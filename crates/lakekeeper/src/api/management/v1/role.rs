@@ -612,7 +612,7 @@ async fn authorize_get_role_metadata<A: Authorizer, C: CatalogStore>(
             .await?;
 
     let role = authorizer
-        .require_role_action(request_metadata, Ok(role), action.clone())
+        .require_role_action(request_metadata, Ok(role), *action)
         .await?;
 
     let role_metadata = RoleMetadata {
@@ -668,7 +668,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     let action = event_ctx.action();
 
     let role = authorizer
-        .require_role_action(request_metadata, role, action.clone())
+        .require_role_action(request_metadata, role, *action)
         .await?;
 
     let mut t = C::Transaction::begin_write(catalog_state)
@@ -705,7 +705,7 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     .await;
 
     authorizer
-        .require_role_action(request_metadata, role, action.clone())
+        .require_role_action(request_metadata, role, *action)
         .await?;
 
     // -------------------- Business Logic --------------------
@@ -748,7 +748,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     .await;
 
     authorizer
-        .require_role_action(request_metadata, role, action.clone())
+        .require_role_action(request_metadata, role, *action)
         .await?;
 
     // -------------------- Business Logic --------------------

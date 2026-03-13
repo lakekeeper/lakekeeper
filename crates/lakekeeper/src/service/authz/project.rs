@@ -11,8 +11,7 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
             CannotInspectPermissions, CatalogAction, CatalogProjectAction, IsAllowedActionError,
-            MustUse,
-            UserOrRole,
+            MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -46,7 +45,7 @@ pub struct AuthZProjectActionForbidden {
 }
 impl AuthZProjectActionForbidden {
     #[must_use]
-    pub fn new(project_id: ArcProjectId, action: impl ProjectAction) -> Self {
+    pub fn new(project_id: ArcProjectId, action: &impl ProjectAction) -> Self {
         Self {
             project_id,
             action: action.as_log_str(),
@@ -198,7 +197,7 @@ pub trait AuthZProjectOps: Authorizer {
         {
             Ok(())
         } else {
-            Err(AuthZProjectActionForbidden::new(project_id.clone(), action).into())
+            Err(AuthZProjectActionForbidden::new(project_id.clone(), &action).into())
         }
     }
 }

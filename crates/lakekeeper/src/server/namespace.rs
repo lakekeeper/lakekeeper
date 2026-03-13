@@ -254,7 +254,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             &authorizer,
             event_ctx.request_metadata(),
             warehouse_id,
-            &namespace,
+            namespace,
             state.v1_state.catalog.clone(),
             properties_btree,
         )

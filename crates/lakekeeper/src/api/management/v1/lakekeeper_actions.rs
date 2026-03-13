@@ -429,7 +429,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
 
     if !can_see {
         let err: RequireProjectActionError =
-            AuthZProjectActionForbidden::new(object.clone(), can_see_permission).into();
+            AuthZProjectActionForbidden::new(object.clone(), &can_see_permission).into();
         return Err(err.into());
     }
 

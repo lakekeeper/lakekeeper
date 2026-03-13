@@ -8,8 +8,7 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
             CannotInspectPermissions, CatalogAction, CatalogServerAction, IsAllowedActionError,
-            MustUse,
-            UserOrRole,
+            MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,

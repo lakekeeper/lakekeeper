@@ -1772,7 +1772,10 @@ mod tests {
                 id: Some("server-check-1".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                    action: CatalogServerAction::CreateProject {
+                        name: None,
+                        project_id: None,
+                    },
                 },
             }],
             error_on_not_found: false,
@@ -1928,7 +1931,10 @@ mod tests {
                     id: Some("batch-1".to_string()),
                     identity: None,
                     operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
                     },
                 },
                 CatalogActionCheckItem {
@@ -2509,7 +2515,10 @@ mod tests {
                     id: None,
                     identity: None,
                     operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
                     },
                 },
                 CatalogActionCheckItem {
@@ -2558,7 +2567,10 @@ mod tests {
                 id: Some(format!("check-{i}")),
                 identity: None,
                 operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                    action: CatalogServerAction::CreateProject {
+                        name: None,
+                        project_id: None,
+                    },
                 },
             })
             .collect();
@@ -2679,7 +2691,10 @@ mod tests {
                 id: Some("role-server-check".to_string()),
                 identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
                 operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                    action: CatalogServerAction::CreateProject {
+                        name: None,
+                        project_id: None,
+                    },
                 },
             }],
             error_on_not_found: false,
@@ -2754,14 +2769,20 @@ mod tests {
                     id: Some("batch-role".to_string()),
                     identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
                     operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
                     },
                 },
                 CatalogActionCheckItem {
                     id: Some("batch-no-identity".to_string()),
                     identity: None,
                     operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject { name: None, project_id: None },
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
                     },
                 },
             ],
