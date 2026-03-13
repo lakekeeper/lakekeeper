@@ -1826,10 +1826,7 @@ pub(crate) mod test {
         },
         service::{
             SecretStore, State, TableId, TabularListFlags, UserId,
-            authz::{
-                AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
-                tests::HidingAuthorizer,
-            },
+            authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
         },
         tests::{create_table_request as create_request, random_request_metadata},
     };
@@ -4175,17 +4172,8 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(
-            format!(
-                "namespace:{:?}",
-                CatalogNamespaceAction::CreateTable {
-                    name: None,
-                    table_id: None,
-                    properties: Arc::default(),
-                }
-            )
-            .as_str(),
-        );
+        // Block any CreateTable namespace action (prefix match — fields are dynamic).
+        authz.block_action("namespace:CreateTable");
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {

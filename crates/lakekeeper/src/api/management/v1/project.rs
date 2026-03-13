@@ -120,15 +120,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             project_id,
         } = request;
 
-        let project_id = project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7()));
-
         // Create event context for tracking authorization and operation events
         let event_ctx = APIEventContext::for_server(
             Arc::new(request_metadata),
             context.v1_state.events,
             CatalogServerAction::CreateProject {
                 name: Some(project_name.clone()),
-                project_id: Some(project_id.clone()),
+                project_id: project_id.clone(),
             },
             context.v1_state.authz.server_id(),
         );
@@ -143,7 +141,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
         validate_project_name(&project_name)?;
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let project_id = Arc::new(project_id);
+        let project_id = Arc::new(project_id.unwrap_or(ProjectId::from(uuid::Uuid::now_v7())));
         C::create_project(&project_id, project_name.clone(), t.transaction()).await?;
         authorizer
             .create_project(event_ctx.request_metadata(), &project_id)

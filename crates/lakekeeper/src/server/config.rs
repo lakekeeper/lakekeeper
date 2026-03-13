@@ -53,7 +53,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
             let authz_result = authorizer
                 .require_project_action(&request_metadata_arc, &project_id, action)
                 .await;
-            let _ = event_ctx.emit_authz(authz_result);
+            event_ctx.emit_authz(authz_result)?;
             C::get_warehouse_by_name(
                 &warehouse_from_arg,
                 &project_id,

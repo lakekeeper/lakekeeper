@@ -254,10 +254,10 @@ impl CatalogAction for CatalogUserAction {
 pub enum CatalogServerAction {
     /// Can create items inside the server (can create Warehouses).
     CreateProject {
-        /// Name of the project to create. `None` when used via the check endpoint.
+        /// Name of the project to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// Externally provided project ID. `None` when auto-generated or used via the check endpoint.
+        /// Project ID, if externally provided.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "open-api", schema(value_type = Option<String>))]
         project_id: Option<ProjectId>,
@@ -312,7 +312,7 @@ impl CatalogAction for CatalogServerAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum CatalogProjectAction {
     CreateWarehouse {
-        /// Name of the warehouse to create. `None` when used via the check endpoint.
+        /// Name of the warehouse to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
@@ -322,7 +322,7 @@ pub enum CatalogProjectAction {
     ListWarehouses,
     IncludeInList,
     CreateRole {
-        /// Name of the role to create. `None` when used via the check endpoint.
+        /// Name of the role to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
@@ -413,7 +413,7 @@ impl CatalogAction for CatalogRoleAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogWarehouseAction {
     CreateNamespace {
-        /// Name of the namespace to create. `None` when used via the check endpoint.
+        /// Name of the namespace to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -507,10 +507,10 @@ impl CatalogAction for CatalogWarehouseAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogNamespaceAction {
     CreateTable {
-        /// Name of the table to create. `None` when used via the check endpoint.
+        /// Name of the table to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        /// Externally provided table ID. `None` when auto-generated or used via the check endpoint.
+        /// Table ID, if externally provided (e.g. via register).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
         table_id: Option<TableId>,
@@ -519,7 +519,7 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     CreateView {
-        /// Name of the view to create. `None` when used via the check endpoint.
+        /// Name of the view to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -527,7 +527,7 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     CreateNamespace {
-        /// Name of the namespace to create. `None` when used via the check endpoint.
+        /// Name of the namespace to create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1368,7 +1368,11 @@ pub(crate) mod tests {
         }
 
         fn action_is_blocked(&self, action: &str) -> bool {
-            self.blocked_actions.read().unwrap().contains(action)
+            let blocked = self.blocked_actions.read().unwrap();
+            // Exact match or prefix match (e.g. "namespace:CreateTable" matches
+            // "namespace:CreateTable { name: Some(...), ... }").
+            blocked.contains(action)
+                || blocked.iter().any(|b| action.starts_with(b.as_str()))
         }
 
         pub(crate) fn block_action(&self, object: &str) {

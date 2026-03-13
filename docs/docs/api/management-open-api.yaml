@@ -4874,12 +4874,23 @@ components:
               type: string
               enum:
                 - create_table
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the table to create.
             properties:
               type: object
               additionalProperties:
                 type: string
               propertyNames:
                 type: string
+            table_id:
+              type:
+                - string
+                - 'null'
+              format: uuid
+              description: Table ID, if externally provided (e.g. via register).
         - type: object
           required:
             - action
@@ -4888,6 +4899,11 @@ components:
               type: string
               enum:
                 - create_view
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the view to create.
             properties:
               type: object
               additionalProperties:
@@ -4902,6 +4918,11 @@ components:
               type: string
               enum:
                 - create_namespace
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the namespace to create.
             properties:
               type: object
               additionalProperties:
@@ -5000,6 +5021,11 @@ components:
               type: string
               enum:
                 - create_warehouse
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the warehouse to create.
         - type: object
           required:
             - action
@@ -5048,6 +5074,11 @@ components:
               type: string
               enum:
                 - create_role
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the role to create.
         - type: object
           required:
             - action
@@ -5141,6 +5172,7 @@ components:
     LakekeeperServerAction:
       oneOf:
         - type: object
+          description: Can create items inside the server (can create Warehouses).
           required:
             - action
           properties:
@@ -5148,7 +5180,18 @@ components:
               type: string
               enum:
                 - create_project
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the project to create.
+            project_id:
+              type:
+                - string
+                - 'null'
+              description: Project ID, if externally provided.
         - type: object
+          description: Can update all users on this server.
           required:
             - action
           properties:
@@ -5157,6 +5200,7 @@ components:
               enum:
                 - update_users
         - type: object
+          description: Can delete all users on this server.
           required:
             - action
           properties:
@@ -5165,6 +5209,7 @@ components:
               enum:
                 - delete_users
         - type: object
+          description: Can List all users on this server.
           required:
             - action
           properties:
@@ -5173,6 +5218,7 @@ components:
               enum:
                 - list_users
         - type: object
+          description: Can provision user
           required:
             - action
           properties:
@@ -5400,6 +5446,11 @@ components:
               type: string
               enum:
                 - create_namespace
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the namespace to create.
             properties:
               type: object
               additionalProperties:
