@@ -83,6 +83,9 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), Warehou
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
             .initial_capacity(50)
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.warehouse.time_to_live_secs,
+            ))
             .build()
     });
 
@@ -419,6 +422,20 @@ mod tests {
         // Verify name-to-id cache is also invalidated
         let cached_by_name = warehouse_cache_get_by_name(&name, &project_id).await;
         assert!(cached_by_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_name_to_id_cache_has_ttl_matching_primary() {
+        let primary_ttl = WAREHOUSE_CACHE.policy().time_to_live();
+        let secondary_ttl = NAME_TO_ID_CACHE.policy().time_to_live();
+        assert_eq!(
+            primary_ttl, secondary_ttl,
+            "NAME_TO_ID_CACHE TTL must match WAREHOUSE_CACHE TTL"
+        );
+        assert!(
+            secondary_ttl.is_some(),
+            "NAME_TO_ID_CACHE must have a TTL configured"
+        );
     }
 
     #[tokio::test]

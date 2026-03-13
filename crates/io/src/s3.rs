@@ -60,7 +60,7 @@ macro_rules! apply_aws_config {
             .sleep_impl(SLEEP_IMPL.clone())
             .behavior_version(BehaviorVersion::latest())
             .http_client((*SMITHY_HTTP_CLIENT).clone())
-            .identity_cache(IdentityCache::lazy().build())
+            .identity_cache(IdentityCache::no_cache())
             .app_name(AppName::new("lakekeeper").unwrap())
     };
 }

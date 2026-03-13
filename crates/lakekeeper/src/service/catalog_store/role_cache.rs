@@ -64,6 +64,7 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
         Cache::builder()
             .max_capacity(CONFIG.cache.role.capacity)
             .initial_capacity(100)
+            .time_to_live(Duration::from_secs(CONFIG.cache.role.time_to_live_secs))
             .build()
     });
 
@@ -300,6 +301,20 @@ mod tests {
             updated_at: None,
             version: RoleVersion::new(version),
         })
+    }
+
+    #[tokio::test]
+    async fn test_ident_to_id_cache_has_ttl_matching_primary() {
+        let primary_ttl = ROLE_CACHE.policy().time_to_live();
+        let secondary_ttl = IDENT_TO_ID_CACHE.policy().time_to_live();
+        assert_eq!(
+            primary_ttl, secondary_ttl,
+            "IDENT_TO_ID_CACHE TTL must match ROLE_CACHE TTL"
+        );
+        assert!(
+            secondary_ttl.is_some(),
+            "IDENT_TO_ID_CACHE must have a TTL configured"
+        );
     }
 
     #[tokio::test]
