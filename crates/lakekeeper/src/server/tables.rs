@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    hash::Hash,
     str::FromStr as _,
     sync::Arc,
 };
@@ -20,6 +21,7 @@ use iceberg_ext::{
 use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
+use tokio::task::{JoinError, JoinSet};
 use uuid::Uuid;
 pub(crate) mod create_table;
 mod load_table;
@@ -41,12 +43,16 @@ use crate::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
-                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
-                tables::{DataAccessMode, LoadTableFilters, LoadTableRequest},
+                ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
+                TableParameters,
+                tables::{
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
+                },
             },
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
+    config::{SecurityModel, TrustedEngine},
     request_metadata::RequestMetadata,
     server::{
         self,
@@ -54,17 +60,22 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
-        CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
-        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        Actor, AuthZTableInfo, AuthZTabularInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy,
+        CatalogBackendError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError,
+        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
+        GetTabularInfoError, NamedEntity, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
+        ResolveTasksError, ResolvedWarehouse, State, TableCommit, TableCreation, TableId,
+        TableIdentOrId, TableInfo, TabularId, TabularIdentBorrowed, TabularIdentOwned, TabularInfo,
+        TabularListFlags, TabularNotFound, Transaction, ViewInfo, ViewOrTableInfo, WarehouseStatus,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
-            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
-            RequireNamespaceActionError, RequireTableActionError,
-            refresh_warehouse_and_namespace_if_needed,
+            ActionOnTable, ActionOnTableOrView, ActionOnView, AuthZCannotSeeNamespace,
+            AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden, AuthZTableOps,
+            AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            RequireNamespaceActionError, RequireTableActionError, RequireViewActionError,
+            UserOrRole, refresh_warehouse_and_namespace_if_needed,
         },
+        build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
@@ -428,10 +439,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     async fn load_table_credentials(
         parameters: TableParameters,
+        request: LoadTableCredentialsRequest,
         data_access: DataAccess,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadCredentialsResponse> {
+        let LoadTableCredentialsRequest { referenced_by } = request;
+
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -451,6 +465,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularListFlags::active_and_staged(),
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
+            referenced_by.as_deref(),
         )
         .await
         {
@@ -762,7 +777,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         Ok(())
     }
 }
-
+#[allow(clippy::too_many_lines)]
 async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: TableIdent,
@@ -770,6 +785,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     list_flags: TabularListFlags,
     authorizer: A,
     state: C::State,
+    referenced_by: Option<&[ReferencingView]>,
 ) -> Result<
     (
         Arc<ResolvedWarehouse>,
@@ -778,6 +794,93 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     ),
     AuthZError,
 > {
+    let engine = request_metadata.engine();
+
+    // 1. Collect all relevant namespace idents
+    let user_provided_namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+        TabularIdentBorrowed::Table(&table),
+        referenced_by,
+        engine,
+    );
+
+    // 2. Collect all relevant tabular idents
+    let user_provided_tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+        TabularIdentBorrowed::Table(&table),
+        referenced_by,
+        engine,
+    );
+
+    // 3. Load Objects with JoinSet:
+    // * warehouse (get_active_warehouse_by_id)
+    // * load namespaces with batch function (`get_namespaces_by_ident`)
+    // * load tabulars with batch function (`get_tabular_infos_by_idents`)
+    let AuthorizeLoadTableObjects {
+        warehouse,
+        namespaces,
+        tabulars,
+    } = load_objects_to_authorize_load_tabular::<C>(
+        warehouse_id,
+        user_provided_namespaces.clone().into_iter().collect(),
+        user_provided_tabulars.clone().into_iter().collect(),
+        list_flags,
+        state.clone(),
+    )
+    .await
+    .map_err(|e| ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e)))?;
+
+    // 4. Check objects presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let tabulars =
+        check_required_tabulars(warehouse_id, user_provided_tabulars, tabulars, &authorizer)?;
+    let namespaces =
+        check_required_namespaces(warehouse_id, &user_provided_namespaces, namespaces)?;
+
+    // 5. Build NamespaceHierarchy
+    let namespaces_with_hierarchy = namespaces
+        .iter()
+        .map(|(namespace_id, namespace)| {
+            (
+                *namespace_id,
+                build_namespace_hierarchy(namespace, &namespaces),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    // 6. Sort tabulars by comparing initial referenced_by list plus appended table/view
+    let sorted_tabulars =
+        sort_tabulars_for_authorize_load_tabular(&tabulars, referenced_by, &table);
+
+    // 7. Connect tabular with namespaces by using namespace_id
+    let sorted_tabulars = add_namespace_to_tabulars_for_authorize_load_tabular(
+        warehouse_id,
+        sorted_tabulars,
+        &namespaces_with_hierarchy,
+    )?;
+
+    // 8. Collect all specified owners
+    let owners =
+        collect_owners_from_tabulars_for_authorize_load_tabular(&sorted_tabulars, engine).await?;
+
+    // 9. Build list containing (current_user, view) pairs by iterating over ordered view.
+    //     1. Start with calling user
+    //     2. When current view has special engine property -> Definer view -> current user will change to owner of current view for next views in the list
+    let sorted_tabulars_with_full_info = add_current_user_to_tabulars_for_authorize_load_tabular(
+        &sorted_tabulars,
+        request_metadata.actor(),
+        &owners,
+        engine,
+    );
+
+    // 10. Check all authorizations in batch with `are_allowed_tabular_actions_vec` with list of (current_user, view) pairs from Step 8.
+    let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+        &sorted_tabulars_with_full_info,
+        engine,
+    );
+    let _ = authorizer
+        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
+        .await?;
+
+    // ------------------ OLD ------------------
     let (warehouse, namespace, table_info) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, state.clone()),
         C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
@@ -800,17 +903,44 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     )
     .await?;
 
+    let parent_namespaces: HashMap<_, _> = namespace
+        .parents
+        .iter()
+        .map(|ns| (ns.namespace_id(), ns.clone()))
+        .collect();
     let [can_get_metadata, can_read, can_write] = authorizer
         .are_allowed_table_actions_arr(
             request_metadata,
-            None,
             &warehouse,
-            &namespace,
-            &table_info,
+            &parent_namespaces,
             &[
-                CatalogTableAction::GetMetadata,
-                CatalogTableAction::ReadData,
-                CatalogTableAction::WriteData,
+                (
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: &table_info,
+                        action: CatalogTableAction::GetMetadata,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
+                (
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: &table_info,
+                        action: CatalogTableAction::ReadData,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
+                (
+                    &namespace.namespace,
+                    ActionOnTable {
+                        info: &table_info,
+                        action: CatalogTableAction::WriteData,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                ),
             ],
         )
         .await?
@@ -828,6 +958,385 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
         None
     };
     Ok((warehouse, table_info, storage_permissions))
+}
+
+fn get_relevant_namespaces_to_authorize_load_tabular<'a>(
+    tabular: TabularIdentBorrowed<'a>,
+    referenced_by: Option<&'a [ReferencingView]>,
+    engine: Option<&TrustedEngine>,
+) -> HashSet<NamespaceIdent> {
+    get_relevant_objects_to_authorize_load_tabular(tabular, referenced_by, engine, |o| match o {
+        TabularIdentBorrowed::Table(table_ident) | TabularIdentBorrowed::View(table_ident) => {
+            table_ident.namespace().clone()
+        }
+    })
+}
+
+fn get_relevant_tabulars_to_authorize_load_tabular<'a>(
+    tabular: TabularIdentBorrowed<'a>,
+    referenced_by: Option<&'a [ReferencingView]>,
+    engine: Option<&TrustedEngine>,
+) -> HashSet<TabularIdentOwned> {
+    get_relevant_objects_to_authorize_load_tabular(
+        tabular,
+        referenced_by,
+        engine,
+        std::convert::Into::into,
+    )
+}
+
+fn get_relevant_objects_to_authorize_load_tabular<'a, F, O>(
+    tabular: TabularIdentBorrowed<'a>,
+    referenced_by: Option<&'a [ReferencingView]>,
+    engine: Option<&TrustedEngine>,
+    transformer: F,
+) -> HashSet<O>
+where
+    O: Eq + Hash,
+    F: Fn(TabularIdentBorrowed<'a>) -> O,
+{
+    let mut results = HashSet::new();
+
+    results.insert(transformer(tabular));
+
+    if let Some(views) = referenced_by
+        && engine.is_some()
+    {
+        for view in views {
+            results.insert(transformer(TabularIdentBorrowed::View(view)));
+        }
+    }
+
+    results
+}
+
+#[derive(Debug)]
+pub struct AuthorizeLoadTableObjects {
+    pub warehouse: Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>,
+    pub namespaces: Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>,
+    pub tabulars: Result<Vec<ViewOrTableInfo>, GetTabularInfoError>,
+}
+
+enum AuthorizeLoadTableLoadTaskResult {
+    Warehouse(Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError>),
+    Namespaces(Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>),
+    Tabulars(Result<Vec<ViewOrTableInfo>, GetTabularInfoError>),
+}
+
+async fn load_objects_to_authorize_load_tabular<C: CatalogStore>(
+    warehouse_id: WarehouseId,
+    namespaces: Vec<NamespaceIdent>,
+    tabulars: Vec<TabularIdentOwned>,
+    list_flags: TabularListFlags,
+    state: C::State,
+) -> Result<AuthorizeLoadTableObjects, JoinError> {
+    let mut set = JoinSet::new();
+
+    set.spawn({
+        let state = state.clone();
+        async move {
+            AuthorizeLoadTableLoadTaskResult::Warehouse(
+                C::get_active_warehouse_by_id(warehouse_id, state).await,
+            )
+        }
+    });
+
+    set.spawn({
+        let state = state.clone();
+        async move {
+            AuthorizeLoadTableLoadTaskResult::Namespaces(
+                C::get_namespaces_by_ident(
+                    warehouse_id,
+                    &namespaces.iter().collect::<Vec<_>>(),
+                    state,
+                )
+                .await,
+            )
+        }
+    });
+
+    set.spawn({
+        let state = state.clone();
+        async move {
+            AuthorizeLoadTableLoadTaskResult::Tabulars(
+                C::get_tabular_infos_by_ident(
+                    warehouse_id,
+                    &tabulars.iter().map(|t| t.as_borrowed()).collect::<Vec<_>>(),
+                    list_flags,
+                    state,
+                )
+                .await,
+            )
+        }
+    });
+
+    let mut warehouse_result = None;
+    let mut tabulars_result = None;
+    let mut namespaces_result = None;
+
+    while let Some(join_result) = set.join_next().await {
+        let task_result = join_result?;
+
+        match task_result {
+            AuthorizeLoadTableLoadTaskResult::Warehouse(warehouse) => {
+                warehouse_result = Some(warehouse);
+            }
+            AuthorizeLoadTableLoadTaskResult::Namespaces(namespaces) => {
+                namespaces_result = Some(namespaces);
+            }
+            AuthorizeLoadTableLoadTaskResult::Tabulars(tabulars) => {
+                tabulars_result = Some(tabulars);
+            }
+        }
+    }
+
+    // TODO: Would it be better to delegate the error as JoinError?
+    Ok(AuthorizeLoadTableObjects {
+        warehouse: warehouse_result.expect("Warehouse task should be spawned and completed."),
+        namespaces: namespaces_result.expect("Namespaces task should be spawned and completed."),
+        tabulars: tabulars_result.expect("Tabulars task should be spawned and completed."),
+    })
+}
+
+fn check_required_tabulars<A: Authorizer>(
+    warehouse_id: WarehouseId,
+    user_provided_tabulars: HashSet<TabularIdentOwned>,
+    tabulars: Result<Vec<ViewOrTableInfo>, GetTabularInfoError>,
+    authorizer: &A,
+) -> Result<Vec<ViewOrTableInfo>, AuthZError> {
+    let tabulars = tabulars.map_err(|e| {
+        ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e))
+    })?;
+
+    for user_provided_tabular in user_provided_tabulars {
+        match user_provided_tabular {
+            TabularIdentOwned::Table(table_ident) => {
+                let table = tabulars
+                    .iter()
+                    .find(|tabular| tabular.tabular_ident() == &table_ident);
+                let table = table.and_then(|tabular| tabular.clone().into_table_info());
+                authorizer.require_table_presence(
+                    warehouse_id,
+                    table_ident,
+                    Ok::<_, RequireTableActionError>(table),
+                )?;
+            }
+            TabularIdentOwned::View(view_ident) => {
+                let view = tabulars
+                    .iter()
+                    .find(|tabular| tabular.tabular_ident() == &view_ident);
+                let view = view.and_then(|tabular| tabular.clone().into_view_info());
+                authorizer.require_view_presence(
+                    warehouse_id,
+                    view_ident,
+                    Ok::<_, RequireViewActionError>(view),
+                )?;
+            }
+        }
+    }
+
+    Ok(tabulars)
+}
+
+fn check_required_namespaces(
+    warehouse_id: WarehouseId,
+    user_provided_namespaces: &HashSet<NamespaceIdent>,
+    namespaces: Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>,
+) -> Result<HashMap<NamespaceId, NamespaceWithParent>, AuthZError> {
+    let namespaces = namespaces.map_err(|e| {
+        ResolveTasksError::CatalogBackendError(CatalogBackendError::new_unexpected(e))
+    })?;
+
+    let namespace_idents: HashSet<NamespaceIdent> = namespaces
+        .values()
+        .map(NamespaceWithParent::namespace_ident)
+        .cloned()
+        .collect();
+
+    let missing_namespaces = user_provided_namespaces
+        .difference(&namespace_idents)
+        .collect::<Vec<_>>();
+    if let Some(missing_namespace) = missing_namespaces.first() {
+        return Err(
+            AuthZCannotSeeNamespace::new_not_found(warehouse_id, *missing_namespace).into(),
+        );
+    }
+
+    Ok(namespaces)
+}
+
+fn sort_tabulars_for_authorize_load_tabular(
+    tabular_infos: &[ViewOrTableInfo],
+    referenced_by: Option<&[ReferencingView]>,
+    tabular: &TableIdent,
+) -> Vec<ViewOrTableInfo> {
+    let mut results = BTreeMap::new();
+
+    let mut current_index = 0;
+
+    if let Some(referencing_views) = referenced_by {
+        for referencing_view in referencing_views {
+            let view_info = tabular_infos
+                .iter()
+                .find(|info| info.tabular_ident() == &referencing_view.clone().into_inner());
+            if let Some(view_info) = view_info {
+                results.insert(current_index, view_info.clone());
+                current_index += 1;
+            }
+        }
+    }
+
+    let tabular_info = tabular_infos
+        .iter()
+        .find(|info| info.tabular_ident() == tabular);
+    if let Some(tabular_info) = tabular_info {
+        results.insert(current_index, tabular_info.clone());
+    }
+
+    results.into_values().collect()
+}
+
+fn add_namespace_to_tabulars_for_authorize_load_tabular(
+    warehouse_id: WarehouseId,
+    tabulars: Vec<ViewOrTableInfo>,
+    namespaces: &HashMap<NamespaceId, NamespaceHierarchy>,
+) -> Result<Vec<(ViewOrTableInfo, NamespaceHierarchy)>, AuthZError> {
+    tabulars
+        .into_iter()
+        .map(|tabular| {
+            let namespace_id = tabular.namespace_id();
+            namespaces
+                .get(&namespace_id)
+                .map(|namespace| (tabular, namespace.clone()))
+                .ok_or_else(|| {
+                    AuthZCannotSeeNamespace::new_not_found(warehouse_id, namespace_id).into()
+                })
+        })
+        .collect()
+}
+
+async fn collect_owners_from_tabulars_for_authorize_load_tabular(
+    tabulars: &[(ViewOrTableInfo, NamespaceHierarchy)],
+    engine: Option<&TrustedEngine>,
+) -> Result<HashMap<String, Actor>, AuthZError> {
+    match engine {
+        Some(engine) => {
+            let definer_views = tabulars
+                .iter()
+                .map(|(tabular, _)| engine.determine_security_model(tabular.properties()))
+                .filter(|security_model| matches!(security_model, SecurityModel::Definer(_)))
+                .collect::<Vec<_>>();
+            let results = HashMap::with_capacity(definer_views.len());
+
+            // TODO: Load User or Role, probably with JoinSet or an batch_call if possible and use the owner string in definer_views as key for the map
+            // Note: The engine contains the idp_id
+
+            Ok(results)
+        }
+        None => Ok(HashMap::new()),
+    }
+}
+
+fn add_current_user_to_tabulars_for_authorize_load_tabular(
+    tabulars: &[(ViewOrTableInfo, NamespaceHierarchy)],
+    actor: &Actor,
+    owners: &HashMap<String, Actor>,
+    engine: Option<&TrustedEngine>,
+) -> Vec<(ViewOrTableInfo, Option<UserOrRole>, NamespaceHierarchy)> {
+    match engine {
+        Some(engine) => {
+            let mut current_user = actor;
+
+            tabulars
+                .iter()
+                .map(|(tabular, namespace)| {
+                    let result = (
+                        tabular.clone(),
+                        current_user.to_user_or_role(),
+                        namespace.clone(),
+                    );
+                    if let SecurityModel::Definer(owner) =
+                        engine.determine_security_model(tabular.properties())
+                    {
+                        current_user = owners
+                            .get(&owner)
+                            .expect("owners should contain all owners used in views.");
+                    }
+                    result
+                })
+                .collect()
+        }
+        None => tabulars
+            .last()
+            .map(|(tabular, namespace)| {
+                (tabular.clone(), actor.to_user_or_role(), namespace.clone())
+            })
+            .into_iter()
+            .collect(),
+    }
+}
+
+type NamespaceWithAction<'a> = (
+    &'a NamespaceWithParent,
+    ActionOnTableOrView<'a, 'a, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>,
+);
+
+fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
+    tabulars: &'a [(ViewOrTableInfo, Option<UserOrRole>, NamespaceHierarchy)],
+    engine: Option<&TrustedEngine>,
+) -> Vec<NamespaceWithAction<'a>> {
+    tabulars
+        .iter()
+        .flat_map(|(tabular, user, namespace)| {
+            let is_delegated_execution = engine.is_some_and(|e| {
+                matches!(
+                    e.determine_security_model(tabular.properties()),
+                    SecurityModel::Definer(_)
+                )
+            });
+            let user = user.as_ref();
+            match tabular {
+                ViewOrTableInfo::Table(info) => vec![
+                    CatalogTableAction::GetMetadata,
+                    CatalogTableAction::ReadData,
+                    CatalogTableAction::WriteData,
+                ]
+                .into_iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnTableOrView::Table(ActionOnTable {
+                            info,
+                            action,
+                            user,
+                            is_delegated_execution,
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+                ViewOrTableInfo::View(info) => vec![
+                    CatalogViewAction::GetMetadata,
+                    CatalogViewAction::Commit {
+                        updated_properties: Arc::new(BTreeMap::default()),
+                        removed_properties: Arc::new(Vec::default()),
+                    },
+                ]
+                .into_iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnTableOrView::View(ActionOnView {
+                            info,
+                            action,
+                            user,
+                            is_delegated_execution,
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            }
+        })
+        .collect()
 }
 
 /// Validate commit table requests
@@ -1812,6 +2321,7 @@ pub(crate) mod test {
                 warehouse::TabularDeleteProfile,
             },
         },
+        config::{TrinoEngineConfig, TrustedEngine},
         implementations::postgres::{
             PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
         },
@@ -1821,7 +2331,7 @@ pub(crate) mod test {
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            SecretStore, State, TableId, TabularListFlags, UserId,
+            RoleId, SecretStore, State, TableId, TabularListFlags, UserId, ViewInfo,
             authz::{
                 AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
                 tests::HidingAuthorizer,
@@ -4628,5 +5138,561 @@ pub(crate) mod test {
             .unwrap()
             .expect("table and metadata should still exist");
         }
+    }
+
+    fn get_test_engine() -> TrustedEngine {
+        TrustedEngine::Trino(TrinoEngineConfig {
+            idp_id: "keycloak~trino".to_string(),
+            security_model_property: "trino.run-as-owner".to_string(),
+        })
+    }
+
+    #[test]
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_base_tabular_namespace() {
+        let engine = get_test_engine();
+        let namespace_ident = NamespaceIdent::from_strs(vec!["ns_a", "ns_b"])
+            .expect("NamespaceIdent should be able to be build");
+        let table = TabularIdentBorrowed::Table(&TableIdent::new(
+            namespace_ident.clone(),
+            "table".to_string(),
+        ));
+        let namespaces =
+            get_relevant_namespaces_to_authorize_load_tabular(table, None, Some(&engine));
+        assert!(namespaces.contains(&namespace_ident));
+    }
+
+    #[test]
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_all_namespaces_of_referencing_views()
+     {
+        let engine = get_test_engine();
+
+        let namespace_a = NamespaceIdent::from_strs(vec!["ns_a"]).unwrap();
+        let view_a = TableIdent::new(namespace_a.clone(), "view_a".to_string());
+
+        let namespace_b = NamespaceIdent::from_strs(vec!["ns_b"]).unwrap();
+        let view_b = TableIdent::new(namespace_b.clone(), "view_b".to_string());
+
+        let referencing_views = vec![ReferencingView::new(view_a), ReferencingView::new(view_b)];
+
+        let namespace_c = NamespaceIdent::from_strs(vec!["ns_c"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace_c.clone(), "table".to_string()));
+
+        let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+            table,
+            Some(&referencing_views),
+            Some(&engine),
+        );
+
+        assert_eq!(namespaces.len(), 3);
+        assert!(namespaces.contains(&namespace_a));
+        assert!(namespaces.contains(&namespace_b));
+        assert!(namespaces.contains(&namespace_c));
+    }
+
+    #[test]
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_no_duplicates() {
+        let engine = get_test_engine();
+
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+
+        let view_a = TableIdent::new(namespace.clone(), "view_a".to_string());
+        let view_b = TableIdent::new(namespace.clone(), "view_b".to_string());
+        let referencing_views = vec![ReferencingView::new(view_a), ReferencingView::new(view_b)];
+
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+
+        let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+            table,
+            Some(&referencing_views),
+            Some(&engine),
+        );
+
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains(&namespace));
+    }
+
+    #[test]
+    fn test_get_relevant_namespaces_to_authorize_load_tabular_ignores_referencing_views_without_trusted_engine()
+     {
+        let namespace_referenced_by = NamespaceIdent::from_strs(vec!["ns_referenced_by"]).unwrap();
+
+        let referencing_view = TableIdent::new(
+            namespace_referenced_by.clone(),
+            "referencing_view".to_string(),
+        );
+        let referencing_views = vec![ReferencingView::new(referencing_view)];
+
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+
+        let namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+            table,
+            Some(&referencing_views),
+            None,
+        );
+
+        assert_eq!(namespaces.len(), 1);
+        assert!(namespaces.contains(&namespace));
+    }
+
+    #[test]
+    fn test_get_relevant_tabulars_to_authorize_load_tabular_contains_base_tabular() {
+        let engine = get_test_engine();
+
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+        let table = TabularIdentBorrowed::Table(&TableIdent::new(namespace, "table".to_string()));
+
+        let tabulars =
+            get_relevant_tabulars_to_authorize_load_tabular(table.clone(), None, Some(&engine));
+
+        assert_eq!(tabulars.len(), 1);
+        assert!(tabulars.contains(&table.into()));
+    }
+
+    #[test]
+    fn test_get_relevant_tabulars_to_authorize_load_tabular_contains_all_referencing_views() {
+        let engine = get_test_engine();
+
+        let namespace_a = NamespaceIdent::from_strs(vec!["ns_a"]).unwrap();
+        let view_a = TableIdent::new(namespace_a.clone(), "view_a".to_string());
+
+        let namespace_b = NamespaceIdent::from_strs(vec!["ns_b"]).unwrap();
+        let view_b = TableIdent::new(namespace_b.clone(), "view_b".to_string());
+
+        let referencing_views = vec![
+            ReferencingView::new(view_a.clone()),
+            ReferencingView::new(view_b.clone()),
+        ];
+
+        let namespace_c = NamespaceIdent::from_strs(vec!["ns_c"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace_c.clone(), "table".to_string()));
+
+        let tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+            table.clone(),
+            Some(&referencing_views),
+            Some(&engine),
+        );
+
+        assert_eq!(tabulars.len(), 3);
+        assert!(tabulars.contains(&TabularIdentOwned::View(view_a)));
+        assert!(tabulars.contains(&TabularIdentOwned::View(view_b)));
+        assert!(tabulars.contains(&table.into()));
+    }
+
+    #[test]
+    fn test_get_relevant_tabulars_to_authorize_load_tabular_ignores_referencing_views_without_trusted_engine()
+     {
+        let namespace_referenced_by = NamespaceIdent::from_strs(vec!["ns_referenced_by"]).unwrap();
+
+        let referencing_view = TableIdent::new(
+            namespace_referenced_by.clone(),
+            "referencing_view".to_string(),
+        );
+        let referencing_views = vec![ReferencingView::new(referencing_view)];
+
+        let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
+        let table =
+            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+
+        let tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+            table.clone(),
+            Some(&referencing_views),
+            None,
+        );
+
+        assert_eq!(tabulars.len(), 1);
+        assert!(tabulars.contains(&table.into()));
+    }
+
+    #[test]
+    fn test_sort_tabulars_for_authorize_load_tabular_should_contain_table_when_only_table_is_given()
+    {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+
+        let referenced_by = None;
+
+        let tabulars: Vec<ViewOrTableInfo> = vec![table.clone().into()];
+
+        let sorted_tabulars = sort_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            referenced_by,
+            &table.tabular_ident,
+        );
+
+        assert_eq!(sorted_tabulars.len(), 1);
+    }
+
+    #[test]
+    fn test_sort_tabulars_for_authorize_load_tabular_should_contain_referencing_views_in_order_before_tabular()
+     {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+
+        let view_1 = ViewInfo::new_random(warehouse_id);
+        let view_2 = ViewInfo::new_random(warehouse_id);
+
+        let referenced_by = vec![
+            ReferencingView::new(view_1.clone().tabular_ident),
+            ReferencingView::new(view_2.clone().tabular_ident),
+        ];
+
+        let tabulars: Vec<ViewOrTableInfo> = vec![
+            view_1.clone().into(),
+            view_2.clone().into(),
+            table.clone().into(),
+        ];
+
+        let sorted_tabulars = sort_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            Some(&referenced_by),
+            &table.tabular_ident,
+        );
+
+        assert_eq!(sorted_tabulars.len(), 3);
+
+        assert_eq!(sorted_tabulars[0], view_1.into());
+        assert_eq!(sorted_tabulars[1], view_2.into());
+        assert_eq!(sorted_tabulars[2], table.into());
+    }
+
+    #[test]
+    fn test_add_namespace_to_tabulars_for_authorize_load_tabular_adds_namespace_when_given_single_table_and_correct_namespace()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let tabulars = vec![table.clone().into()];
+
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let mut namespaces = HashMap::new();
+        namespaces.insert(namespace.namespace_id(), namespace.clone());
+
+        let tabulars_with_namespaces = add_namespace_to_tabulars_for_authorize_load_tabular(
+            warehouse_id,
+            tabulars,
+            &namespaces,
+        )
+        .unwrap();
+
+        assert_eq!(tabulars_with_namespaces.len(), 1);
+        assert_eq!(tabulars_with_namespaces[0], (table.into(), namespace));
+    }
+
+    #[test]
+    fn test_add_namespace_to_tabulars_for_authorize_load_tabular_adds_namespace_when_given_single_table_and_multiple_namespaces()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let tabulars = vec![table.clone().into()];
+
+        let namespace_1 = NamespaceHierarchy::new_with_id(warehouse_id, NamespaceId::new_random());
+        let namespace_2 = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let mut namespaces = HashMap::new();
+        namespaces.insert(namespace_1.namespace_id(), namespace_1);
+        namespaces.insert(namespace_2.namespace_id(), namespace_2.clone());
+
+        let tabulars_with_namespaces = add_namespace_to_tabulars_for_authorize_load_tabular(
+            warehouse_id,
+            tabulars,
+            &namespaces,
+        )
+        .unwrap();
+
+        assert_eq!(tabulars_with_namespaces.len(), 1);
+        assert_eq!(tabulars_with_namespaces[0], (table.into(), namespace_2));
+    }
+
+    #[test]
+    fn test_add_namespace_to_tabulars_for_authorize_load_tabular_adds_namespaces_when_given_multiple_tabulars_and_multiple_namespaces()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let view = ViewInfo::new_random(warehouse_id);
+        let tabulars = vec![view.clone().into(), table.clone().into()];
+
+        let namespace_1 = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let namespace_2 = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
+        let mut namespaces = HashMap::new();
+        namespaces.insert(namespace_1.namespace_id(), namespace_1.clone());
+        namespaces.insert(namespace_2.namespace_id(), namespace_2.clone());
+
+        let tabulars_with_namespaces = add_namespace_to_tabulars_for_authorize_load_tabular(
+            warehouse_id,
+            tabulars,
+            &namespaces,
+        )
+        .unwrap();
+
+        assert_eq!(tabulars_with_namespaces.len(), 2);
+        assert_eq!(tabulars_with_namespaces[0], (view.into(), namespace_2));
+        assert_eq!(tabulars_with_namespaces[1], (table.into(), namespace_1));
+    }
+
+    #[test]
+    fn test_add_current_user_to_tabulars_for_authorize_load_tabular_returns_empty_list_if_no_tabular_given()
+     {
+        let actor = Actor::Principal(UserId::new_unchecked("test", "test"));
+
+        let owners = HashMap::new();
+
+        let tabulars = add_current_user_to_tabulars_for_authorize_load_tabular(
+            &Vec::new(),
+            &actor,
+            &owners,
+            None,
+        );
+
+        assert!(tabulars.is_empty());
+    }
+
+    #[test]
+    fn test_add_current_user_to_tabulars_for_authorize_load_tabular_adds_request_user_if_only_tabular_is_defined()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let actor = Actor::Principal(UserId::new_unchecked("test", "test"));
+
+        let owners = HashMap::new();
+
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let tabulars = vec![(table.clone().into(), namespace.clone())];
+
+        let tabulars = add_current_user_to_tabulars_for_authorize_load_tabular(
+            &tabulars, &actor, &owners, None,
+        );
+
+        assert_eq!(
+            tabulars[0],
+            (table.into(), actor.to_user_or_role(), namespace)
+        );
+    }
+
+    #[test]
+    fn test_add_current_user_to_tabulars_for_authorize_load_tabular_adds_request_user_if_all_views_are_invoker()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let security_model_property = "trino.run-as-owner".to_string();
+        let engine = TrustedEngine::Trino(TrinoEngineConfig {
+            idp_id: "test".to_string(),
+            security_model_property: security_model_property.clone(),
+        });
+
+        let actor = Actor::Principal(UserId::new_unchecked("test", "test"));
+
+        let owners = HashMap::new();
+
+        let view_1 = ViewInfo::new_random(warehouse_id);
+        let view_1_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_1.namespace_id);
+
+        let view_2 = ViewInfo::new_random(warehouse_id);
+        let view_2_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_2.namespace_id);
+
+        let table = TableInfo::new_random(warehouse_id);
+        let table_namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+
+        let tabulars = vec![
+            (view_1.clone().into(), view_1_namespace.clone()),
+            (view_2.clone().into(), view_2_namespace.clone()),
+            (table.clone().into(), table_namespace.clone()),
+        ];
+
+        let tabulars = add_current_user_to_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &actor,
+            &owners,
+            Some(&engine),
+        );
+
+        assert_eq!(tabulars.len(), 3);
+        assert_eq!(
+            tabulars[0],
+            (view_1.into(), actor.to_user_or_role(), view_1_namespace)
+        );
+        assert_eq!(
+            tabulars[1],
+            (view_2.into(), actor.to_user_or_role(), view_2_namespace)
+        );
+        assert_eq!(
+            tabulars[2],
+            (table.into(), actor.to_user_or_role(), table_namespace)
+        );
+    }
+
+    #[test]
+    fn test_add_current_user_to_tabulars_for_authorize_load_tabular_changes_to_view_owner_if_a_views_is_definer()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let security_model_property = "trino.run-as-owner".to_string();
+        let engine = TrustedEngine::Trino(TrinoEngineConfig {
+            idp_id: "test".to_string(),
+            security_model_property: security_model_property.clone(),
+        });
+
+        let actor_test_name = "test";
+        let actor_test = Actor::Principal(UserId::new_unchecked(engine.idp_id(), actor_test_name));
+
+        let actor_trino_name = "trino";
+        let actor_trino = Actor::Role {
+            principal: UserId::new_unchecked(engine.idp_id(), actor_trino_name),
+            assumed_role: RoleId::new_random(),
+        };
+
+        let actor_peter_name = "peter";
+        let actor_peter =
+            Actor::Principal(UserId::new_unchecked(engine.idp_id(), actor_peter_name));
+
+        let mut owners = HashMap::new();
+        owners.insert(actor_trino_name.to_string(), actor_trino.clone());
+        owners.insert(actor_peter_name.to_string(), actor_peter.clone());
+
+        let mut view_1 = ViewInfo::new_random(warehouse_id);
+        view_1.properties.insert(
+            security_model_property.clone(),
+            actor_trino_name.to_string(),
+        );
+        let view_1_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_1.namespace_id);
+
+        let view_2 = ViewInfo::new_random(warehouse_id);
+        let view_2_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_2.namespace_id);
+
+        let mut view_3 = ViewInfo::new_random(warehouse_id);
+        view_3
+            .properties
+            .insert(security_model_property, actor_peter_name.to_string());
+        let view_3_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_3.namespace_id);
+
+        let view_4 = ViewInfo::new_random(warehouse_id);
+        let view_4_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_4.namespace_id);
+
+        let table = TableInfo::new_random(warehouse_id);
+        let table_namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+
+        let tabulars = vec![
+            (view_1.clone().into(), view_1_namespace.clone()),
+            (view_2.clone().into(), view_2_namespace.clone()),
+            (view_3.clone().into(), view_3_namespace.clone()),
+            (view_4.clone().into(), view_4_namespace.clone()),
+            (table.clone().into(), table_namespace.clone()),
+        ];
+
+        let tabulars = add_current_user_to_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &actor_test,
+            &owners,
+            Some(&engine),
+        );
+
+        assert_eq!(tabulars.len(), 5);
+        assert_eq!(
+            tabulars[0],
+            (
+                view_1.into(),
+                actor_test.to_user_or_role(),
+                view_1_namespace
+            )
+        );
+        assert_eq!(
+            tabulars[1],
+            (
+                view_2.into(),
+                actor_trino.to_user_or_role(),
+                view_2_namespace
+            )
+        );
+        assert_eq!(
+            tabulars[2],
+            (
+                view_3.into(),
+                actor_trino.to_user_or_role(),
+                view_3_namespace
+            )
+        );
+        assert_eq!(
+            tabulars[3],
+            (
+                view_4.into(),
+                actor_peter.to_user_or_role(),
+                view_4_namespace
+            )
+        );
+        assert_eq!(
+            tabulars[4],
+            (table.into(), actor_peter.to_user_or_role(), table_namespace)
+        );
+    }
+
+    #[test]
+    fn test_add_current_user_to_tabulars_for_authorize_load_tabular_returns_only_tabular_with_owner_if_no_trusted_engine_is_given()
+     {
+        let warehouse_id = WarehouseId::new_random();
+
+        let security_model_property = "trino.run-as-owner".to_string();
+        let idp_id = "test";
+
+        let actor_test_name = "test";
+        let actor_test = Actor::Principal(UserId::new_unchecked(idp_id, actor_test_name));
+
+        let actor_trino_name = "trino";
+        let actor_trino = Actor::Principal(UserId::new_unchecked(idp_id, actor_trino_name));
+
+        let actor_peter_name = "peter";
+        let actor_peter = Actor::Principal(UserId::new_unchecked(idp_id, actor_peter_name));
+
+        let mut owners = HashMap::new();
+        owners.insert(actor_trino_name.to_string(), actor_trino.clone());
+        owners.insert(actor_peter_name.to_string(), actor_peter.clone());
+
+        let mut view_1 = ViewInfo::new_random(warehouse_id);
+        view_1.properties.insert(
+            security_model_property.clone(),
+            actor_trino_name.to_string(),
+        );
+        let view_1_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_1.namespace_id);
+
+        let view_2 = ViewInfo::new_random(warehouse_id);
+        let view_2_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_2.namespace_id);
+
+        let mut view_3 = ViewInfo::new_random(warehouse_id);
+        view_3
+            .properties
+            .insert(security_model_property, actor_peter_name.to_string());
+        let view_3_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_3.namespace_id);
+
+        let view_4 = ViewInfo::new_random(warehouse_id);
+        let view_4_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_4.namespace_id);
+
+        let table = TableInfo::new_random(warehouse_id);
+        let table_namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+
+        let tabulars = vec![
+            (view_1.clone().into(), view_1_namespace.clone()),
+            (view_2.clone().into(), view_2_namespace.clone()),
+            (view_3.clone().into(), view_3_namespace.clone()),
+            (view_4.clone().into(), view_4_namespace.clone()),
+            (table.clone().into(), table_namespace.clone()),
+        ];
+
+        let tabulars = add_current_user_to_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &actor_test,
+            &owners,
+            None,
+        );
+
+        assert_eq!(tabulars.len(), 1);
+        assert_eq!(
+            tabulars[0],
+            (table.into(), actor_test.to_user_or_role(), table_namespace)
+        );
     }
 }

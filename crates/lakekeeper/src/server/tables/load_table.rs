@@ -52,7 +52,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         data_access,
         filters,
         etags,
-        referenced_by: _,
+        referenced_by,
     } = request;
 
     // ------------------- VALIDATIONS -------------------
@@ -88,6 +88,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
             TabularListFlags::active(),
             authorizer.clone(),
             catalog_state.clone(),
+            referenced_by.as_deref(),
         )
         .await,
     )?;

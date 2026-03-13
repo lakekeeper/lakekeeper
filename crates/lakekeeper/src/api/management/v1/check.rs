@@ -21,14 +21,14 @@ use crate::{
         SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId,
         ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            MustUse, RequireNamespaceActionError, RequireTableActionError,
-            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
-            UserOrRole as AuthzUserOrRole,
+            ActionOnTable, ActionOnTableOrView, ActionOnView, AuthZCannotSeeNamespace,
+            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError,
+            AuthZProjectOps, AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, MustUse, RequireNamespaceActionError,
+            RequireTableActionError, RequireWarehouseActionError,
+            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole,
         },
         events::{APIEventContext, context::IntrospectPermissions},
         namespace_cache::namespace_ident_to_cache_key,
@@ -684,18 +684,30 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
 }
 
 /// Convert optional table/view actions into `ActionOnTableOrView`
-fn convert_tabular_action(
-    tabular_info: &ViewOrTableInfo,
+fn convert_tabular_action<'a, 'u>(
+    tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
-) -> Option<ActionOnTableOrView<'_, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>> {
+    user: Option<&'u AuthzUserOrRole>,
+) -> Option<ActionOnTableOrView<'a, 'u, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>>
+{
     match tabular_info {
-        ViewOrTableInfo::Table(table_info) => {
-            table_action.map(|action| ActionOnTableOrView::Table((table_info, action)))
-        }
-        ViewOrTableInfo::View(view_info) => {
-            view_action.map(|action| ActionOnTableOrView::View((view_info, action)))
-        }
+        ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
+            ActionOnTableOrView::Table(ActionOnTable {
+                info: table_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::View(view_info) => view_action.map(|action| {
+            ActionOnTableOrView::View(ActionOnView {
+                info: view_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
     }
 }
 
@@ -1315,7 +1327,7 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone()) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1332,7 +1344,6 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_tabular_actions_vec(
                     &metadata,
-                    authz_for_user.as_ref(),
                     &warehouse,
                     parent_namespaces,
                     &tabular_with_actions,
@@ -1429,7 +1440,7 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                 };
 
                 for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone()) {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1446,7 +1457,6 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_tabular_actions_vec(
                     &metadata,
-                    authz_for_user.as_ref(),
                     &warehouse,
                     parent_namespaces,
                     &tabular_with_actions,

@@ -90,6 +90,7 @@ where
                     t.tabular.as_action_request(
                         CatalogViewAction::IncludeInList,
                         CatalogTableAction::IncludeInList,
+                        None,
                     ),
                 ))
             })
@@ -101,7 +102,6 @@ where
             authorizer
                 .are_allowed_tabular_actions_vec(
                     event_ctx.request_metadata(),
-                    None,
                     &warehouse,
                     &namespaces,
                     &actions,
