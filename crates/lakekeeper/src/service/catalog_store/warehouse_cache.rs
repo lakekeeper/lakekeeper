@@ -87,6 +87,9 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ProjectId, UniCase<String>), WarehouseI
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
             .initial_capacity(50)
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.warehouse.time_to_live_secs,
+            ))
             .build()
     });
 
@@ -143,6 +146,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse")
         .set(WAREHOUSE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse_name_to_id")
+        .set(NAME_TO_ID_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn warehouse_cache_get_by_id(
@@ -164,13 +169,14 @@ pub(super) async fn warehouse_cache_get_by_name(
     project_id: &ProjectId,
 ) -> Option<Arc<ResolvedWarehouse>> {
     update_cache_size_metric();
-    let Some(warehouse_id) = NAME_TO_ID_CACHE
-        .get(&(project_id.clone(), UniCase::new(name.to_string())))
-        .await
-    else {
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
+    let name_key = (project_id.clone(), UniCase::new(name.to_string()));
+    let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
+        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse_name_to_id")
+            .increment(1);
         return None;
     };
+    metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse_name_to_id")
+        .increment(1);
     tracing::debug!("Warehouse name {name} resolved in name-to-id cache to id {warehouse_id}");
 
     if let Some(value) = WAREHOUSE_CACHE.get(&(warehouse_id)).await {
@@ -407,6 +413,20 @@ mod tests {
         // Verify name-to-id cache is also invalidated
         let cached_by_name = warehouse_cache_get_by_name(&name, &project_id).await;
         assert!(cached_by_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_name_to_id_cache_has_ttl_matching_primary() {
+        let primary_ttl = WAREHOUSE_CACHE.policy().time_to_live();
+        let secondary_ttl = NAME_TO_ID_CACHE.policy().time_to_live();
+        assert_eq!(
+            primary_ttl, secondary_ttl,
+            "NAME_TO_ID_CACHE TTL must match WAREHOUSE_CACHE TTL"
+        );
+        assert!(
+            secondary_ttl.is_some(),
+            "NAME_TO_ID_CACHE must have a TTL configured"
+        );
     }
 
     #[tokio::test]

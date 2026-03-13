@@ -39,7 +39,11 @@ lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.
 limes = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
+tikv-jemallocator = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["background_threads"] }
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
