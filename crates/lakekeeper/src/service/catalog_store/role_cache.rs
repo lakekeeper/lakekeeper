@@ -180,6 +180,7 @@ pub(super) async fn role_cache_get_by_ident(
             "Role id {role_id} not found in cache, invalidating stale ident mapping for {ident}"
         );
         IDENT_TO_ID_CACHE.remove(&ident_key).await;
+        update_cache_size_metric();
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         None
     }
