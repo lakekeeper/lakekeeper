@@ -153,6 +153,7 @@ pub(crate) async fn role_ident_insert(
 ) {
     if CONFIG.cache.role.enabled {
         IDENT_TO_ID_CACHE.insert((project_id, ident), role_id).await;
+        update_cache_size_metric();
     }
 }
 
