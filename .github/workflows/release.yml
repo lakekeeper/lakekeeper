@@ -46,7 +46,7 @@ jobs:
           manifest-file: release-please/.release-please-manifest.json
           # # The short ref name of the branch or tag that triggered
           # #  the workflow run. For example, `main` or `1.x`
-          # target-branch: ${{ github.ref_name }}
+          target-branch: rel-0-11
 
   build-binary:
     name: Build Binary
