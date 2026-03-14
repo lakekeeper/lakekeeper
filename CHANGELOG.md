@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.3](https://github.com/lakekeeper/lakekeeper/compare/v0.11.2...v0.11.3) (2026-03-14)
+
+
+### Bug Fixes
+
+* S3 identity cache memory leak (backport) ([ca0060a](https://github.com/lakekeeper/lakekeeper/commit/ca0060a31e412580da897a65c09057420731fbfd))
+* Update transitive deps for RUSTSEC-2026-0037 (quinn-proto) ([#1659](https://github.com/lakekeeper/lakekeeper/issues/1659)) ([176afdf](https://github.com/lakekeeper/lakekeeper/commit/176afdfe9f7c32290228e614d9761336c518e156))
+
 ## [0.11.2](https://github.com/lakekeeper/lakekeeper/compare/v0.11.1...v0.11.2) (2026-01-29)
 
 
