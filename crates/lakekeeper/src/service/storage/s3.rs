@@ -946,8 +946,7 @@ impl S3Profile {
         "#,
             Self::permission_to_actions(storage_permissions),
         )
-        .replace('\n', "")
-        .replace(' ', "");
+        .replace('\n', "");
 
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
             statements = format!(
@@ -973,8 +972,7 @@ impl S3Profile {
         ]
         }}"#
         )
-        .replace('\n', "")
-        .replace(' ', ""))
+        .replace('\n', ""))
     }
 
     fn validate_session_tags(&self) -> Result<(), ValidationError> {
