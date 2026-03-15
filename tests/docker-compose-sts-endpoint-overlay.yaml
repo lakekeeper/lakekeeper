@@ -7,7 +7,7 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/ 2>/dev/null"]
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/health 2>/dev/null"]
       interval: 2s
       timeout: 3s
       retries: 5
