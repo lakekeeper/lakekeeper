@@ -1116,6 +1116,18 @@ pub(crate) mod tests {
     use crate::service::{Namespace, NamespaceHierarchy, health::Health};
 
     #[test]
+    fn test_server_action_variant_completeness() {
+        let variants = CatalogServerAction::variants();
+        assert_eq!(variants.len(), CatalogServerAction::COUNT);
+    }
+
+    #[test]
+    fn test_project_action_variant_completeness() {
+        let variants = CatalogProjectAction::variants();
+        assert_eq!(variants.len(), CatalogProjectAction::COUNT);
+    }
+
+    #[test]
     fn test_warehouse_action_variant_completeness() {
         let variants = CatalogWarehouseAction::variants();
         assert_eq!(variants.len(), CatalogWarehouseAction::COUNT);
@@ -1354,6 +1366,79 @@ pub(crate) mod tests {
         let deserialized: CatalogTableAction =
             serde_json::from_value(serialized).expect("Failed to deserialize");
         assert_eq!(deserialized, action);
+    }
+
+    #[test]
+    fn test_action_descriptor_with_populated_context() {
+        // CreateProject with name and project_id
+        let action = CatalogServerAction::CreateProject {
+            name: Some("my-project".to_string()),
+            project_id: Some(crate::ProjectId::from(Uuid::nil())),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-project"), "got: {log}");
+        assert!(
+            log.contains("project_id=00000000-0000-0000-0000-000000000000"),
+            "got: {log}"
+        );
+
+        // CreateWarehouse with name
+        let action = CatalogProjectAction::CreateWarehouse {
+            name: Some("my-warehouse".to_string()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-warehouse"), "got: {log}");
+
+        // CreateRole with name
+        let action = CatalogProjectAction::CreateRole {
+            name: Some("admin".to_string()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=admin"), "got: {log}");
+
+        // CreateNamespace in warehouse with name
+        let action = CatalogWarehouseAction::CreateNamespace {
+            name: Some("ns1".to_string()),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=ns1"), "got: {log}");
+
+        // CreateTable with name and table_id
+        let action = CatalogNamespaceAction::CreateTable {
+            name: Some("my-table".to_string()),
+            table_id: Some(crate::service::TableId::from(Uuid::nil())),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-table"), "got: {log}");
+        assert!(
+            log.contains("table_id=00000000-0000-0000-0000-000000000000"),
+            "got: {log}"
+        );
+
+        // CreateView with name
+        let action = CatalogNamespaceAction::CreateView {
+            name: Some("my-view".to_string()),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-view"), "got: {log}");
+
+        // CreateNamespace in namespace with name
+        let action = CatalogNamespaceAction::CreateNamespace {
+            name: Some("sub-ns".to_string()),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=sub-ns"), "got: {log}");
+
+        // None fields should produce no context
+        let action = CatalogServerAction::CreateProject {
+            name: None,
+            project_id: None,
+        };
+        assert_eq!(action.as_log_str(), "create_project");
     }
 
     #[derive(Clone, Debug)]

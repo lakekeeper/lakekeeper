@@ -42,7 +42,7 @@ allow_schema_create if {
     properties := object.get(input.action.resource.schema, "properties", {})
     flattended_properties := flatten_properties(properties)
     is_nested_schema(schema) == false
-    trino.require_catalog_create_namespace_access(catalog, flattended_properties)
+    trino.require_catalog_create_namespace_access(catalog, flattended_properties, schema)
 }
 
 allow_schema_create if {
@@ -52,7 +52,7 @@ allow_schema_create if {
     properties := object.get(input.action.resource.schema, "properties", {})
     flattended_properties := flatten_properties(properties)
     is_nested_schema(schema) == true
-    trino.require_schema_access_create(catalog, parent_schema(schema), "create_namespace", flattended_properties)
+    trino.require_schema_access_create(catalog, parent_schema(schema), "create_namespace", flattended_properties, trino.child_schema_name(schema))
 }
 
 allow_schema_drop if {
