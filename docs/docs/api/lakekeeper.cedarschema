@@ -236,10 +236,21 @@ namespace Lakekeeper {
 
   // ---------- Server Actions ----------
   action "ServerActions";
-  action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources, ListServerCedarPolicySources, CreateProject, UpdateUsers, DeleteUsers, ListUsers, ProvisionUsers, IntrospectServerAuthorization in ["ServerActions"]
+  action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources, ListServerCedarPolicySources, UpdateUsers, DeleteUsers, ListUsers, ProvisionUsers, IntrospectServerAuthorization in ["ServerActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Server]
+    };
+  action CreateProject in ["ServerActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server],
+      context: {
+        // Name of the project being created. Absent when listing allowed actions or when not specified via the check API.
+        project_name?: String,
+        // Externally provided project ID. Absent when listing allowed actions or when not specified via the check API.
+        project_id?: String,
+      }
     };
 
   // ---------- Project Actions ----------
@@ -251,10 +262,28 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Project]
     };
-  action IntrospectProjectAuthorization, CreateWarehouse, DeleteProject, RenameProject, CreateRole, ModifyProjectTaskQueueConfig, ControlProjectTasks in ["ProjectModifyActions"]
+  action IntrospectProjectAuthorization, DeleteProject, RenameProject, ModifyProjectTaskQueueConfig, ControlProjectTasks in ["ProjectModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project]
+    };
+  action CreateWarehouse in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the warehouse being created. Absent when listing allowed actions or when not specified via the check API.
+        warehouse_name?: String,
+      }
+    };
+  action CreateRole in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the role being created. Absent when listing allowed actions or when not specified via the check API.
+        role_name?: String,
+      }
     };
 
   // ---------- Role Actions ----------
@@ -289,6 +318,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Warehouse],
       context: {
+        // Name of the namespace being created. Absent when listing allowed actions or when not specified via the check API.
+        namespace_name?: String,
         // Initial property values for the namespace being created.
         initial_namespace_properties: ResourceProperties,
       }
@@ -314,6 +345,10 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
+        // Name of the table being created. Absent when listing allowed actions or when not specified via the check API.
+        table_name?: String,
+        // Externally provided table ID (e.g. via register). Absent when listing allowed actions or when not specified via the check API.
+        table_id?: String,
         // Initial property values for the table being created.
         initial_table_properties: ResourceProperties,
       }
@@ -323,6 +358,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
+        // Name of the view being created. Absent when listing allowed actions or when not specified via the check API.
+        view_name?: String,
         // Initial property values for the view being created.
         initial_view_properties: ResourceProperties,
       }
@@ -332,6 +369,8 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace],
       context: {
+        // Name of the namespace being created. Absent when listing allowed actions or when not specified via the check API.
+        namespace_name?: String,
         // Initial property values for the namespace being created.
         initial_namespace_properties: ResourceProperties,
       }

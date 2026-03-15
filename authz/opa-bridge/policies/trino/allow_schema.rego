@@ -20,7 +20,7 @@ allow_schema if {
 }
 
 allow_schema if {
-    allow_select_from_columns_schemata
+    allow_tables_in_system_schemas
 }
 
 allow_schema if {
@@ -33,6 +33,14 @@ allow_schema if {
 
 allow_schema if {
     allow_show_tables_in_schema
+}
+
+allow_schema if {
+    allow_filter_system_schemas
+}
+
+allow_schema if {
+    allow_admin_system_schemas
 }
 
 allow_schema_create if {
@@ -76,25 +84,45 @@ allow_show_schemas if {
     trino.require_catalog_access_simple(catalog, "list_namespaces")
 }
 
-allow_select_from_columns_schemata if {
-    input.action.operation == "SelectFromColumns"
+allow_filter_system_schemas if {
+    input.action.operation == "FilterSchemas"
+    catalog := input.action.resource.schema.catalogName
+    schema := input.action.resource.schema.schemaName
+    schema in trino.lakekeeper_system_schemas
+    trino.require_catalog_access_simple(catalog, "get_config")
+}
+
+# Table-level access for Lakekeeper system schemas.
+# Each schema has its own allowed table list defined in allow_default_access.rego.
+allow_tables_in_system_schemas if {
+    input.action.operation in ["SelectFromColumns", "FilterTables", "FilterColumns"]
+    catalog := input.action.resource.table.catalogName
     input.action.resource.table.schemaName == "information_schema"
-    input.action.resource.table.tableName in ["schemata", "tables", "columns", "views"]
+    input.action.resource.table.tableName in trino.allowed_information_schema_tables
+    trino.require_catalog_access_simple(catalog, "get_config")
 }
 
-# always allow "information_schema" schema
+allow_tables_in_system_schemas if {
+    input.action.operation in ["SelectFromColumns", "FilterTables", "FilterColumns"]
+    catalog := input.action.resource.table.catalogName
+    input.action.resource.table.schemaName == "schema_discovery"
+    input.action.resource.table.tableName in trino.allowed_schema_discovery_tables
+    trino.require_catalog_access_simple(catalog, "get_config")
+}
+
+allow_tables_in_system_schemas if {
+    input.action.operation in ["SelectFromColumns", "FilterTables", "FilterColumns"]
+    catalog := input.action.resource.table.catalogName
+    input.action.resource.table.schemaName == "system"
+    input.action.resource.table.tableName in trino.allowed_system_schema_tables
+    trino.require_catalog_access_simple(catalog, "get_config")
+}
+
 allow_filter_schemas if {
     input.action.operation == "FilterSchemas"
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
-    schema == "information_schema"
-}
-
-allow_filter_schemas if {
-    input.action.operation == "FilterSchemas"
-    catalog := input.action.resource.schema.catalogName
-    schema := input.action.resource.schema.schemaName
-    schema != "information_schema"
+    not schema in trino.lakekeeper_system_schemas
     trino.require_schema_access_simple(catalog, schema, "get_metadata")
 }
 
@@ -102,7 +130,7 @@ allow_show_create_schemas if {
     input.action.operation == "ShowCreateSchema"
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
-    schema != "information_schema"
+    not schema in trino.lakekeeper_system_schemas
     trino.require_schema_access_simple(catalog, schema, "get_metadata")
 }
 
@@ -111,4 +139,19 @@ allow_show_tables_in_schema if {
     catalog := input.action.resource.schema.catalogName
     schema := input.action.resource.schema.schemaName
     trino.require_schema_access_simple(catalog, schema, "get_metadata")
+}
+
+# ------------- Admin Access -------------
+# Admins get full access to all tables in Lakekeeper system schemas
+# (no table filtering on information_schema, schema_discovery, system)
+allow_admin_system_schemas if {
+    trino.is_admin
+    input.action.operation == "FilterSchemas"
+    input.action.resource.schema.schemaName in trino.lakekeeper_system_schemas
+}
+
+allow_admin_system_schemas if {
+    trino.is_admin
+    input.action.operation in ["SelectFromColumns", "FilterTables", "FilterColumns"]
+    input.action.resource.table.schemaName in trino.lakekeeper_system_schemas
 }

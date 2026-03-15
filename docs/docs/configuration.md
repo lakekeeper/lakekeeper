@@ -436,7 +436,7 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 |--------------------------------|----------------------------------|----------|
 | <nobr>`…__TYPE`</nobr>         | `ldap`                           | Provider type. Must be `ldap`. |
 | <nobr>`…__URL`</nobr>          | `ldaps://ldap.example.com:636`   | LDAP server URL. Use `ldap://` for plain-text or STARTTLS, `ldaps://` for TLS. |
-| <nobr>`…__DOMAINS`</nobr>      | `example.com,*.corp.example.com` | Comma-separated list of domain patterns. Only users whose login name ends with one of these domains are resolved via this provider. Supports `*` (any number of characters) and `?` (exactly one character). |
+| <nobr>`…__DOMAINS`</nobr>      | `["example.com","*.corp.example.com"]` | JSON array of domain patterns. Only users whose login name ends with one of these domains are resolved via this provider. Supports `*` (any number of characters) and `?` (exactly one character). |
 | <nobr>`…__USER_BASE_DN`</nobr> | `ou=people,dc=example,dc=com`    | Base DN for the LDAP user search. |
 
 **Authentication:**
@@ -494,13 +494,13 @@ If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts L
 
 | Variable                  | Default      | Description                       |
 |---------------------------|--------------|-----------------------------------|
-| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | Comma-separated list of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
 
 **Example — minimal LDAP provider (env vars):**
 ```bash
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__TYPE=ldap
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__URL=ldaps://ldap.corp.example.com:636
-LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__DOMAINS=corp.example.com
+LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__DOMAINS=["corp.example.com"]
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__USER_BASE_DN=ou=people,dc=corp,dc=example,dc=com
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_DN=cn=svc-lakekeeper,ou=service-accounts,dc=corp,dc=example,dc=com
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-password
@@ -517,7 +517,7 @@ Point `LAKEKEEPER__ROLE_PROVIDER_FILE` at a standard TOML file. Each provider is
 `/etc/lakekeeper/role-providers.toml`:
 ```toml
 [role_provider.corporate]
-type = "Ldap"
+type = "ldap"
 url = "ldaps://ldap.corp.example.com:636"
 domains = ["corp.example.com"]
 user_base_dn = "ou=people,dc=corp,dc=example,dc=com"
@@ -525,7 +525,7 @@ bind_dn = "cn=svc-lakekeeper,ou=service-accounts,dc=corp,dc=example,dc=com"
 bind_password = "s3cr3t"
 
 [role_provider.subsidiary]
-type = "Ldap"
+type = "ldap"
 url = "ldaps://ldap.subsidiary.example.com:636"
 domains = ["subsidiary.example.com"]
 user_base_dn = "ou=users,dc=subsidiary,dc=example,dc=com"
@@ -543,7 +543,7 @@ LAKEKEEPER__ROLE_PROVIDER_FILE=/etc/lakekeeper/role-providers.toml
 > ```toml
 > # /etc/lakekeeper/role-providers.toml (checked in, no secrets)
 > [role_provider.corporate]
-> type = "Ldap"
+> type = "ldap"
 > url = "ldaps://ldap.corp.example.com:636"
 > domains = ["corp.example.com"]
 > user_base_dn = "ou=people,dc=corp,dc=example,dc=com"
