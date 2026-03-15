@@ -32,7 +32,7 @@ jobs:
           configuration_path: ".github/pr-title-checker-config.json"
           pass_on_octokit_error: false
 
-      - uses: marocchino/sticky-pull-request-comment@v2
+      - uses: marocchino/sticky-pull-request-comment@v3
         if: ${{ steps.check.outputs.success == 'false'}}
         with:
           header: 'pr-title-checker'
@@ -49,7 +49,7 @@ jobs:
 
               We only use types: `feat`, `fix`, `docs` and `chore`.
 
-      - uses: marocchino/sticky-pull-request-comment@v2
+      - uses: marocchino/sticky-pull-request-comment@v3
         if: ${{ steps.check.outputs.success == 'true'}}
         with:
           header: 'pr-title-checker'

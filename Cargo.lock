@@ -3818,13 +3818,14 @@ dependencies = [
  "limes",
  "reqwest",
  "serde",
+ "tikv-jemallocator",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.12.0"
-source = "git+https://github.com/lakekeeper/console?rev=f9845a5#f9845a57cd975ae0b8d6612e0ec9707b3b554fba"
+version = "0.12.3"
+source = "git+https://github.com/lakekeeper/console?rev=1c6a3bb#1c6a3bb933dd1f3e1c1dcf5cf2b20cf3d4c17440"
 dependencies = [
  "fs_extra",
  "mime_guess",
@@ -6935,6 +6936,26 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float 2.10.1",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]

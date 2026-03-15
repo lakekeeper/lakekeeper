@@ -2,7 +2,8 @@
 //!
 //! Every cache emits the same three metric names differentiated by the
 //! `cache_type` label (values: `"role"`, `"warehouse"`, `"namespace"`,
-//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_members"`).
+//! `"secrets"`, `"stc"`, `"user_assignments"`, `"role_members"`,
+//! `"warehouse_name_to_id"`, `"role_ident_to_id"`, `"namespace_ident_to_id"`).
 
 use std::sync::LazyLock;
 

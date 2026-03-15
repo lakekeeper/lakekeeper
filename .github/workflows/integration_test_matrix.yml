@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - "manual-release-*"
+      - "rel-*"
   pull_request:
     branches:
       - main
       - "manual-release-*"
+      - "rel-*"
 
 env:
   CARGO_TERM_COLOR: always

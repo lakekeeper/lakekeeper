@@ -187,6 +187,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 valuable = "0.1.1"
 veil = "0.2.0"
+tikv-jemallocator = { version = "0.6" }
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
 [profile.dev.build-override]

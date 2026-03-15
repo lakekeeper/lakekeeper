@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "rel-*"
   pull_request:
 
 env:
