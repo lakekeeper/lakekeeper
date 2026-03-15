@@ -132,7 +132,7 @@ def test_table_in_nested_schema(trino, warehouse: conftest.Warehouse):
         "INSERT INTO \"test_table_in_nested_schema_trino.nested\".my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')"
     )
     r = cur.execute(
-        'SELECT * FROM "test_table_in_nested_schema_trino.nested".my_table'
+        'SELECT * FROM "test_table_in_nested_schema_trino.nested".my_table ORDER BY my_ints'
     ).fetchall()
     assert len(r) == 2
     assert r[0] == [1, 1.0, "a"]
