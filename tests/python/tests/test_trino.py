@@ -117,6 +117,28 @@ def test_nested_schema(trino, warehouse: conftest.Warehouse):
     )
 
 
+def test_table_in_nested_schema(trino, warehouse: conftest.Warehouse):
+    cur = trino.cursor()
+    cur.execute("CREATE SCHEMA test_table_in_nested_schema_trino")
+    cur.execute('CREATE SCHEMA "test_table_in_nested_schema_trino.nested"')
+    cur.execute(
+        "CREATE TABLE \"test_table_in_nested_schema_trino.nested\".my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    loaded_table = warehouse.pyiceberg_catalog.load_table(
+        ("test_table_in_nested_schema_trino", "nested", "my_table")
+    )
+    assert len(loaded_table.schema().fields) == 3
+    cur.execute(
+        "INSERT INTO \"test_table_in_nested_schema_trino.nested\".my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')"
+    )
+    r = cur.execute(
+        'SELECT * FROM "test_table_in_nested_schema_trino.nested".my_table ORDER BY my_ints'
+    ).fetchall()
+    assert len(r) == 2
+    assert r[0] == [1, 1.0, "a"]
+    assert r[1] == [2, 2.0, "b"]
+
+
 def test_set_properties(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA test_set_properties_trino")

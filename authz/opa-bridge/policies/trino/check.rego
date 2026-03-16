@@ -46,13 +46,14 @@ require_catalog_access_simple(catalog_name, action) := true if {
     )
 }
 
-require_catalog_create_namespace_access(catalog_name, properties) := true if {
+require_catalog_create_namespace_access(catalog_name, properties, name) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
     lakekeeper.require_warehouse_create_namespace_access(
         trino_catalog.lakekeeper_id,
-        trino_catalog.lakekeeper_warehouse, 
+        trino_catalog.lakekeeper_warehouse,
         trino.lakekeeper_user_id,
-        properties
+        properties,
+        name
     )
 }
 
@@ -67,16 +68,17 @@ require_schema_access_simple(catalog_name, schema_name, action) := true if {
         action
     )
 }
-require_schema_access_create(catalog_name, schema_name, action, properties) := true if {
+require_schema_access_create(catalog_name, schema_name, action, properties, name) := true if {
     trino_catalog := trino.trino_catalog_by_name[catalog_name]
     namespace_name := trino.namespace_for_schema(schema_name)
     lakekeeper.require_namespace_access_create(
         trino_catalog.lakekeeper_id,
-        trino_catalog.lakekeeper_warehouse, 
+        trino_catalog.lakekeeper_warehouse,
         namespace_name,
         trino.lakekeeper_user_id,
         action,
-        properties
+        properties,
+        name
     )
 }
 # Not used yet
@@ -133,6 +135,10 @@ require_view_access_simple(catalog_name, schema_name, view_name, action) := true
     )
 }
 
+child_schema_name(schema_name) = child_name if {
+    parts := split(schema_name, ".")
+    child_name := parts[count(parts) - 1]
+}
 
 is_metadata_table(table_name) := true if {
     table_name_suffixes := [

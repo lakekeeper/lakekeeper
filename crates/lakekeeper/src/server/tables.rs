@@ -14,7 +14,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{ETag, IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
@@ -42,7 +42,7 @@ use crate::{
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
                 RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
-                tables::{DataAccessMode, LoadTableFilters},
+                tables::{DataAccessMode, LoadTableFilters, LoadTableRequest},
             },
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
@@ -210,6 +210,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             parameters.namespace.clone(),
             // Preliminary action, updated after Metadata is read
             CatalogNamespaceAction::CreateTable {
+                name: Some(request.name.clone()),
+                table_id: None,
                 properties: Arc::new(BTreeMap::new()),
             },
         );
@@ -244,6 +246,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         storage_profile.require_allowed_location(&table_location)?;
 
         let action = CatalogNamespaceAction::CreateTable {
+            name: Some(request.name.clone()),
+            table_id: Some(TableId::from(table_metadata.uuid())),
             properties: Arc::new(
                 table_metadata
                     .properties()
@@ -419,21 +423,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn load_table(
         parameters: TableParameters,
-        data_access: impl Into<DataAccessMode> + Send,
-        filters: LoadTableFilters,
+        request: LoadTableRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified> {
-        load_table::load_table(
-            parameters,
-            data_access,
-            filters,
-            state,
-            request_metadata,
-            etags,
-        )
-        .await
+        load_table::load_table(parameters, request, state, request_metadata).await
     }
 
     async fn load_table_credentials(
@@ -1814,8 +1808,7 @@ pub(crate) mod test {
                 types::{PageToken, Prefix},
                 v1::{
                     DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
-                    NamespaceParameters, TableParameters,
-                    tables::{LoadTableFilters, TablesService as _},
+                    NamespaceParameters, TableParameters, tables::TablesService as _,
                 },
             },
             management::v1::{
@@ -1833,10 +1826,7 @@ pub(crate) mod test {
         },
         service::{
             SecretStore, State, TableId, TabularListFlags, UserId,
-            authz::{
-                AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
-                tests::HidingAuthorizer,
-            },
+            authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
         },
         tests::{create_table_request as create_request, random_request_metadata},
     };
@@ -2060,11 +2050,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident,
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2199,11 +2187,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2362,11 +2348,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2431,11 +2415,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2520,11 +2502,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2573,11 +2553,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2624,11 +2602,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2675,11 +2651,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2988,11 +2962,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3027,11 +2999,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3083,11 +3053,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3170,11 +3138,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3239,11 +3205,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3302,11 +3266,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3346,11 +3308,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -4212,15 +4172,8 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(
-            format!(
-                "namespace:{:?}",
-                CatalogNamespaceAction::CreateTable {
-                    properties: Arc::default(),
-                }
-            )
-            .as_str(),
-        );
+        // Block any CreateTable namespace action (prefix match — fields are dynamic).
+        authz.block_action("namespace:CreateTable");
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {
@@ -4461,11 +4414,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident,
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();

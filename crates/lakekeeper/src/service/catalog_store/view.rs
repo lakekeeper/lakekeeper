@@ -3,7 +3,7 @@ use iceberg::{
     TableIdent,
     spec::{ViewMetadata, ViewMetadataRef},
 };
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 
 use crate::{

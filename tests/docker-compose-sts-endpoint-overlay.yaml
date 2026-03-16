@@ -1,0 +1,26 @@
+services:
+  s3-proxy:
+    image: nginx:alpine
+    volumes:
+      - ./nginx-sts-split.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - iceberg_rest_tests
+
+  spark:
+    environment:
+      # Point S3 at the S3-only proxy (blocks STS)
+      - LAKEKEEPER_TEST__S3_ENDPOINT=http://s3-proxy:8080
+      # Point STS at the full proxy (allows STS)
+      - LAKEKEEPER_TEST__S3_STS_ENDPOINT=http://s3-proxy:8081
+    depends_on:
+      s3-proxy:
+        condition: service_healthy

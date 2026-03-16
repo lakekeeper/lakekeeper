@@ -147,7 +147,7 @@ pub struct ServeConfiguration<
     /// Additional event listeners to register.
     /// Emitting cloud events is always registered.
     #[builder(default)]
-    pub additional_event_dispatcher: Option<EventDispatcher>,
+    pub event_dispatcher: Option<EventDispatcher>,
     /// Additional background services / futures to await.
     #[builder(default)]
     #[debug("Vec with {} functions", register_additional_background_services_fn.len())]
@@ -323,7 +323,7 @@ async fn serve_inner<
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
         register_additional_task_queues_fn,
-        additional_event_dispatcher,
+        event_dispatcher: additional_event_dispatcher,
         register_additional_background_services_fn: additional_background_services,
         license_status,
     } = config;
@@ -375,35 +375,43 @@ async fn serve_inner<
     );
 
     // Event system setup
-    let mut dispatcher = additional_event_dispatcher.unwrap_or(EventDispatcher::new(vec![]));
-    dispatcher.append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())));
+    let dispatcher = additional_event_dispatcher.unwrap_or(EventDispatcher::new(vec![]));
+    dispatcher
+        .append(Arc::new(CloudEventsPublisher::new(cloud_events_tx.clone())))
+        .await;
     if CONFIG.cache.warehouse.enabled {
         tracing::info!("Warehouse cache is enabled, registering warehouse cache event listener");
-        dispatcher.append(Arc::new(
-            crate::service::warehouse_cache::WarehouseCacheEventListener {},
-        ));
+        dispatcher
+            .append(Arc::new(
+                crate::service::warehouse_cache::WarehouseCacheEventListener {},
+            ))
+            .await;
     } else {
         tracing::info!("Warehouse cache is disabled");
     }
     if CONFIG.cache.namespace.enabled {
         tracing::info!("Namespace cache is enabled, registering namespace cache event listener");
-        dispatcher.append(Arc::new(
-            crate::service::namespace_cache::NamespaceCacheEventListener {},
-        ));
+        dispatcher
+            .append(Arc::new(
+                crate::service::namespace_cache::NamespaceCacheEventListener {},
+            ))
+            .await;
     } else {
         tracing::info!("Namespace cache is disabled");
     }
     if CONFIG.cache.role.enabled {
         tracing::info!("Role cache is enabled, registering role cache event listener");
-        dispatcher.append(Arc::new(
-            crate::service::role_cache::RoleCacheEventListener {},
-        ));
+        dispatcher
+            .append(Arc::new(
+                crate::service::role_cache::RoleCacheEventListener {},
+            ))
+            .await;
     } else {
         tracing::info!("Role cache is disabled");
     }
     if CONFIG.audit.tracing.enabled {
         tracing::info!("Audit tracing is enabled, registering audit event listener");
-        dispatcher.append(Arc::new(AuditEventListener));
+        dispatcher.append(Arc::new(AuditEventListener)).await;
     } else {
         tracing::info!("Audit tracing is disabled");
     }

@@ -13,28 +13,16 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CONFIG,
     api::Result,
-    service::{health::HealthExt, storage::StorageCredential},
+    service::{
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_SECRETS_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_SECRETS_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_SECRETS_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        health::HealthExt,
+        storage::StorageCredential,
+    },
 };
-
-const METRIC_SECRETS_CACHE_SIZE: &str = "lakekeeper_secrets_cache_size";
-const METRIC_SECRETS_CACHE_HITS: &str = "lakekeeper_secrets_cache_hits_total";
-const METRIC_SECRETS_CACHE_MISSES: &str = "lakekeeper_secrets_cache_misses_total";
-
-/// Initialize metric descriptions for STC cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_SECRETS_CACHE_SIZE,
-        "Current number of entries in the secrets cache"
-    );
-    metrics::describe_counter!(
-        METRIC_SECRETS_CACHE_HITS,
-        "Total number of secrets cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_SECRETS_CACHE_MISSES,
-        "Total number of secrets cache misses"
-    );
-});
 
 pub(crate) static SECRETS_CACHE: LazyLock<Cache<SecretId, CachedSecret>> = LazyLock::new(|| {
     Cache::builder()

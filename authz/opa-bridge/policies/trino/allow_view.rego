@@ -31,9 +31,10 @@ allow_view_create if {
     input.action.operation in ["CreateView", "CreateMaterializedView"]
     catalog := input.action.resource.table.catalogName
     schema := input.action.resource.table.schemaName
+    view := input.action.resource.table.tableName
     properties := object.get(input.action.resource.table, "properties", {})
     flattened_properties := flatten_properties(properties)
-    trino.require_schema_access_create(catalog, schema, "create_view", flattened_properties)
+    trino.require_schema_access_create(catalog, schema, "create_view", flattened_properties, view)
 }
 
 allow_view_modify if {

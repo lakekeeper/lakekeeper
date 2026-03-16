@@ -146,6 +146,8 @@ async fn authorize_rename_table<C: CatalogStore, A: Authorizer + Clone>(
             user_provided_namespace,
             destination_namespace,
             CatalogNamespaceAction::CreateTable {
+                name: Some(destination.name.clone()),
+                table_id: Some(source_table_info.table_id()),
                 properties: Arc::new(source_table_info.properties().clone().into_iter().collect()),
             },
         ),

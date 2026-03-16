@@ -233,15 +233,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let properties_btree: Arc<std::collections::BTreeMap<String, String>> =
             Arc::new(properties.clone().unwrap_or_default().into_iter().collect());
 
+        let namespace_name = namespace.as_ref().last().cloned().unwrap_or_default();
+
         let event_ctx = create_namespace_or_warehouse_event_context(
             namespace.parent().clone(),
             request_metadata,
             state.v1_state.events,
             warehouse_id,
             CatalogNamespaceAction::CreateNamespace {
+                name: Some(namespace_name.clone()),
                 properties: properties_btree.clone(),
             },
             CatalogWarehouseAction::CreateNamespace {
+                name: Some(namespace_name),
                 properties: properties_btree.clone(),
             },
         );
@@ -250,7 +254,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             &authorizer,
             event_ctx.request_metadata(),
             warehouse_id,
-            namespace.parent().as_ref(),
+            namespace,
             state.v1_state.catalog.clone(),
             properties_btree,
         )

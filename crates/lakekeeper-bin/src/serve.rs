@@ -9,7 +9,7 @@ use lakekeeper::{
         authn::{BuiltInAuthenticators, get_default_authenticator_from_config},
         authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
-        events::get_default_cloud_event_backends_from_config,
+        events::{EventDispatcher, get_default_cloud_event_backends_from_config},
     },
     tracing,
 };
@@ -23,19 +23,25 @@ pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Re
     let server_id = <PostgresBackend as CatalogStore>::get_server_info(catalog.clone())
         .await?
         .server_id();
+    // Events implement interior mutability.
+    let events = EventDispatcher::new(vec![]);
     let authorizer = AuthorizerEnum::init_from_env(server_id).await?;
     let stats = vec![stats];
 
     match authorizer {
         AuthorizerEnum::AllowAll(authz) => {
             tracing::info!("Using AllowAll authorizer");
-            serve_with_authn::<PostgresBackend, _, _>(bind_addr, secrets, catalog, authz, stats)
-                .await
+            serve_with_authn::<PostgresBackend, _, _>(
+                bind_addr, secrets, catalog, authz, stats, events,
+            )
+            .await
         }
         AuthorizerEnum::OpenFGA(authz) => {
             tracing::info!("Using OpenFGA authorizer");
-            serve_with_authn::<PostgresBackend, _, _>(bind_addr, secrets, catalog, *authz, stats)
-                .await
+            serve_with_authn::<PostgresBackend, _, _>(
+                bind_addr, secrets, catalog, *authz, stats, events,
+            )
+            .await
         }
     }
 }
@@ -46,19 +52,24 @@ async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
     catalog: C::State,
     authz: A,
     stats: Vec<Arc<dyn EndpointStatisticsSink + 'static>>,
+    events: EventDispatcher,
 ) -> anyhow::Result<()> {
     let authentication = get_default_authenticator_from_config().await?;
 
     match authentication {
         None => {
-            serve_inner::<C, _, _, AuthenticatorEnum>(bind, secret, catalog, authz, None, stats)
-                .await
+            serve_inner::<C, _, _, AuthenticatorEnum>(
+                bind, secret, catalog, authz, None, stats, events,
+            )
+            .await
         }
         Some(BuiltInAuthenticators::Chain(authn)) => {
-            serve_inner::<C, _, _, _>(bind, secret, catalog, authz, Some(authn), stats).await
+            serve_inner::<C, _, _, _>(bind, secret, catalog, authz, Some(authn), stats, events)
+                .await
         }
         Some(BuiltInAuthenticators::Single(authn)) => {
-            serve_inner::<C, _, _, _>(bind, secret, catalog, authz, Some(authn), stats).await
+            serve_inner::<C, _, _, _>(bind, secret, catalog, authz, Some(authn), stats, events)
+                .await
         }
     }
 }
@@ -70,6 +81,7 @@ async fn serve_inner<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenti
     authorizer: A,
     authenticator: Option<N>,
     stats: Vec<Arc<dyn EndpointStatisticsSink + 'static>>,
+    events: EventDispatcher,
 ) -> anyhow::Result<()> {
     let cloud_event_sinks = get_default_cloud_event_backends_from_config().await?;
 
@@ -82,6 +94,7 @@ async fn serve_inner<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenti
         .stats(stats)
         .modify_router_fn(Some(add_ui_routes))
         .cloud_event_sinks(cloud_event_sinks)
+        .event_dispatcher(Some(events))
         .build();
 
     serve(config).await

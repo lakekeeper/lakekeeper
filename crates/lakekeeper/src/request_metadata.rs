@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId, XXHashSet,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
+    config::TrustedEngine,
     service::{
         ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
@@ -71,6 +72,7 @@ pub struct RequestMetadata {
     matched_path: Option<Arc<str>>,
     request_method: Method,
     user_agent: Option<UserAgent>,
+    engine: Option<TrustedEngine>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +142,18 @@ impl RequestMetadata {
         self
     }
 
+    /// Set the identified trusted engine.
+    pub fn set_engine(&mut self, engine: TrustedEngine) -> &mut Self {
+        self.engine = Some(engine);
+        self
+    }
+
+    /// Identified trusted engine.
+    #[must_use]
+    pub fn engine(&self) -> Option<&TrustedEngine> {
+        self.engine.as_ref()
+    }
+
     pub fn set_token_roles(&mut self, token_roles: TokenRoles) -> &mut Self {
         self.token_roles = Some(token_roles);
         self
@@ -187,6 +201,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            engine: None,
             token_roles: None,
         }
     }
@@ -210,8 +225,15 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            engine: None,
             token_roles: None,
         }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_project_id(&mut self, project_id: ProjectId) -> &mut Self {
+        self.project_id = Some(Arc::new(project_id));
+        self
     }
 
     #[must_use]
@@ -240,6 +262,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            engine: None,
             token_roles: None,
         }
     }
@@ -274,6 +297,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            engine: None,
             token_roles: None,
         }
     }
@@ -297,6 +321,7 @@ impl RequestMetadata {
             matched_path,
             request_method,
             user_agent: None,
+            engine: None,
             token_roles: None,
         }
     }
@@ -468,6 +493,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         matched_path,
         request_method,
         user_agent,
+        engine: None,
     });
     next.run(request).await
 }

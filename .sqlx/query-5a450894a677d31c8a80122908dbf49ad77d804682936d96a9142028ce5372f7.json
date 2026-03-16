@@ -23,7 +23,8 @@
               "Enum": [
                 "create-endpoint",
                 "config-call-creation",
-                "update-endpoint"
+                "update-endpoint",
+                "role-provider"
               ]
             }
           }

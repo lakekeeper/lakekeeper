@@ -35,11 +35,15 @@ lakekeeper = { path = "../lakekeeper", features = [
     "kafka",
 ] }
 lakekeeper-authz-openfga = { path = "../authz-openfga" }
-lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "c9443cf", optional = true }
+lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "1c6a3bb", optional = true }
 limes = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
+tikv-jemallocator = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["background_threads"] }
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }

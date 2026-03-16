@@ -3,7 +3,7 @@ FROM rust:1.88-slim-bookworm AS chef
 ARG NO_CHEF=false
 ENV NO_CHEF=${NO_CHEF}
 
-ENV NODE_VERSION=23.3.0
+ENV NODE_VERSION=24.14.0
 ENV NVM_DIR=/root/.nvm
 
 # We only pay the installation cost once, 

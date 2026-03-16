@@ -7,7 +7,6 @@ use axum::Router;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
-use valuable::Valuable;
 
 use super::{
     CatalogStore, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore, State, TableId,
@@ -144,6 +143,8 @@ pub enum ContextValue {
     Map(BTreeMap<String, String>),
     /// A list of plain strings (e.g. `removed_properties`).
     List(Vec<String>),
+    /// A single string value (e.g. resource name, ID).
+    String(String),
 }
 
 impl std::fmt::Display for ContextValue {
@@ -160,6 +161,7 @@ impl std::fmt::Display for ContextValue {
             Self::List(list) => {
                 write!(f, "[{}]", list.join(", "))
             }
+            Self::String(s) => write!(f, "{s}"),
         }
     }
 }
@@ -173,6 +175,10 @@ impl std::fmt::Display for ContextValue {
     #[allow(unreachable_pub)]
     pub fn context_list(&mut self, key: &'static str, list: impl Into<Vec<String>>) {
         self.context.push((key, ContextValue::List(list.into())));
+    }
+    #[allow(unreachable_pub)]
+    pub fn context_string(&mut self, key: &'static str, value: impl Into<String>) {
+        self.context.push((key, ContextValue::String(value.into())));
     }
 ))]
 pub struct ActionDescriptor {
@@ -239,18 +245,14 @@ impl CatalogAction for CatalogUserAction {
 
 #[derive(
     Debug,
+    Hash,
     Clone,
-    Copy,
     Eq,
     PartialEq,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    IntoStaticStr,
     Serialize,
     Deserialize,
-    VariantArray,
-    Valuable,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperServerAction))]
@@ -258,7 +260,15 @@ impl CatalogAction for CatalogUserAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum CatalogServerAction {
     /// Can create items inside the server (can create Warehouses).
-    CreateProject,
+    CreateProject {
+        /// Name of the project to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Project ID, if externally provided.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "open-api", schema(value_type = Option<String>))]
+        project_id: Option<ProjectId>,
+    },
     /// Can update all users on this server.
     UpdateUsers,
     /// Can delete all users on this server.
@@ -268,39 +278,70 @@ pub enum CatalogServerAction {
     /// Can provision user
     ProvisionUsers,
 }
+static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 5]> = LazyLock::new(|| {
+    [
+        CatalogServerAction::CreateProject {
+            name: None,
+            project_id: None,
+        },
+        CatalogServerAction::UpdateUsers,
+        CatalogServerAction::DeleteUsers,
+        CatalogServerAction::ListUsers,
+        CatalogServerAction::ProvisionUsers,
+    ]
+});
+impl CatalogServerAction {
+    #[must_use]
+    pub fn variants() -> &'static [CatalogServerAction; 5] {
+        &SERVER_ACTION_VARIANTS
+    }
+}
 impl CatalogAction for CatalogServerAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::CreateProject { name, project_id } = self {
+            if let Some(n) = name {
+                b = b.context_string("name", n.clone());
+            }
+            if let Some(pid) = project_id {
+                b = b.context_string("project_id", pid.to_string());
+            }
+        }
+        b.build()
     }
 }
 
 #[derive(
     Debug,
+    Hash,
     Clone,
-    Copy,
     Eq,
     PartialEq,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    IntoStaticStr,
     Serialize,
     Deserialize,
-    VariantArray,
-    Valuable,
+    strum_macros::EnumCount,
+    strum_macros::IntoStaticStr,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectAction))]
 #[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum CatalogProjectAction {
-    CreateWarehouse,
+    CreateWarehouse {
+        /// Name of the warehouse to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     Delete,
     Rename,
     GetMetadata,
     ListWarehouses,
     IncludeInList,
-    CreateRole,
+    CreateRole {
+        /// Name of the role to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     ListRoles,
     SearchRoles,
     GetEndpointStatistics,
@@ -309,9 +350,40 @@ pub enum CatalogProjectAction {
     GetProjectTasks,
     ControlProjectTasks,
 }
+static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 14]> = LazyLock::new(|| {
+    [
+        CatalogProjectAction::CreateWarehouse { name: None },
+        CatalogProjectAction::Delete,
+        CatalogProjectAction::Rename,
+        CatalogProjectAction::GetMetadata,
+        CatalogProjectAction::ListWarehouses,
+        CatalogProjectAction::IncludeInList,
+        CatalogProjectAction::CreateRole { name: None },
+        CatalogProjectAction::ListRoles,
+        CatalogProjectAction::SearchRoles,
+        CatalogProjectAction::GetEndpointStatistics,
+        CatalogProjectAction::ModifyTaskQueueConfig,
+        CatalogProjectAction::GetTaskQueueConfig,
+        CatalogProjectAction::GetProjectTasks,
+        CatalogProjectAction::ControlProjectTasks,
+    ]
+});
+impl CatalogProjectAction {
+    #[must_use]
+    pub fn variants() -> &'static [CatalogProjectAction; 14] {
+        &PROJECT_ACTION_VARIANTS
+    }
+}
 impl CatalogAction for CatalogProjectAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        match self {
+            Self::CreateWarehouse { name: Some(n) } | Self::CreateRole { name: Some(n) } => {
+                b = b.context_string("name", n.clone());
+            }
+            _ => {}
+        }
+        b.build()
     }
 }
 
@@ -364,6 +436,9 @@ impl CatalogAction for CatalogRoleAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogWarehouseAction {
     CreateNamespace {
+        /// Name of the namespace to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
@@ -392,6 +467,7 @@ pub enum CatalogWarehouseAction {
 static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 21]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
+            name: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogWarehouseAction::Delete,
@@ -425,10 +501,13 @@ impl CatalogWarehouseAction {
 impl CatalogAction for CatalogWarehouseAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::CreateNamespace { properties } = self
-            && !properties.is_empty()
-        {
-            b = b.context_map("properties", properties.as_ref().clone());
+        if let Self::CreateNamespace { name, properties } = self {
+            if let Some(n) = name {
+                b = b.context_string("name", n.clone());
+            }
+            if !properties.is_empty() {
+                b = b.context_map("properties", properties.as_ref().clone());
+            }
         }
         b.build()
     }
@@ -451,16 +530,29 @@ impl CatalogAction for CatalogWarehouseAction {
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogNamespaceAction {
     CreateTable {
+        /// Name of the table to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Table ID, if externally provided (e.g. via register).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
+        table_id: Option<TableId>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
     },
     CreateView {
+        /// Name of the view to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
     },
     CreateNamespace {
+        /// Name of the namespace to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
@@ -484,12 +576,16 @@ pub enum CatalogNamespaceAction {
 static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 12]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
+            name: None,
+            table_id: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::CreateView {
+            name: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::CreateNamespace {
+            name: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::Delete,
@@ -516,9 +612,25 @@ impl CatalogAction for CatalogNamespaceAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
-            Self::CreateTable { properties }
-            | Self::CreateView { properties }
-            | Self::CreateNamespace { properties } => {
+            Self::CreateTable {
+                name,
+                table_id,
+                properties,
+            } => {
+                if let Some(n) = name {
+                    b = b.context_string("name", n.clone());
+                }
+                if let Some(tid) = table_id {
+                    b = b.context_string("table_id", tid.to_string());
+                }
+                if !properties.is_empty() {
+                    b = b.context_map("properties", properties.as_ref().clone());
+                }
+            }
+            Self::CreateView { name, properties } | Self::CreateNamespace { name, properties } => {
+                if let Some(n) = name {
+                    b = b.context_string("name", n.clone());
+                }
                 if !properties.is_empty() {
                     b = b.context_map("properties", properties.as_ref().clone());
                 }
@@ -1004,6 +1116,18 @@ pub(crate) mod tests {
     use crate::service::{Namespace, NamespaceHierarchy, health::Health};
 
     #[test]
+    fn test_server_action_variant_completeness() {
+        let variants = CatalogServerAction::variants();
+        assert_eq!(variants.len(), CatalogServerAction::COUNT);
+    }
+
+    #[test]
+    fn test_project_action_variant_completeness() {
+        let variants = CatalogProjectAction::variants();
+        assert_eq!(variants.len(), CatalogProjectAction::COUNT);
+    }
+
+    #[test]
     fn test_warehouse_action_variant_completeness() {
         let variants = CatalogWarehouseAction::variants();
         assert_eq!(variants.len(), CatalogWarehouseAction::COUNT);
@@ -1064,18 +1188,22 @@ pub(crate) mod tests {
             ),
             (
                 CatalogNamespaceAction::CreateTable {
+                    name: None,
+                    table_id: None,
                     properties: Arc::new(BTreeMap::new()),
                 },
                 serde_json::json!({"action": "create_table"}),
             ),
             (
                 CatalogNamespaceAction::CreateView {
+                    name: None,
                     properties: Arc::new(BTreeMap::new()),
                 },
                 serde_json::json!({"action": "create_view"}),
             ),
             (
                 CatalogNamespaceAction::CreateNamespace {
+                    name: None,
                     properties: Arc::new(BTreeMap::new()),
                 },
                 serde_json::json!({"action": "create_namespace"}),
@@ -1240,6 +1368,79 @@ pub(crate) mod tests {
         assert_eq!(deserialized, action);
     }
 
+    #[test]
+    fn test_action_descriptor_with_populated_context() {
+        // CreateProject with name and project_id
+        let action = CatalogServerAction::CreateProject {
+            name: Some("my-project".to_string()),
+            project_id: Some(crate::ProjectId::from(Uuid::nil())),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-project"), "got: {log}");
+        assert!(
+            log.contains("project_id=00000000-0000-0000-0000-000000000000"),
+            "got: {log}"
+        );
+
+        // CreateWarehouse with name
+        let action = CatalogProjectAction::CreateWarehouse {
+            name: Some("my-warehouse".to_string()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-warehouse"), "got: {log}");
+
+        // CreateRole with name
+        let action = CatalogProjectAction::CreateRole {
+            name: Some("admin".to_string()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=admin"), "got: {log}");
+
+        // CreateNamespace in warehouse with name
+        let action = CatalogWarehouseAction::CreateNamespace {
+            name: Some("ns1".to_string()),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=ns1"), "got: {log}");
+
+        // CreateTable with name and table_id
+        let action = CatalogNamespaceAction::CreateTable {
+            name: Some("my-table".to_string()),
+            table_id: Some(crate::service::TableId::from(Uuid::nil())),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-table"), "got: {log}");
+        assert!(
+            log.contains("table_id=00000000-0000-0000-0000-000000000000"),
+            "got: {log}"
+        );
+
+        // CreateView with name
+        let action = CatalogNamespaceAction::CreateView {
+            name: Some("my-view".to_string()),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=my-view"), "got: {log}");
+
+        // CreateNamespace in namespace with name
+        let action = CatalogNamespaceAction::CreateNamespace {
+            name: Some("sub-ns".to_string()),
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log = action.as_log_str();
+        assert!(log.contains("name=sub-ns"), "got: {log}");
+
+        // None fields should produce no context
+        let action = CatalogServerAction::CreateProject {
+            name: None,
+            project_id: None,
+        };
+        assert_eq!(action.as_log_str(), "create_project");
+    }
+
     #[derive(Clone, Debug)]
     /// A mock of the [`Authorizer`] that allows to hide objects.
     /// This is useful to test the behavior of the authorizer when objects are hidden.
@@ -1281,7 +1482,10 @@ pub(crate) mod tests {
         }
 
         fn action_is_blocked(&self, action: &str) -> bool {
-            self.blocked_actions.read().unwrap().contains(action)
+            let blocked = self.blocked_actions.read().unwrap();
+            // Exact match or prefix match (e.g. "namespace:CreateTable" matches
+            // "namespace:CreateTable { name: Some(...), ... }").
+            blocked.contains(action) || blocked.iter().any(|b| action.starts_with(b.as_str()))
         }
 
         pub(crate) fn block_action(&self, object: &str) {
@@ -1662,6 +1866,7 @@ pub(crate) mod tests {
     test_block_action!(
         warehouse,
         CatalogWarehouseAction::CreateNamespace {
+            name: None,
             properties: Arc::new(BTreeMap::new())
         },
         &ResolvedWarehouse::new_random()

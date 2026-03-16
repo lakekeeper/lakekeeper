@@ -41,6 +41,8 @@ bash run.sh starrocks
 bash run.sh trino
 # Trino with Open Policy Agent
 bash run.sh trino_opa
+# S3 STS with separate STS endpoint (nginx proxy)
+bash run.sh spark_minio_sts_separate_endpoint-1.10.1
 # S3 System Identity
 bash run.sh spark_aws_system_identity_sts-1.10.1
 ```

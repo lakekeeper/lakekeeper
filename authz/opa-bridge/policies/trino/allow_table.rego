@@ -43,7 +43,7 @@ allow_table_create if {
     properties := object.get(input.action.resource.table, "properties", {})
     flattened_properties := flatten_properties(properties)
     trino.is_metadata_table(table) == false
-    trino.require_schema_access_create(catalog, schema, "create_table", flattened_properties)
+    trino.require_schema_access_create(catalog, schema, "create_table", flattened_properties, table)
 }
 
 allow_table_drop if {

@@ -9,28 +9,16 @@ use unicase::UniCase;
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG, WarehouseId,
-    service::{NamespaceId, NamespaceWithParent, catalog_store::namespace::NamespaceHierarchy},
+    service::{
+        NamespaceId, NamespaceWithParent,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_NAMESPACE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+        catalog_store::namespace::NamespaceHierarchy,
+    },
 };
-
-const METRIC_NAMESPACE_CACHE_SIZE: &str = "lakekeeper_namespace_cache_size";
-const METRIC_NAMESPACE_CACHE_HITS: &str = "lakekeeper_namespace_cache_hits_total";
-const METRIC_NAMESPACE_CACHE_MISSES: &str = "lakekeeper_namespace_cache_misses_total";
-
-/// Initialize metric descriptions for namespace cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_NAMESPACE_CACHE_SIZE,
-        "Current number of entries in the namespace cache"
-    );
-    metrics::describe_counter!(
-        METRIC_NAMESPACE_CACHE_HITS,
-        "Total number of namespace cache hits"
-    );
-    metrics::describe_counter!(
-        METRIC_NAMESPACE_CACHE_MISSES,
-        "Total number of namespace cache misses"
-    );
-});
 
 // Main cache: stores individual namespaces by ID
 pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =
@@ -100,6 +88,9 @@ pub(crate) static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, Namespace
         Cache::builder()
             .max_capacity(CONFIG.cache.namespace.capacity)
             .initial_capacity(50)
+            .time_to_live(Duration::from_secs(
+                CONFIG.cache.namespace.time_to_live_secs,
+            ))
             .build()
     });
 
@@ -165,6 +156,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_NAMESPACE_CACHE_SIZE, "cache_type" => "namespace")
         .set(NAMESPACE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_NAMESPACE_CACHE_SIZE, "cache_type" => "namespace_ident_to_id")
+        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
 }
 
 /// Get a namespace by ID, reconstructing the hierarchy from cached parents.
@@ -195,8 +188,13 @@ pub(super) async fn namespace_cache_get_by_ident(
 ) -> Option<NamespaceHierarchy> {
     update_cache_size_metric();
     let ident_key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
-    let namespace_id = IDENT_TO_ID_CACHE.get(&ident_key).await?;
-
+    let Some(namespace_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
+        metrics::counter!(METRIC_NAMESPACE_CACHE_MISSES, "cache_type" => "namespace_ident_to_id")
+            .increment(1);
+        return None;
+    };
+    metrics::counter!(METRIC_NAMESPACE_CACHE_HITS, "cache_type" => "namespace_ident_to_id")
+        .increment(1);
     tracing::debug!("Namespace ident {namespace_ident} found in ident-to-id cache");
     let result = namespace_cache_get_by_id(namespace_id).await;
     if result.is_none() {
@@ -675,6 +673,20 @@ mod tests {
         // Verify ident-to-id cache is also invalidated
         let cached_by_ident = namespace_cache_get_by_ident(&namespace_ident, warehouse_id).await;
         assert!(cached_by_ident.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ident_to_id_cache_has_ttl_matching_primary() {
+        let primary_ttl = NAMESPACE_CACHE.policy().time_to_live();
+        let secondary_ttl = IDENT_TO_ID_CACHE.policy().time_to_live();
+        assert_eq!(
+            primary_ttl, secondary_ttl,
+            "IDENT_TO_ID_CACHE TTL must match NAMESPACE_CACHE TTL"
+        );
+        assert!(
+            secondary_ttl.is_some(),
+            "IDENT_TO_ID_CACHE must have a TTL configured"
+        );
     }
 
     #[tokio::test]

@@ -35,7 +35,7 @@ require_warehouse_access_simple(lakekeeper_id, warehouse_name, user, action) := 
 }
 
 # Check access to a warehouse
-require_warehouse_create_namespace_access(lakekeeper_id, warehouse_name, user, properties) := true if {
+require_warehouse_create_namespace_access(lakekeeper_id, warehouse_name, user, properties, name) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
         "POST", "/management/v1/action/batch-check",
@@ -45,7 +45,7 @@ require_warehouse_create_namespace_access(lakekeeper_id, warehouse_name, user, p
                 {
                     "operation": {
                         "warehouse": {
-                            "action": {"action": "create_namespace", "properties": properties},
+                            "action": {"action": "create_namespace", "properties": properties, "name": name},
                             "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name)
                         }
                     },
@@ -87,17 +87,17 @@ require_namespace_access_simple(lakekeeper_id, warehouse_name, namespace_name, u
     count(value.results) == 1
 }
 
-require_namespace_access_create(lakekeeper_id, warehouse_name, namespace_name, user, action, properties) := true if {
+require_namespace_access_create(lakekeeper_id, warehouse_name, namespace_name, user, action, properties, name) := true if {
     value := authenticated_http_send(
         lakekeeper_id,
-        "POST", "/management/v1/action/batch-check", 
+        "POST", "/management/v1/action/batch-check",
         {
             "error-on-not-found": false,
             "checks": [
                 {
                     "operation": {
                         "namespace" : {
-                            "action": {"action": action, "properties": properties},
+                            "action": {"action": action, "properties": properties, "name": name},
                             "warehouse-id": warehouse_id_for_name(lakekeeper_id, warehouse_name),
                             "namespace": namespace_name
                         }

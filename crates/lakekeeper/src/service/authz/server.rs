@@ -7,8 +7,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogServerAction, IsAllowedActionError, MustUse,
-            UserOrRole,
+            CannotInspectPermissions, CatalogAction, CatalogServerAction, IsAllowedActionError,
+            MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedRole,
@@ -18,7 +18,7 @@ use crate::{
 };
 pub trait ServerAction
 where
-    Self: std::fmt::Display + Send + Sync + Copy + From<CatalogServerAction> + PartialEq,
+    Self: CatalogAction + Clone + From<CatalogServerAction> + Eq + PartialEq,
 {
 }
 
@@ -33,10 +33,10 @@ pub struct AuthZServerActionForbidden {
 }
 impl AuthZServerActionForbidden {
     #[must_use]
-    pub fn new(server_id: ServerId, action: impl ServerAction) -> Self {
+    pub fn new(server_id: ServerId, action: &impl ServerAction) -> Self {
         Self {
             server_id,
-            action: action.to_string(),
+            action: action.as_log_str(),
         }
     }
 }
@@ -153,7 +153,7 @@ pub trait AuthZServerOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        action: impl Into<Self::ServerAction> + Send + Sync + Copy,
+        action: impl Into<Self::ServerAction> + Send + Sync + Clone,
     ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_server_actions_arr(metadata, for_user, &[action])
@@ -162,7 +162,7 @@ pub trait AuthZServerOps: Authorizer {
         Ok(decision.into())
     }
 
-    async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Sync + Copy>(
+    async fn are_allowed_server_actions_vec<A: Into<Self::ServerAction> + Send + Sync + Clone>(
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
@@ -175,7 +175,7 @@ pub trait AuthZServerOps: Authorizer {
         if metadata.has_admin_privileges() && for_user.is_none() {
             Ok(vec![true; actions.len()])
         } else {
-            let converted = actions.iter().map(|a| (*a).into()).collect::<Vec<_>>();
+            let converted = actions.iter().map(|a| a.clone().into()).collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_server_actions_impl(metadata, for_user, &converted)
                 .await?;
@@ -196,7 +196,7 @@ pub trait AuthZServerOps: Authorizer {
 
     async fn are_allowed_server_actions_arr<
         const N: usize,
-        A: Into<Self::ServerAction> + Send + Sync + Copy,
+        A: Into<Self::ServerAction> + Send + Sync + Clone,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -218,17 +218,17 @@ pub trait AuthZServerOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        action: impl Into<Self::ServerAction> + Send + Sync + Copy,
+        action: impl Into<Self::ServerAction> + Send + Sync + Clone,
     ) -> Result<(), RequireServerActionError> {
         let action = action.into();
         if self
-            .is_allowed_server_action(metadata, for_user, action)
+            .is_allowed_server_action(metadata, for_user, action.clone())
             .await?
             .into_inner()
         {
             Ok(())
         } else {
-            Err(AuthZServerActionForbidden::new(self.server_id(), action).into())
+            Err(AuthZServerActionForbidden::new(self.server_id(), &action).into())
         }
     }
 

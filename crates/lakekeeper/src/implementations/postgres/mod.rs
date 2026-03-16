@@ -6,6 +6,7 @@ pub mod migrations;
 pub(crate) mod namespace;
 mod pagination;
 pub(crate) mod role;
+pub(crate) mod role_assignment;
 pub(crate) mod secrets;
 pub mod tabular;
 pub mod tasks;

@@ -7,6 +7,12 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions, clippy::similar_names)]
 
+// Use jemalloc as the global allocator to avoid glibc malloc fragmentation
+// which causes monotonic growth of container_memory_working_set_bytes.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use clap::{Parser, Subcommand};
 use lakekeeper::{
     CONFIG,

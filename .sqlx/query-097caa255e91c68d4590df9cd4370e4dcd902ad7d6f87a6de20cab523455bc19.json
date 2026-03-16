@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH assigned AS (\n            SELECT\n                r.id          AS role_id,\n                r.source_id,\n                r.provider_id,\n                r.project_id,\n                s.project_id  AS sync_project_id,\n                s.provider_id AS sync_provider_id,\n                s.synced_at\n            FROM role_assignment ur\n            JOIN \"role\" r ON r.id = ur.role_id\n            LEFT JOIN role_assignment_sync s\n                ON  s.user_id     = ur.user_id\n                AND s.provider_id = r.provider_id\n                AND s.project_id  = r.project_id\n            WHERE ur.user_id = $1\n        )\n        SELECT\n            role_id          AS \"role_id?: Uuid\",\n            source_id        AS \"source_id?\",\n            provider_id      AS \"provider_id?\",\n            project_id       AS \"project_id?\",\n            sync_project_id  AS \"sync_project_id?\",\n            sync_provider_id AS \"sync_provider_id?\",\n            synced_at        AS \"synced_at?\"\n        FROM assigned\n\n        UNION ALL\n\n        -- Providers that have been synced but currently have no assignments.\n        -- These rows carry only sync metadata; all role columns are NULL.\n        -- The NOT EXISTS check reuses the already-computed `assigned` CTE\n        -- instead of re-joining role_assignment + role.\n        SELECT\n            NULL::UUID AS \"role_id?: Uuid\",\n            NULL::TEXT AS \"source_id?\",\n            NULL::TEXT AS \"provider_id?\",\n            NULL::TEXT AS \"project_id?\",\n            s.project_id,\n            s.provider_id,\n            s.synced_at\n        FROM role_assignment_sync s\n        WHERE s.user_id = $1\n          AND NOT EXISTS (\n              SELECT 1\n              FROM assigned\n              WHERE assigned.provider_id = s.provider_id\n                AND assigned.project_id  = s.project_id\n          )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role_id?: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "source_id?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider_id?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "project_id?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "sync_project_id?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "sync_provider_id?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "synced_at?",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "097caa255e91c68d4590df9cd4370e4dcd902ad7d6f87a6de20cab523455bc19"
+}

@@ -7,25 +7,15 @@ use moka::{future::Cache, notification::RemovalCause};
 use crate::service::events::{self, EventListener};
 use crate::{
     CONFIG,
-    service::{ArcProjectId, ArcRole, ArcRoleIdent, RoleId},
+    service::{
+        ArcProjectId, ArcRole, ArcRoleIdent, RoleId,
+        cache_metrics::{
+            METRIC_CACHE_HITS_TOTAL as METRIC_ROLE_CACHE_HITS,
+            METRIC_CACHE_MISSES_TOTAL as METRIC_ROLE_CACHE_MISSES,
+            METRIC_CACHE_SIZE as METRIC_ROLE_CACHE_SIZE, METRICS_INITIALIZED,
+        },
+    },
 };
-
-const METRIC_ROLE_CACHE_SIZE: &str = "lakekeeper_role_cache_size";
-const METRIC_ROLE_CACHE_HITS: &str = "lakekeeper_role_cache_hits_total";
-const METRIC_ROLE_CACHE_MISSES: &str = "lakekeeper_role_cache_misses_total";
-
-/// Initialize metric descriptions for Role cache metrics
-static METRICS_INITIALIZED: LazyLock<()> = LazyLock::new(|| {
-    metrics::describe_gauge!(
-        METRIC_ROLE_CACHE_SIZE,
-        "Current number of entries in the role cache"
-    );
-    metrics::describe_counter!(METRIC_ROLE_CACHE_HITS, "Total number of role cache hits");
-    metrics::describe_counter!(
-        METRIC_ROLE_CACHE_MISSES,
-        "Total number of role cache misses"
-    );
-});
 
 // Primary cache: RoleId → ArcRole
 pub(crate) static ROLE_CACHE: LazyLock<Cache<RoleId, ArcRole>> = LazyLock::new(|| {
@@ -74,6 +64,7 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
         Cache::builder()
             .max_capacity(CONFIG.cache.role.capacity)
             .initial_capacity(100)
+            .time_to_live(Duration::from_secs(CONFIG.cache.role.time_to_live_secs))
             .build()
     });
 
@@ -122,6 +113,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role")
         .set(ROLE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role_ident_to_id")
+        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
@@ -136,6 +129,34 @@ pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
     }
 }
 
+/// Resolve `(project_id, role_ident)` → `RoleId` using the secondary index only.
+///
+/// Returns `None` if the ident is not in the role ident cache.  Does not
+/// touch the primary `ROLE_CACHE` — use [`role_cache_get_by_ident`] if the
+/// full role is needed.
+pub(crate) async fn role_ident_to_id(
+    project_id: ArcProjectId,
+    ident: ArcRoleIdent,
+) -> Option<RoleId> {
+    IDENT_TO_ID_CACHE.get(&(project_id, ident)).await
+}
+
+/// Insert a `(project_id, role_ident)` → `RoleId` mapping into the secondary
+/// index without touching the primary [`ROLE_CACHE`].
+///
+/// Used by sync-event listeners that know the full ident but not the complete
+/// [`ArcRole`] data required by [`role_cache_insert`].
+pub(crate) async fn role_ident_insert(
+    project_id: ArcProjectId,
+    ident: ArcRoleIdent,
+    role_id: RoleId,
+) {
+    if CONFIG.cache.role.enabled {
+        IDENT_TO_ID_CACHE.insert((project_id, ident), role_id).await;
+        update_cache_size_metric();
+    }
+}
+
 pub(super) async fn role_cache_get_by_ident(
     project_id: ArcProjectId,
     ident: ArcRoleIdent,
@@ -143,9 +164,11 @@ pub(super) async fn role_cache_get_by_ident(
     update_cache_size_metric();
     let ident_key = (project_id, ident.clone());
     let Some(role_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
-        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
+        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role_ident_to_id")
+            .increment(1);
         return None;
     };
+    metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role_ident_to_id").increment(1);
     tracing::debug!("Role ident {ident} resolved in ident-to-id cache to id {role_id}");
 
     if let Some(role) = ROLE_CACHE.get(&role_id).await {
@@ -157,6 +180,7 @@ pub(super) async fn role_cache_get_by_ident(
             "Role id {role_id} not found in cache, invalidating stale ident mapping for {ident}"
         );
         IDENT_TO_ID_CACHE.remove(&ident_key).await;
+        update_cache_size_metric();
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         None
     }
@@ -202,6 +226,45 @@ impl EventListener for RoleCacheEventListener {
         role_cache_invalidate(role.id()).await;
         Ok(())
     }
+
+    /// Warm the `IDENT_TO_ID_CACHE` secondary index after a role's members
+    /// have been synced.
+    ///
+    /// The sync is authoritative proof that the role exists — its
+    /// `(project_id, role_ident)` → `role_id` mapping is therefore valid and
+    /// we can insert it without a DB round-trip.
+    async fn role_members_synced(
+        &self,
+        event: events::RoleMembersSyncedEvent,
+    ) -> anyhow::Result<()> {
+        role_ident_insert(
+            event.result.project_id.clone(),
+            event.result.role_ident.clone(),
+            event.result.role_id,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Warm the `IDENT_TO_ID_CACHE` secondary index for every role present in
+    /// the authoritative assignment list after a user's assignments are synced.
+    ///
+    /// Each [`AssignedRole`] in `result.roles` carries a valid
+    /// `(project_id, role_ident, role_id)` triple we can insert directly.
+    async fn user_role_assignments_synced(
+        &self,
+        event: events::UserRoleAssignmentsSyncedEvent,
+    ) -> anyhow::Result<()> {
+        for assigned in &event.result.roles {
+            role_ident_insert(
+                assigned.project_id.clone(),
+                assigned.role_ident.clone(),
+                assigned.role_id,
+            )
+            .await;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +303,20 @@ mod tests {
             updated_at: None,
             version: RoleVersion::new(version),
         })
+    }
+
+    #[tokio::test]
+    async fn test_ident_to_id_cache_has_ttl_matching_primary() {
+        let primary_ttl = ROLE_CACHE.policy().time_to_live();
+        let secondary_ttl = IDENT_TO_ID_CACHE.policy().time_to_live();
+        assert_eq!(
+            primary_ttl, secondary_ttl,
+            "IDENT_TO_ID_CACHE TTL must match ROLE_CACHE TTL"
+        );
+        assert!(
+            secondary_ttl.is_some(),
+            "IDENT_TO_ID_CACHE must have a TTL configured"
+        );
     }
 
     #[tokio::test]

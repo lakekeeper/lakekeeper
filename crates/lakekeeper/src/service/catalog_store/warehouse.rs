@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use super::{CatalogStore, Transaction};
 use crate::{

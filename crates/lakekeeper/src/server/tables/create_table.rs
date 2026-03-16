@@ -164,6 +164,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let authorizer = state.v1_state.authz.clone();
 
     let action = CatalogNamespaceAction::CreateTable {
+        name: Some(request.name.clone()),
+        table_id: Some(guard.table_id()),
         properties: Arc::new(
             request
                 .properties

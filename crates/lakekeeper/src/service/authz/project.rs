@@ -10,8 +10,8 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogProjectAction, IsAllowedActionError, MustUse,
-            UserOrRole,
+            CannotInspectPermissions, CatalogAction, CatalogProjectAction, IsAllowedActionError,
+            MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -21,7 +21,7 @@ use crate::{
 };
 pub trait ProjectAction
 where
-    Self: std::fmt::Display + Send + Sync + Copy + From<CatalogProjectAction> + PartialEq,
+    Self: CatalogAction + Clone + From<CatalogProjectAction> + Eq + PartialEq,
 {
 }
 
@@ -45,10 +45,10 @@ pub struct AuthZProjectActionForbidden {
 }
 impl AuthZProjectActionForbidden {
     #[must_use]
-    pub fn new(project_id: ArcProjectId, action: impl ProjectAction) -> Self {
+    pub fn new(project_id: ArcProjectId, action: &impl ProjectAction) -> Self {
         Self {
             project_id,
-            action: action.to_string(),
+            action: action.as_log_str(),
         }
     }
 }
@@ -114,7 +114,7 @@ pub trait AuthZProjectOps: Authorizer {
         }
     }
 
-    async fn are_allowed_project_actions_vec<A: Into<Self::ProjectAction> + Send + Copy + Sync>(
+    async fn are_allowed_project_actions_vec<A: Into<Self::ProjectAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
@@ -130,7 +130,7 @@ pub trait AuthZProjectOps: Authorizer {
             } else {
                 let converted: Vec<(&ArcProjectId, Self::ProjectAction)> = projects_with_actions
                     .iter()
-                    .map(|(id, action)| (*id, (*action).into()))
+                    .map(|(id, action)| (*id, action.clone().into()))
                     .collect();
                 let decisions = self
                     .are_allowed_project_actions_impl(metadata, for_user, &converted)
@@ -152,7 +152,7 @@ pub trait AuthZProjectOps: Authorizer {
 
     async fn are_allowed_project_actions_arr<
         const N: usize,
-        A: Into<Self::ProjectAction> + Send + Copy + Sync,
+        A: Into<Self::ProjectAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -175,7 +175,7 @@ pub trait AuthZProjectOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         project_id: &ArcProjectId,
-        action: impl Into<Self::ProjectAction> + Send + Sync + Copy,
+        action: impl Into<Self::ProjectAction> + Send + Sync + Clone,
     ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_project_actions_arr(metadata, for_user, &[(project_id, action)])
@@ -191,13 +191,13 @@ pub trait AuthZProjectOps: Authorizer {
         action: CatalogProjectAction,
     ) -> Result<(), RequireProjectActionError> {
         if self
-            .is_allowed_project_action(metadata, None, project_id, action)
+            .is_allowed_project_action(metadata, None, project_id, action.clone())
             .await?
             .into_inner()
         {
             Ok(())
         } else {
-            Err(AuthZProjectActionForbidden::new(project_id.clone(), action).into())
+            Err(AuthZProjectActionForbidden::new(project_id.clone(), &action).into())
         }
     }
 }

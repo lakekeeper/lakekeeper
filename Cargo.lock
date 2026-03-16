@@ -581,9 +581,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.15.2"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a88aab2464f1f25453baa7a07c84c5b7684e274054ba06817f382357f77a288"
+checksum = "94bffc006df10ac2a68c83692d734a465f8ee6c5b384d8545a636f81d858f4bf"
 dependencies = [
  "aws-lc-sys",
  "untrusted 0.7.1",
@@ -592,9 +592,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.35.0"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b45afffdee1e7c9126814751f88dddc747f41d91da16c9551a0f1e8a11e788a1"
+checksum = "4321e568ed89bb5a7d291a7f37997c2c0df89809d7b6d12062c81ddb54aa782e"
 dependencies = [
  "cc",
  "cmake",
@@ -3695,6 +3695,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-s3",
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-smithy-http 0.62.6",
@@ -3817,13 +3818,14 @@ dependencies = [
  "limes",
  "reqwest",
  "serde",
+ "tikv-jemallocator",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.11.3"
-source = "git+https://github.com/lakekeeper/console?rev=c9443cf#c9443cf124ad37fddb1e931ec52ee8558ed42c1c"
+version = "0.12.3"
+source = "git+https://github.com/lakekeeper/console?rev=1c6a3bb#1c6a3bb933dd1f3e1c1dcf5cf2b20cf3d4c17440"
 dependencies = [
  "fs_extra",
  "mime_guess",
@@ -4036,8 +4038,7 @@ dependencies = [
 [[package]]
 name = "limes"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3175a153762862c72195a0cc3366a318abeed85c6e94ebea33844a2c74b9031"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?rev=a88da41#a88da41da04d97126f1e600f10e5ac5749601754"
 dependencies = [
  "axum",
  "axum-extra",
@@ -5253,9 +5254,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.13"
+version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1906b49b0c3bc04b5fe5d86a77925ae6524a19b816ae38ce1e426255f1d8a31"
+checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -6935,6 +6936,26 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float 2.10.1",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]

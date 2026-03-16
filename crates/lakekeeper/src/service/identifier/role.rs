@@ -66,8 +66,9 @@ impl From<RoleIdentifierError> for ErrorModel {
 /// Must be non-empty and contain only lowercase ASCII letters (a-z), digits (0-9),
 /// and hyphens (-). Must not contain the `~` separator or any other special characters.
 /// Well-known values: `"lakekeeper"` (server-managed), `"oidc"`, `"ldap"`, etc.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord, valuable::Valuable)]
 #[serde(transparent)]
+#[valuable(transparent)]
 pub struct RoleProviderId(String);
 
 impl std::default::Default for RoleProviderId {

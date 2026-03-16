@@ -148,7 +148,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
     query: GetAccessQuery,
 ) -> Result<Vec<CatalogServerAction>, ErrorModel> {
     let for_user_api = query.try_parse()?.principal;
-    let actions = CatalogServerAction::VARIANTS;
+    let actions = CatalogServerAction::variants();
 
     let mut event_ctx = APIEventContext::for_server(
         Arc::new(request_metadata),
@@ -179,7 +179,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
         .zip(actions)
         .filter_map(
             |(allowed, action)| {
-                if *allowed { Some(*action) } else { None }
+                if *allowed { Some(action.clone()) } else { None }
             },
         )
         .collect();
@@ -396,7 +396,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogProjectAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-    let actions = CatalogProjectAction::VARIANTS;
+    let actions = CatalogProjectAction::variants();
     let can_see_permission = CatalogProjectAction::GetMetadata;
 
     let results = authorizer
@@ -405,7 +405,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (object, *action))
+                .map(|action| (object, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -420,7 +420,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }
@@ -429,7 +429,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
 
     if !can_see {
         let err: RequireProjectActionError =
-            AuthZProjectActionForbidden::new(object.clone(), can_see_permission).into();
+            AuthZProjectActionForbidden::new(object.clone(), &can_see_permission).into();
         return Err(err.into());
     }
 
