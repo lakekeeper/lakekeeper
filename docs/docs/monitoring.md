@@ -19,7 +19,7 @@ Three metrics cover all HTTP traffic:
 
 ### Tokio Metrics
 
-Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics), including "unstable" metrics. A detailed description of these metrics, including how they are derived, can be found in the [tokio_metrics Crate Documentation](https://docs.rs/tokio-metrics/latest/tokio_metrics/struct.RuntimeMetrics.html#fields).
+Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics), including "unstable" metrics. A detailed description of these metrics, including how they are derived, can be found in the [tokio_metrics crate documentation](https://docs.rs/tokio-metrics/latest/tokio_metrics/struct.RuntimeMetrics.html#fields).
 
 ### Cache Metrics
 

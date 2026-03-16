@@ -325,7 +325,7 @@ pub struct DynAppConfig {
     // ------------- Metrics -------------
     /// Interval to report Tokio Runtime Metrics
     ///
-    /// Acceots a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
+    /// Accepts a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
     /// milliseconds
     #[serde(
         deserialize_with = "seconds_to_std_duration",

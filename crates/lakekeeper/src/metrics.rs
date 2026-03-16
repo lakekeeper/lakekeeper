@@ -12,7 +12,7 @@ use crate::CONFIG;
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
 /// Creates `PrometheusRecorder` and installs it as the global metrics recorder. Also creates a
-/// `PrometheusMetricLayer` (which captures axum requests), a Tokio Runtime Metrics recorder (which caputures tokio runtime metrics),
+/// `PrometheusMetricLayer` (which captures axum requests), a Tokio Runtime Metrics recorder (which captures tokio runtime metrics),
 /// and an `ExporterFuture` that serves metrics on a given port.
 ///
 /// # Errors
@@ -36,7 +36,7 @@ pub fn get_axum_layer_and_install_recorder(
     let handle = recorder.handle();
     metrics::set_global_recorder(recorder)?;
 
-    tokio::task::spawn(
+    let runtime_metrics_reporter_handle = tokio::task::spawn(
         tokio_metrics::RuntimeMetricsReporterBuilder::default()
             .with_interval(CONFIG.tokio_runtime_metrics_report_interval)
             .describe_and_run(),
@@ -49,7 +49,7 @@ pub fn get_axum_layer_and_install_recorder(
     Ok((
         layer,
         Box::pin(async move {
-            tokio::select! {
+            let result = tokio::select! {
                 () = cancellation_token.cancelled() => {
                     tracing::info!(port = metrics_port, "Metrics exporter cancelled");
                     Ok(())
@@ -57,7 +57,10 @@ pub fn get_axum_layer_and_install_recorder(
                 r = exporter => {
                     r.map_err(|e| anyhow::anyhow!("Metrics exporter failed: {e:?}"))
                 }
-            }
+            };
+            runtime_metrics_reporter_handle.abort();
+            let _ = runtime_metrics_reporter_handle.await;
+            result
         }),
     ))
 }
