@@ -36,7 +36,11 @@ pub fn get_axum_layer_and_install_recorder(
     let handle = recorder.handle();
     metrics::set_global_recorder(recorder)?;
 
-    tokio::task::spawn(tokio_metrics::RuntimeMetricsReporterBuilder::default().describe_and_run());
+    tokio::task::spawn(
+        tokio_metrics::RuntimeMetricsReporterBuilder::default()
+            .with_interval(CONFIG.tokio_runtime_metrics_report_interval)
+            .describe_and_run(),
+    );
 
     let (layer, _) = PrometheusMetricLayerBuilder::new()
         .with_metrics_from_fn(|| handle)

@@ -556,6 +556,14 @@ LAKEKEEPER__ROLE_PROVIDER_FILE=/etc/lakekeeper/role-providers.toml
 > LAKEKEEPER__ROLE_PROVIDER__CORPORATE__BIND_PASSWORD=s3cr3t
 > ```
 
+### Tokio Runtime Metrics
+
+Lakekeeper emits [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics) with a default report interval of 30 seconds. If necessary, this interval can be finetuned.
+
+| Variable                                                         | Example | Description                                                                                  |
+| ---------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------- |
+| <nobr>`LAKEKEEPER__TOKIO_RUNTIME_METRICS_REPORT_INTERVAL`</nobr> | `30s`   | Length of interval for which Tokio Runtime Metrics are collected and emitted. Default: `30s` |
+
 ### Debug
 
 Lakekeeper provides debugging options to help troubleshoot issues during development. These options should **not** be enabled in production environments as they can expose sensitive data and impact performance.

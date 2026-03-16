@@ -322,6 +322,17 @@ pub struct DynAppConfig {
     pub pagination_size_default: u32,
     pub pagination_size_max: u32,
 
+    // ------------- Metrics -------------
+    /// Interval to report Tokio Runtime Metrics
+    ///
+    /// Acceots a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub tokio_runtime_metrics_report_interval: Duration,
+
     // ------------- Stats -------------
     /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
     ///
@@ -760,6 +771,7 @@ impl Default for DynAppConfig {
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
+            tokio_runtime_metrics_report_interval: Duration::from_secs(30),
             endpoint_stat_flush_interval: Duration::from_secs(30),
             serve_swagger_ui: true,
             skip_storage_validation: false,
