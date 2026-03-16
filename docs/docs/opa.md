@@ -47,15 +47,13 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 | <nobr>`TRINO_ALLOW_UNMANAGED_CATALOGS`</nobr> | `true`  | Allow access to catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false` |
 
 ### Admin Users
-Admin users can be configured in the `trino_admin_users` list in `configuration.rego`. Admin users get full access to all system schemas and tables across all catalogs (including `system.metadata`, `system.runtime`, etc.) and can view queries owned by any user (`FilterViewQueryOwnedBy`, `ViewQueryOwnedBy`). Non-admin users can only view their own queries.
+Admin users get full access to Trino system schemas and tables across all catalogs (including `system.metadata`, `system.runtime`, etc.) and can view queries owned by any user (`FilterViewQueryOwnedBy`, `ViewQueryOwnedBy`). Non-admin users can only view their own queries. Note that this only affects Trino-level authorization — access to data in Lakekeeper-managed catalogs is still governed by Lakekeeper's own authorization.
 
-```rego
-trino_admin_users := [
-    "admin-user-uuid-here",
-]
-```
+| Variable                                  | Example                          | Description |
+|-------------------------------------------|----------------------------------|-----|
+| <nobr>`TRINO_ADMIN_USERS`</nobr>         | <nobr>`user-id-1,user-id-2`</nobr> | Comma-separated list of Trino user IDs (typically OIDC subject identifiers) that receive admin access. Default: empty (no admins). |
 
-Specify Trino user IDs, which are typically OIDC subject identifiers (UUIDs).
+Admin users can also be configured directly in the `trino_admin_users` list in `configuration.rego`.
 
 ### Trino Configuration
 When OPA is running and configured, set the following configurations for trino in `access-control.properties`:
@@ -92,6 +90,11 @@ Within Lakekeeper-managed catalogs, the following schemas are treated as system 
 | `system` | `iceberg_tables` | Iceberg table metadata. |
 
 User-created schemas are authorized through Lakekeeper's permission system as usual.
+
+## Trino Custom Rules Extension Point
+The Trino translation layer in `trino/main.rego` defines a `trino.allow_custom` rule that defaults to `false`. This is a Trino-specific extension point for adding your own authorization rules without modifying the built-in policies. To use it, create an `allow_custom.rego` file in the `policies/trino/` directory with rules that set `allow_custom` to `true` for the Trino operations you want to allow.
+
+To use it, create `policies/trino/allow_custom.rego` in the `trino` package and define `allow_custom` rules for the Trino operations you need. Custom rules bypass Lakekeeper's permission system, so review them carefully.
 
 ## Context Forwarding
 The OPA bridge forwards resource names to Lakekeeper's batch-check API for create actions. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created:

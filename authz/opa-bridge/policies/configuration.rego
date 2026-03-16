@@ -52,10 +52,13 @@ trino_allow_unmanaged_catalogs := object.get(env, "TRINO_ALLOW_UNMANAGED_CATALOG
 # ------------- Trino Admin Users -------------
 # Users with full access to all system schemas/tables across all catalogs,
 # including FilterViewQueryOwnedBy for all users.
-# Specify Trino user IDs (typically OIDC subject / UUID).
-trino_admin_users := [
-    # "admin-user-uuid-here",
-]
+# Specify Trino user IDs (typically OIDC subject).
+# Can be set via the TRINO_ADMIN_USERS environment variable as a comma-separated list.
+trino_admin_users := admin_users if {
+    admin_csv := object.get(env, "TRINO_ADMIN_USERS", "")
+    admin_csv != ""
+    admin_users := split(admin_csv, ",")
+} else := []
 
 # A handful commonly used catalogs are pre-defined and can be configured via environment variables.
 # All pre-defined catalogs use the "default" lakekeeper instance defined above.
