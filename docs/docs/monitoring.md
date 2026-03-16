@@ -17,6 +17,10 @@ Three metrics cover all HTTP traffic:
 !!! tip "Interpreting HTTP request metrics"
     Visualize `axum_http_requests_total` by status code for overall API health. Rising 4XX rates indicate client-side issues; rising 5XX rates indicate server or database problems requiring urgent attention. High `axum_http_requests_pending` counts signal backend bottlenecks — consider scaling Lakekeeper horizontally. For latency, monitor the `le=1` bucket of `axum_http_requests_duration_seconds` as a baseline; spikes typically point to Postgres or upstream service issues.
 
+### Tokio Metrics
+
+Lakekeeper emits all default [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics), including "unstable" metrics. A detailed description of these metrics, including how they are derived, can be found in the [tokio_metrics Crate Documentation](https://docs.rs/tokio-metrics/latest/tokio_metrics/struct.RuntimeMetrics.html#fields).
+
 ### Cache Metrics
 
 Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Namespaces, Secrets, Roles, User Assignments, and Role Members. All caches share three metric names, differentiated by the `cache_type` label:

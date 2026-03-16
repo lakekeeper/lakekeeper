@@ -12,8 +12,8 @@ use crate::CONFIG;
 pub type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
 /// Creates `PrometheusRecorder` and installs it as the global metrics recorder. Also creates a
-/// `PrometheusMetricLayer` which captures axum requests and an `ExporterFuture` that serves metrics
-/// on a given port.
+/// `PrometheusMetricLayer` (which captures axum requests), a Tokio Runtime Metrics recorder (which caputures tokio runtime metrics),
+/// and an `ExporterFuture` that serves metrics on a given port.
 ///
 /// # Errors
 /// Fails if the `PrometheusBuilder` fails to build.
@@ -35,6 +35,8 @@ pub fn get_axum_layer_and_install_recorder(
         .build()?;
     let handle = recorder.handle();
     metrics::set_global_recorder(recorder)?;
+
+    tokio::task::spawn(tokio_metrics::RuntimeMetricsReporterBuilder::default().describe_and_run());
 
     let (layer, _) = PrometheusMetricLayerBuilder::new()
         .with_metrics_from_fn(|| handle)
