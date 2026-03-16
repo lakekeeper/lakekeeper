@@ -51,6 +51,12 @@ allow if {
 	trino.allow_view
 }
 
+default allow_custom = false
+
+allow if {
+	trino.allow_custom
+}
+
 batch contains i if {
     some i
     raw_resource := input.action.filterResources[i]

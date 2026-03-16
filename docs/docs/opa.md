@@ -93,6 +93,11 @@ Within Lakekeeper-managed catalogs, the following schemas are treated as system 
 
 User-created schemas are authorized through Lakekeeper's permission system as usual.
 
+## Trino Custom Rules Extension Point
+The Trino translation layer in `trino/main.rego` defines a `trino.allow_custom` rule that defaults to `false`. This is a Trino-specific extension point for adding your own authorization rules without modifying the built-in policies. To use it, create an `allow_custom.rego` file in the `policies/trino/` directory with rules that set `allow_custom` to `true` for the Trino operations you want to allow.
+
+To use it, create `policies/trino/allow_custom.rego` in the `trino` package and define `allow_custom` rules for the Trino operations you need. Custom rules bypass Lakekeeper's permission system, so review them carefully.
+
 ## Context Forwarding
 The OPA bridge forwards resource names to Lakekeeper's batch-check API for create actions. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created:
 
