@@ -47,15 +47,13 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 | <nobr>`TRINO_ALLOW_UNMANAGED_CATALOGS`</nobr> | `true`  | Allow access to catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false` |
 
 ### Admin Users
-Admin users can be configured in the `trino_admin_users` list in `configuration.rego`. Admin users get full access to all system schemas and tables across all catalogs (including `system.metadata`, `system.runtime`, etc.) and can view queries owned by any user (`FilterViewQueryOwnedBy`, `ViewQueryOwnedBy`). Non-admin users can only view their own queries.
+Admin users get full access to Trino system schemas and tables across all catalogs (including `system.metadata`, `system.runtime`, etc.) and can view queries owned by any user (`FilterViewQueryOwnedBy`, `ViewQueryOwnedBy`). Non-admin users can only view their own queries. Note that this only affects Trino-level authorization — access to data in Lakekeeper-managed catalogs is still governed by Lakekeeper's own authorization.
 
-```rego
-trino_admin_users := [
-    "admin-user-uuid-here",
-]
-```
+| Variable                                  | Example                          | Description |
+|-------------------------------------------|----------------------------------|-----|
+| <nobr>`TRINO_ADMIN_USERS`</nobr>         | <nobr>`user-id-1,user-id-2`</nobr> | Comma-separated list of Trino user IDs (typically OIDC subject identifiers) that receive admin access. Default: empty (no admins). |
 
-Specify Trino user IDs, which are typically OIDC subject identifiers (UUIDs).
+Admin users can also be configured directly in the `trino_admin_users` list in `configuration.rego`.
 
 ### Trino Configuration
 When OPA is running and configured, set the following configurations for trino in `access-control.properties`:
