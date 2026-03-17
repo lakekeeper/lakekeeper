@@ -14,8 +14,8 @@ env := opa.runtime().env
 # - id: Id of this lakekeeper instance.
 #       Has no relevance except as an internal OPA identifier.
 #       Used to reference this instance in the `trino_catalog` configuration below.
-# - lakekeeper_url: The URL where OPA can reach the Lakekeeper instance.
-# - idp_token_endpoint: The URL of the token endpoint of the identity provider.
+# - url: The URL where OPA can reach the Lakekeeper instance.
+# - openid_token_endpoint: The URL of the token endpoint of the identity provider.
 #       Example: http://localhost:30080/realms/iceberg/protocol/openid-connect/token
 # - client_id: The client ID used for authentication with the IdP (Client Credentials Flow)
 # - client_secret: The client secret used for authentication with the IdP (Client Credentials Flow)
