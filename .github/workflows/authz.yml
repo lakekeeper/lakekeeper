@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: authz/opa-bridge/policies
+        working-directory: authz/opa-bridge
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -66,13 +66,13 @@ jobs:
         uses: styrainc/setup-regal@33a142b1189004e0f14bf42b15972c67eecce776 # v1.0.0
 
       - name: OPA Check (strict)
-        run: opa check --strict .
+        run: opa check --strict policies/
 
       - name: OPA Format Check
-        run: opa fmt --diff --fail .
+        run: opa fmt --diff --fail policies/ tests/
 
       - name: OPA Test
-        run: opa test . -v
+        run: opa test policies/ tests/ -v
 
       - name: Regal Lint
-        run: regal lint .
+        run: regal lint policies/
