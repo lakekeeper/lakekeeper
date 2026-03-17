@@ -48,3 +48,30 @@ jobs:
           DESIRED_SCHEMA_JSON=$(fga model transform --file $BASE_PATH/$LAST_VERSION/fga.mod)
           CURRENT_SCHEMA_JSON=$(cat $BASE_PATH/$LAST_VERSION/schema.json)
           echo $DESIRED_SCHEMA_JSON | jq -e '. == '"$CURRENT_SCHEMA_JSON" > /dev/null || { echo "Schema json is not up-to-date"; exit 1; }
+
+  opa-bridge:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: authz/opa-bridge/policies
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: 1.10.1
+
+      - name: Setup Regal
+        uses: styrainc/setup-regal@v2
+        with:
+          version: latest
+
+      - name: OPA Check (strict)
+        run: opa check --strict .
+
+      - name: OPA Format Check
+        run: opa fmt --diff --fail .
+
+      - name: Regal Lint
+        run: regal lint .
