@@ -71,5 +71,8 @@ jobs:
       - name: OPA Format Check
         run: opa fmt --diff --fail .
 
+      - name: OPA Test
+        run: opa test . -v
+
       - name: Regal Lint
         run: regal lint .

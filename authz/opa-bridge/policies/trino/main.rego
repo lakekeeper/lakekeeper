@@ -72,7 +72,7 @@ batch contains i if {
 	raw_resource := input.action.filterResources[0]
 	count(raw_resource.table.columns) > 0
 	new_resources := [
-	object.union(raw_resource, {"table": {"column": column_name}}) |
+	object.union(raw_resource, {"table": object.union(raw_resource.table, {"column": column_name})}) |
 		some column_name in raw_resource.table.columns
 	]
 	some i, resource in new_resources

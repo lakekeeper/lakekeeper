@@ -69,6 +69,7 @@ test-openfga:
 check-opa:
     cd authz/opa-bridge/policies && opa check --strict .
     cd authz/opa-bridge/policies && opa fmt --diff --fail .
+    cd authz/opa-bridge/policies && opa test . -v
     cd authz/opa-bridge/policies && regal lint .
 
 update-management-openapi:
