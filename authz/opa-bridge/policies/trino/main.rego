@@ -2,6 +2,8 @@ package trino
 
 import data.configuration
 
+# METADATA
+# entrypoint: true
 default allow := false
 
 # Allow if catalog is not present

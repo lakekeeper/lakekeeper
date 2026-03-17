@@ -66,6 +66,11 @@ test-openfga:
     LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1); \
     fga model test --tests $BASE_PATH/$LAST_VERSION/store.fga.yaml'
 
+check-opa:
+    cd authz/opa-bridge/policies && opa check --strict .
+    cd authz/opa-bridge/policies && opa fmt --diff --fail .
+    cd authz/opa-bridge/policies && regal lint .
+
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run --features open-api management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml
