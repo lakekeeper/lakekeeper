@@ -13,7 +13,7 @@ pub use crate::service::{
     WarehouseStatus,
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
-        S3Profile, StorageCredential, StorageProfile,
+        S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
     },
 };
 use crate::{
@@ -249,6 +249,10 @@ pub struct GetWarehouseResponse {
     pub project_id: ArcProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
+    /// The type of storage credential configured for this warehouse, if any.
+    /// Does not contain secret values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_credential_type: Option<StorageCredentialType>,
     /// Delete profile used for the warehouse.
     pub delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is active.
@@ -436,9 +440,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         event_ctx.emit_warehouse_created(resolved_warehouse.clone());
 
-        Ok(CreateWarehouseResponse(
-            (*resolved_warehouse).clone().into(),
-        ))
+        let credential_type =
+            resolve_credential_type(&resolved_warehouse, &context.v1_state.secrets).await;
+        let response =
+            GetWarehouseResponse::from_resolved((*resolved_warehouse).clone(), credential_type);
+        Ok(CreateWarehouseResponse(response))
     }
 
     async fn list_warehouses(
@@ -474,7 +480,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
 
-        let warehouses = authorizer
+        let allowed_warehouses: Vec<_> = authorizer
             .are_allowed_warehouse_actions_vec(
                 event_ctx.request_metadata(),
                 None,
@@ -488,12 +494,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into_inner()
             .into_iter()
             .zip(warehouses)
-            .filter_map(|(allowed, warehouse)| {
-                if allowed {
-                    Some((*warehouse).clone().into())
-                } else {
-                    None
-                }
+            .filter_map(|(allowed, warehouse)| if allowed { Some(warehouse) } else { None })
+            .collect();
+
+        let credential_types = futures::future::join_all(
+            allowed_warehouses
+                .iter()
+                .map(|w| resolve_credential_type(w, &context.v1_state.secrets)),
+        )
+        .await;
+        let warehouses: Vec<GetWarehouseResponse> = allowed_warehouses
+            .into_iter()
+            .zip(credential_types)
+            .map(|(warehouse, credential_type)| {
+                GetWarehouseResponse::from_resolved((*warehouse).clone(), credential_type)
             })
             .collect();
 
@@ -530,7 +544,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
         let (_event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
-        Ok((*warehouse).clone().into())
+        let credential_type = resolve_credential_type(&warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn get_warehouse_statistics(
@@ -716,7 +734,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
-        Ok((*updated_warehouse).clone().into())
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn update_warehouse_delete_profile(
@@ -761,7 +784,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
 
-        Ok((*updated_warehouse).clone().into())
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn deactivate_warehouse(
@@ -951,7 +979,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .ok();
         }
 
-        Ok((*updated_warehouse).clone().into())
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn update_storage_credential(
@@ -1044,7 +1077,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .ok();
         }
 
-        Ok((*updated_warehouse).clone().into())
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn undrop_tabulars(
@@ -1402,18 +1440,45 @@ impl axum::response::IntoResponse for GetWarehouseResponse {
     }
 }
 
-impl From<crate::service::ResolvedWarehouse> for GetWarehouseResponse {
-    fn from(warehouse: crate::service::ResolvedWarehouse) -> Self {
+impl GetWarehouseResponse {
+    fn from_resolved(
+        warehouse: crate::service::ResolvedWarehouse,
+        storage_credential_type: Option<StorageCredentialType>,
+    ) -> Self {
         Self {
             warehouse_id: warehouse.warehouse_id,
             id: warehouse.warehouse_id,
             name: warehouse.name,
             project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,
+            storage_credential_type,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
             updated_at: warehouse.updated_at,
+        }
+    }
+}
+
+/// Resolves the credential type for a warehouse by looking up the secret.
+/// Returns `None` if the warehouse has no storage secret configured, or if the
+/// secret lookup fails. Failures are logged as warnings rather than propagated
+/// so that warehouses with broken credentials can still be loaded and fixed via
+/// the UI.
+async fn resolve_credential_type<S: SecretStore>(
+    warehouse: &crate::service::ResolvedWarehouse,
+    secrets: &S,
+) -> Option<StorageCredentialType> {
+    let secret_id = warehouse.storage_secret_id?;
+    match secrets.require_storage_secret_by_id(secret_id).await {
+        Ok(secret) => Some(secret.secret.credential_type()),
+        Err(e) => {
+            tracing::warn!(
+                error=?e.error,
+                ?secret_id,
+                "Failed to resolve storage credential type for warehouse"
+            );
+            None
         }
     }
 }

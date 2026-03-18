@@ -1002,6 +1002,77 @@ pub enum StorageCredential {
     Gcs(GcsCredential),
 }
 
+/// The type of storage credential configured for a warehouse, without secret values.
+///
+/// This is returned in API responses so clients know which credential type
+/// was selected (e.g. to restore radio button state in the UI).
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", content = "credential-type", rename_all = "kebab-case")]
+pub enum StorageCredentialType {
+    /// S3 credential type
+    #[serde(rename = "s3")]
+    S3(S3CredentialType),
+    /// Azure credential type
+    #[serde(rename = "az")]
+    Az(AzCredentialType),
+    /// GCS credential type
+    #[serde(rename = "gcs")]
+    Gcs(GcsCredentialType),
+}
+
+/// The type of S3 credential.
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum S3CredentialType {
+    AccessKey,
+    AwsSystemIdentity,
+    CloudflareR2,
+}
+
+/// The type of Azure credential.
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum AzCredentialType {
+    ClientCredentials,
+    SharedAccessKey,
+    AzureSystemIdentity,
+}
+
+/// The type of GCS credential.
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum GcsCredentialType {
+    ServiceAccountKey,
+    GcpSystemIdentity,
+}
+
+impl StorageCredential {
+    /// Returns the credential type discriminant without secret values.
+    #[must_use]
+    pub fn credential_type(&self) -> StorageCredentialType {
+        match self {
+            StorageCredential::S3(s3) => StorageCredentialType::S3(match s3 {
+                S3Credential::AccessKey(_) => S3CredentialType::AccessKey,
+                S3Credential::AwsSystemIdentity(_) => S3CredentialType::AwsSystemIdentity,
+                S3Credential::CloudflareR2(_) => S3CredentialType::CloudflareR2,
+            }),
+            StorageCredential::Az(az) => StorageCredentialType::Az(match az {
+                AzCredential::ClientCredentials { .. } => AzCredentialType::ClientCredentials,
+                AzCredential::SharedAccessKey { .. } => AzCredentialType::SharedAccessKey,
+                AzCredential::AzureSystemIdentity {} => AzCredentialType::AzureSystemIdentity,
+            }),
+            StorageCredential::Gcs(gcs) => StorageCredentialType::Gcs(match gcs {
+                GcsCredential::ServiceAccountKey { .. } => GcsCredentialType::ServiceAccountKey,
+                GcsCredential::GcpSystemIdentity {} => GcsCredentialType::GcpSystemIdentity,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Hash, Copy, Clone, PartialEq, derive_more::From)]
 enum StorageCredentialBorrowed<'a> {
     S3(&'a S3Credential),
