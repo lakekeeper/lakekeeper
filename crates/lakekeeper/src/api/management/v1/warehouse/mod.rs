@@ -249,8 +249,10 @@ pub struct GetWarehouseResponse {
     pub project_id: ArcProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
-    /// The type of storage credential configured for this warehouse, if any.
-    /// Does not contain secret values.
+    /// Best-effort indicator of the storage credential type. When present it
+    /// reflects the detected credential kind; when absent the warehouse may
+    /// either have no credential configured or the secret lookup may have
+    /// failed. Does not contain secret values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credential_type: Option<StorageCredentialType>,
     /// Delete profile used for the warehouse.

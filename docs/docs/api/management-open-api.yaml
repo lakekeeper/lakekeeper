@@ -4861,8 +4861,10 @@ components:
             - type: 'null'
             - $ref: '#/components/schemas/StorageCredentialType'
               description: |-
-                The type of storage credential configured for this warehouse, if any.
-                Does not contain secret values.
+                Best-effort indicator of the storage credential type. When present it
+                reflects the detected credential kind; when absent the warehouse may
+                either have no credential configured or the secret lookup may have
+                failed. Does not contain secret values.
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile used for the warehouse.
