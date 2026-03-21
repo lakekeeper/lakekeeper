@@ -402,6 +402,17 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
+### Idempotency
+
+Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) specification. When enabled, clients can send an `Idempotency-Key` header on mutation requests to guarantee at-most-once execution. The server advertises support via the `idempotency-key-lifetime` field in the `GET /v1/config` response.
+
+| Variable | Example | Description |
+|---|---|---|
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__ENABLED`</nobr> | `true` | Enable idempotency key support. When enabled, `idempotency-key-lifetime` is advertised in `getConfig`. Default: `true` |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__LIFETIME`</nobr> | `PT30M` | How long idempotency records are kept, in ISO-8601 duration format. This value is advertised to clients. Default: `PT30M` (30 minutes) |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__GRACE_PERIOD`</nobr> | `PT5M` | Grace period added on top of lifetime for clock skew and transit delays, in ISO-8601 duration format. Default: `PT5M` (5 minutes) |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__CLEANUP_TIMEOUT`</nobr> | `PT30S` | Maximum time a background cleanup task may run before being considered dead. If exceeded, the next attempt takes over. Default: `PT30S` (30 seconds) |
+
 ### Audit Logging
 
 Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Audit Logging Guide](./audit-logging.md).

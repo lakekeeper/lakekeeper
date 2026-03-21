@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    DELETE FROM ONLY idempotency_record\n                    WHERE ctid IN (\n                        SELECT ctid FROM idempotency_record\n                        WHERE created_at < $1\n                        LIMIT 1000\n                    )\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "379138af823458ee54aca09bc2fe8115eff3a03c39ec6ce888dfd398f01e86c5"
+}
