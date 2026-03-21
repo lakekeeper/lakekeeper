@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
+use http::StatusCode;
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::RenameTableRequest;
+use iceberg_ext::catalog::rest::{ErrorModel, RenameTableRequest};
 
 use crate::{
     WarehouseId,
-    api::{ApiContext, iceberg::types::Prefix},
+    api::{ApiContext, endpoints::EndpointFlat, iceberg::types::Prefix},
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result, SecretStore, State,
-        TabularId, TabularListFlags, Transaction, ViewInfo,
+        AuthZViewInfo as _, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result,
+        SecretStore, State, TabularId, TabularListFlags, Transaction, ViewInfo,
         authz::{
             AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogNamespaceAction, CatalogViewAction, RequireViewActionError,
@@ -19,6 +20,7 @@ use crate::{
         },
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedView},
+        idempotency::IdempotencyInfo,
     },
 };
 
@@ -30,17 +32,24 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let RenameTableRequest {
-        source,
-        destination,
-    } = &request;
+    let source = &request.source;
+    let destination = &request.destination;
     validate_table_or_view_ident(source)?;
     validate_table_or_view_ident(destination)?;
+    let source = source.clone();
+    let destination = destination.clone();
 
-    // ------------------- AUTHZ -------------------
-    // Authorization is required for:
-    // 1) creating a view in the destination namespace
-    // 2) renaming the old view
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            return Ok(());
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
 
     let event_ctx = APIEventContext::for_view(
@@ -54,8 +63,8 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let authz_result = authorize_rename_view::<C, _>(
         event_ctx.request_metadata(),
         warehouse_id,
-        source,
-        destination,
+        &source,
+        &destination,
         &authorizer,
         state.v1_state.catalog.clone(),
     )
@@ -84,18 +93,38 @@ pub(crate) async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     C::rename_tabular(
         warehouse_id,
         source_id,
-        source,
-        destination,
+        &source,
+        &destination,
         t.transaction(),
     )
     .await?;
     state
         .v1_state
         .contract_verifiers
-        .check_rename(TabularId::View(source_id), destination)
+        .check_rename(TabularId::View(source_id), &destination)
         .await?
         .into_result()?;
 
+    if let Some(ref key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1RenameView)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
     t.commit().await?;
 
     event_ctx.emit_view_renamed_async(destination_namespace.namespace, Arc::new(request));

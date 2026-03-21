@@ -69,7 +69,9 @@ mod role;
 pub use role::*;
 mod role_assignment;
 pub use role_assignment::*;
+mod idempotency;
 pub(crate) mod role_assignments_cache;
+pub use idempotency::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -732,4 +734,20 @@ where
         retention_period: Duration,
         project_id: &ProjectId,
     ) -> Result<()>;
+
+    // ---------------- Idempotency ----------------
+    /// Check if an idempotency key exists (SELECT on write pool).
+    async fn check_idempotency_key_impl(
+        warehouse_id: WarehouseId,
+        key: &crate::service::idempotency::IdempotencyKey,
+        state: Self::State,
+    ) -> Result<crate::service::idempotency::IdempotencyCheck>;
+
+    /// Insert an idempotency key inside a transaction (INSERT ... ON CONFLICT DO NOTHING).
+    /// Returns `true` if inserted, `false` if conflict.
+    async fn try_insert_idempotency_key_impl<'a>(
+        warehouse_id: WarehouseId,
+        info: &crate::service::idempotency::IdempotencyInfo,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<bool>;
 }
