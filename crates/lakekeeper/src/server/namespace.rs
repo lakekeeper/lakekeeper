@@ -546,9 +546,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await?;
         } else {
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
-            authorizer
-                .delete_namespace(&request_metadata, namespace_id)
-                .await?;
             if let Some(ref key) = idempotency_key
                 && !C::try_insert_idempotency_key(
                     warehouse_id,
@@ -570,6 +567,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 return Err(ErrorModel::request_in_progress().into());
             }
             t.commit().await?;
+            authorizer
+                .delete_namespace(&request_metadata, namespace_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
+                })
+                .ok();
         }
 
         event_ctx.emit_namespace_dropped_async();

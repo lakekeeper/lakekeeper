@@ -96,13 +96,14 @@ pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 /// return a `LoadTableResult` (e.g. `createTable`, `registerTable`).
 async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
+    data_access: DataAccessMode,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     operation_name: &str,
 ) -> Result<LoadTableResult> {
     let load_result = load_table::load_table::<C, A, S>(
         parameters,
-        LoadTableRequest::default(),
+        LoadTableRequest::builder().data_access(data_access).build(),
         state,
         request_metadata,
     )
@@ -137,8 +138,15 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<CommitTableResponse> {
-    let r =
-        replay_load_table::<C, A, S>(parameters, state, request_metadata, "updateTable").await?;
+    // CommitTableResponse doesn't include storage credentials, so default access mode is fine.
+    let r = replay_load_table::<C, A, S>(
+        parameters,
+        DataAccessMode::default(),
+        state,
+        request_metadata,
+        "updateTable",
+    )
+    .await?;
     let metadata_location = r.metadata_location.ok_or_else(|| {
         ErrorModel::internal(
             "Missing metadata_location during idempotency replay",
@@ -278,6 +286,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 };
                 return replay_load_table::<C, A, S>(
                     load_params,
+                    DataAccessMode::default(),
                     state,
                     request_metadata,
                     "registerTable",
@@ -790,35 +799,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
                     tracing::debug!("Queued purge task for dropped table '{table_id}'.");
                 }
-                // Insert idempotency key in the same transaction.
-                if let Some(ref key) = idempotency_key
-                    && !C::try_insert_idempotency_key(
-                        warehouse_id,
-                        &IdempotencyInfo::builder()
-                            .key(*key)
-                            .endpoint(EndpointFlat::CatalogV1DropTable)
-                            .http_status(StatusCode::NO_CONTENT)
-                            .build(),
-                        t.transaction(),
-                    )
-                    .await?
-                {
-                    t.rollback()
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                        })
-                        .ok();
-                    return Err(ErrorModel::request_in_progress().into());
-                }
-                t.commit().await?;
-                authorizer
-                    .delete_table(warehouse_id, table_id)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
-                    })
-                    .ok();
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
@@ -852,29 +832,41 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
 
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
-                // Insert idempotency key in the same transaction.
-                if let Some(ref key) = idempotency_key
-                    && !C::try_insert_idempotency_key(
-                        warehouse_id,
-                        &IdempotencyInfo::builder()
-                            .key(*key)
-                            .endpoint(EndpointFlat::CatalogV1DropTable)
-                            .http_status(StatusCode::NO_CONTENT)
-                            .build(),
-                        t.transaction(),
-                    )
-                    .await?
-                {
-                    t.rollback()
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                        })
-                        .ok();
-                    return Err(ErrorModel::request_in_progress().into());
-                }
-                t.commit().await?;
             }
+        }
+
+        // Insert idempotency key and commit — shared across both delete profiles.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1DropTable)
+                    .http_status(StatusCode::NO_CONTENT)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+        t.commit().await?;
+
+        // Post-commit: best-effort authz cleanup for hard deletes
+        if matches!(delete_profile, TabularDeleteProfile::Hard {}) {
+            authorizer
+                .delete_table(warehouse_id, table_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
+                })
+                .ok();
         }
 
         event_ctx.emit_table_dropped_async(DropParams {

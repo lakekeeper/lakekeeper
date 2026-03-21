@@ -26,9 +26,18 @@ impl IdempotencyKey {
     /// Returns `Ok(Some(key))` if the header is present and a valid UUID.
     /// Returns `Err` (400) if the header is present but not a valid UUID.
     pub fn from_headers(headers: &HeaderMap) -> Result<Option<Self>, IcebergErrorResponse> {
-        let Some(value) = headers.get(IDEMPOTENCY_KEY_HEADER) else {
+        let mut values = headers.get_all(IDEMPOTENCY_KEY_HEADER).iter();
+        let Some(value) = values.next() else {
             return Ok(None);
         };
+        if values.next().is_some() {
+            return Err(ErrorModel::bad_request(
+                "Multiple Idempotency-Key headers are not allowed",
+                "DuplicateIdempotencyKey",
+                None,
+            )
+            .into());
+        }
 
         let value_str = value.to_str().map_err(|_| {
             ErrorModel::bad_request(
@@ -165,6 +174,24 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.error.code, 400);
+    }
+
+    #[test]
+    fn from_headers_duplicate_keys_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_static("550e8400-e29b-41d4-a716-446655440000"),
+        );
+        headers.append(
+            IDEMPOTENCY_KEY_HEADER,
+            HeaderValue::from_static("660e8400-e29b-41d4-a716-446655440000"),
+        );
+        let result = IdempotencyKey::from_headers(&headers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.error.code, 400);
+        assert!(err.error.message.contains("Multiple"));
     }
 
     #[test]

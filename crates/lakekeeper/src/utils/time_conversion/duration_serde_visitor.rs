@@ -190,4 +190,10 @@ mod test {
         let result = StdDurationVisitor.visit_str::<Error>("P1MT2H");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_std_duration_visitor_returns_error_if_negative() {
+        let result = StdDurationVisitor.visit_str::<Error>("-P1D");
+        assert!(result.is_err());
+    }
 }

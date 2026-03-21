@@ -118,35 +118,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                     event_ctx.resolved().view.view_ident()
                 );
             }
-            if let Some(ref key) = idempotency_key
-                && !C::try_insert_idempotency_key(
-                    warehouse_id,
-                    &IdempotencyInfo::builder()
-                        .key(*key)
-                        .endpoint(EndpointFlat::CatalogV1DropView)
-                        .http_status(StatusCode::NO_CONTENT)
-                        .build(),
-                    t.transaction(),
-                )
-                .await?
-            {
-                t.rollback()
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                    })
-                    .ok();
-                return Err(ErrorModel::request_in_progress().into());
-            }
-            t.commit().await?;
-
-            authorizer
-                .delete_view(warehouse_id, view_id)
-                .await
-                .inspect_err(|e| {
-                    tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
-                })
-                .ok();
+            // authorizer cleanup happens after commit (below)
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
@@ -182,28 +154,44 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                 "Queued expiration task for dropped view '{}' with id '{view_id}' in warehouse {warehouse_id}.",
                 event_ctx.resolved().view.view_ident()
             );
-            if let Some(ref key) = idempotency_key
-                && !C::try_insert_idempotency_key(
-                    warehouse_id,
-                    &IdempotencyInfo::builder()
-                        .key(*key)
-                        .endpoint(EndpointFlat::CatalogV1DropView)
-                        .http_status(StatusCode::NO_CONTENT)
-                        .build(),
-                    t.transaction(),
-                )
-                .await?
-            {
-                t.rollback()
-                    .await
-                    .inspect_err(|e| {
-                        tracing::warn!("Rollback failed after idempotency conflict: {e}");
-                    })
-                    .ok();
-                return Err(ErrorModel::request_in_progress().into());
-            }
-            t.commit().await?;
         }
+    }
+
+    // Insert idempotency key and commit — shared across both delete profiles.
+    if let Some(ref key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1DropView)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
+    t.commit().await?;
+
+    // Post-commit: best-effort authz cleanup for hard deletes
+    if matches!(
+        warehouse.tabular_delete_profile,
+        TabularDeleteProfile::Hard {}
+    ) {
+        authorizer
+            .delete_view(warehouse_id, view_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
+            })
+            .ok();
     }
 
     event_ctx.emit_view_dropped_async(DropParams {

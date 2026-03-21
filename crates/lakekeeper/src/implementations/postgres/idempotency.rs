@@ -22,8 +22,8 @@ fn current_epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Try to claim the cleanup slot. Returns `true` if we won.
-fn try_claim_cleanup() -> bool {
+/// Try to claim the cleanup slot. Returns the claimed timestamp if we won.
+fn try_claim_cleanup() -> Option<u64> {
     let now = current_epoch_secs();
     let prev = CLEANUP_STARTED_AT.load(Ordering::Relaxed);
     let timeout_secs = crate::CONFIG.idempotency.cleanup_timeout.as_secs();
@@ -31,14 +31,18 @@ fn try_claim_cleanup() -> bool {
     if prev == 0 || now.saturating_sub(prev) > timeout_secs {
         CLEANUP_STARTED_AT
             .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
+            .ok()
+            .map(|_| now)
     } else {
-        false
+        None
     }
 }
 
-fn release_cleanup() {
-    CLEANUP_STARTED_AT.store(0, Ordering::Relaxed);
+/// Release the cleanup slot, but only if we still own it.
+/// A newer takeover (after timeout) must not be clobbered.
+fn release_cleanup(claimed_at: u64) {
+    let _ =
+        CLEANUP_STARTED_AT.compare_exchange(claimed_at, 0, Ordering::Relaxed, Ordering::Relaxed);
 }
 
 impl PostgresBackend {
@@ -74,9 +78,9 @@ impl PostgresBackend {
         if fastrand::f32() < 0.01 {
             let pool = state.write_pool();
             tokio::spawn(async move {
-                if !try_claim_cleanup() {
+                let Some(claimed_at) = try_claim_cleanup() else {
                     return; // Another cleanup is already running
-                }
+                };
 
                 let max_age = crate::CONFIG.idempotency.total_retention();
                 let cutoff = chrono::Utc::now()
@@ -110,7 +114,7 @@ impl PostgresBackend {
                         tracing::warn!(error = %e, "Failed to clean up idempotency records");
                     }
                 }
-                release_cleanup();
+                release_cleanup(claimed_at);
             });
         }
 

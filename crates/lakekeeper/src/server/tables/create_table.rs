@@ -130,6 +130,7 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
             };
             return super::replay_load_table::<C, A, S>(
                 load_params,
+                data_access.into(),
                 state,
                 request_metadata,
                 "createTable",
@@ -374,9 +375,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
                 tracing::warn!("Rollback failed after idempotency conflict: {e}");
             })
             .ok();
-        return Err(
-            ErrorModel::conflict("Table already exists", "TableAlreadyExists", None).into(),
-        );
+        return Err(ErrorModel::request_in_progress().into());
     }
 
     // Commit transaction
