@@ -1483,8 +1483,10 @@ async fn resolve_credential_type<S: SecretStore>(
         Ok(secret) => Some(secret.secret.credential_type()),
         Err(e) => {
             tracing::warn!(
-                error=?e.error,
-                ?secret_id,
+                error=e.error.message,
+                secret_id=?secret_id,
+                warehouse_id = %warehouse.warehouse_id,
+                warehouse_name = %warehouse.name,
                 "Failed to resolve storage credential type for warehouse"
             );
             None
