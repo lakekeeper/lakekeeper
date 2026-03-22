@@ -36,23 +36,28 @@ _lakekeeper_batch_allowed[catalog_name] := allowed_indices if {
 	trino_catalog := catalog_config_by_name[catalog_name]
 	warehouse_id := lakekeeper.warehouse_id_for_name(trino_catalog.lakekeeper_id, trino_catalog.lakekeeper_warehouse)
 
-	checks := [check |
-		some i in _lakekeeper_batch_table_indices
-		raw_resource := input.action.filterResources[i]
+	# Build an ordered list of (index, resource) from the input array (deterministic order).
+	# Sets are unordered in Rego, so we iterate the array directly to guarantee
+	# that checks and ordered_indices are aligned.
+	catalog_resources := [{"idx": i, "res": raw_resource} |
+		some i, raw_resource in input.action.filterResources
+		i in _lakekeeper_batch_table_indices
 		raw_resource.table.catalogName == catalog_name
-		namespace := namespace_for_schema(raw_resource.table.schemaName)
+	]
+
+	checks := [check |
+		some entry in catalog_resources
+		namespace := namespace_for_schema(entry.res.table.schemaName)
 		some check in [
-			lakekeeper.build_table_check(warehouse_id, namespace, raw_resource.table.tableName, lakekeeper_user_id, action),
-			lakekeeper.build_view_check(warehouse_id, namespace, raw_resource.table.tableName, lakekeeper_user_id, action),
+			lakekeeper.build_table_check(warehouse_id, namespace, entry.res.table.tableName, lakekeeper_user_id, action),
+			lakekeeper.build_view_check(warehouse_id, namespace, entry.res.table.tableName, lakekeeper_user_id, action),
 		]
 	]
 
 	count(checks) > 0
 
-	ordered_indices := [i |
-		some i in _lakekeeper_batch_table_indices
-		raw_resource := input.action.filterResources[i]
-		raw_resource.table.catalogName == catalog_name
+	ordered_indices := [entry.idx |
+		some entry in catalog_resources
 		some _ in [0, 1] # two checks per resource (table + view)
 	]
 
@@ -84,20 +89,22 @@ _lakekeeper_batch_schema_allowed[catalog_name] := allowed_indices if {
 	trino_catalog := catalog_config_by_name[catalog_name]
 	warehouse_id := lakekeeper.warehouse_id_for_name(trino_catalog.lakekeeper_id, trino_catalog.lakekeeper_warehouse)
 
-	checks := [check |
-		some i in _lakekeeper_batch_schema_indices
-		raw_resource := input.action.filterResources[i]
+	catalog_resources := [{"idx": i, "res": raw_resource} |
+		some i, raw_resource in input.action.filterResources
+		i in _lakekeeper_batch_schema_indices
 		raw_resource.schema.catalogName == catalog_name
-		namespace := namespace_for_schema(raw_resource.schema.schemaName)
+	]
+
+	checks := [check |
+		some entry in catalog_resources
+		namespace := namespace_for_schema(entry.res.schema.schemaName)
 		check := lakekeeper.build_namespace_check(warehouse_id, namespace, lakekeeper_user_id, "get_metadata")
 	]
 
 	count(checks) > 0
 
-	ordered_indices := [i |
-		some i in _lakekeeper_batch_schema_indices
-		raw_resource := input.action.filterResources[i]
-		raw_resource.schema.catalogName == catalog_name
+	ordered_indices := [entry.idx |
+		some entry in catalog_resources
 	]
 
 	results := lakekeeper.batch_check_results(trino_catalog.lakekeeper_id, checks)
@@ -118,4 +125,19 @@ batch contains i if {
 batch contains i if {
 	some catalog_name in _managed_catalog_names
 	some i in _lakekeeper_batch_schema_allowed[catalog_name]
+}
+
+# FilterColumns with a single table + columns array on a managed catalog:
+# Lakekeeper authorizes at table level, so we check the table once via the
+# batch path and return all column indices if allowed — no per-column evaluation.
+batch contains i if {
+	input.action.operation == "FilterColumns"
+	count(input.action.filterResources) == 1
+	raw_resource := input.action.filterResources[0]
+	count(raw_resource.table.columns) > 0
+	raw_resource.table.catalogName in _managed_catalog_names
+	not raw_resource.table.schemaName in lakekeeper_system_schemas
+	not is_metadata_table(raw_resource.table.tableName)
+	0 in _lakekeeper_batch_allowed[raw_resource.table.catalogName]
+	some i in numbers.range(0, count(raw_resource.table.columns) - 1)
 }

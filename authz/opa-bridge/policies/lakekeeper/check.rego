@@ -176,7 +176,8 @@ require_table_access_commit(
 # Returns a flat array of results in the same order as the input checks.
 batch_check_results(lakekeeper_id, checks) := all_results if {
 	count(checks) > 0
-	max_size := config_by_id[lakekeeper_id].max_batch_check_size
+	_raw_max := object.get(config_by_id[lakekeeper_id], "max_batch_check_size", 1000)
+	max_size := max([_raw_max, 1])
 	num_batches := ceil(count(checks) / max_size)
 	all_results := [result |
 		some batch_idx in numbers.range(0, num_batches - 1)

@@ -25,6 +25,7 @@ If configuration is done via environment variables, the following settings are a
 | <nobr>`LAKEKEEPER_CLIENT_ID`</nobr>      | `trino`                                                             | Client ID used by OPA to access Lakekeeper's permissions API. |
 | <nobr>`LAKEKEEPER_CLIENT_SECRET`</nobr>  | `abcd`                                                              | Client Secret for the Client ID. |
 | <nobr>`LAKEKEEPER_SCOPE`</nobr>          | `lakekeeper`                                                        | Scopes to request from the IdP. Defaults to `lakekeeper`. Please check the [Authentication Guide](./authentication.md) for setup. |
+| <nobr>`LAKEKEEPER_MAX_BATCH_CHECK_SIZE`</nobr> | `1000`                                                       | Maximum number of checks per `batch-check` HTTP request. Larger values mean fewer HTTP calls but more load on the authorization backend. Default: `1000` |
 
 ### Catalog Mapping
 All above mentioned configuration options refer to a specific Lakekeeper instance. What is missing is a mapping of trino catalogs to Lakekeeper warehouses. By default we support 4 catalogs in trino, but more can easily be added in the `configuration.rego`.
@@ -115,13 +116,15 @@ allow_unmanaged if {
 ```
 
 ## Batch Optimization
-For Trino filter operations (`FilterTables`, `FilterColumns`, `SelectFromColumns`, `FilterSchemas`), the OPA bridge optimizes authorization checks on Lakekeeper-managed catalogs by batching all resource checks into a single HTTP request to Lakekeeper's `batch-check` API, instead of making one HTTP call per resource.
+For Trino filter operations (`FilterTables`, `FilterColumns`, `SelectFromColumns`, `FilterSchemas`), the OPA bridge optimizes authorization checks on Lakekeeper-managed catalogs by batching resource checks into Lakekeeper `batch-check` HTTP requests, instead of making one HTTP call per resource.
 
 For table/column/select operations, each resource generates two checks (table + view) since Trino does not distinguish between tables and views in filter requests. A resource is allowed if either check passes. Schema filter operations generate one namespace check per resource.
 
-System schemas (`information_schema`, `schema_discovery`, `system`) within managed catalogs are excluded from the batch optimization and evaluated locally, as they don't require Lakekeeper authorization.
+When the number of checks exceeds the configured batch size, the bridge automatically splits them into multiple `batch-check` requests (chunking) and concatenates the results. The batch size can be configured per Lakekeeper instance via the `LAKEKEEPER_MAX_BATCH_CHECK_SIZE` environment variable or the `max_batch_check_size` field in `configuration.rego` (default: 1000, matching Lakekeeper's server limit). When using OpenFGA as the authorization backend, this value should be tuned to match the OpenFGA and Lakekeeper batch check settings to avoid overloading the authorization backend.
 
-This optimization is transparent — it produces the same results as per-resource evaluation but with significantly fewer HTTP round-trips to Lakekeeper.
+System schemas (`information_schema`, `schema_discovery`, `system`) and metadata tables (e.g., `foo$snapshots`) within managed catalogs are excluded from this batch optimization: they are not included in the `batch-check` request and are instead evaluated per-resource by the OPA policies. These per-resource evaluations may still trigger Lakekeeper calls (for example, catalog-level `get_config` checks), but they do not participate in the batched table/schema authorization request.
+
+This optimization is transparent — it produces the same results as per-resource evaluation but with significantly fewer HTTP round-trips to Lakekeeper for non-system resources.
 
 ## Context Forwarding
 The OPA bridge forwards resource names to Lakekeeper's batch-check API for create actions. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created:
