@@ -44,7 +44,7 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 
 | Variable                                       | Example | Description |
 |------------------------------------------------|---------|-----|
-| <nobr>`TRINO_ALLOW_UNMANAGED_CATALOGS`</nobr> | `true`  | Allow access to catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false` |
+| <nobr>`TRINO_ALLOW_UNMANAGED_CATALOGS`</nobr> | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
 
 ### Admin Users
 Admin users get full access to Trino system schemas and tables across all catalogs (including `system.metadata`, `system.runtime`, etc.) and can view queries owned by any user (`FilterViewQueryOwnedBy`, `ViewQueryOwnedBy`). Non-admin users can only view their own queries. Note that this only affects Trino-level authorization — access to data in Lakekeeper-managed catalogs is still governed by Lakekeeper's own authorization.
@@ -75,7 +75,7 @@ The following schemas in the trino `system` catalog are accessible to all authen
 |--------|----------------|-------------|
 | `jdbc` | all | Required by JDBC clients for metadata discovery. |
 | `information_schema` | `columns`, `schemata`, `tables`, `views` | Standard SQL metadata tables. |
-| `metadata` | `analyze_properties`, `catalogs`, `column_properties`, `schema_properties`, `table_comments`, `table_properties` | Catalog metadata. Tables like `*_authorization` are excluded for non-admins. |
+| `metadata` | `analyze_properties`, `catalogs`, `column_properties`, `materialized_views`, `schema_properties`, `table_comments`, `table_properties` | Catalog metadata. Tables like `*_authorization` are excluded for non-admins. |
 | `runtime` | `queries` | Query monitoring. Non-admins can only see their own queries. |
 
 Admin users have unrestricted access to all tables in all system schemas.
@@ -91,10 +91,37 @@ Within Lakekeeper-managed catalogs, the following schemas are treated as system 
 
 User-created schemas are authorized through Lakekeeper's permission system as usual.
 
-## Trino Custom Rules Extension Point
-The Trino translation layer in `trino/main.rego` defines a `trino.allow_custom` rule that defaults to `false`. This is a Trino-specific extension point for adding your own authorization rules without modifying the built-in policies. To use it, create an `allow_custom.rego` file in the `policies/trino/` directory with rules that set `allow_custom` to `true` for the Trino operations you want to allow.
+## Extension Points
+The OPA bridge provides two extension points for adding custom authorization rules without modifying the built-in policies. Both default to `false` and can be extended by creating `.rego` files in the `policies/trino/` directory.
 
-To use it, create `policies/trino/allow_custom.rego` in the `trino` package and define `allow_custom` rules for the Trino operations you need. Custom rules bypass Lakekeeper's permission system, so review them carefully.
+### `allow_managed` — Managed Catalog Extensions
+Use `allow_managed` for additional rules on catalogs listed in `trino_catalog`. These rules run alongside Lakekeeper's permission checks (OR logic). For example, granting UDF management permissions on a Lakekeeper-managed catalog.
+
+To use it, create `policies/trino/allow_managed.rego` in the `trino` package and define `allow_managed` rules for the Trino operations you need. These rules bypass Lakekeeper's permission system, so review them carefully.
+
+### `allow_unmanaged` — Unmanaged Catalog Extensions
+Use `allow_unmanaged` for catalogs **not** listed in `trino_catalog` (e.g., external database catalogs like PostgreSQL or Exasol). These rules are evaluated on a fast path that never triggers Lakekeeper HTTP calls, including in batch operations.
+
+For a simple blanket allow, set `TRINO_ALLOW_UNMANAGED_CATALOGS=true` (see above). For fine-grained control, create `policies/trino/allow_unmanaged.rego` in the `trino` package. For example, to grant read-only access to a specific external catalog for certain users:
+
+```rego
+package trino
+
+allow_unmanaged if {
+    input.action.operation in ["AccessCatalog", "FilterCatalogs", "ShowSchemas",
+        "FilterSchemas", "SelectFromColumns", "FilterTables", "FilterColumns"]
+    input.action.resource.catalog.name == "my_external_catalog"
+}
+```
+
+## Batch Optimization
+For Trino filter operations (`FilterTables`, `FilterColumns`, `SelectFromColumns`, `FilterSchemas`), the OPA bridge optimizes authorization checks on Lakekeeper-managed catalogs by batching all resource checks into a single HTTP request to Lakekeeper's `batch-check` API, instead of making one HTTP call per resource.
+
+For table/column/select operations, each resource generates two checks (table + view) since Trino does not distinguish between tables and views in filter requests. A resource is allowed if either check passes. Schema filter operations generate one namespace check per resource.
+
+System schemas (`information_schema`, `schema_discovery`, `system`) within managed catalogs are excluded from the batch optimization and evaluated locally, as they don't require Lakekeeper authorization.
+
+This optimization is transparent — it produces the same results as per-resource evaluation but with significantly fewer HTTP round-trips to Lakekeeper.
 
 ## Context Forwarding
 The OPA bridge forwards resource names to Lakekeeper's batch-check API for create actions. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created:

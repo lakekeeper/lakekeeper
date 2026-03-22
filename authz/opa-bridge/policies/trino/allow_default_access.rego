@@ -18,6 +18,7 @@ allowed_metadata_tables := [
 	"analyze_properties",
 	"catalogs",
 	"column_properties",
+	"materialized_views",
 	"schema_properties",
 	"table_comments",
 	"table_properties",

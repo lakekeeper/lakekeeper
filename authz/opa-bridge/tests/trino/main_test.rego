@@ -6,7 +6,15 @@ import data.trino
 
 mock_context := {"identity": {"user": "test-user", "groups": []}, "softwareStack": {"trinoVersion": "467"}}
 
-# --- batch: FilterCatalogs ---
+mock_trino_catalog := [{
+	"name": "managed",
+	"lakekeeper_id": "default",
+	"lakekeeper_warehouse": "test-warehouse",
+}]
+
+# ===================================================================
+# System catalog batch routing (no Lakekeeper calls)
+# ===================================================================
 
 test_batch_filter_catalogs_includes_system if {
 	result := trino.batch with input as {
@@ -20,14 +28,9 @@ test_batch_filter_catalogs_includes_system if {
 		},
 	}
 
-	# Index 0 (system) should be in the result
 	0 in result
-
-	# Index 1 (unknown) should not — unmanaged catalogs are off by default
 	not 1 in result
 }
-
-# --- batch: FilterColumns on system.jdbc ---
 
 test_batch_filter_columns_system_jdbc if {
 	result := trino.batch with input as {
@@ -43,11 +46,8 @@ test_batch_filter_columns_system_jdbc if {
 		},
 	}
 
-	# All three columns should be allowed
 	result == {0, 1, 2}
 }
-
-# --- batch: FilterColumns preserves table properties (deep merge test) ---
 
 test_batch_filter_columns_preserves_table_fields if {
 	result := trino.batch with input as {
@@ -63,12 +63,8 @@ test_batch_filter_columns_preserves_table_fields if {
 		},
 	}
 
-	# The column should be allowed — this only works if catalogName/schemaName/tableName
-	# survive the object.union (deep merge)
 	0 in result
 }
-
-# --- batch: FilterColumns denied for unknown table ---
 
 test_batch_filter_columns_denied_for_unknown_table if {
 	result := trino.batch with input as {
@@ -86,8 +82,6 @@ test_batch_filter_columns_denied_for_unknown_table if {
 	count(result) == 0
 }
 
-# --- batch: regular filterResources (non-FilterColumns) ---
-
 test_batch_filter_schemas_system if {
 	result := trino.batch with input as {
 		"context": mock_context,
@@ -103,4 +97,62 @@ test_batch_filter_schemas_system if {
 	0 in result
 	1 in result
 	not 2 in result
+}
+
+# ===================================================================
+# Unmanaged catalog extension point
+# ===================================================================
+
+test_batch_filter_tables_unmanaged_denied_by_default if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [{"table": {"catalogName": "external_db", "schemaName": "public", "tableName": "users"}}],
+		},
+	}
+
+	not 0 in result
+}
+
+test_batch_filter_tables_unmanaged_blanket_allow if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [{"table": {"catalogName": "external_db", "schemaName": "public", "tableName": "users"}}],
+		},
+	}
+		with data.configuration.trino_allow_unmanaged_catalogs as true
+
+	0 in result
+}
+
+test_unmanaged_flag_does_not_allow_managed if {
+	not trino.allow with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "AccessCatalog",
+			"resource": {"catalog": {"name": "managed"}},
+		},
+	}
+		with data.configuration.trino_allow_unmanaged_catalogs as true
+		with data.configuration.trino_catalog as mock_trino_catalog
+}
+
+test_batch_unmanaged_no_lakekeeper_calls if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [
+				{"table": {"catalogName": "external_db", "schemaName": "public", "tableName": "users"}},
+				{"table": {"catalogName": "system", "schemaName": "jdbc", "tableName": "types"}},
+			],
+		},
+	}
+		with data.configuration.trino_allow_unmanaged_catalogs as true
+
+	0 in result
+	1 in result
 }
