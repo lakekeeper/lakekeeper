@@ -9,8 +9,8 @@ use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
-    CatalogStore, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore, State, TableId,
-    ViewId, WarehouseId, health::HealthExt,
+    CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore,
+    State, TableId, ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
     api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
@@ -1098,6 +1098,26 @@ where
     /// Hook that is called when a view is deleted.
     /// This is used to clean up permissions for the view.
     async fn delete_view(&self, warehouse_id: WarehouseId, view_id: ViewId) -> Result<()>;
+
+    /// Hook that is called when a new generic table is created.
+    async fn create_generic_table(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _generic_table_id: GenericTableId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that is called when a generic table is deleted.
+    async fn delete_generic_table(
+        &self,
+        _warehouse_id: WarehouseId,
+        _generic_table_id: GenericTableId,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

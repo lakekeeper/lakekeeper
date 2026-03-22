@@ -1,3 +1,4 @@
+pub(crate) mod generic_table;
 mod load_by_location;
 mod protection;
 pub mod table;
