@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            g.generic_table_id,\n            g.warehouse_id,\n            w.version as \"warehouse_version!\",\n            g.namespace_id,\n            n.version as \"namespace_version!\",\n            n.namespace_name as \"namespace_name!\",\n            g.name,\n            g.format,\n            g.base_location,\n            g.doc,\n            g.schema_info,\n            g.statistics,\n            g.properties\n        FROM generic_table g\n        INNER JOIN warehouse w ON w.warehouse_id = g.warehouse_id AND w.status = 'active'\n        INNER JOIN namespace n ON n.namespace_id = g.namespace_id AND n.warehouse_id = g.warehouse_id\n        WHERE g.warehouse_id = $1 AND g.namespace_id = $2 AND g.name = $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "generic_table_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_version!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "namespace_version!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "namespace_name!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "base_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "schema_info",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 11,
+        "name": "statistics",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "properties",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "c0db78da6a00fc5b15c9229940ea12f50965a527d1e4a76aea6dab6a47684fb4"
+}

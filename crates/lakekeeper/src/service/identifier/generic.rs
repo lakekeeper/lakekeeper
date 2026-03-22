@@ -156,6 +156,14 @@ define_id_type!(ViewId, true);
 define_id_type!(TableId, true);
 define_id_type!(NamespaceId, true);
 define_id_type!(RoleId, true);
+define_id_type!(GenericTableId, true);
+
+impl GenericTableId {
+    #[must_use]
+    pub fn into_uuid(self) -> uuid::Uuid {
+        *self
+    }
+}
 
 impl TryFrom<Prefix> for WarehouseId {
     type Error = ErrorModel;
