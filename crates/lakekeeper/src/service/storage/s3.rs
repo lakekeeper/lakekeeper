@@ -360,19 +360,22 @@ impl S3Profile {
     }
 
     /// Check if the profile can be updated with the other profile.
-    /// `key_prefix`, `region` and `bucket` must be the same.
+    /// `key_prefix` and `bucket` must be the same.
+    /// `region` must be the same unless an `endpoint` is set in the new profile,
+    /// in which case the region does not determine the S3 endpoint.
     /// We enforce this to avoid issues by accidentally changing the bucket or region
     /// of a warehouse, after which all tables would not be accessible anymore.
     /// Changing an endpoint might still result in an invalid profile, but we allow it.
     ///
     /// # Errors
-    /// Fails if the `bucket`, `region` or `key_prefix` is different.
+    /// Fails if the `bucket` or `key_prefix` is different, or if `region` is different
+    /// and no `endpoint` is set.
     pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.bucket != other.bucket {
             return Err(UpdateError::ImmutableField("bucket".to_string()));
         }
 
-        if self.region != other.region {
+        if self.region != other.region && other.endpoint.is_none() {
             return Err(UpdateError::ImmutableField("region".to_string()));
         }
 
@@ -1933,6 +1936,49 @@ pub(crate) mod test {
             )
             .unwrap();
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    #[test]
+    fn test_update_region_allowed_when_endpoint_set() {
+        let profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-east-1".to_string())
+            .endpoint("http://localhost:9000".parse().unwrap())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .build();
+
+        let updated = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-west-2".to_string())
+            .endpoint("http://localhost:9000".parse().unwrap())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .build();
+
+        let result = profile.update_with(updated);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().region, "us-west-2");
+    }
+
+    #[test]
+    fn test_update_region_rejected_without_endpoint() {
+        let profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(false)
+            .build();
+
+        let updated = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-west-2".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(false)
+            .build();
+
+        let result = profile.update_with(updated);
+        assert!(result.is_err());
     }
 }
 
