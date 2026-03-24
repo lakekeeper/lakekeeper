@@ -1,6 +1,6 @@
-use std::str::FromStr as _;
-
 use http::StatusCode;
+use iceberg::TableIdent;
+use uuid::Uuid;
 
 use crate::{
     api::{
@@ -13,15 +13,15 @@ use crate::{
         },
     },
     request_metadata::RequestMetadata,
-    server::require_warehouse_id,
+    server::{require_warehouse_id, tabular::determine_tabular_location},
     service::{
-        CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
-        GenericTableCreation, Result, SecretStore, State, Transaction, authz::Authorizer,
-        idempotency::IdempotencyInfo,
+        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
+        CatalogWarehouseOps, GenericTableCreation, GenericTableId, Result, SecretStore, State,
+        TabularId, Transaction, authz::Authorizer, idempotency::IdempotencyInfo,
     },
 };
 
-fn validate_create_request(request: &CreateGenericTableRequest) -> Result<&str> {
+fn validate_create_request(request: &CreateGenericTableRequest) -> Result<()> {
     if request.name.is_empty() {
         return Err(ErrorModel::bad_request(
             "Generic table name cannot be empty",
@@ -38,7 +38,7 @@ fn validate_create_request(request: &CreateGenericTableRequest) -> Result<&str> 
         )
         .into());
     }
-    if request.format.is_empty() {
+    if request.format.as_str().is_empty() {
         return Err(ErrorModel::bad_request(
             "Generic table format cannot be empty",
             "InvalidFormat",
@@ -46,19 +46,10 @@ fn validate_create_request(request: &CreateGenericTableRequest) -> Result<&str> 
         )
         .into());
     }
-    let base_location = request.base_location.as_deref().ok_or_else(|| {
-        ErrorModel::bad_request("base-location is required", "BaseLocationRequired", None)
-    })?;
-    let _ = lakekeeper_io::Location::from_str(base_location).map_err(|e| {
-        ErrorModel::bad_request(
-            format!("Invalid base-location URI: {e}"),
-            "InvalidBaseLocation",
-            Some(Box::new(e)),
-        )
-    })?;
-    Ok(base_location)
+    Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateGenericTableRequest,
@@ -67,7 +58,7 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
 ) -> Result<LoadGenericTableResponse> {
     let NamespaceParameters { namespace, prefix } = &parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let base_location = validate_create_request(&request)?.to_string();
+    validate_create_request(&request)?;
 
     // ------------------- IDEMPOTENCY CHECK -------------------
     let idempotency_key = request_metadata.idempotency_key().copied();
@@ -106,12 +97,26 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
     })?;
 
     let namespace_id = ns.namespace.namespace.namespace_id;
+
+    let generic_table_id = GenericTableId::from(Uuid::now_v7());
+    let tabular_id = TabularId::GenericTable(generic_table_id);
+    let table_ident = TableIdent::new(namespace.clone(), request.name.clone());
+
+    let location = determine_tabular_location(
+        &ns,
+        request.base_location.clone(),
+        tabular_id,
+        &table_ident,
+        &warehouse.storage_profile,
+    )?;
+
     let creation = GenericTableCreation {
+        generic_table_id,
         namespace_id,
         warehouse_id: warehouse.warehouse_id,
         name: request.name.clone(),
         format: request.format.clone(),
-        base_location,
+        location,
         doc: request.doc.clone(),
         schema: request.schema.clone(),
         statistics: request.statistics.clone(),
@@ -119,9 +124,9 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
     };
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let info = C::create_generic_table_impl(creation, t.transaction()).await?;
+    let info = C::create_generic_table(creation, t.transaction()).await?;
 
-    // Insert idempotency key in the same transaction — atomic with the mutation.
+    // Insert idempotency key in the same transaction.
     if let Some(ref key) = idempotency_key
         && !C::try_insert_idempotency_key(
             warehouse_id,
@@ -157,7 +162,7 @@ pub(super) async fn create_generic_table<C: CatalogStore, A: Authorizer + Clone,
         table: GenericTableData {
             name: info.name,
             format: info.format,
-            base_location: info.base_location,
+            base_location: info.location.to_string(),
             doc: info.doc,
             properties: info.properties,
             schema: info.schema,

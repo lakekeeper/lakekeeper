@@ -737,6 +737,9 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
+                if tabular_id.is_generic_table() {
+                    continue;
+                }
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
                         project_id: project_id.clone(),
@@ -794,6 +797,18 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .inspect_err(|err| {
                             tracing::error!(
                                 "Failed to delete view '{tabular_ident}' with id '{view_id}' from authorizer after recursive namespace drop: {}",
+                                err.error
+                            );
+                        })
+                        .ok();
+                }
+                TabularId::GenericTable(generic_table_id) => {
+                    authorizer
+                        .delete_generic_table(warehouse.warehouse_id, generic_table_id)
+                        .await
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })

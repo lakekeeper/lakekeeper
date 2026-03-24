@@ -943,14 +943,19 @@ pub trait AuthZTableOps: Authorizer {
             ActionOnTableOrView<'_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
         )],
     ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
-        let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|(ns, a)| match a {
-            ActionOnTableOrView::Table((t, a)) => {
-                itertools::Either::Left((*ns, *t, a.clone().into()))
+        let mut tables = Vec::new();
+        let mut views = Vec::new();
+        for (ns, action) in actions {
+            match action {
+                ActionOnTableOrView::Table((t, a)) => {
+                    tables.push((*ns, *t, a.clone().into()));
+                }
+                ActionOnTableOrView::View((v, a)) => {
+                    views.push((*ns, *v, a.clone().into()));
+                }
+                ActionOnTableOrView::GenericTable => {}
             }
-            ActionOnTableOrView::View((v, a)) => {
-                itertools::Either::Right((*ns, *v, a.clone().into()))
-            }
-        });
+        }
 
         let table_results = if tables.is_empty() {
             Vec::new()
@@ -1010,6 +1015,7 @@ pub trait AuthZTableOps: Authorizer {
                     view_idx += 1;
                     result
                 }
+                ActionOnTableOrView::GenericTable => true,
             })
             .collect();
 
@@ -1064,6 +1070,7 @@ pub trait AuthZTableOps: Authorizer {
                         )
                         .into());
                     }
+                    ActionOnTableOrView::GenericTable => {}
                 }
             }
         }
@@ -1123,6 +1130,8 @@ where
 pub enum ActionOnTableOrView<'a, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
     Table((&'a IT, AT)),
     View((&'a IV, AV)),
+    // TODO: add generic table authorization
+    GenericTable,
 }
 
 #[cfg(test)]

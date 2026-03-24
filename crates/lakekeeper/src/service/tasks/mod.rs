@@ -420,6 +420,9 @@ impl From<TabularId> for WarehouseTaskEntityId {
         match id {
             TabularId::Table(table_id) => WarehouseTaskEntityId::Table { table_id },
             TabularId::View(view_id) => WarehouseTaskEntityId::View { view_id },
+            TabularId::GenericTable(_) => {
+                unreachable!("generic tables do not have background tasks")
+            }
         }
     }
 }

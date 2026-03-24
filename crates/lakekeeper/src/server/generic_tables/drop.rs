@@ -7,8 +7,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
-        CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, Result,
-        SecretStore, State, Transaction, authz::Authorizer, idempotency::IdempotencyInfo,
+        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
+        CatalogWarehouseOps, Result, SecretStore, State, Transaction, authz::Authorizer,
+        idempotency::IdempotencyInfo,
     },
 };
 
@@ -54,8 +55,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let generic_table_id =
-        C::drop_generic_table_impl(warehouse_id, namespace_id, &table_name, t.transaction())
-            .await?;
+        C::drop_generic_table(warehouse_id, namespace_id, &table_name, t.transaction()).await?;
 
     // Insert idempotency key in the same transaction.
     if let Some(ref key) = idempotency_key

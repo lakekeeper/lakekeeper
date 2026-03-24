@@ -1,22 +1,32 @@
+ALTER TYPE tabular_type ADD VALUE IF NOT EXISTS 'generic-table';
+
 CREATE TABLE generic_table (
-    generic_table_id UUID PRIMARY KEY DEFAULT uuid_generate_v1mc(),
-    namespace_id     UUID NOT NULL REFERENCES namespace(namespace_id) ON DELETE CASCADE,
-    warehouse_id     UUID NOT NULL REFERENCES warehouse(warehouse_id) ON DELETE CASCADE,
-    name             TEXT NOT NULL,
+    warehouse_id     UUID NOT NULL,
+    generic_table_id UUID NOT NULL,
     format           TEXT NOT NULL,
-    base_location    TEXT NOT NULL,
     doc              TEXT,
     schema_info      JSONB,
     statistics       JSONB,
-    properties       JSONB NOT NULL DEFAULT '{}',
+    version          BIGINT NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ,
-    CONSTRAINT "unique_generic_table_name_per_namespace" UNIQUE (namespace_id, warehouse_id, name)
+    PRIMARY KEY (warehouse_id, generic_table_id),
+    FOREIGN KEY (warehouse_id, generic_table_id)
+        REFERENCES tabular(warehouse_id, tabular_id) ON DELETE CASCADE
 );
-SELECT trigger_updated_at('generic_table');
-CREATE INDEX "generic_table_namespace_id_idx" ON generic_table (warehouse_id, namespace_id);
+SELECT trigger_updated_at_and_version_if_distinct('"generic_table"');
 
-ALTER TYPE api_endpoints ADD VALUE 'generic-table-v1-create-generic-table';
-ALTER TYPE api_endpoints ADD VALUE 'generic-table-v1-list-generic-tables';
-ALTER TYPE api_endpoints ADD VALUE 'generic-table-v1-load-generic-table';
-ALTER TYPE api_endpoints ADD VALUE 'generic-table-v1-drop-generic-table';
+CREATE TABLE generic_table_properties (
+    warehouse_id     UUID NOT NULL,
+    generic_table_id UUID NOT NULL,
+    key              TEXT NOT NULL,
+    value            TEXT,
+    PRIMARY KEY (warehouse_id, generic_table_id, key),
+    FOREIGN KEY (warehouse_id, generic_table_id)
+        REFERENCES generic_table(warehouse_id, generic_table_id) ON DELETE CASCADE
+);
+
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'generic-table-v1-create-generic-table';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'generic-table-v1-list-generic-tables';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'generic-table-v1-load-generic-table';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'generic-table-v1-drop-generic-table';
