@@ -23,14 +23,14 @@ use crate::{
         },
     },
     request_metadata::RequestMetadata,
-    service::GenericTableId,
+    service::{GenericTableFormat, GenericTableId},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct CreateGenericTableRequest {
     pub name: String,
-    pub format: String,
+    pub format: GenericTableFormat,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_location: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,7 +47,7 @@ pub struct CreateGenericTableRequest {
 #[serde(rename_all = "kebab-case")]
 pub struct GenericTableData {
     pub name: String,
-    pub format: String,
+    pub format: GenericTableFormat,
     pub base_location: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
@@ -75,7 +75,7 @@ pub struct GenericTableIdentifier {
     pub namespace: Vec<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
+    pub format: Option<GenericTableFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<GenericTableId>,
 }

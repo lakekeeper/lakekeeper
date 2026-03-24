@@ -12,9 +12,9 @@ use crate::{
         management::v1::TabularType,
     },
     service::{
-        CatalogBackendError, CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken,
-        NamespaceId, NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed,
-        TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
+        CatalogBackendError, CatalogStore, GenericTableId, InvalidNamespaceIdentifier,
+        InvalidPaginationToken, NamespaceId, NamespaceVersion, Result, TableId, TabularId,
+        TabularIdentBorrowed, TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
         authz::{ActionOnTable, ActionOnTableOrView, ActionOnView, UserOrRole},
         define_simple_error, define_transparent_error,
         events::impl_authorization_failure_source,
@@ -146,13 +146,37 @@ impl BasicTabularInfo for ViewInfo {
         self.namespace_id
     }
 }
+impl BasicTabularInfo for GenericTabularInfo {
+    fn namespace_version(&self) -> NamespaceVersion {
+        self.namespace_version
+    }
+    fn warehouse_version(&self) -> WarehouseVersion {
+        self.warehouse_version
+    }
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn tabular_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+
+    fn tabular_id(&self) -> TabularId {
+        self.tabular_id.into()
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
+}
 #[derive(Debug, Clone, PartialEq, derive_more::From)]
 pub enum ViewOrTableInfo {
     Table(TableInfo),
     View(ViewInfo),
+    GenericTable(GenericTabularInfo),
 }
 pub type TableInfo = TabularInfo<TableId>;
 pub type ViewInfo = TabularInfo<ViewId>;
+pub type GenericTabularInfo = TabularInfo<GenericTableId>;
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("{source}")]
@@ -227,6 +251,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => TabularId::Table(info.tabular_id),
             Self::View(info) => TabularId::View(info.tabular_id),
+            Self::GenericTable(info) => TabularId::GenericTable(info.tabular_id),
         }
     }
 
@@ -235,6 +260,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => &info.tabular_ident,
             Self::View(info) => &info.tabular_ident,
+            Self::GenericTable(info) => &info.tabular_ident,
         }
     }
 
@@ -243,6 +269,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
+            Self::GenericTable(info) => info.namespace_id,
         }
     }
 
@@ -251,6 +278,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => info.protected,
             Self::View(info) => info.protected,
+            Self::GenericTable(info) => info.protected,
         }
     }
 
@@ -259,6 +287,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => info.updated_at,
             Self::View(info) => info.updated_at,
+            Self::GenericTable(info) => info.updated_at,
         }
     }
 
@@ -281,6 +310,7 @@ impl ViewOrTableInfo {
                 user,
                 is_delegated_execution: false,
             }),
+            Self::GenericTable(_) => ActionOnTableOrView::GenericTable,
         }
     }
 
@@ -289,6 +319,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => info.metadata_location.as_ref(),
             Self::View(info) => info.metadata_location.as_ref(),
+            Self::GenericTable(info) => info.metadata_location.as_ref(),
         }
     }
 
@@ -297,6 +328,7 @@ impl ViewOrTableInfo {
         match self {
             Self::Table(info) => &info.location,
             Self::View(info) => &info.location,
+            Self::GenericTable(info) => &info.location,
         }
     }
 }
@@ -534,36 +566,42 @@ impl BasicTabularInfo for ViewOrTableInfo {
         match self {
             Self::Table(info) => info.namespace_version,
             Self::View(info) => info.namespace_version,
+            Self::GenericTable(info) => info.namespace_version,
         }
     }
     fn namespace_id(&self) -> NamespaceId {
         match self {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
+            Self::GenericTable(info) => info.namespace_id,
         }
     }
     fn warehouse_version(&self) -> WarehouseVersion {
         match self {
             Self::Table(info) => info.warehouse_version,
             Self::View(info) => info.warehouse_version,
+            Self::GenericTable(info) => info.warehouse_version,
         }
     }
     fn warehouse_id(&self) -> WarehouseId {
         match self {
             Self::Table(info) => info.warehouse_id,
             Self::View(info) => info.warehouse_id,
+            Self::GenericTable(info) => info.warehouse_id,
         }
     }
     fn tabular_ident(&self) -> &TableIdent {
         match self {
             Self::Table(info) => &info.tabular_ident,
             Self::View(info) => &info.tabular_ident,
+            Self::GenericTable(info) => &info.tabular_ident,
         }
     }
     fn tabular_id(&self) -> TabularId {
         match self {
             Self::Table(info) => TabularId::Table(info.tabular_id),
             Self::View(info) => TabularId::View(info.tabular_id),
+            Self::GenericTable(info) => TabularId::GenericTable(info.tabular_id),
         }
     }
 }
@@ -572,36 +610,42 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => info.tabular.namespace_version,
             Self::View(info) => info.tabular.namespace_version,
+            Self::GenericTable(info) => info.tabular.namespace_version,
         }
     }
     fn warehouse_version(&self) -> WarehouseVersion {
         match self {
             Self::Table(info) => info.tabular.warehouse_version,
             Self::View(info) => info.tabular.warehouse_version,
+            Self::GenericTable(info) => info.tabular.warehouse_version,
         }
     }
     fn warehouse_id(&self) -> WarehouseId {
         match self {
             Self::Table(info) => info.tabular.warehouse_id,
             Self::View(info) => info.tabular.warehouse_id,
+            Self::GenericTable(info) => info.tabular.warehouse_id,
         }
     }
     fn tabular_ident(&self) -> &TableIdent {
         match self {
             Self::Table(info) => &info.tabular.tabular_ident,
             Self::View(info) => &info.tabular.tabular_ident,
+            Self::GenericTable(info) => &info.tabular.tabular_ident,
         }
     }
     fn tabular_id(&self) -> TabularId {
         match self {
             Self::Table(info) => TabularId::Table(info.tabular.tabular_id),
             Self::View(info) => TabularId::View(info.tabular.tabular_id),
+            Self::GenericTable(info) => TabularId::GenericTable(info.tabular.tabular_id),
         }
     }
     fn namespace_id(&self) -> NamespaceId {
         match self {
             Self::Table(info) => info.tabular.namespace_id,
             Self::View(info) => info.tabular.namespace_id,
+            Self::GenericTable(info) => info.tabular.namespace_id,
         }
     }
 }
@@ -611,7 +655,7 @@ impl ViewOrTableInfo {
     pub fn into_table_info(self) -> Option<TableInfo> {
         match self {
             Self::Table(info) => Some(info),
-            Self::View(_) => None,
+            Self::View(_) | Self::GenericTable(_) => None,
         }
     }
 
@@ -619,7 +663,15 @@ impl ViewOrTableInfo {
     pub fn into_view_info(self) -> Option<ViewInfo> {
         match self {
             Self::View(info) => Some(info),
-            Self::Table(_) => None,
+            Self::Table(_) | Self::GenericTable(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_generic_table_info(self) -> Option<GenericTabularInfo> {
+        match self {
+            Self::GenericTable(info) => Some(info),
+            Self::Table(_) | Self::View(_) => None,
         }
     }
 }
@@ -635,9 +687,11 @@ pub struct TabularDeletionInfo<T: std::fmt::Debug + PartialEq + Copy> {
 pub enum ViewOrTableDeletionInfo {
     Table(TableDeletionInfo),
     View(ViewDeletionInfo),
+    GenericTable(GenericTableDeletionInfo),
 }
 pub type TableDeletionInfo = TabularDeletionInfo<TableId>;
 pub type ViewDeletionInfo = TabularDeletionInfo<ViewId>;
+pub type GenericTableDeletionInfo = TabularDeletionInfo<GenericTableId>;
 
 impl ViewOrTableDeletionInfo {
     #[must_use]
@@ -645,6 +699,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => ViewOrTableInfo::Table(info.tabular),
             Self::View(info) => ViewOrTableInfo::View(info.tabular),
+            Self::GenericTable(info) => ViewOrTableInfo::GenericTable(info.tabular),
         }
     }
 
@@ -653,6 +708,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => info.tabular.namespace_id,
             Self::View(info) => info.tabular.namespace_id,
+            Self::GenericTable(info) => info.tabular.namespace_id,
         }
     }
 
@@ -661,6 +717,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => TabularId::Table(info.tabular.tabular_id),
             Self::View(info) => TabularId::View(info.tabular.tabular_id),
+            Self::GenericTable(info) => TabularId::GenericTable(info.tabular.tabular_id),
         }
     }
 
@@ -669,6 +726,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => info.deleted_at,
             Self::View(info) => info.deleted_at,
+            Self::GenericTable(info) => info.deleted_at,
         }
     }
 
@@ -677,6 +735,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => info.created_at,
             Self::View(info) => info.created_at,
+            Self::GenericTable(info) => info.created_at,
         }
     }
 
@@ -685,6 +744,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => info.expiration_task.as_ref(),
             Self::View(info) => info.expiration_task.as_ref(),
+            Self::GenericTable(info) => info.expiration_task.as_ref(),
         }
     }
 
@@ -693,6 +753,7 @@ impl ViewOrTableDeletionInfo {
         match self {
             Self::Table(info) => &info.tabular.tabular_ident,
             Self::View(info) => &info.tabular.tabular_ident,
+            Self::GenericTable(info) => &info.tabular.tabular_ident,
         }
     }
 
@@ -700,7 +761,7 @@ impl ViewOrTableDeletionInfo {
     pub fn into_table_info(self) -> Option<TableDeletionInfo> {
         match self {
             Self::Table(info) => Some(info),
-            Self::View(_) => None,
+            Self::View(_) | Self::GenericTable(_) => None,
         }
     }
 
@@ -708,7 +769,7 @@ impl ViewOrTableDeletionInfo {
     pub fn into_view_info(self) -> Option<ViewDeletionInfo> {
         match self {
             Self::View(info) => Some(info),
-            Self::Table(_) => None,
+            Self::Table(_) | Self::GenericTable(_) => None,
         }
     }
 
@@ -731,6 +792,7 @@ impl ViewOrTableDeletionInfo {
                 user,
                 is_delegated_execution: false,
             }),
+            Self::GenericTable(_) => ActionOnTableOrView::GenericTable,
         }
     }
 }
@@ -832,8 +894,23 @@ impl TabularIdentOrId {
     }
 
     #[must_use]
+    pub fn is_generic_table(&self) -> bool {
+        matches!(
+            self,
+            TabularIdentOrId::Ident(TabularIdentOwned::GenericTable(_))
+                | TabularIdentOrId::Id(TabularId::GenericTable(_))
+        )
+    }
+
+    #[must_use]
     pub fn type_str(&self) -> &'static str {
-        if self.is_table() { "table" } else { "view" }
+        if self.is_table() {
+            "table"
+        } else if self.is_view() {
+            "view"
+        } else {
+            "generic-table"
+        }
     }
 }
 impl std::fmt::Display for TabularIdentOrId {
@@ -842,10 +919,12 @@ impl std::fmt::Display for TabularIdentOrId {
             TabularIdentOrId::Ident(ident) => match ident {
                 TabularIdentOwned::Table(t) => write!(f, "Table '{t}'"),
                 TabularIdentOwned::View(v) => write!(f, "View '{v}'"),
+                TabularIdentOwned::GenericTable(g) => write!(f, "GenericTable '{g}'"),
             },
             TabularIdentOrId::Id(id) => match id {
                 TabularId::Table(t) => write!(f, "Table ID '{t}'"),
                 TabularId::View(v) => write!(f, "View ID '{v}'"),
+                TabularId::GenericTable(g) => write!(f, "GenericTable ID '{g}'"),
             },
         }
     }
@@ -858,6 +937,11 @@ impl From<TableId> for TabularIdentOrId {
 impl From<ViewId> for TabularIdentOrId {
     fn from(value: ViewId) -> Self {
         Self::Id(TabularId::View(value))
+    }
+}
+impl From<GenericTableId> for TabularIdentOrId {
+    fn from(value: GenericTableId) -> Self {
+        Self::Id(TabularId::GenericTable(value))
     }
 }
 
@@ -1540,7 +1624,9 @@ where
         .await?;
         let views = page.map::<ViewId, ViewDeletionInfo, ListViewsError>(
             |k| match k {
-                TabularId::Table(_) => Err(TableInViewList::new(warehouse_id, k).into()),
+                TabularId::Table(_) | TabularId::GenericTable(_) => {
+                    Err(TableInViewList::new(warehouse_id, k).into())
+                }
                 TabularId::View(t) => Ok(t),
             },
             |v| {
@@ -1573,7 +1659,9 @@ where
         let tables = page.map::<TableId, TableDeletionInfo, ListTablesError>(
             |k| match k {
                 TabularId::Table(t) => Ok(t),
-                TabularId::View(_) => Err(ViewInTableList::new(warehouse_id, k).into()),
+                TabularId::View(_) | TabularId::GenericTable(_) => {
+                    Err(ViewInTableList::new(warehouse_id, k).into())
+                }
             },
             |v| {
                 let tabular_id = v.tabular_id();

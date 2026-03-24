@@ -1019,14 +1019,19 @@ pub trait AuthZTableOps: Authorizer {
             ActionOnTableOrView<'_, '_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
         )],
     ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
-        let (tables, views): (Vec<_>, Vec<_>) = actions.iter().partition_map(|(ns, a)| match a {
-            ActionOnTableOrView::Table(table_action) => {
-                itertools::Either::Left((*ns, table_action.clone()))
+        let mut tables = Vec::new();
+        let mut views = Vec::new();
+        for (ns, action) in actions {
+            match action {
+                ActionOnTableOrView::Table(table_action) => {
+                    tables.push((*ns, table_action.clone()));
+                }
+                ActionOnTableOrView::View(view_action) => {
+                    views.push((*ns, view_action.clone()));
+                }
+                ActionOnTableOrView::GenericTable => {}
             }
-            ActionOnTableOrView::View(view_action) => {
-                itertools::Either::Right((*ns, view_action.clone()))
-            }
-        });
+        }
 
         let table_results = if tables.is_empty() {
             Vec::new()
@@ -1074,6 +1079,7 @@ pub trait AuthZTableOps: Authorizer {
                     view_idx += 1;
                     result
                 }
+                ActionOnTableOrView::GenericTable => true,
             })
             .collect();
 
@@ -1128,6 +1134,7 @@ pub trait AuthZTableOps: Authorizer {
                         )
                         .into());
                     }
+                    ActionOnTableOrView::GenericTable => {}
                 }
             }
         }
@@ -1259,6 +1266,8 @@ impl<I: AuthZViewInfo, A> std::fmt::Debug for ActionOnView<'_, '_, I, A> {
 pub enum ActionOnTableOrView<'a, 'u, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
     Table(ActionOnTable<'a, 'u, IT, AT>),
     View(ActionOnView<'a, 'u, IV, AV>),
+    // TODO: add generic table authorization
+    GenericTable,
 }
 
 #[cfg(test)]

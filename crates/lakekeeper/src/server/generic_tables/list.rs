@@ -9,8 +9,8 @@ use crate::{
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
-        CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, Result, SecretStore, State,
-        Transaction, authz::Authorizer,
+        CatalogGenericTableOps, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps, Result,
+        SecretStore, State, Transaction, authz::Authorizer,
     },
 };
 
@@ -42,7 +42,7 @@ pub(super) async fn list_generic_tables<C: CatalogStore, A: Authorizer + Clone, 
     let namespace_id = ns.namespace.namespace.namespace_id;
 
     let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
-    let (entries, next_page_token) = C::list_generic_tables_impl(
+    let (entries, next_page_token) = C::list_generic_tables(
         warehouse_id,
         namespace_id,
         namespace,

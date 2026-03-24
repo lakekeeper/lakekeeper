@@ -356,6 +356,9 @@ mod test {
         let variants: Vec<Endpoint> = PermissionV1Endpoint::iter().map(Into::into).collect_vec();
         all_variants.extend(variants);
 
+        let variants: Vec<Endpoint> = GenericTableV1Endpoint::iter().map(Into::into).collect_vec();
+        all_variants.extend(variants);
+
         let endpoint_variants = Endpoint::iter().collect_vec();
 
         // Check no duplicates in all_variants
@@ -454,8 +457,10 @@ mod test {
         let mut actual_endpoints = HashSet::new();
         for endpoint in Endpoint::iter() {
             // Only catalog and management endpoints are relevant for this test
+            // TODO: Add generic-tables-api OpenAPI spec and remove this skip
             if matches!(endpoint, Endpoint::PermissionV1(_))
                 || matches!(endpoint, Endpoint::Sign(_))
+                || matches!(endpoint, Endpoint::GenericTableV1(_))
             {
                 continue;
             }

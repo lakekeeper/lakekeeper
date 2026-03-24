@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-
+use iceberg::TableIdent;
 use uuid::Uuid;
 
-use super::super::dbutils::DBErrorHandler as _;
+use super::{super::dbutils::DBErrorHandler as _, CreateTabular, TabularType};
 use crate::{
     CONFIG, WarehouseId,
     implementations::postgres::{
@@ -11,26 +10,29 @@ use crate::{
     },
     service::{
         CatalogBackendError, CreateGenericTableError, DropGenericTableError,
-        GenericTableAlreadyExists, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GenericTableNotFound, ListGenericTablesError, LoadGenericTableError,
-        NamespaceId, NamespaceVersion, WarehouseVersion,
+        GenericTableAlreadyExists, GenericTableCreation, GenericTableFormat, GenericTableId,
+        GenericTableInfo, GenericTableListEntry, GenericTableNotFound, ListGenericTablesError,
+        LoadGenericTableError, NamespaceId, NamespaceVersion, TabularId, WarehouseVersion,
+        storage::join_location,
     },
 };
 
-struct GenericTableRow {
+struct GenericTableFullRow {
     generic_table_id: Uuid,
-    warehouse_id: Uuid,
     warehouse_version: i64,
     namespace_id: Uuid,
     namespace_version: i64,
     namespace_name: Vec<String>,
     name: String,
     format: String,
-    base_location: String,
+    fs_location: String,
+    fs_protocol: String,
+    protected: bool,
     doc: Option<String>,
     schema_info: Option<serde_json::Value>,
     statistics: Option<serde_json::Value>,
-    properties: serde_json::Value,
+    property_keys: Option<Vec<String>>,
+    property_values: Option<Vec<String>>,
 }
 
 struct GenericTableListRow {
@@ -40,35 +42,48 @@ struct GenericTableListRow {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
-struct GenericTableDropRow {
-    generic_table_id: Uuid,
-}
-
-fn row_to_info(row: GenericTableRow) -> Result<GenericTableInfo, CatalogBackendError> {
+fn full_row_to_info(
+    row: GenericTableFullRow,
+    warehouse_id: WarehouseId,
+) -> Result<GenericTableInfo, CatalogBackendError> {
     let namespace_ident = parse_namespace_identifier_from_vec(
         &row.namespace_name,
-        row.warehouse_id.into(),
+        warehouse_id,
         Some(row.namespace_id),
     )
     .map_err(CatalogBackendError::new_unexpected)?;
 
-    let properties: HashMap<String, String> =
-        serde_json::from_value(row.properties).map_err(CatalogBackendError::new_unexpected)?;
+    let location = join_location(&row.fs_protocol, &row.fs_location)
+        .map_err(CatalogBackendError::new_unexpected)?;
+
+    let properties = if let (Some(keys), Some(values)) = (row.property_keys, row.property_values) {
+        keys.into_iter().zip(values).collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let name = row.name;
+    let tabular_ident = TableIdent {
+        namespace: namespace_ident.clone(),
+        name: name.clone(),
+    };
 
     Ok(GenericTableInfo {
         generic_table_id: row.generic_table_id.into(),
-        warehouse_id: row.warehouse_id.into(),
+        warehouse_id,
         warehouse_version: WarehouseVersion::new(row.warehouse_version),
         namespace_id: row.namespace_id.into(),
         namespace_version: NamespaceVersion::new(row.namespace_version),
         namespace_ident,
-        name: row.name,
-        format: row.format,
-        base_location: row.base_location,
+        name,
+        tabular_ident,
+        location,
+        properties,
+        protected: row.protected,
+        format: GenericTableFormat::from(row.format),
         doc: row.doc,
         schema: row.schema_info,
         statistics: row.statistics,
-        properties,
     })
 }
 
@@ -76,57 +91,91 @@ pub(crate) async fn create_generic_table(
     creation: GenericTableCreation,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<GenericTableInfo, CreateGenericTableError> {
-    let properties_json = serde_json::to_value(&creation.properties)
-        .map_err(|e| CreateGenericTableError::from(CatalogBackendError::new_unexpected(e)))?;
+    let id: Uuid = *creation.generic_table_id;
 
-    let row = sqlx::query_as!(
-        GenericTableRow,
-        r#"
-        WITH inserted AS (
-            INSERT INTO generic_table (namespace_id, warehouse_id, name, format, base_location, doc, schema_info, statistics, properties)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING generic_table_id, warehouse_id, namespace_id, name, format, base_location, doc, schema_info, statistics, properties
-        )
-        SELECT
-            i.generic_table_id,
-            i.warehouse_id,
-            w.version as "warehouse_version!",
-            i.namespace_id,
-            n.version as "namespace_version!",
-            n.namespace_name as "namespace_name!",
-            i.name,
-            i.format,
-            i.base_location,
-            i.doc,
-            i.schema_info,
-            i.statistics,
-            i.properties
-        FROM inserted i
-        INNER JOIN warehouse w ON w.warehouse_id = i.warehouse_id
-        INNER JOIN namespace n ON n.namespace_id = i.namespace_id AND n.warehouse_id = i.warehouse_id
-        "#,
-        *creation.namespace_id,
-        *creation.warehouse_id,
-        &creation.name,
-        &creation.format,
-        &creation.base_location,
-        creation.doc.as_deref(),
-        creation.schema as Option<serde_json::Value>,
-        creation.statistics as Option<serde_json::Value>,
-        &properties_json,
+    let tabular_info = super::create_tabular(
+        CreateTabular {
+            id,
+            name: &creation.name,
+            namespace_id: *creation.namespace_id,
+            warehouse_id: *creation.warehouse_id,
+            typ: TabularType::GenericTable,
+            metadata_location: None,
+            location: &creation.location,
+        },
+        transaction,
     )
-    .fetch_one(&mut **transaction)
     .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db_err)
-            if db_err.constraint() == Some("unique_generic_table_name_per_namespace") =>
-        {
-            CreateGenericTableError::from(GenericTableAlreadyExists::new())
+    .map_err(|e| {
+        use crate::service::CreateTabularError;
+        match e {
+            CreateTabularError::TabularAlreadyExists(_) => {
+                CreateGenericTableError::from(GenericTableAlreadyExists::new())
+            }
+            CreateTabularError::CatalogBackendError(e) => CreateGenericTableError::from(e),
+            other => CreateGenericTableError::from(CatalogBackendError::new_unexpected(other)),
         }
-        _ => CreateGenericTableError::from(e.into_catalog_backend_error()),
     })?;
 
-    row_to_info(row).map_err(CreateGenericTableError::from)
+    let format_str = creation.format.as_str();
+    let schema_clone = creation.schema.clone();
+    let statistics_clone = creation.statistics.clone();
+    sqlx::query!(
+        r#"INSERT INTO generic_table (warehouse_id, generic_table_id, format, doc, schema_info, statistics)
+        VALUES ($1, $2, $3, $4, $5, $6)"#,
+        *creation.warehouse_id,
+        id,
+        format_str,
+        creation.doc.as_deref(),
+        schema_clone as Option<serde_json::Value>,
+        statistics_clone as Option<serde_json::Value>,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| CreateGenericTableError::from(e.into_catalog_backend_error()))?;
+
+    if !creation.properties.is_empty() {
+        let keys: Vec<&str> = creation.properties.keys().map(String::as_str).collect();
+        let values: Vec<&str> = creation.properties.values().map(String::as_str).collect();
+        sqlx::query!(
+            r#"INSERT INTO generic_table_properties (warehouse_id, generic_table_id, key, value)
+            SELECT $1, $2, UNNEST($3::text[]), UNNEST($4::text[])"#,
+            *creation.warehouse_id,
+            id,
+            &keys as &[&str],
+            &values as &[&str],
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| CreateGenericTableError::from(e.into_catalog_backend_error()))?;
+    }
+
+    let generic_tabular = tabular_info
+        .into_generic_table_info()
+        .expect("create_tabular returned GenericTable type");
+
+    let tabular_ident = TableIdent {
+        namespace: generic_tabular.tabular_ident.namespace.clone(),
+        name: generic_tabular.tabular_ident.name.clone(),
+    };
+
+    Ok(GenericTableInfo {
+        generic_table_id: id.into(),
+        warehouse_id: generic_tabular.warehouse_id,
+        warehouse_version: generic_tabular.warehouse_version,
+        namespace_id: generic_tabular.namespace_id,
+        namespace_version: generic_tabular.namespace_version,
+        namespace_ident: tabular_ident.namespace.clone(),
+        name: tabular_ident.name.clone(),
+        tabular_ident,
+        location: generic_tabular.location,
+        properties: creation.properties,
+        protected: generic_tabular.protected,
+        format: creation.format,
+        doc: creation.doc,
+        schema: creation.schema,
+        statistics: creation.statistics,
+    })
 }
 
 pub(crate) async fn load_generic_table(
@@ -136,26 +185,41 @@ pub(crate) async fn load_generic_table(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<GenericTableInfo, LoadGenericTableError> {
     let row = sqlx::query_as!(
-        GenericTableRow,
+        GenericTableFullRow,
         r#"
         SELECT
-            g.generic_table_id,
-            g.warehouse_id,
+            t.tabular_id as generic_table_id,
             w.version as "warehouse_version!",
-            g.namespace_id,
+            t.namespace_id,
             n.version as "namespace_version!",
-            n.namespace_name as "namespace_name!",
-            g.name,
-            g.format,
-            g.base_location,
-            g.doc,
-            g.schema_info,
-            g.statistics,
-            g.properties
-        FROM generic_table g
-        INNER JOIN warehouse w ON w.warehouse_id = g.warehouse_id AND w.status = 'active'
-        INNER JOIN namespace n ON n.namespace_id = g.namespace_id AND n.warehouse_id = g.warehouse_id
-        WHERE g.warehouse_id = $1 AND g.namespace_id = $2 AND g.name = $3
+            t.tabular_namespace_name as "namespace_name!",
+            t.name,
+            gt.format,
+            t.fs_location,
+            t.fs_protocol,
+            t.protected,
+            gt.doc,
+            gt.schema_info,
+            gt.statistics,
+            gtp.keys as property_keys,
+            gtp.values as property_values
+        FROM tabular t
+        INNER JOIN generic_table gt ON gt.warehouse_id = t.warehouse_id AND gt.generic_table_id = t.tabular_id
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id
+        LEFT JOIN (
+            SELECT generic_table_id,
+                   ARRAY_AGG(key) as keys,
+                   ARRAY_AGG(value) as values
+            FROM generic_table_properties
+            WHERE warehouse_id = $1
+            GROUP BY generic_table_id
+        ) gtp ON t.tabular_id = gtp.generic_table_id
+        WHERE t.warehouse_id = $1
+          AND t.namespace_id = $2
+          AND t.name = $3
+          AND t.typ = 'generic-table'
+          AND t.deleted_at IS NULL
         "#,
         *warehouse_id,
         *namespace_id,
@@ -166,7 +230,7 @@ pub(crate) async fn load_generic_table(
     .map_err(|e| LoadGenericTableError::from(e.into_catalog_backend_error()))?
     .ok_or_else(|| LoadGenericTableError::from(GenericTableNotFound::new()))?;
 
-    row_to_info(row).map_err(LoadGenericTableError::from)
+    full_row_to_info(row, warehouse_id).map_err(LoadGenericTableError::from)
 }
 
 pub(crate) async fn list_generic_tables(
@@ -196,15 +260,23 @@ pub(crate) async fn list_generic_tables(
     let rows = sqlx::query_as!(
         GenericTableListRow,
         r#"
-        SELECT g.generic_table_id, g.name, g.format, g.created_at
-        FROM generic_table g
-        INNER JOIN warehouse w ON w.warehouse_id = g.warehouse_id AND w.status = 'active'
-        WHERE g.warehouse_id = $1 AND g.namespace_id = $2
+        SELECT
+            t.tabular_id as generic_table_id,
+            t.name,
+            gt.format,
+            t.created_at
+        FROM tabular t
+        INNER JOIN generic_table gt ON gt.warehouse_id = t.warehouse_id AND gt.generic_table_id = t.tabular_id
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        WHERE t.warehouse_id = $1
+          AND t.namespace_id = $2
+          AND t.typ = 'generic-table'
+          AND t.deleted_at IS NULL
           AND (
             ($3::timestamptz IS NULL)
-            OR (g.created_at, g.generic_table_id) > ($3, $4)
+            OR (t.created_at, t.tabular_id) > ($3, $4)
           )
-        ORDER BY g.created_at ASC, g.generic_table_id ASC
+        ORDER BY t.created_at ASC, t.tabular_id ASC
         LIMIT $5
         "#,
         *warehouse_id,
@@ -232,7 +304,7 @@ pub(crate) async fn list_generic_tables(
         entries.push(GenericTableListEntry {
             generic_table_id: row.generic_table_id.into(),
             name: row.name.clone(),
-            format: row.format.clone(),
+            format: GenericTableFormat::from(row.format.clone()),
             namespace_ident: namespace_ident.clone(),
             created_at: row.created_at,
         });
@@ -247,13 +319,16 @@ pub(crate) async fn drop_generic_table(
     table_name: &str,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<GenericTableId, DropGenericTableError> {
-    let row = sqlx::query_as!(
-        GenericTableDropRow,
+    let row = sqlx::query!(
         r#"
-        DELETE FROM generic_table
-        WHERE warehouse_id = $1 AND namespace_id = $2 AND name = $3
-          AND EXISTS (SELECT 1 FROM warehouse w WHERE w.warehouse_id = $1 AND w.status = 'active')
-        RETURNING generic_table_id
+        SELECT t.tabular_id as generic_table_id
+        FROM tabular t
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        WHERE t.warehouse_id = $1
+          AND t.namespace_id = $2
+          AND t.name = $3
+          AND t.typ = 'generic-table'
+          AND t.deleted_at IS NULL
         "#,
         *warehouse_id,
         *namespace_id,
@@ -264,5 +339,26 @@ pub(crate) async fn drop_generic_table(
     .map_err(|e| DropGenericTableError::from(e.into_catalog_backend_error()))?
     .ok_or_else(|| DropGenericTableError::from(GenericTableNotFound::new()))?;
 
-    Ok(row.generic_table_id.into())
+    let generic_table_id: GenericTableId = row.generic_table_id.into();
+
+    super::drop_tabular(
+        warehouse_id,
+        TabularId::GenericTable(generic_table_id),
+        false,
+        None,
+        transaction,
+    )
+    .await
+    .map_err(|e| {
+        use crate::service::DropTabularError;
+        match e {
+            DropTabularError::TabularNotFound(_) => {
+                DropGenericTableError::from(GenericTableNotFound::new())
+            }
+            DropTabularError::CatalogBackendError(e) => DropGenericTableError::from(e),
+            other => DropGenericTableError::from(CatalogBackendError::new_unexpected(other)),
+        }
+    })?;
+
+    Ok(generic_table_id)
 }

@@ -302,6 +302,9 @@ impl UserProvidedEntity for UserProvidedTabularsIDs {
                 TabularId::View(view_id) => EntityDescriptor::new(ENTITY_TYPE_VIEW)
                     .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
                     .field(FIELD_NAME_VIEW_ID, view_id),
+                TabularId::GenericTable(generic_table_id) => EntityDescriptor::new("generic-table")
+                    .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                    .field("generic_table_id", generic_table_id),
             }
         }))
     }
