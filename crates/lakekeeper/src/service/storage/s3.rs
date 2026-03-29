@@ -1597,11 +1597,11 @@ pub(crate) mod test {
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
             let profile = S3Profile::builder()
-                .bucket(std::env::var("AWS_S3_BUCKET").unwrap())
+                .bucket(std::env::var("LAKEKEEPER_TEST__AWS_S3_BUCKET").unwrap())
                 .key_prefix(uuid::Uuid::now_v7().to_string())
-                .region(std::env::var("AWS_S3_REGION").unwrap())
+                .region(std::env::var("LAKEKEEPER_TEST__AWS_S3_REGION").unwrap())
                 .path_style_access(true)
-                .sts_role_arn(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap())
+                .sts_role_arn(std::env::var("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN").unwrap())
                 .flavor(S3Flavor::Aws)
                 .sts_enabled(true)
                 .remote_signing_enabled(true)
@@ -1610,8 +1610,9 @@ pub(crate) mod test {
                 .push_s3_delete_disabled(false)
                 .build();
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                aws_access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID").unwrap(),
+                aws_secret_access_key: std::env::var("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
+                    .unwrap(),
                 external_id: None,
             });
 
@@ -1812,22 +1813,23 @@ pub(crate) mod test {
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
             let profile = S3Profile::builder()
-                .bucket(std::env::var("AWS_KMS_S3_BUCKET").unwrap())
+                .bucket(std::env::var("LAKEKEEPER_TEST__AWS_KMS_S3_BUCKET").unwrap())
                 .key_prefix(uuid::Uuid::now_v7().to_string())
-                .assume_role_arn(std::env::var("AWS_S3_STS_ROLE_ARN").unwrap())
-                .region(std::env::var("AWS_S3_REGION").unwrap())
+                .assume_role_arn(std::env::var("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN").unwrap())
+                .region(std::env::var("LAKEKEEPER_TEST__AWS_S3_REGION").unwrap())
                 .path_style_access(true)
                 .flavor(S3Flavor::Aws)
                 .sts_enabled(true)
                 .remote_signing_enabled(true)
                 .allow_alternative_protocols(false)
-                .aws_kms_key_arn(std::env::var("AWS_S3_KMS_ARN").unwrap())
+                .aws_kms_key_arn(std::env::var("LAKEKEEPER_TEST__AWS_S3_KMS_ARN").unwrap())
                 .legacy_md5_behavior(false)
                 .push_s3_delete_disabled(false)
                 .build();
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                aws_access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID").unwrap(),
+                aws_secret_access_key: std::env::var("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
+                    .unwrap(),
                 external_id: None,
             });
 

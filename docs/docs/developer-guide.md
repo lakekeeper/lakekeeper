@@ -185,11 +185,11 @@ export LAKEKEEPER_TEST__AZURE_CLIENT_SECRET=<your entra id app registration clie
 # Auth Method 2: Shared Key
 export LAKEKEEPER_TEST__AZURE_STORAGE_SHARED_KEY=<shared key>
 
-export AWS_S3_BUCKET=<your aws s3 bucket>
-export AWS_S3_REGION=<your aws s3 region>
-export AWS_S3_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-export AWS_S3_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-export AWS_S3_STS_ROLE_ARN=arn:aws:iam::123456789012:role/role-name
+export LAKEKEEPER_TEST__AWS_S3_BUCKET=<your aws s3 bucket>
+export LAKEKEEPER_TEST__AWS_S3_REGION=<your aws s3 region>
+export LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+export LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+export LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN=arn:aws:iam::123456789012:role/role-name
 
 # the values below should work with the default minio in our docker-compose
 export LAKEKEEPER_TEST__S3_BUCKET=tests
