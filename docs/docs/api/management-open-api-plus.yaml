@@ -219,6 +219,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListCedarPolicySourcesResponse'
+  /management/v1/permissions/cedar/schema:
+    get:
+      tags:
+        - permissions-cedar
+      summary: Get the currently active Cedar schema.
+      operationId: get_cedar_schema
+      responses:
+        '200':
+          description: Currently active cedar schema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetCedarSchemaResponse'
   /management/v1/permissions/check:
     post:
       tags:
@@ -1825,6 +1838,16 @@ paths:
         - name: sourceIds
           in: query
           description: Filter by source IDs
+          required: false
+          schema:
+            type:
+              - array
+              - 'null'
+            items:
+              type: string
+        - name: providerIds
+          in: query
+          description: Filter by provider IDs
           required: false
           schema:
             type:
@@ -3692,6 +3715,11 @@ components:
           format: int64
           description: 'The validity of the sas token in seconds. Default: 3600.'
           minimum: 0
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
     AzCredential:
       oneOf:
         - type: object
@@ -3733,6 +3761,13 @@ components:
               type: string
               enum:
                 - azure-system-identity
+    AzCredentialType:
+      type: string
+      description: The type of Azure credential.
+      enum:
+        - client-credentials
+        - shared-access-key
+        - azure-system-identity
     BootstrapRequest:
       type: object
       required:
@@ -4349,13 +4384,21 @@ components:
           description: |-
             Project ID in which the role is created.
             Deprecated: Please use the `x-project-id` header instead.
+        provider-id:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+            Must be provided together with `source-id`. Omit both to let the server
+            assign `provider-id = "lakekeeper"` and a fresh UUIDv7 `source-id`.
         source-id:
           type:
             - string
             - 'null'
           description: |-
-            Identifier of the role in an external system (source of truth).
-            `source-id` must be unique within a project.
+            Identifier of the role in the provider.
+            Must be provided together with `provider-id`.
     CreateUserRequest:
       type: object
       properties:
@@ -4707,6 +4750,12 @@ components:
               "universe_domain": "googleapis.com"
             }
         ```
+    GcsCredentialType:
+      type: string
+      description: The type of GCS credential.
+      enum:
+        - service-account-key
+        - gcp-system-identity
     GcsProfile:
       type: object
       required:
@@ -4720,6 +4769,11 @@ components:
             - string
             - 'null'
           description: Subpath in the bucket to use.
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
         sts-enabled:
           type: boolean
           description: |-
@@ -4782,6 +4836,20 @@ components:
             List of JSON formatted Cedar policies.
 
             For schema details, see `<https://docs.cedarpolicy.com/policies/json-format.html>`
+    GetCedarSchemaResponse:
+      type: object
+      required:
+        - schema-fragments
+      properties:
+        schema-fragments:
+          type: object
+          description: |-
+            The currently active Cedar schema fragments.
+            The key is the fragment file path, and the value is the fragment content.
+          additionalProperties:
+            type: string
+          propertyNames:
+            type: string
     GetEndpointStatisticsRequest:
       type: object
       required:
@@ -5233,6 +5301,15 @@ components:
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
+        storage-credential-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageCredentialType'
+              description: |-
+                Best-effort indicator of the storage credential type. When present it
+                reflects the detected credential kind; when absent the warehouse may
+                either have no credential configured or the secret lookup may have
+                failed. Does not contain secret values.
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile used for the warehouse.
@@ -5264,12 +5341,23 @@ components:
               type: string
               enum:
                 - create_table
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the table to create.
             properties:
               type: object
               additionalProperties:
                 type: string
               propertyNames:
                 type: string
+            table_id:
+              type:
+                - string
+                - 'null'
+              format: uuid
+              description: Table ID, if externally provided (e.g. via register).
         - type: object
           required:
             - action
@@ -5278,6 +5366,11 @@ components:
               type: string
               enum:
                 - create_view
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the view to create.
             properties:
               type: object
               additionalProperties:
@@ -5292,6 +5385,11 @@ components:
               type: string
               enum:
                 - create_namespace
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the namespace to create.
             properties:
               type: object
               additionalProperties:
@@ -5390,6 +5488,11 @@ components:
               type: string
               enum:
                 - create_warehouse
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the warehouse to create.
         - type: object
           required:
             - action
@@ -5438,6 +5541,11 @@ components:
               type: string
               enum:
                 - create_role
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the role to create.
         - type: object
           required:
             - action
@@ -5531,6 +5639,7 @@ components:
     LakekeeperServerAction:
       oneOf:
         - type: object
+          description: Can create items inside the server (can create Warehouses).
           required:
             - action
           properties:
@@ -5538,7 +5647,18 @@ components:
               type: string
               enum:
                 - create_project
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the project to create.
+            project_id:
+              type:
+                - string
+                - 'null'
+              description: Project ID, if externally provided.
         - type: object
+          description: Can update all users on this server.
           required:
             - action
           properties:
@@ -5547,6 +5667,7 @@ components:
               enum:
                 - update_users
         - type: object
+          description: Can delete all users on this server.
           required:
             - action
           properties:
@@ -5555,6 +5676,7 @@ components:
               enum:
                 - delete_users
         - type: object
+          description: Can List all users on this server.
           required:
             - action
           properties:
@@ -5563,6 +5685,7 @@ components:
               enum:
                 - list_users
         - type: object
+          description: Can provision user
           required:
             - action
           properties:
@@ -5790,6 +5913,11 @@ components:
               type: string
               enum:
                 - create_namespace
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the namespace to create.
             properties:
               type: object
               additionalProperties:
@@ -6690,6 +6818,9 @@ components:
       type: object
       required:
         - id
+        - ident
+        - provider-id
+        - source-id
         - name
         - project-id
         - created-at
@@ -6706,20 +6837,24 @@ components:
         id:
           type: string
           format: uuid
-          description: Globally unique id of this role
+          description: Globally unique UUID identifier
+        ident:
+          type: string
+          description: |-
+            Composite project-scoped identifier (`provider~source_id`).
+            Unique within a project.
         name:
           type: string
           description: Name of the role
         project-id:
           type: string
           description: Project ID in which the role is created.
+        provider-id:
+          type: string
+          description: Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
         source-id:
-          type:
-            - string
-            - 'null'
-          description: |-
-            Identifier of the role in an external system (source of truth).
-            `source-id` is guaranteed to be unique within a project.
+          type: string
+          description: Identifier of the role in the provider.
         updated-at:
           type:
             - string
@@ -6767,19 +6902,31 @@ components:
         Returned for cross-project role references.
       required:
         - id
+        - ident
+        - provider-id
+        - source-id
         - name
         - project-id
       properties:
         id:
           type: string
           format: uuid
-          description: Globally unique id of this role
+          description: Globally unique UUID identifier
+        ident:
+          type: string
+          description: Composite project-scoped identifier (`provider~source_id`).
         name:
           type: string
           description: Name of the role
         project-id:
           type: string
           description: Project ID in which the role is created.
+        provider-id:
+          type: string
+          description: Provider that owns this role (e.g. `"lakekeeper"`, `"oidc"`).
+        source-id:
+          type: string
+          description: Identifier of the role in the provider.
     RoleRelation:
       type: string
       enum:
@@ -6871,6 +7018,13 @@ components:
                   type: string
                   enum:
                     - cloudflare-r2
+    S3CredentialType:
+      type: string
+      description: The type of S3 credential.
+      enum:
+        - access-key
+        - aws-system-identity
+        - cloudflare-r2
     S3Flavor:
       type: string
       enum:
@@ -6985,8 +7139,23 @@ components:
             Path style:
               - <https://s3.endpoint.com/bucket/bar/a/key>
               - <https://s3.us-east-1.amazonaws.com/bucket/file>
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
         sts-enabled:
           type: boolean
+        sts-endpoint:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            Optional endpoint to use for STS requests.
+            Use this when the STS endpoint differs from the S3 endpoint,
+            which is common with S3-compatible storage systems.
+            If not provided, the S3 `endpoint` is used for STS requests as well.
         sts-role-arn:
           type:
             - string
@@ -7426,6 +7595,134 @@ components:
             }"#).unwrap();
             ```
       description: Storage secret for a warehouse.
+    StorageCredentialType:
+      oneOf:
+        - type: object
+          description: S3 credential type
+          required:
+            - credential-type
+            - type
+          properties:
+            credential-type:
+              $ref: '#/components/schemas/S3CredentialType'
+              description: S3 credential type
+            type:
+              type: string
+              enum:
+                - s3
+        - type: object
+          description: Azure credential type
+          required:
+            - credential-type
+            - type
+          properties:
+            credential-type:
+              $ref: '#/components/schemas/AzCredentialType'
+              description: Azure credential type
+            type:
+              type: string
+              enum:
+                - az
+        - type: object
+          description: GCS credential type
+          required:
+            - credential-type
+            - type
+          properties:
+            credential-type:
+              $ref: '#/components/schemas/GcsCredentialType'
+              description: GCS credential type
+            type:
+              type: string
+              enum:
+                - gcs
+      description: |-
+        The type of storage credential configured for a warehouse, without secret values.
+
+        This is returned in API responses so clients know which credential type
+        was selected (e.g. to restore radio button state in the UI).
+    StorageLayout:
+      oneOf:
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - default
+        - allOf:
+            - $ref: '#/components/schemas/StorageLayoutFlat'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - tabular-only
+        - allOf:
+            - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - full-hierarchy
+      description: |-
+        Controls how namespace and tabular paths are constructed under the warehouse base location.
+
+        - `default` / omitted: one directory per direct-parent namespace, one per tabular, both with `"{uuid}"` segments.
+        - `full-hierarchy`: one directory per namespace level, one per tabular.
+        - `tabular-only`: no namespace directories; all tabulars are placed directly under the base location.
+
+        Segment templates may use `{uuid}` and `{name}` as placeholders.
+      example:
+        type: full-hierarchy
+        namespace: '{name}-{uuid}'
+        tabular: '{name}-{uuid}'
+    StorageLayoutFlat:
+      type: object
+      description: |-
+        No namespace directories; all tabulars are placed directly under the base location.
+
+        For a tabular `my_tabular` (uuid `…002`) the path is: `<base>/<tabular-segment>`.
+        The tabular template must contain `{uuid}` to avoid collisions between tabulars with the same name.
+      required:
+        - tabular
+      properties:
+        tabular:
+          $ref: '#/components/schemas/StorageLayoutTabularTemplate'
+      example:
+        tabular: '{name}-{uuid}'
+    StorageLayoutFullHierarchy:
+      type: object
+      description: |-
+        One directory per namespace level, one per tabular.
+
+        For a tabular `my_tabular` (uuid `…003`) in `grandparent_ns` / `parent_ns` the path is:
+        `<base>/<grandparent-segment>/<parent-segment>/<tabular-segment>`.
+      required:
+        - namespace
+        - tabular
+      properties:
+        namespace:
+          $ref: '#/components/schemas/StorageLayoutNamespaceTemplate'
+        tabular:
+          $ref: '#/components/schemas/StorageLayoutTabularTemplate'
+      example:
+        namespace: '{name}-{uuid}'
+        tabular: '{name}-{uuid}'
+    StorageLayoutNamespaceTemplate:
+      type: string
+      description: 'Template string for namespace path segments. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual namespace UUID and name respectively. The {name} value is percent-encoded (URL percent-encoding) so spaces and special characters are escaped (e.g. "my name" becomes "my%20name"). The {uuid} value is inserted as-is without encoding. Example: "{name}-{uuid}" for a namespace named "my ns" renders to "my%20ns-550e8400-e29b-41d4-a716-446655440001".'
+      example: '{uuid}'
+    StorageLayoutTabularTemplate:
+      type: string
+      description: 'Template string for tabular names. Placeholders {uuid} and {name} (with curly braces) will be replaced with the actual tabular UUID and name respectively. The {name} value is percent-encoded (URL percent-encoding) so spaces and special characters are escaped (e.g. "my tabular" becomes "my%20tabular"). The {uuid} value is inserted as-is without encoding. Example: "{name}-{uuid}" for a tabular named "my tabular" renders to "my%20tabular-550e8400-e29b-41d4-a716-446655440002".'
+      example: '{uuid}'
     StorageProfile:
       oneOf:
         - allOf:
@@ -7836,7 +8133,11 @@ components:
       type: object
       required:
         - source-id
+        - provider-id
       properties:
+        provider-id:
+          type: string
+          description: New Provider ID of the role.
         source-id:
           type: string
           description: New Source ID / External ID of the role.
@@ -7934,7 +8235,7 @@ components:
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
             to avoid data loss. For S3 this means that you may not change the
-            bucket, key prefix, or region.
+            bucket or key prefix. The region may only be changed if an endpoint is set.
     User:
       type: object
       description: User of the catalog
@@ -7979,6 +8280,7 @@ components:
         - create-endpoint
         - config-call-creation
         - update-endpoint
+        - role-provider
     UserOrRole:
       oneOf:
         - type: object
