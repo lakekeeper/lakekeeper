@@ -533,6 +533,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata: table_metadata,
             config: Some(config.config.into()),
             storage_credentials: None,
+            labels: None,
         })
     }
 

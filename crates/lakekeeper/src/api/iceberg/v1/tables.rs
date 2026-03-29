@@ -1158,6 +1158,7 @@ mod test {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            labels: None,
         };
         let load_table_result_response_expected = load_table_result.clone().into_response();
 
