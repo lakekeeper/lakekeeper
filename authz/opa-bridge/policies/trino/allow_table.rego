@@ -90,7 +90,7 @@ allow_table_modify if {
 }
 
 allow_table_metadata if {
-	input.action.operation in ["FilterTables", "ShowColumns", "FilterColumns"]
+	input.action.operation in ["FilterTables", "ShowColumns", "FilterColumns", "ShowCreateTable"]
 	table := input.action.resource.table.tableName
 	is_metadata_table(table) == false
 	catalog := input.action.resource.table.catalogName
