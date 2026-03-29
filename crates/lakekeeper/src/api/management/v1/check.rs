@@ -583,6 +583,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 ViewOrTableInfo::View(info) => {
                     TabularIdentOwned::View(info.tabular_ident().clone())
                 }
+                ViewOrTableInfo::GenericTable(info) => {
+                    TabularIdentOwned::GenericTable(info.tabular_ident().clone())
+                }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
         })
@@ -695,6 +698,10 @@ fn convert_tabular_action(
         }
         ViewOrTableInfo::View(view_info) => {
             view_action.map(|action| ActionOnTableOrView::View((view_info, action)))
+        }
+        ViewOrTableInfo::GenericTable(_) => {
+            // TODO: add generic table authorization
+            None
         }
     }
 }
@@ -1291,6 +1298,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::View(view_id) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *view_id).into());
                             }
+                            TabularId::GenericTable(_) => {
+                                // TODO: add generic table authorization
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1404,6 +1414,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             }
                             TabularIdentOwned::View(view_ident) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, view_ident.clone()).into());
+                            }
+                            TabularIdentOwned::GenericTable(_) => {
+                                // TODO: add generic table authorization
                             }
                         }
                     }

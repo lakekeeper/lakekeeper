@@ -106,6 +106,11 @@ pub async fn new_full_router<
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
 
+    let generic_table_routes = crate::api::v1::generic_tables::router::<
+        crate::server::CatalogServer<C, A, S>,
+        State<A, C, S>,
+    >();
+
     let authorizer = state.v1_state.authz.clone();
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
     let maybe_cors_layer = get_cors_layer(cors_origins);
@@ -127,6 +132,7 @@ pub async fn new_full_router<
     let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        .nest("/v1", generic_table_routes)
         .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body
