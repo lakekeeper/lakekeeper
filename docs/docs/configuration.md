@@ -254,6 +254,8 @@ Please check the [Authorization User Guide](./authorization.md#authorization-wit
 | `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__PATTERN` | <nobr>`^(?<username>[^@]+)`<br>`@(?<domain>.+)$`</nobr> | Regex pattern with named capture groups for a user identity derivation rule. Each named group that matches a non-empty substring becomes a string tag on the `UserDerivedAttributes` entity, accessible in policies via `principal.derived_attributes.hasTag("…")` / `principal.derived_attributes.getTag("…")`. Invalid patterns cause a startup error. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
 | `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__TRANSFORM` | `lowercase` | Optional transformation applied to all captured values before they become Cedar tags. Supported values: `none` (default — keep as-is), `lowercase`, `uppercase`. Because Cedar string comparison is case-sensitive, use `lowercase` to normalize captured values so policies can compare against a known-case literal (e.g. `getTag("domain") == "example.com"`). If different capture groups need different transforms, use separate derivation entries with distinct regexes. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
 
+
+
 **Debug configurations for Cedar**
 
 | Variable                                              | Example | Description |
@@ -570,6 +572,14 @@ LAKEKEEPER__ROLE_PROVIDER_FILE=/etc/lakekeeper/role-providers.toml
 > LAKEKEEPER__ROLE_PROVIDER_FILE=/etc/lakekeeper/role-providers.toml
 > LAKEKEEPER__ROLE_PROVIDER__CORPORATE__BIND_PASSWORD=s3cr3t
 > ```
+
+### Tokio Runtime Metrics
+
+Lakekeeper emits [Tokio Runtime Metrics](https://github.com/tokio-rs/tokio-metrics?tab=readme-ov-file#runtime-metrics) with a default report interval of 30 seconds. If necessary, this interval can be fine-tuned.
+
+| Variable                                                         | Example | Description                                   |
+|------------------------------------------------------------------|---------|-----------------------------------------------|
+| <nobr>`LAKEKEEPER__TOKIO_RUNTIME_METRICS_REPORT_INTERVAL`</nobr> | `30s`   | Length of interval for which Tokio Runtime Metrics are collected and emitted. Default: `30s` |
 
 ### Debug
 

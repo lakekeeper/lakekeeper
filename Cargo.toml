@@ -100,7 +100,11 @@ jwks_client_rs = { version = "0.5.1", default-features = false, features = [
 ] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = [
+    "kubernetes",
+    "axum",
+    "rustls-tls",
+] }
 maplit = "1.0.2"
 md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }
@@ -153,6 +157,10 @@ tokio = { version = "1.41", default-features = false, features = [
     "time",
 ] }
 tokio-util = { version = "^0.7" }
+tokio-metrics = { version = "0.4.9", features = [
+    "metrics-rs-integration",
+    "rt",
+] }
 tower = { version = "^0.5" }
 tower-http = { version = "^0.6", features = [
     "catch-panic",
