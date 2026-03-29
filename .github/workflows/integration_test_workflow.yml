@@ -52,11 +52,11 @@ jobs:
           AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_S3_REGION: ${{ secrets.AWS_S3_REGION }}
-          AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
-          AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
-          AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
+          LAKEKEEPER_TEST__AWS_S3_BUCKET: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_BUCKET }}
+          LAKEKEEPER_TEST__AWS_S3_REGION: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_REGION }}
+          LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID }}
+          LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY }}
+          LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN }}
       - name: Dump DB
         if: always()
         uses: tj-actions/pg-dump@f68d6b3b0a96a30fda60109a19a5d9fb3c536c9c
