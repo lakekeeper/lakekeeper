@@ -440,6 +440,7 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
     LAKEKEEPER__OPENID_AUDIENCE="<Client ID from Client 1>"
     LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from Client 1>"
     LAKEKEEPER__UI__OPENID_SCOPE="openid profile"
+    LAKEKEEPER__UI__OPENID_TOKEN_TYPE="id_token"
     ```
 We are now able to login and bootstrap Lakekeeper.
 

@@ -237,19 +237,22 @@ Authorization is only effective if [Authentication](#authentication) is enabled.
 
 Please check the [Authorization User Guide](./authorization.md#authorization-with-cedar) for more information on Cedar.
 
-| Variable                                                 | Example                                               | Description |
-|----------------------------------------------------------|-------------------------------------------------------|-----|
-| `LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`         | `[/path/to/policies1.cedar,/path/to/policies2.cedar]` | List of local file paths containing Cedar policies in Cedar format (not JSON). |
-| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__LOCAL_FILES`    | `[/path/to/entities1.json,/path/to/entities2.json]`   | List of local JSON file paths containing additional Cedar entities (typically roles). |
-| <nobr>`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`</nobr> | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
-| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM`         | `[my-cm-1, my-cm-2]`                                  | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
-| `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`               | `5`                                                   | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization.md#authorization-with-cedar) for more information. |
-| `LAKEKEEPER__CEDAR__REFRESH_DISABLED`                    | `false`                                               | When set to `true`, disables periodic reloading of policies and entities entirely. Useful in environments where Cedar configuration is known to be static and the polling overhead is undesirable. Default: `false`. |
-| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES`   | `false`                                               | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and does not extract `Lakekeeper::Role` or `Lakekeeper::User` entities from the user's token. When set to `false` (default), Lakekeeper automatically provides `Lakekeeper::Role` and `Lakekeeper::User` entities to Cedar based on information extracted from the user's token. When set to `false`, ensure `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured to specify which claim in the token contains role information. |
-| `LAKEKEEPER__CEDAR__SCHEMA_FILE`                         | `/path/to/custom/schema.cedarschema`                  | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
-| `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE`                | `/path/to/schema-fragment.cedarschema`                | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
-| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`             | `["access_", "access-"]`                              | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization.md#property-based-access-control). |
-| `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED`             | `false`                                               | When `true`, the `global_role_ids: Set<String>` attribute on every `Lakekeeper::User` entity is populated with the `source_id` of every provider-resolved role (token claims, LDAP, etc.). This enables simpler policies such as `principal.global_role_ids.contains("admins")` without needing to specify a `provider_id`. Only meaningful when all configured role providers use globally unique `source_id` values (i.e. no two providers assign the same `source_id` to different roles). When `false` (default), `global_role_ids` is always an empty set. |
+| Variable                                               | Example                                                 | Description |
+|--------------------------------------------------------|---------------------------------------------------------|-----|
+| `LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`       | `[/path/to/policies1.cedar,/path/to/policies2.cedar]`   | List of local file paths containing Cedar policies in Cedar format (not JSON). |
+| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__LOCAL_FILES`  | `[/path/to/entities1.json,/path/to/entities2.json]`     | List of local JSON file paths containing additional Cedar entities (typically roles). |
+| `LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`            | `[my-cm-1, my-cm-2]`                                    | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedar` is treated as a policy source in Cedar format (not JSON). |
+| `LAKEKEEPER__CEDAR__ENTITY_JSON_SOURCES__K8S_CM`       | `[my-cm-1, my-cm-2]`                                    | List of Kubernetes ConfigMap names in the same namespace as Lakekeeper. Every key ending with `.cedarentities.json` is treated as an entity source. |
+| `LAKEKEEPER__CEDAR__REFRESH_INTERVAL_SECS`             | `5`                                                     | Refresh interval in seconds for reloading policies and entities from Kubernetes ConfigMaps and local files. Default: `5` seconds. See [Cedar Authorization](./authorization.md#authorization-with-cedar) for more information. |
+| <nobr>`LAKEKEEPER__CEDAR__REFRESH_DISABLED`</nobr>     | `false`                                                 | When set to `true`, disables periodic reloading of policies and entities entirely. Useful in environments where Cedar configuration is known to be static and the polling overhead is undesirable. Default: `false`. |
+| `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` | `false`                                                 | When set to `true`, Lakekeeper expects all roles and users to be managed externally via entities.json and does not extract `Lakekeeper::Role` or `Lakekeeper::User` entities from the user's token. When set to `false` (default), Lakekeeper automatically provides `Lakekeeper::Role` and `Lakekeeper::User` entities to Cedar based on information extracted from the user's token. When set to `false`, ensure `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured to specify which claim in the token contains role information. |
+| <nobr>`LAKEKEEPER__CEDAR__SCHEMA_FILE`</nobr>          | `/path/to/custom/schema.cedarschema`                    | Path to a custom Cedar schema file that replaces the embedded default schema entirely. Use this only when you need complete control over the schema definition. Your custom schema must maintain compatibility with all Lakekeeper-provided entities (Server, Project, Warehouse, Namespace, Table, View, and optionally User & Role). For most use cases, prefer `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE` to extend the built-in schema. |
+| `LAKEKEEPER__CEDAR__SCHEMA_FRAGMENT_FILE`              | `/path/to/schema-fragment.cedarschema`                  | Path to a Cedar schema fragment file that extends the embedded default schema. This is the recommended approach for adding custom entity types or grouped actions while preserving compatibility with Lakekeeper's built-in schema. The fragment is merged with the default schema at startup. |
+| `LAKEKEEPER__CEDAR__PROPERTY_PARSE_PREFIXES`           | `["access_", "access-"]`                                | List of property key prefixes that trigger entity-reference parsing for ABAC. Table, Namespace, and View properties whose key starts with one of these prefixes are parsed as JSON arrays of `role:` / `role-full:` / `user:` references. Parsed values are exposed in Cedar as `roles: Set<Role>` and `users: Set<User>` on each `ResourcePropertyValue`. Set to `[]` to disable parsing entirely. Default: `["access_", "access-"]`. See [Property-Based Access Control](./authorization.md#property-based-access-control). |
+| `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED`           | `false`                                                 | When `true`, the `global_role_ids: Set<String>` attribute on every `Lakekeeper::User` entity is populated with the `source_id` of every provider-resolved role (token claims, LDAP, etc.). This enables simpler policies such as `principal.global_role_ids.contains("admins")` without needing to specify a `provider_id`. Only meaningful when all configured role providers use globally unique `source_id` values (i.e. no two providers assign the same `source_id` to different roles). When `false` (default), `global_role_ids` is always an empty set. |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__SOURCE`  | `source_id`                                             | Source field for a user identity derivation rule. Supported values: `source_id` (the user's subject in the IdP) or `provider_id` (e.g. `oidc`, `kubernetes`). `<NAME>` is a human-readable key (e.g. `EMAIL_PARTS`) used in error messages. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__PATTERN` | <nobr>`^(?<username>[^@]+)`<br>`@(?<domain>.+)$`</nobr> | Regex pattern with named capture groups for a user identity derivation rule. Each named group that matches a non-empty substring becomes a string tag on the `UserDerivedAttributes` entity, accessible in policies via `principal.derived_attributes.hasTag("…")` / `principal.derived_attributes.getTag("…")`. Invalid patterns cause a startup error. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__TRANSFORM` | `lowercase` | Optional transformation applied to all captured values before they become Cedar tags. Supported values: `none` (default — keep as-is), `lowercase`, `uppercase`. Because Cedar string comparison is case-sensitive, use `lowercase` to normalize captured values so policies can compare against a known-case literal (e.g. `getTag("domain") == "example.com"`). If different capture groups need different transforms, use separate derivation entries with distinct regexes. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
 
 
 
@@ -402,6 +405,17 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
+### Idempotency
+
+Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) specification. When enabled, clients can send an `Idempotency-Key` header on mutation requests to guarantee at-most-once execution. The server advertises support via the `idempotency-key-lifetime` field in the `GET /v1/config` response.
+
+| Variable | Example | Description |
+|---|---|---|
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__ENABLED`</nobr> | `true` | Enable idempotency key support. When enabled, `idempotency-key-lifetime` is advertised in `getConfig`. Default: `true` |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__LIFETIME`</nobr> | `PT30M` | How long idempotency records are kept, in ISO-8601 duration format. This value is advertised to clients. Default: `PT30M` (30 minutes) |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__GRACE_PERIOD`</nobr> | `PT5M` | Grace period added on top of lifetime for clock skew and transit delays, in ISO-8601 duration format. Default: `PT5M` (5 minutes) |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__CLEANUP_TIMEOUT`</nobr> | `PT30S` | Maximum time a background cleanup task may run before being considered dead. If exceeded, the next attempt takes over. Default: `PT30S` (30 seconds) |
+
 ### Audit Logging
 
 Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Audit Logging Guide](./audit-logging.md).
@@ -416,9 +430,10 @@ Authorizers such as `Cedar` support pluggable role providers that resolve a user
 
 ##### Chain settings
 
-| Variable                                                            | Default | Description |
-|---------------------------------------------------------------------|---------|-----|
-| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`</nobr> | `true`  | When `true`, an audit event is emitted whenever a user is not matched by any configured role provider. Useful for detecting misconfigured domain filters. Set to `false` to suppress these events for deployments where some users are intentionally not covered by any provider. |
+| Variable                                                             | Default | Description |
+|----------------------------------------------------------------------|---------|-----|
+| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`</nobr>  | `true`  | When `true`, an audit event is emitted whenever a user is not matched by any configured role provider. Useful for detecting misconfigured domain filters. Set to `false` to suppress these events for deployments where some users are intentionally not covered by any provider. |
+| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_ROLE_ASSIGNMENTS`</nobr> | `false` | When `true`, an audit event listing every resolved role name is emitted after each successful role resolution. Very noisy — intended for debugging role-provider configuration only. See [Logging — Operational Audit Events](./logging.md) for the event schema. |
 
 ##### Token role provider
 
@@ -434,12 +449,12 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 
 **Required fields:**
 
-| Variable                       | Example                          | Description |
-|--------------------------------|----------------------------------|----------|
-| <nobr>`…__TYPE`</nobr>         | `ldap`                           | Provider type. Must be `ldap`. |
-| <nobr>`…__URL`</nobr>          | `ldaps://ldap.example.com:636`   | LDAP server URL. Use `ldap://` for plain-text or STARTTLS, `ldaps://` for TLS. |
+| Variable                       | Example                                | Description |
+|--------------------------------|----------------------------------------|-----|
+| <nobr>`…__TYPE`</nobr>         | `ldap`                                 | Provider type. Must be `ldap`. |
+| <nobr>`…__URL`</nobr>          | `ldaps://ldap.example.com:636`         | LDAP server URL. Use `ldap://` for plain-text or STARTTLS, `ldaps://` for TLS. |
 | <nobr>`…__DOMAINS`</nobr>      | `["example.com","*.corp.example.com"]` | JSON array of domain patterns. Only users whose login name ends with one of these domains are resolved via this provider. Supports `*` (any number of characters) and `?` (exactly one character). |
-| <nobr>`…__USER_BASE_DN`</nobr> | `ou=people,dc=example,dc=com`    | Base DN for the LDAP user search. |
+| <nobr>`…__USER_BASE_DN`</nobr> | `ou=people,dc=example,dc=com`          | Base DN for the LDAP user search. |
 
 **Authentication:**
 

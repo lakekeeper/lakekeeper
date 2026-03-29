@@ -80,6 +80,7 @@ use crate::{
         UpdateWarehouseStorageProfileError, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
         ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
+        idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -876,5 +877,22 @@ impl CatalogStore for super::PostgresBackend {
         project_id: &ProjectId,
     ) -> Result<()> {
         cleanup_task_logs_older_than(&mut *transaction, retention_period, project_id).await
+    }
+
+    // ---------------- Idempotency ----------------
+    async fn check_idempotency_key_impl(
+        warehouse_id: WarehouseId,
+        key: &IdempotencyKey,
+        state: Self::State,
+    ) -> Result<IdempotencyCheck> {
+        Self::check_idempotency_key_impl(warehouse_id, key, state).await
+    }
+
+    async fn try_insert_idempotency_key_impl<'a>(
+        warehouse_id: WarehouseId,
+        info: &IdempotencyInfo,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<bool> {
+        Self::try_insert_idempotency_key_impl(warehouse_id, info, transaction).await
     }
 }

@@ -238,14 +238,17 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 ```
 </details>
 
-**Role provider chain (`operation = "chain_resolve_roles"`):**
+**Role resolution (`operation = "resolve_roles"`):**
 
 | `outcome`                | When emitted                                      |
 |--------------------------|---------------------------------------------------|
 | `no_provider_applicable` | No configured role provider matched this user.    |
+| `roles_resolved`         | At least one role was resolved. Disabled by default — enable with `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_ROLE_ASSIGNMENTS=true`. The `context` contains `role_count`, the full `roles` list, and `sources` showing where each provider's roles came from (`fresh`, `cache_hit`, `stale_fallback`, or `in_request`). |
 | `error`                  | A matched provider failed to resolve roles (e.g. LDAP connection error). The request proceeds with an empty role set. |
 
 The `no_provider_applicable` outcome is enabled by default and can be controlled via `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`. A `no_provider_applicable` outcome for a user that you expect to be covered indicates a misconfigured domain filter or a missing provider. Set the variable to `false` to suppress these events if some users are intentionally not covered.
+
+The `roles_resolved` outcome is **disabled by default** because it fires on every authenticated request and contains the full list of resolved role names. Enable it temporarily to debug role-provider configuration — do not leave it on in production.
 
 The `error` outcome always fires when role resolution fails. It is accompanied by a general application warning in the non-audit log stream (without PII).
 
@@ -257,7 +260,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "timestamp": "2026-03-07T10:00:00.000000Z",
   "level": "INFO",
   "event_source": "audit",
-  "operation": "chain_resolve_roles",
+  "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~unknown@other-domain.com"
@@ -267,6 +270,30 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
     "providers_checked": ["ldap-prod"]
   },
   "message": "No role provider handled user; user will have no provider-assigned roles"
+}
+```
+</details>
+
+<details>
+<summary>Roles resolved (debug)</summary>
+
+```json
+{
+  "timestamp": "2026-03-07T10:00:01.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice@corp.example.com"
+  },
+  "outcome": "roles_resolved",
+  "context": {
+    "role_count": 2,
+    "roles": ["my-ldap~devs", "my-ldap~admins"],
+    "sources": {"my-ldap": "cache_hit", "oidc": "in_request"}
+  },
+  "message": "Resolved role assignments for user"
 }
 ```
 </details>

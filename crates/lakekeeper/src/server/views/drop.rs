@@ -1,19 +1,24 @@
 use std::sync::Arc;
 
+use http::StatusCode;
+use iceberg_ext::catalog::rest::ErrorModel;
+
 use crate::{
     api::{
         ApiContext,
+        endpoints::EndpointFlat,
         iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
-        State, TabularId, TabularListFlags, Transaction,
+        AuthZViewInfo as _, CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, NamedEntity,
+        Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedView},
+        idempotency::IdempotencyInfo,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -37,7 +42,17 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     validate_table_or_view_ident(view)?;
 
-    // ------------------- AUTHZ -------------------
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            return Ok(());
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
 
     let event_ctx = APIEventContext::for_view(
@@ -103,15 +118,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                     event_ctx.resolved().view.view_ident()
                 );
             }
-            t.commit().await?;
-
-            authorizer
-                .delete_view(warehouse_id, view_id)
-                .await
-                .inspect_err(|e| {
-                    tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
-                })
-                .ok();
+            // authorizer cleanup happens after commit (below)
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
@@ -147,15 +154,50 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                 "Queued expiration task for dropped view '{}' with id '{view_id}' in warehouse {warehouse_id}.",
                 event_ctx.resolved().view.view_ident()
             );
-            t.commit().await?;
         }
     }
 
-    let drop_params = DropParams {
+    // Insert idempotency key and commit — shared across both delete profiles.
+    if let Some(ref key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1DropView)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
+    t.commit().await?;
+
+    // Post-commit: best-effort authz cleanup for hard deletes
+    if matches!(
+        warehouse.tabular_delete_profile,
+        TabularDeleteProfile::Hard {}
+    ) {
+        authorizer
+            .delete_view(warehouse_id, view_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
+            })
+            .ok();
+    }
+
+    event_ctx.emit_view_dropped_async(DropParams {
         purge_requested,
         force,
-    };
-    event_ctx.emit_view_dropped_async(drop_params);
+    });
 
     Ok(())
 }

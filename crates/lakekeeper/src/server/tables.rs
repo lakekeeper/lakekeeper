@@ -35,6 +35,7 @@ use super::{
 use crate::{
     WarehouseId, XXHashSet,
     api::{
+        endpoints::EndpointFlat,
         iceberg::{
             types::DropParams,
             v1::{
@@ -54,10 +55,11 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
-        CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
-        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
+        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
+        NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
+        TableInfo, TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction,
+        WarehouseStatus,
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
             AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -70,6 +72,7 @@ use crate::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
             context::{ResolvedNamespace, ResolvedTable},
         },
+        idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
         storage::StoragePermissions,
@@ -86,6 +89,77 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
+
+/// Replay a load-table operation for idempotency.
+///
+/// Used when an idempotency check detects a replay for operations that
+/// return a `LoadTableResult` (e.g. `createTable`, `registerTable`).
+async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    parameters: TableParameters,
+    data_access: DataAccessMode,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+    operation_name: &str,
+) -> Result<LoadTableResult> {
+    let load_result = load_table::load_table::<C, A, S>(
+        parameters,
+        LoadTableRequest::builder().data_access(data_access).build(),
+        state,
+        request_metadata,
+    )
+    .await
+    .map_err(|e| {
+        ErrorModel::internal(
+            format!("Failed to replay idempotent {operation_name}: {e}"),
+            "IdempotencyReplayFailed",
+            None,
+        )
+    })?;
+    match load_result {
+        LoadTableResultOrNotModified::LoadTableResult(r) => Ok(r),
+        LoadTableResultOrNotModified::NotModifiedResponse(_) => {
+            // Should not happen: replay uses LoadTableRequest::default() with no
+            // If-None-Match header. If it does, treat as an internal error.
+            Err(ErrorModel::internal(
+                "Unexpected NotModified during idempotency replay",
+                "IdempotencyReplayFailed",
+                None,
+            )
+            .into())
+        }
+    }
+}
+
+/// Replay a commit-table operation for idempotency.
+///
+/// Used when an idempotency check detects a replay for `updateTable`.
+async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    parameters: TableParameters,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+) -> Result<CommitTableResponse> {
+    // CommitTableResponse doesn't include storage credentials, so default access mode is fine.
+    let r = replay_load_table::<C, A, S>(
+        parameters,
+        DataAccessMode::default(),
+        state,
+        request_metadata,
+        "updateTable",
+    )
+    .await?;
+    let metadata_location = r.metadata_location.ok_or_else(|| {
+        ErrorModel::internal(
+            "Missing metadata_location during idempotency replay",
+            "IdempotencyReplayFailed",
+            None,
+        )
+    })?;
+    Ok(CommitTableResponse {
+        metadata_location,
+        metadata: r.metadata,
+        config: None,
+    })
+}
 
 #[async_trait::async_trait]
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
@@ -200,7 +274,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let metadata_location =
             parse_location(&request.metadata_location, StatusCode::BAD_REQUEST)?;
 
-        // ------------------- AUTHZ -------------------
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                let load_params = TableParameters {
+                    prefix: parameters.prefix.clone(),
+                    table: table_ident,
+                };
+                return replay_load_table::<C, A, S>(
+                    load_params,
+                    DataAccessMode::default(),
+                    state,
+                    request_metadata,
+                    "registerTable",
+                )
+                .await;
+            }
+        }
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
         let authorizer = state.v1_state.authz.clone();
 
         let event_ctx = APIEventContext::for_namespace(
@@ -363,18 +458,40 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
+        // Insert idempotency key in the same transaction.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1RegisterTable)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t_write.transaction(),
+            )
+            .await?
+        {
+            // Concurrent request committed the same key.
+            t_write
+                .rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         let mut auth_needs_delete = false;
         // Delete the previous table from authorizer if it exists and differs from the new one
         if let Some(previous_table_to_drop) = &previous_table_to_drop {
             if previous_table_to_drop.tabular_id != tabular_id {
                 auth_needs_delete = true;
-                // Only create authorization for the new table if it's different
                 authorizer
                     .create_table(request_metadata, warehouse_id, tabular_id, namespace_id)
                     .await?;
             }
         } else {
-            // No previous table, need to create authorization
             authorizer
                 .create_table(request_metadata, warehouse_id, tabular_id, namespace_id)
                 .await?;
@@ -386,13 +503,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // If we need to delete the previous table from authorizer
         if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
             authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
-                    |e| {
-                        tracing::warn!(
-                            "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
-                            previous_table.tabular_id, e.error
-                        );
-                    }
-                }).ok();
+                |e| {
+                    tracing::warn!(
+                        "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
+                        previous_table.tabular_id, e.error
+                    );
+                }
+            }).ok();
         }
 
         // If a staged table was overwritten, delete it from authorizer
@@ -519,38 +636,56 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
+        // ------------------- VALIDATIONS -------------------
         request.identifier = Some(determine_table_ident(
             &parameters.table,
             request.identifier.as_ref(),
         )?);
-        let t = commit_tables_with_authz(
-            parameters.prefix,
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        let idempotency = idempotency_key.map(|key| IdempotencyInfo {
+            key,
+            endpoint: EndpointFlat::CatalogV1UpdateTable,
+            http_status: StatusCode::OK,
+        });
+        let result = commit_tables_with_authz(
+            parameters.prefix.clone(),
             CommitTransactionRequest {
                 table_changes: vec![request],
             },
-            state,
-            request_metadata,
+            state.clone(),
+            request_metadata.clone(),
+            idempotency.as_ref(),
         )
         .await?;
-        let mut it = t.iter();
-        let Some(item) = it.next() else {
-            return Err(ErrorModel::internal(
-                "No new metadata returned by backend",
-                "NoNewMetadataReturned",
-                None,
-            )
-            .into());
-        };
-        debug_assert!(
-            it.next().is_none(),
-            "commit_table must return exactly one CommitContext"
-        );
 
-        Ok(CommitTableResponse {
-            metadata_location: item.new_metadata_location.to_string(),
-            metadata: item.new_metadata.clone(),
-            config: None,
-        })
+        match result {
+            CommitTablesResult::Replay => {
+                replay_commit_table::<C, A, S>(parameters, state, request_metadata).await
+            }
+            CommitTablesResult::Committed(t) => {
+                let mut it = t.iter();
+                let Some(item) = it.next() else {
+                    return Err(ErrorModel::internal(
+                        "No new metadata returned by backend",
+                        "NoNewMetadataReturned",
+                        None,
+                    )
+                    .into());
+                };
+                debug_assert!(
+                    it.next().is_none(),
+                    "commit_table must return exactly one CommitContext"
+                );
+
+                Ok(CommitTableResponse {
+                    metadata_location: item.new_metadata_location.to_string(),
+                    metadata: item.new_metadata.clone(),
+                    config: None,
+                })
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -581,7 +716,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         validate_table_or_view_ident(table)?;
 
-        // ------------------- AUTHZ -------------------
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                return Ok(());
+            }
+        }
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
         let authorizer = state.v1_state.authz;
 
         let event_ctx = APIEventContext::for_table(
@@ -654,14 +799,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
                     tracing::debug!("Queued purge task for dropped table '{table_id}'.");
                 }
-                t.commit().await?;
-                authorizer
-                    .delete_table(warehouse_id, table_id)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
-                    })
-                    .ok();
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
@@ -695,8 +832,41 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
 
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
-                t.commit().await?;
             }
+        }
+
+        // Insert idempotency key and commit — shared across both delete profiles.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1DropTable)
+                    .http_status(StatusCode::NO_CONTENT)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+        t.commit().await?;
+
+        // Post-commit: best-effort authz cleanup for hard deletes
+        if matches!(delete_profile, TabularDeleteProfile::Hard {}) {
+            authorizer
+                .delete_table(warehouse_id, table_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
+                })
+                .ok();
         }
 
         event_ctx.emit_table_dropped_async(DropParams {
@@ -761,9 +931,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
-        tracing::debug!("Successfully committed {} table(s)", contexts.len());
-        Ok(())
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        let idempotency = idempotency_key.map(|key| IdempotencyInfo {
+            key,
+            endpoint: EndpointFlat::CatalogV1CommitTransaction,
+            http_status: StatusCode::NO_CONTENT,
+        });
+        let result = commit_tables_with_authz(
+            prefix,
+            request,
+            state,
+            request_metadata,
+            idempotency.as_ref(),
+        )
+        .await?;
+        match result {
+            CommitTablesResult::Replay => Ok(()),
+            CommitTablesResult::Committed(contexts) => {
+                tracing::debug!("Successfully committed {} table(s)", contexts.len());
+                Ok(())
+            }
+        }
     }
 }
 
@@ -902,6 +1091,7 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
     request: CommitTransactionRequest,
     event_ctx: APIEventCommitContext,
     state: ApiContext<State<A, C, S>>,
+    idempotency: Option<&IdempotencyInfo>,
 ) -> Result<Arc<Vec<CommitContext>>> {
     let include_deleted = false;
     let warehouse_id = event_ctx.user_provided_entity().warehouse_id;
@@ -909,9 +1099,15 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
     // Start the retry loop
     let mut attempt = 0;
     loop {
-        let result =
-            try_commit_tables::<C, A, S>(&request, &warehouse, &event_ctx, &state, include_deleted)
-                .await;
+        let result = try_commit_tables::<C, A, S>(
+            &request,
+            &warehouse,
+            &event_ctx,
+            &state,
+            include_deleted,
+            idempotency,
+        )
+        .await;
 
         match result {
             Ok(commits) => {
@@ -975,12 +1171,13 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     request: CommitTransactionRequest,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-) -> Result<Arc<Vec<CommitContext>>> {
+    idempotency: Option<&IdempotencyInfo>,
+) -> Result<CommitTablesResult> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     commit_tables_validate(&request)?;
 
-    // ------------------- AUTHZ -------------------
+    // ------------------- AUTHZ (+ parallel idempotency check) -------------------
     let authorizer = state.v1_state.authz.clone();
     let request_metadata = Arc::new(request_metadata);
 
@@ -1009,16 +1206,33 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         actions.clone(),
     );
 
-    let authz_result = commit_tables_authz::<A, C>(
-        authorizer,
-        warehouse_id,
-        &event_ctx.user_provided_entity().tables,
-        &actions,
-        state.v1_state.catalog.clone(),
-        event_ctx.request_metadata(),
-    )
-    .await;
+    // Run authz and idempotency check in parallel.
+    let (authz_result, idempotency_check) = tokio::join!(
+        commit_tables_authz::<A, C>(
+            authorizer,
+            warehouse_id,
+            &event_ctx.user_provided_entity().tables,
+            &actions,
+            state.v1_state.catalog.clone(),
+            event_ctx.request_metadata(),
+        ),
+        async {
+            if let Some(info) = idempotency {
+                C::check_idempotency_key(warehouse_id, &info.key, state.v1_state.catalog.clone())
+                    .await
+            } else {
+                Ok(IdempotencyCheck::NewRequest)
+            }
+        }
+    );
+    let idempotency_check = idempotency_check?;
     let (event_ctx, authz_result) = event_ctx.emit_authz(authz_result)?;
+
+    // If the idempotency check determined this is a replay, return early.
+    if idempotency_check.is_replay() {
+        return Ok(CommitTablesResult::Replay);
+    }
+
     let warehouse = authz_result.warehouse;
     let table_infos = authz_result
         .table_infos_with_actions
@@ -1028,13 +1242,38 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     let event_ctx = event_ctx.resolve(table_infos);
 
     // ------------------- BUSINESS LOGIC -------------------
-    commit_tables_inner::<C, _, _>(warehouse, request, event_ctx, state).await
+    let commits =
+        commit_tables_inner::<C, _, _>(warehouse, request, event_ctx, state, idempotency).await?;
+    Ok(CommitTablesResult::Committed(commits))
 }
 
 struct CommitAuthorizationResult<'a> {
     table_infos_with_actions:
         HashMap<TableIdent, (Arc<TabularInfo<TableId>>, &'a CatalogTableAction)>,
     warehouse: Arc<ResolvedWarehouse>,
+}
+
+/// Result of `commit_tables_with_authz`, indicating whether the operation
+/// was committed or is a replay of a previously committed idempotent request.
+#[derive(Debug)]
+enum CommitTablesResult {
+    /// The commit was executed successfully.
+    Committed(Arc<Vec<CommitContext>>),
+    /// An idempotency check determined this is a replay of an already-committed
+    /// request. The caller must reconstruct the response appropriately.
+    Replay,
+}
+
+impl CommitTablesResult {
+    /// Unwrap the committed result, panicking if this is a replay.
+    /// Only intended for use in tests.
+    #[cfg(test)]
+    fn unwrap_committed(self) -> Arc<Vec<CommitContext>> {
+        match self {
+            Self::Committed(c) => c,
+            Self::Replay => panic!("Expected CommitTablesResult::Committed, got Replay"),
+        }
+    }
 }
 
 async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
@@ -1133,6 +1372,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     event_ctx: &APIEventCommitContext,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
+    idempotency: Option<&IdempotencyInfo>,
 ) -> Result<Arc<Vec<CommitContext>>> {
     let warehouse_id = warehouse.warehouse_id;
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
@@ -1289,6 +1529,20 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             transaction.transaction(),
         )
         .await?;
+
+        // Insert idempotency key in the same transaction.
+        if let Some(info) = idempotency
+            && !C::try_insert_idempotency_key(warehouse_id, info, transaction.transaction()).await?
+        {
+            transaction
+                .rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
 
         transaction.commit().await?;
         Result::<_, IcebergErrorResponse>::Ok(())
@@ -2085,9 +2339,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2170,9 +2426,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2336,6 +2594,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2398,9 +2657,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2490,6 +2751,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2544,6 +2806,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2589,9 +2852,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2638,9 +2903,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2790,6 +3057,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await;
 
@@ -2952,6 +3220,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2989,6 +3258,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3043,6 +3313,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3129,6 +3400,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3196,6 +3468,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3257,6 +3530,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3299,6 +3573,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();

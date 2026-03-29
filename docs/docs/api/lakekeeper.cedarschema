@@ -120,7 +120,26 @@ namespace Lakekeeper {
     provider_id: String,
     // The ID of this user in its authentication provider
     source_id: String,
+    // Derived identity attributes, populated from configured regex derivations.
+    // Configured via `LAKEKEEPER__CEDAR__USER_DERIVATIONS`.
+    // Each derivation matches a regex with named capture groups against a source
+    // field (source_id, provider_id). Named groups become string tags on this
+    // entity.
+    //
+    // Optional — only present when user derivations are configured.
+    //
+    // Access in policies (guard with has() since the field is optional):
+    //   principal has derived_attributes &&
+    //   principal.derived_attributes.hasTag("username") &&
+    //   principal.derived_attributes.getTag("username")
+    derived_attributes?: UserDerivedAttributes,
   };
+
+  // Derived identity attributes for a User, populated from configurable regex
+  // derivations (see `LAKEKEEPER__CEDAR__USER_DERIVATIONS`).
+  // Tags are keyed by regex named capture group names with String values.
+  // ID: same as the owning User entity ID (1:1 relationship).
+  entity UserDerivedAttributes = {} tags String;
 
   // Roles in Lakekeeper are scoped to projects.
   // ID: "<project-id>/<provider_id>~<source_id>"

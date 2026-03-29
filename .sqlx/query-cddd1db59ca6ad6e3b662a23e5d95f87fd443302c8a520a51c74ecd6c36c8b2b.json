@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT http_status\n            FROM idempotency_record\n            WHERE warehouse_id = $1 AND idempotency_key = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "http_status",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cddd1db59ca6ad6e3b662a23e5d95f87fd443302c8a520a51c74ecd6c36c8b2b"
+}

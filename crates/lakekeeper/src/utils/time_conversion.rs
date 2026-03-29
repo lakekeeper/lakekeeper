@@ -68,6 +68,11 @@ pub mod iso8601_duration_serde;
 /// ```
 pub mod iso8601_option_duration_serde;
 
+/// Serialization support for `std::time::Duration` as ISO 8601 duration strings.
+///
+/// Like [`iso8601_duration_serde`], but for `std::time::Duration` (always non-negative).
+pub mod iso8601_std_duration_serde;
+
 /// Converts an ISO 8601 duration to a `chrono::Duration`.
 ///
 /// # Arguments
@@ -119,6 +124,72 @@ pub fn iso_8601_duration_to_chrono(
         }
         iso8601::Duration::Weeks(w) => Ok(chrono::Duration::weeks(i64::from(*w))),
     }
+}
+
+/// Converts an ISO 8601 duration to a `std::time::Duration`.
+///
+/// Like [`iso_8601_duration_to_chrono`], but returns a `std::time::Duration` which
+/// is inherently non-negative.
+///
+/// # Errors
+/// Returns an error if the duration contains years or months.
+pub fn iso_8601_duration_to_std(
+    duration: &iso8601::Duration,
+) -> Result<std::time::Duration, ErrorModel> {
+    let chrono = iso_8601_duration_to_chrono(duration)?;
+    chrono.to_std().map_err(|_| {
+        ErrorModel::bad_request(
+            "Negative durations are not supported",
+            "InvalidDuration",
+            None,
+        )
+    })
+}
+
+/// Converts a `std::time::Duration` to an ISO 8601 duration string.
+///
+/// `std::time::Duration` is always non-negative, so this cannot fail for that reason.
+#[must_use]
+pub fn std_duration_to_iso_8601_string(duration: &std::time::Duration) -> String {
+    use std::fmt::Write;
+    let total_secs = duration.as_secs();
+    let millis = duration.subsec_millis();
+
+    // If divisible by weeks, use weeks representation
+    if total_secs != 0 && total_secs.is_multiple_of(7 * 24 * 3600) && millis == 0 {
+        let weeks = total_secs / (7 * 24 * 3600);
+        return format!("P{weeks}W");
+    }
+
+    let days = total_secs / 86400;
+    let hours = (total_secs % 86400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+
+    let mut s = String::from("P");
+    if days > 0 {
+        let _ = write!(s, "{days}D");
+    }
+    if hours > 0 || minutes > 0 || seconds > 0 || millis > 0 {
+        s.push('T');
+        if hours > 0 {
+            let _ = write!(s, "{hours}H");
+        }
+        if minutes > 0 {
+            let _ = write!(s, "{minutes}M");
+        }
+        if seconds > 0 || millis > 0 {
+            if millis > 0 {
+                let _ = write!(s, "{seconds}.{millis:03}S");
+            } else {
+                let _ = write!(s, "{seconds}S");
+            }
+        }
+    }
+    if s == "P" {
+        s.push_str("T0S");
+    }
+    s
 }
 
 /// Converts a `chrono::Duration` to an ISO 8601 duration.
