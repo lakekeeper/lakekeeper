@@ -1465,12 +1465,17 @@ mod tests {
             crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
-                    let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
-                    let region = std::env::var("AWS_S3_REGION").unwrap();
-                    let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
+                    let bucket = std::env::var("LAKEKEEPER_TEST__AWS_S3_BUCKET").unwrap();
+                    let region = std::env::var("LAKEKEEPER_TEST__AWS_S3_REGION").unwrap();
+                    let sts_role_arn =
+                        std::env::var("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN").unwrap();
                     let cred: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-                        aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                        aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                        aws_access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID")
+                            .unwrap(),
+                        aws_secret_access_key: std::env::var(
+                            "LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY",
+                        )
+                        .unwrap(),
                         external_id: None,
                     })
                     .into();
