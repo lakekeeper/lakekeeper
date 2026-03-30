@@ -356,13 +356,13 @@ async fn serve_inner<
 
     // Metrics server
     let (layer, metrics_future) = crate::metrics::get_axum_layer_and_install_recorder(
-        CONFIG.metrics_port,
+        CONFIG.metrics.port,
         cancellation_token.clone(),
     )
     .map_err(|e| {
         anyhow!(e).context(format!(
             "Failed to start metrics server on port: {}",
-            CONFIG.metrics_port
+            CONFIG.metrics.port
         ))
     })?;
 

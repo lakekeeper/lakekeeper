@@ -62,11 +62,11 @@ This contrasts with the Postgres connection: if Postgres becomes unreachable, th
 
 ## Prometheus Integration
 
-Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS_PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`.
+Lakekeeper listens on `LAKEKEEPER__BIND_IP:LAKEKEEPER__METRICS__PORT` (defaults: `0.0.0.0:9000`). The bind address `0.0.0.0` means "listen on all interfaces" — it is not a valid scrape target. Configure Prometheus to scrape a reachable address such as `http://localhost:9000/metrics` or `http://<service-or-pod-ip>:9000/metrics`.
 
 | Variable                                                      | Description  |
 |---------------------------------------------------------------|--------------|
-| <code class="selectable">LAKEKEEPER__<wbr>METRICS_PORT</code> | Port Lakekeeper listens on for the metrics endpoint (default `9000`) |
+| <code class="selectable">LAKEKEEPER__<wbr>METRICS__PORT</code> | Port Lakekeeper listens on for the metrics endpoint (default `9000`) |
 | <code class="selectable">LAKEKEEPER__<wbr>BIND_IP</code>      | Listener bind address for metrics, REST API, and Management API (default `0.0.0.0`; use a specific IP to restrict access) |
 
 ```yaml title="Example Prometheus scrape configuration"

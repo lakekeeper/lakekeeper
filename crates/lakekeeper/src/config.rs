@@ -14,6 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
+use figment::value::Uncased;
 use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -42,9 +43,24 @@ fn get_config() -> DynAppConfig {
 
     let file_keys = &["kafka_config"];
 
+    let config_keys_map = &[("METRICS_PORT", "METRICS__PORT")];
+
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        let env = figment::providers::Env::prefixed(prefix).split("__");
+        let env = figment::providers::Env::prefixed(prefix)
+            .map(|env_key| {
+                config_keys_map
+                    .iter()
+                    .find_map(|(k, v)| {
+                        if *k == env_key {
+                            Some(Uncased::from_borrowed(v))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(env_key.into())
+            })
+            .split("__");
         config = config
             .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
             .merge(env);
@@ -151,8 +167,6 @@ pub struct DynAppConfig {
     /// This is used as the "uri" and "s3.signer.url"
     /// while generating the Catalog Config
     pub base_uri: Option<url::Url>,
-    /// Port under which we serve metrics
-    pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
     /// Bind IP the server listens on.
@@ -323,15 +337,8 @@ pub struct DynAppConfig {
     pub pagination_size_max: u32,
 
     // ------------- Metrics -------------
-    /// Interval to report Tokio Runtime Metrics
-    ///
-    /// Accepts a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
-    /// milliseconds
-    #[serde(
-        deserialize_with = "seconds_to_std_duration",
-        serialize_with = "serialize_std_duration_as_ms"
-    )]
-    pub tokio_runtime_metrics_report_interval: Duration,
+    #[serde(default)]
+    pub(crate) metrics: Metrics,
 
     // ------------- Stats -------------
     /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
@@ -753,11 +760,40 @@ impl std::default::Default for RoleCache {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct Metrics {
+    /// Port under which to serve metrics
+    ///
+    /// default: 9000
+    pub(crate) port: u16,
+
+    /// Interval to report Tokio Runtime metrics
+    ///
+    /// Accepts a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds
+    ///
+    /// default: 30s
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub(crate) tokio_runtime_report_interval: Duration,
+}
+
+impl std::default::Default for Metrics {
+    fn default() -> Self {
+        Self {
+            port: 9000,
+            tokio_runtime_report_interval: Duration::from_secs(30),
+        }
+    }
+}
+
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
             base_uri: None,
-            metrics_port: 9000,
             enable_default_project: true,
             use_x_forwarded_headers: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -821,7 +857,7 @@ impl Default for DynAppConfig {
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
-            tokio_runtime_metrics_report_interval: Duration::from_secs(30),
+            metrics: Metrics::default(),
             endpoint_stat_flush_interval: Duration::from_secs(30),
             serve_swagger_ui: true,
             skip_storage_validation: false,
@@ -1751,6 +1787,58 @@ mod test {
             assert!(config.idempotency.enabled);
             assert_eq!(config.idempotency.lifetime, Duration::from_secs(15 * 60));
             assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_metrics_default_values_as_expected() {
+        figment::Jail::expect_with(|_| {
+            let config = get_config();
+            assert_eq!(config.metrics.port, 9000);
+            assert_eq!(
+                config.metrics.tokio_runtime_report_interval,
+                Duration::from_secs(30),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_metrics_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
+            jail.set_env(
+                "LAKEKEEPER_TEST__METRICS__TOKIO_RUNTIME_REPORT_INTERVAL",
+                "100ms",
+            );
+            let config = get_config();
+            assert_eq!(config.metrics.port, 2);
+            assert_eq!(
+                config.metrics.tokio_runtime_report_interval,
+                Duration::from_millis(100),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_flat_metrics_port_config_is_mapped() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS_PORT", "1");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 1);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_nested_metrics_port_config_takes_precedence() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS_PORT", "1");
+            jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 2);
             Ok(())
         });
     }
