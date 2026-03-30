@@ -1988,6 +1988,7 @@ pub mod v1 {
             match ident {
                 TabularId::Table(_) => TabularType::Table,
                 TabularId::View(_) => TabularType::View,
+                TabularId::GenericTable(_) => TabularType::GenericTable,
             }
         }
     }
@@ -1999,6 +2000,7 @@ pub mod v1 {
     pub enum TabularType {
         Table,
         View,
+        GenericTable,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]

@@ -70,6 +70,9 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
             TabularId::View(id) => {
                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, id).into());
             }
+            TabularId::GenericTable(_) => {
+                // TODO: add generic table authorization
+            }
         }
     }
 
