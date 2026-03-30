@@ -6934,8 +6934,8 @@ components:
                 let cred: StorageCredential = serde_json::from_str(r#"{
                     "type": "s3",
                     "credential-type": "access-key",
-                    "access-key-id": "minio-root-user",
-                    "secret-access-key": "minio-root-password"
+                    "aws-access-key-id": "minio-root-user",
+                    "aws-secret-access-key": "minio-root-password"
                   }"#).unwrap();
                 ```
             - type: object
@@ -6957,8 +6957,8 @@ components:
             let cred: StorageCredential = serde_json::from_str(r#"{
                 "type": "s3",
                 "credential-type": "access-key",
-                "access-key-id": "minio-root-user",
-                "secret-access-key": "minio-root-password"
+                "aws-access-key-id": "minio-root-user",
+                "aws-secret-access-key": "minio-root-password"
               }"#).unwrap();
             ```
         - allOf:
