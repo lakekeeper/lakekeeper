@@ -503,13 +503,13 @@ mod test {
             namespace: ns.namespace.clone(),
         };
 
-        // Create 50 views (with properties via create_view_request) to increase the
-        // chance of PostgreSQL choosing a join strategy that reorders rows.
-        let n_views: usize = 50;
+        // Create 300 views (with properties via create_view_request) to match the
+        // bug report scenario (~300 views, pagination breaks at ~43+ per page).
+        let n_views: usize = 300;
         for i in 0..n_views {
             CatalogServer::create_view(
                 ns_params.clone(),
-                create_view_request(Some(&format!("view-{i:03}")), None),
+                create_view_request(Some(&format!("view-{i:04}")), None),
                 ctx.clone(),
                 DataAccess {
                     vended_credentials: true,
@@ -522,7 +522,7 @@ mod test {
         }
 
         // Paginate through all views with a small page size
-        let page_size = 7;
+        let page_size = 100;
         let mut all_names: Vec<String> = Vec::new();
         let mut page_token = PageToken::NotSpecified;
         let mut pages: usize = 0;
