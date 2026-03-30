@@ -1249,11 +1249,11 @@ mod tests {
     #[test]
     fn test_redact_s3_access_key() {
         let secrets: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id: "
+            access_key_id: "
                 AKIAIOSFODNN7EXAMPLE
             "
             .to_string(),
-            aws_secret_access_key: "
+            secret_access_key: "
                 wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
             "
             .to_string(),
@@ -1327,8 +1327,8 @@ mod tests {
         assert_eq!(
             secret,
             StorageCredential::S3(S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
-                aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+                secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
                 external_id: None
             }))
         );
@@ -1470,9 +1470,9 @@ mod tests {
                     let sts_role_arn =
                         std::env::var("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN").unwrap();
                     let cred: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-                        aws_access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID")
+                        access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID")
                             .unwrap(),
-                        aws_secret_access_key: std::env::var(
+                        secret_access_key: std::env::var(
                             "LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY",
                         )
                         .unwrap(),

@@ -317,16 +317,16 @@ pub(crate) mod test {
         let key_prefix = format!("test_prefix-{}", Uuid::now_v7());
         let bucket = std::env::var("LAKEKEEPER_TEST__S3_BUCKET").unwrap();
         let region = std::env::var("LAKEKEEPER_TEST__S3_REGION").unwrap_or("local".into());
-        let aws_access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
-        let aws_secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
+        let access_key_id = std::env::var("LAKEKEEPER_TEST__S3_ACCESS_KEY").unwrap();
+        let secret_access_key = std::env::var("LAKEKEEPER_TEST__S3_SECRET_KEY").unwrap();
         let endpoint: url::Url = std::env::var("LAKEKEEPER_TEST__S3_ENDPOINT")
             .unwrap()
             .parse()
             .unwrap();
 
         let cred: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id,
-            aws_secret_access_key,
+            access_key_id,
+            secret_access_key,
             external_id: None,
         })
         .into();
