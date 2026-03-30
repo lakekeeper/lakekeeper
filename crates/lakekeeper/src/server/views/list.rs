@@ -473,7 +473,7 @@ mod test {
     ///
     /// The `list_tabulars` query uses a CTE with `ORDER BY ... LIMIT` to select rows,
     /// then LEFT JOINs view/table properties in the outer SELECT. Without an ORDER BY
-    /// on the outer SELECT, PostgreSQL may return rows in a different order than the CTE,
+    /// on the outer SELECT, `PostgreSQL` may return rows in a different order than the CTE,
     /// causing the next-page-token (derived from the last returned row) to point to the
     /// wrong cursor position — leading to overlapping/duplicate results on subsequent pages.
     #[sqlx::test]
@@ -505,7 +505,7 @@ mod test {
 
         // Create 50 views (with properties via create_view_request) to increase the
         // chance of PostgreSQL choosing a join strategy that reorders rows.
-        let n_views = 50;
+        let n_views: usize = 50;
         for i in 0..n_views {
             CatalogServer::create_view(
                 ns_params.clone(),
@@ -525,7 +525,7 @@ mod test {
         let page_size = 7;
         let mut all_names: Vec<String> = Vec::new();
         let mut page_token = PageToken::NotSpecified;
-        let mut pages = 0;
+        let mut pages: usize = 0;
 
         loop {
             let page = CatalogServer::list_views(
@@ -557,7 +557,7 @@ mod test {
         // Must have all views with no duplicates
         assert_eq!(
             all_names.len(),
-            n_views as usize,
+            n_views,
             "Expected {n_views} total views across all pages, got {}",
             all_names.len()
         );
@@ -567,10 +567,7 @@ mod test {
             unique_names.len(),
             all_names.len(),
             "Found duplicate view names across pages: {:?}",
-            all_names
-                .iter()
-                .duplicates()
-                .collect::<Vec<_>>()
+            all_names.iter().duplicates().collect::<Vec<_>>()
         );
     }
 }
