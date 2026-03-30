@@ -768,6 +768,21 @@ pub(crate) struct Metrics {
     /// default: 9000
     pub(crate) port: u16,
 
+    pub(crate) tokio: Tokio,
+}
+
+impl std::default::Default for Metrics {
+    fn default() -> Self {
+        Self {
+            port: 9000,
+            tokio: Tokio::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct Tokio {
     /// Interval to report Tokio Runtime metrics
     ///
     /// Accepts a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
@@ -778,14 +793,13 @@ pub(crate) struct Metrics {
         deserialize_with = "seconds_to_std_duration",
         serialize_with = "serialize_std_duration_as_ms"
     )]
-    pub(crate) tokio_runtime_report_interval: Duration,
+    pub(crate) report_interval: Duration,
 }
 
-impl std::default::Default for Metrics {
+impl std::default::Default for Tokio {
     fn default() -> Self {
-        Self {
-            port: 9000,
-            tokio_runtime_report_interval: Duration::from_secs(30),
+        Tokio {
+            report_interval: Duration::from_secs(30),
         }
     }
 }
@@ -1797,7 +1811,7 @@ mod test {
             let config = get_config();
             assert_eq!(config.metrics.port, 9000);
             assert_eq!(
-                config.metrics.tokio_runtime_report_interval,
+                config.metrics.tokio.report_interval,
                 Duration::from_secs(30),
             );
             Ok(())
@@ -1808,14 +1822,11 @@ mod test {
     fn test_metrics_env_vars() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
-            jail.set_env(
-                "LAKEKEEPER_TEST__METRICS__TOKIO_RUNTIME_REPORT_INTERVAL",
-                "100ms",
-            );
+            jail.set_env("LAKEKEEPER_TEST__METRICS__TOKIO__REPORT_INTERVAL", "100ms");
             let config = get_config();
             assert_eq!(config.metrics.port, 2);
             assert_eq!(
-                config.metrics.tokio_runtime_report_interval,
+                config.metrics.tokio.report_interval,
                 Duration::from_millis(100),
             );
             Ok(())

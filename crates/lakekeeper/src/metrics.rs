@@ -38,7 +38,7 @@ pub fn get_axum_layer_and_install_recorder(
 
     let runtime_metrics_reporter_handle = tokio::task::spawn(
         tokio_metrics::RuntimeMetricsReporterBuilder::default()
-            .with_interval(CONFIG.metrics.tokio_runtime_report_interval)
+            .with_interval(CONFIG.metrics.tokio.report_interval)
             .describe_and_run(),
     );
 
