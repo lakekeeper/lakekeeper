@@ -14,6 +14,7 @@ use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
 use crate::{
     CONFIG,
     api::{
+        endpoints::EndpointFlat,
         iceberg::v1::{
             ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel,
             GetNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters,
@@ -25,8 +26,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, NamedEntity,
-        NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId, Transaction,
+        CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
+        NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
+        Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             NamespaceParent,
@@ -37,6 +39,7 @@ use crate::{
                 ResolvedNamespace, Unresolved, UserProvidedNamespace, authz_to_error_no_audit,
             },
         },
+        idempotency::IdempotencyInfo,
         secrets::SecretStore,
         storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
@@ -196,6 +199,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn create_namespace(
         prefix: Option<Prefix>,
         request: CreateNamespaceRequest,
@@ -227,8 +231,31 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into());
         }
 
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                let ns = Self::load_namespace_metadata(
+                    NamespaceParameters {
+                        prefix,
+                        namespace: namespace.clone(),
+                    },
+                    GetNamespacePropertiesQuery { return_uuid: false },
+                    state,
+                    request_metadata,
+                )
+                .await?;
+                return Ok(CreateNamespaceResponse {
+                    namespace: ns.namespace,
+                    properties: ns.properties.map(|arc| (*arc).clone()),
+                });
+            }
+        }
+
         // ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
+        let authorizer = state.v1_state.authz.clone();
 
         let properties_btree: Arc<std::collections::BTreeMap<String, String>> =
             Arc::new(properties.clone().unwrap_or_default().into_iter().collect());
@@ -279,7 +306,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
-        // Set location if not specified - validate location if specified
         set_namespace_location_property(
             &mut namespace_props,
             &warehouse,
@@ -294,6 +320,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        // Insert idempotency key in the same transaction — atomic with the mutation.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1CreateNamespace)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            // Concurrent request committed the same key — rollback and replay.
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         let authz_parent = if let Some(parent_namespace) = &parent_namespace {
             NamespaceParent::Namespace(parent_namespace.namespace_id())
         } else {
@@ -302,6 +351,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         authorizer
             .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
+
         t.commit().await?;
 
         event_ctx.emit_namespace_created_async(r.clone());
@@ -433,6 +483,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into());
         }
 
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        // Idempotency is not supported for recursive drops — they manage their own
+        // transaction internally, so we cannot insert the key atomically. A retry of
+        // a recursive drop will get 404 (namespace already gone), which is correct.
+        let idempotency_key = if flags.recursive {
+            None
+        } else {
+            request_metadata.idempotency_key().copied()
+        };
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                return Ok(());
+            }
+        }
+
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
@@ -466,7 +533,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let r = if flags.recursive {
+        if flags.recursive {
+            // recursive drop manages its own transaction
             try_recursive_drop::<_, C>(
                 flags,
                 authorizer,
@@ -475,26 +543,45 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 namespace_id,
                 &request_metadata,
             )
-            .await
+            .await?;
         } else {
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
+            if let Some(ref key) = idempotency_key
+                && !C::try_insert_idempotency_key(
+                    warehouse_id,
+                    &IdempotencyInfo::builder()
+                        .key(*key)
+                        .endpoint(EndpointFlat::CatalogV1DropNamespace)
+                        .http_status(StatusCode::NO_CONTENT)
+                        .build(),
+                    t.transaction(),
+                )
+                .await?
+            {
+                t.rollback()
+                    .await
+                    .inspect_err(|e| {
+                        tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                    })
+                    .ok();
+                return Err(ErrorModel::request_in_progress().into());
+            }
+            t.commit().await?;
             authorizer
                 .delete_namespace(&request_metadata, namespace_id)
-                .await?;
-            t.commit().await?;
-            Ok(())
-        };
-
-        match r {
-            Ok(()) => {
-                event_ctx.emit_namespace_dropped_async();
-                Ok(())
-            }
-            Err(err) => Err(err),
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
+                })
+                .ok();
         }
+
+        event_ctx.emit_namespace_dropped_async();
+        Ok(())
     }
 
     /// Set or remove properties on a namespace
+    #[allow(clippy::too_many_lines)]
     async fn update_namespace_properties(
         parameters: NamespaceParameters,
         request: UpdateNamespacePropertiesRequest,
@@ -518,6 +605,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut updates = NamespaceProperties::try_from_maybe_props(updates.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         remove_managed_namespace_properties(&mut updates);
+
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                let ns = Self::load_namespace_metadata(
+                    parameters,
+                    GetNamespacePropertiesQuery { return_uuid: false },
+                    state,
+                    request_metadata,
+                )
+                .await?;
+                let properties = ns.properties.map(|arc| (*arc).clone());
+                let (_props, response) = update_namespace_properties(properties, updates, removals);
+                return Ok(response);
+            }
+        }
+
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
@@ -566,6 +673,30 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             t.transaction(),
         )
         .await?;
+
+        // Insert idempotency key in the same transaction.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1UpdateNamespaceProperties)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            // Concurrent request won — rollback and replay.
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         t.commit().await?;
 
         event_ctx.emit_namespace_properties_updated_async(updated_namespace, Arc::new(r.clone()));

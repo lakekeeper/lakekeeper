@@ -343,6 +343,10 @@ pub struct DynAppConfig {
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
 
+    // ------------- Idempotency -------------
+    #[serde(default)]
+    pub idempotency: IdempotencyConfig,
+
     // ------------- Debug -------------
     #[serde(default)]
     pub debug: DebugConfig,
@@ -506,6 +510,52 @@ pub enum SecretBackend {
     KV2,
     #[serde(alias = "postgres")]
     Postgres,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct IdempotencyConfig {
+    /// Whether idempotency key support is enabled.
+    /// When enabled, `idempotency-key-lifetime` is advertised in getConfig.
+    pub enabled: bool,
+    /// How long idempotency records are kept (ISO-8601 duration).
+    /// This value is advertised to clients via getConfig.
+    /// Default: PT30M (30 minutes)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub lifetime: Duration,
+    /// Grace period added on top of lifetime for clock skew / transit delays (ISO-8601 duration).
+    /// Default: PT5M (5 minutes)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub grace_period: Duration,
+    /// Maximum time a background cleanup task may run before being considered dead.
+    /// If a cleanup exceeds this, the next attempt takes over.
+    /// Default: PT30S (30 seconds)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub cleanup_timeout: Duration,
+}
+
+impl Default for IdempotencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            lifetime: Duration::from_secs(30 * 60),
+            grace_period: Duration::from_secs(5 * 60),
+            cleanup_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl IdempotencyConfig {
+    /// Returns the lifetime as an ISO-8601 duration string for advertising in getConfig.
+    #[must_use]
+    pub fn lifetime_iso8601(&self) -> String {
+        crate::utils::time_conversion::std_duration_to_iso_8601_string(&self.lifetime)
+    }
+
+    /// Total retention duration (lifetime + grace).
+    #[must_use]
+    pub fn total_retention(&self) -> Duration {
+        self.lifetime + self.grace_period
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
@@ -763,6 +813,7 @@ impl Default for DynAppConfig {
             endpoint_stat_flush_interval: Duration::from_secs(30),
             serve_swagger_ui: true,
             skip_storage_validation: false,
+            idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
@@ -1640,6 +1691,54 @@ mod test {
             assert_eq!(prod_config.idp_id, "keycloak-prod");
             assert_eq!(prod_config.security_model_property, "trino.run-as-owner");
 
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_secs(30 * 60));
+            assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
+            assert_eq!(config.idempotency.lifetime_iso8601(), "PT30M");
+            assert_eq!(
+                config.idempotency.total_retention(),
+                Duration::from_secs(35 * 60)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__ENABLED", "false");
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", "PT1H");
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__GRACE_PERIOD", "PT10M");
+            let config = get_config();
+            assert!(!config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_secs(3600));
+            assert_eq!(config.idempotency.grace_period, Duration::from_secs(600));
+            assert_eq!(config.idempotency.lifetime_iso8601(), "PT1H");
+            assert_eq!(
+                config.idempotency.total_retention(),
+                Duration::from_secs(4200)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_partial_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", "PT15M");
+            let config = get_config();
+            // lifetime overridden, grace_period keeps default
+            assert!(config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_secs(15 * 60));
+            assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
             Ok(())
         });
     }

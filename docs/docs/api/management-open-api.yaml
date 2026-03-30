@@ -3643,6 +3643,13 @@ components:
               type: string
               enum:
                 - azure-system-identity
+    AzCredentialType:
+      type: string
+      description: The type of Azure credential.
+      enum:
+        - client-credentials
+        - shared-access-key
+        - azure-system-identity
     BootstrapRequest:
       type: object
       required:
@@ -4343,6 +4350,12 @@ components:
               "universe_domain": "googleapis.com"
             }
         ```
+    GcsCredentialType:
+      type: string
+      description: The type of GCS credential.
+      enum:
+        - service-account-key
+        - gcp-system-identity
     GcsProfile:
       type: object
       required:
@@ -4843,6 +4856,15 @@ components:
         status:
           $ref: '#/components/schemas/WarehouseStatus'
           description: Whether the warehouse is active.
+        storage-credential-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageCredentialType'
+              description: |-
+                Best-effort indicator of the storage credential type. When present it
+                reflects the detected credential kind; when absent the warehouse may
+                either have no credential configured or the secret lookup may have
+                failed. Does not contain secret values.
         storage-profile:
           $ref: '#/components/schemas/StorageProfile'
           description: Storage profile used for the warehouse.
@@ -6477,6 +6499,13 @@ components:
                   type: string
                   enum:
                     - cloudflare-r2
+    S3CredentialType:
+      type: string
+      description: The type of S3 credential.
+      enum:
+        - access-key
+        - aws-system-identity
+        - cloudflare-r2
     S3Flavor:
       type: string
       enum:
@@ -7035,6 +7064,52 @@ components:
             }"#).unwrap();
             ```
       description: Storage secret for a warehouse.
+    StorageCredentialType:
+      oneOf:
+        - type: object
+          description: S3 credential type
+          required:
+            - credential-type
+            - type
+          properties:
+            credential-type:
+              $ref: '#/components/schemas/S3CredentialType'
+              description: S3 credential type
+            type:
+              type: string
+              enum:
+                - s3
+        - type: object
+          description: Azure credential type
+          required:
+            - credential-type
+            - type
+          properties:
+            credential-type:
+              $ref: '#/components/schemas/AzCredentialType'
+              description: Azure credential type
+            type:
+              type: string
+              enum:
+                - az
+        - type: object
+          description: GCS credential type
+          required:
+            - credential-type
+            - type
+          properties:
+            credential-type:
+              $ref: '#/components/schemas/GcsCredentialType'
+              description: GCS credential type
+            type:
+              type: string
+              enum:
+                - gcs
+      description: |-
+        The type of storage credential configured for a warehouse, without secret values.
+
+        This is returned in API responses so clients know which credential type
+        was selected (e.g. to restore radio button state in the UI).
     StorageLayout:
       oneOf:
         - type: object
@@ -7629,7 +7704,7 @@ components:
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
             to avoid data loss. For S3 this means that you may not change the
-            bucket, key prefix, or region.
+            bucket or key prefix. The region may only be changed if an endpoint is set.
     User:
       type: object
       description: User of the catalog

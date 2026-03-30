@@ -114,6 +114,24 @@ when {
 };
 ```
 
+### Property-based `global_role_ids` matching
+
+When `GLOBAL_ROLE_IDS_ENABLED` is set, both `User` and `ResourcePropertyValue` expose `global_role_ids` as plain `Set<String>`. This enables provider-agnostic property-based access control — no need to align provider prefixes between the user's roles and the property tag references:
+
+```cedar
+// Grant read access when the user shares any role with the table's access_read tag.
+// Works regardless of whether roles come from OIDC, LDAP, or any other provider.
+permit (
+    principal is Lakekeeper::User,
+    action in [Lakekeeper::Action::"TableSelectActions"],
+    resource is Lakekeeper::Table
+)
+when {
+    resource.properties.hasTag("access_read") &&
+    resource.properties.getTag("access_read").global_role_ids.containsAny(principal.global_role_ids)
+};
+```
+
 ## Property-Based Access Control
 
 Lakekeeper can parse roles and users directly from Table, Namespace, and View properties. This enables a powerful ABAC pattern where access control lists are stored as resource metadata, and Cedar policies grant access based on those lists — without maintaining a separate role-assignment file.
@@ -124,9 +142,10 @@ Every Table, Namespace, and View entity carries a `properties` attribute of type
 
 ```
 type ResourcePropertyValue = {
-    raw:   String,        // original value as stored
-    roles: Set<Role>,     // parsed Lakekeeper::Role entity references
-    users: Set<User>,     // parsed Lakekeeper::User entity references
+    raw:            String,        // original value as stored
+    roles:          Set<Role>,     // parsed Lakekeeper::Role entity references
+    users:          Set<User>,     // parsed Lakekeeper::User entity references
+    global_role_ids: Set<String>,  // source_id of each parsed role (requires GLOBAL_ROLE_IDS_ENABLED)
 }
 ```
 
@@ -189,12 +208,12 @@ Access-control property values must be a JSON array of typed entity references:
 
 | Format                                          | Description                |
 |-------------------------------------------------|----------------------------|
-| `role:<source-id>`                              | Short form — uses the default identity provider. Requires exactly one Authenticator to be configured. |
-| `role-full:<provider>~<source-id>`              | Full form — provider name is explicit. Works with any configured identity provider. |
+| `role:<source-id>`                              | Short form — uses the default role provider. |
+| `role-full:<provider>~<source-id>`              | Full form — provider name is explicit. Works with any configured role or identity provider. |
 | `role-full:<project-id>/<provider>~<source-id>` | Full form with an explicit project scope. Useful in multi-project setups when referencing a role from a different project. |
 | `user:<user-id>`                                | References a specific user by their identity-provider ID (e.g. `user:oidc~alice@example.com`). |
 
-The `provider` in `role-full:` must match one of the configured Authenticator IDs. When there is exactly one OIDC provider, `role:` (short form) automatically resolves to it; when there are multiple, you must use the full form.
+The default provider for the `role:` short form is determined as follows: if a role provider (e.g. LDAP) is configured, its provider ID is used; otherwise, if exactly one identity provider (e.g. OIDC) is registered, it becomes the default. When there are multiple providers and no single default can be determined, you must use the `role-full:` form.
 
 The entire property value is a **JSON-encoded string** containing an array of these references. For example:
 
@@ -230,8 +249,11 @@ Each derivation rule specifies:
 
 - **`source`**: which identity field to match against — `source_id` (the user's subject in the IdP) or `provider_id` (e.g. `oidc`, `kubernetes`)
 - **`pattern`**: a regex with [named capture groups](https://docs.rs/regex/latest/regex/#grouping-and-flags) (`(?<name>...)`)
+- **`transform`** *(optional)*: a transformation applied to every captured value before it becomes a tag — `none` (default), `lowercase`, or `uppercase`
 
 Every named group that matches a non-empty substring becomes a string tag on the `UserDerivedAttributes` entity. Empty captures are silently skipped.
+
+Because Cedar has no built-in case-insensitive string comparison or `toLowerCase()` function, use `transform = "lowercase"` to normalize captured values so that policies can compare them against known-case literals. If different capture groups need different transforms, define separate derivation entries with distinct regexes.
 
 ### Configuration
 
@@ -240,11 +262,13 @@ Derivations are configured as a map under `LAKEKEEPER__CEDAR__USER_DERIVATIONS`.
 **Environment variables:**
 
 ```sh
-# Extract "username" and "domain" from source_id (e.g. "alice@example.com")
+# Extract "username" and "domain" from source_id (e.g. "Alice@Example.COM"),
+# lowercased so policies can compare against known-case literals.
 LAKEKEEPER__CEDAR__USER_DERIVATIONS__EMAIL_PARTS__SOURCE=source_id
 LAKEKEEPER__CEDAR__USER_DERIVATIONS__EMAIL_PARTS__PATTERN=^(?<username>[^@]+)@(?<domain>.+)$
+LAKEKEEPER__CEDAR__USER_DERIVATIONS__EMAIL_PARTS__TRANSFORM=lowercase
 
-# Extract Kubernetes service account parts from source_id
+# Extract Kubernetes service account parts from source_id (no transform needed)
 LAKEKEEPER__CEDAR__USER_DERIVATIONS__K8S_SA__SOURCE=source_id
 LAKEKEEPER__CEDAR__USER_DERIVATIONS__K8S_SA__PATTERN=^system:serviceaccount:(?<namespace>[^:]+):(?<sa_name>.+)$
 ```
@@ -253,8 +277,9 @@ LAKEKEEPER__CEDAR__USER_DERIVATIONS__K8S_SA__PATTERN=^system:serviceaccount:(?<n
 
 ```toml
 [cedar.user_derivations.email_parts]
-source  = "source_id"
-pattern = "^(?<username>[^@]+)@(?<domain>.+)$"
+source    = "source_id"
+pattern   = "^(?<username>[^@]+)@(?<domain>.+)$"
+transform = "lowercase"   # "none" (default), "lowercase", "uppercase"
 
 [cedar.user_derivations.k8s_sa]
 source  = "source_id"
@@ -278,7 +303,7 @@ principal.derived_attributes.getTag("username")
 
 **Grant users full access to their personal namespace in the `dev` warehouse:**
 
-If users authenticate with an OIDC provider where `source_id` is an email (e.g. `alice@example.com`), and you configure a derivation to extract `username`, this policy lets each user perform any action on the namespace resource itself (e.g. list tables, create tables) — but only within the `dev` warehouse. It does not automatically grant access to tables, views, or child namespaces within it; those require separate policies:
+If users authenticate with an OIDC provider where `source_id` is an email (e.g. `Alice@Example.COM`), and you configure a derivation with `transform = "lowercase"` to extract `username`, this policy lets each user perform any action on the namespace resource itself (e.g. list tables, create tables) — but only within the `dev` warehouse. The `lowercase` transform ensures the comparison works regardless of the casing in the IdP's subject claim. It does not automatically grant access to tables, views, or child namespaces within it; those require separate policies:
 
 ```cedar
 permit(

@@ -252,6 +252,7 @@ Please check the [Authorization User Guide](./authorization.md#authorization-wit
 | `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED`           | `false`                                                 | When `true`, the `global_role_ids: Set<String>` attribute on every `Lakekeeper::User` entity is populated with the `source_id` of every provider-resolved role (token claims, LDAP, etc.). This enables simpler policies such as `principal.global_role_ids.contains("admins")` without needing to specify a `provider_id`. Only meaningful when all configured role providers use globally unique `source_id` values (i.e. no two providers assign the same `source_id` to different roles). When `false` (default), `global_role_ids` is always an empty set. |
 | `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__SOURCE`  | `source_id`                                             | Source field for a user identity derivation rule. Supported values: `source_id` (the user's subject in the IdP) or `provider_id` (e.g. `oidc`, `kubernetes`). `<NAME>` is a human-readable key (e.g. `EMAIL_PARTS`) used in error messages. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
 | `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__PATTERN` | <nobr>`^(?<username>[^@]+)`<br>`@(?<domain>.+)$`</nobr> | Regex pattern with named capture groups for a user identity derivation rule. Each named group that matches a non-empty substring becomes a string tag on the `UserDerivedAttributes` entity, accessible in policies via `principal.derived_attributes.hasTag("…")` / `principal.derived_attributes.getTag("…")`. Invalid patterns cause a startup error. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
+| `LAKEKEEPER__CEDAR__USER_DERIVATIONS__<NAME>__TRANSFORM` | `lowercase` | Optional transformation applied to all captured values before they become Cedar tags. Supported values: `none` (default — keep as-is), `lowercase`, `uppercase`. Because Cedar string comparison is case-sensitive, use `lowercase` to normalize captured values so policies can compare against a known-case literal (e.g. `getTag("domain") == "example.com"`). If different capture groups need different transforms, use separate derivation entries with distinct regexes. See [User Identity Derivations](./authorization.md#user-identity-derivations). |
 
 **Debug configurations for Cedar**
 
@@ -401,6 +402,17 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 |--------------------------------------------------|-----------|---------------|
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
+
+### Idempotency
+
+Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) specification. When enabled, clients can send an `Idempotency-Key` header on mutation requests to guarantee at-most-once execution. The server advertises support via the `idempotency-key-lifetime` field in the `GET /v1/config` response.
+
+| Variable | Example | Description |
+|---|---|---|
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__ENABLED`</nobr> | `true` | Enable idempotency key support. When enabled, `idempotency-key-lifetime` is advertised in `getConfig`. Default: `true` |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__LIFETIME`</nobr> | `PT30M` | How long idempotency records are kept, in ISO-8601 duration format. This value is advertised to clients. Default: `PT30M` (30 minutes) |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__GRACE_PERIOD`</nobr> | `PT5M` | Grace period added on top of lifetime for clock skew and transit delays, in ISO-8601 duration format. Default: `PT5M` (5 minutes) |
+| <nobr>`LAKEKEEPER__IDEMPOTENCY__CLEANUP_TIMEOUT`</nobr> | `PT30S` | Maximum time a background cleanup task may run before being considered dead. If exceeded, the next attempt takes over. Default: `PT30S` (30 seconds) |
 
 ### Audit Logging
 

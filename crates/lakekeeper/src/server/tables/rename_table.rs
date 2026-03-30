@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
+use http::StatusCode;
+
 use crate::{
     WarehouseId,
-    api::iceberg::v1::{ApiContext, Prefix, RenameTableRequest, Result, TableIdent},
+    api::{
+        endpoints::EndpointFlat,
+        iceberg::v1::{ApiContext, ErrorModel, Prefix, RenameTableRequest, Result, TableIdent},
+    },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        AuthZTableInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, State, TableInfo,
-        TabularListFlags, Transaction,
+        AuthZTableInfo as _, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, State,
+        TableInfo, TabularListFlags, Transaction,
         authz::{
             AuthZCannotSeeTable, AuthZError, AuthZTableOps, Authorizer, AuthzNamespaceOps,
             AuthzWarehouseOps, CatalogNamespaceAction, CatalogTableAction, RequireTableActionError,
@@ -16,6 +21,7 @@ use crate::{
         },
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedTable},
+        idempotency::IdempotencyInfo,
         secrets::SecretStore,
     },
 };
@@ -29,17 +35,24 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
 ) -> Result<()> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let RenameTableRequest {
-        source,
-        destination,
-    } = &request;
+    let source = &request.source;
+    let destination = &request.destination;
     validate_table_or_view_ident(source)?;
     validate_table_or_view_ident(destination)?;
+    let source = source.clone();
+    let destination = destination.clone();
 
-    // ------------------- AUTHZ -------------------
-    // Authorization is required for:
-    // 1) creating a table in the destination namespace
-    // 2) renaming the old table
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            return Ok(());
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
 
     let event_ctx = APIEventContext::for_table(
@@ -53,8 +66,8 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     let authz_result = authorize_rename_table::<C, A>(
         event_ctx.request_metadata(),
         warehouse_id,
-        source,
-        destination,
+        &source,
+        &destination,
         &authorizer,
         state.v1_state.catalog.clone(),
     )
@@ -79,8 +92,8 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     C::rename_tabular(
         warehouse_id,
         source_table_id,
-        source,
-        destination,
+        &source,
+        &destination,
         t.transaction(),
     )
     .await?;
@@ -88,9 +101,31 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     state
         .v1_state
         .contract_verifiers
-        .check_rename(source_table_id.into(), destination)
+        .check_rename(source_table_id.into(), &destination)
         .await?
         .into_result()?;
+
+    // Insert idempotency key in the same transaction.
+    if let Some(ref key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1RenameTable)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
 
     t.commit().await?;
 

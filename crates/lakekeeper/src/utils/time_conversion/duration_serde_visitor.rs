@@ -76,6 +76,28 @@ impl Visitor<'_> for ChronoDurationVisitor {
     }
 }
 
+/// Visitor for deserializing ISO 8601 duration strings into `std::time::Duration`.
+///
+/// Rejects negative durations, years, and months.
+#[derive(Debug, Default)]
+pub struct StdDurationVisitor;
+
+impl Visitor<'_> for StdDurationVisitor {
+    type Value = std::time::Duration;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a non-negative duration string in ISO 8601 format")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: Error,
+    {
+        let iso = ISO8601DurationVisitor.visit_str::<E>(value)?;
+        super::iso_8601_duration_to_std(&iso).map_err(E::custom)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use serde_json::error::Error;
@@ -139,6 +161,39 @@ mod test {
     fn test_chrono_duration_visitor_returns_error_if_it_contains_year() {
         let iso_duration_str = "P1YT2H";
         let result = ChronoDurationVisitor.visit_str::<Error>(iso_duration_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_std_duration_visitor_can_parse_iso_8601_duration() {
+        let duration = StdDurationVisitor.visit_str::<Error>("P3DT4H").unwrap();
+        assert_eq!(
+            duration,
+            std::time::Duration::from_secs(3 * 86400 + 4 * 3600)
+        );
+    }
+
+    #[test]
+    fn test_std_duration_visitor_throws_error_with_invalid_format() {
+        let result = StdDurationVisitor.visit_str::<Error>("InvalidDuration");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_std_duration_visitor_returns_error_if_it_contains_year() {
+        let result = StdDurationVisitor.visit_str::<Error>("P1YT2H");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_std_duration_visitor_returns_error_if_it_contains_month() {
+        let result = StdDurationVisitor.visit_str::<Error>("P1MT2H");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_std_duration_visitor_returns_error_if_negative() {
+        let result = StdDurationVisitor.visit_str::<Error>("-P1D");
         assert!(result.is_err());
     }
 }

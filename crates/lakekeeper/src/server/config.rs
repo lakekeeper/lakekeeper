@@ -103,6 +103,13 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
             .overrides
             .insert("uri".to_string(), request_metadata_arc.base_uri_catalog());
 
+        if CONFIG.idempotency.enabled {
+            config.overrides.insert(
+                "idempotency-key-lifetime".to_string(),
+                CONFIG.idempotency.lifetime_iso8601(),
+            );
+        }
+
         Ok(config)
     }
 }

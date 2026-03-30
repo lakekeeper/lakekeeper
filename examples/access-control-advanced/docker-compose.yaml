@@ -88,13 +88,14 @@ services:
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__AUTHZ_BACKEND=openfga
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
+      - LAKEKEEPER__OPENFGA__MAX_BATCH_CHECK_SIZE=200
       - LAKEKEEPER__OPENID_PROVIDER_URI=http://keycloak:8080/realms/iceberg
       - LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS=http://localhost:30080/realms/iceberg
       - LAKEKEEPER__OPENID_AUDIENCE=lakekeeper
       - LAKEKEEPER__UI__OPENID_CLIENT_ID=lakekeeper
       - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
       - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
-      - RUST_LOG=debug
+      - RUST_LOG=info,lakekeeper=debug
     command: ["serve"]
     healthcheck:
       test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
@@ -185,6 +186,7 @@ services:
 
   openfga-db:
     image: postgres:17
+    command: postgres -c max_connections=1000
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
@@ -245,13 +247,18 @@ services:
         condition: service_healthy
       openfga-migrate:
         condition: service_completed_successfully
-    image: openfga/openfga:v1.8
+    image: openfga/openfga:v1.12
     command: run
     environment:
       - OPENFGA_DATASTORE_ENGINE=postgres
       - OPENFGA_DATASTORE_URI=postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
-      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=50
       - OPENFGA_PLAYGROUND_ENABLED=false
+      - OPENFGA_DATASTORE_MAX_OPEN_CONNS=200
+      - OPENFGA_DATASTORE_MAX_IDLE_CONNS=100
+      - OPENFGA_CACHE_CONTROLLER_ENABLED=true
+      - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
+      - OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
+      - OPENFGA_MAX_CHECKS_PER_BATCH_CHECK=200
     networks:
       iceberg_net:
     healthcheck:

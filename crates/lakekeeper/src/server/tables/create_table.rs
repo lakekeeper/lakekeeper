@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use http::StatusCode;
 use iceberg::spec::{
     FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, TableProperties,
     UnboundPartitionSpec,
@@ -14,9 +15,12 @@ use super::{
 };
 use crate::{
     WarehouseId,
-    api::iceberg::v1::{
-        ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters, Result,
-        TableIdent, tables::DataAccessMode,
+    api::{
+        endpoints::EndpointFlat,
+        iceberg::v1::{
+            ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters,
+            Result, TableIdent, TableParameters, tables::DataAccessMode,
+        },
     },
     request_metadata::RequestMetadata,
     server::{
@@ -24,13 +28,14 @@ use crate::{
         tabular::determine_tabular_location,
     },
     service::{
-        CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
-        Transaction,
+        CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps, State, TableCreation,
+        TableId, TabularId, Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::{StoragePermissions, ValidationError},
     },
@@ -110,8 +115,32 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadTableResult> {
-    let authorizer = state.v1_state.authz.clone();
     let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
+
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            let table_ident = TableIdent::new(parameters.namespace.clone(), request.name.clone());
+            let load_params = TableParameters {
+                prefix: parameters.prefix.clone(),
+                table: table_ident,
+            };
+            return super::replay_load_table::<C, A, S>(
+                load_params,
+                data_access.into(),
+                state,
+                request_metadata,
+                "createTable",
+            )
+            .await;
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+    let authorizer = state.v1_state.authz.clone();
     let table_id = TableId::from(Uuid::now_v7());
 
     let mut guard = TableCreationGuard::new(authorizer.clone(), warehouse_id, table_id);
@@ -122,6 +151,7 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         data_access,
         state,
         request_metadata,
+        idempotency_key.as_ref(),
         &mut guard,
     )
     .await
@@ -146,6 +176,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     data_access: impl Into<DataAccessMode> + Send,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
     guard: &mut TableCreationGuard<A>,
 ) -> Result<LoadTableResult> {
     let data_access = data_access.into();
@@ -324,6 +355,28 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         .await?;
 
     guard.mark_authorizer_created();
+
+    // Insert idempotency key in the same transaction.
+    if let Some(key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1CreateTable)
+                .http_status(StatusCode::OK)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
 
     // Commit transaction
     t.commit().await?;
