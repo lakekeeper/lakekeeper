@@ -15,7 +15,7 @@
   "storage-credential": {
     "type": "s3",
     "credential-type": "access-key",
-    "access-key-id": "minio-root-user",
-    "secret-access-key": "minio-root-password"
+    "aws-access-key-id": "minio-root-user",
+    "aws-secret-access-key": "minio-root-password"
   }
 }
