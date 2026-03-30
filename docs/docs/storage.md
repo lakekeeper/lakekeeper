@@ -430,7 +430,10 @@ Example CORS policy:
         "AllowedOrigins": [
             "https://lakekeeper.example.com"
         ],
-        "ExposeHeaders": []
+        "ExposeHeaders": [
+            "ETag",
+            "x-amz-version-id"
+        ]
     }
 ]
 ```

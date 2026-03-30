@@ -266,11 +266,19 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
     LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
     LAKEKEEPER__UI__OPENID_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
     LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
-    // The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
-    // shows https://login.microsoftonline.com as the issuer but actually
-    // issues tokens for https://sts.windows.net/. This is a well-known
-    // problem in Entra ID.
     ```
+
+    !!! info "Why is `OPENID_ADDITIONAL_ISSUERS` needed?"
+        Entra ID issues **v1** or **v2** access tokens depending on the `accessTokenAcceptedVersion` property in the **resource API's** app manifest (App 2). The token version determines the `iss` (issuer) claim in the JWT:
+
+        | Token Version | `accessTokenAcceptedVersion` | Issuer (`iss`) claim |
+        |---|---|---|
+        | v1 | `null` (default) or `1` | `https://sts.windows.net/<Tenant ID>/` |
+        | v2 | `2` | `https://login.microsoftonline.com/<Tenant ID>/v2.0` |
+
+        Even when using the v2.0 provider URI, Entra may still issue **v1 tokens** with the `sts.windows.net` issuer if `accessTokenAcceptedVersion` is not explicitly set to `2` in App 2's manifest. This is a common source of authentication failures.
+
+        **Recommended:** Set `accessTokenAcceptedVersion` to `2` in App 2's manifest (or use `requested_access_token_version = 2` in Terraform as shown above). The `OPENID_ADDITIONAL_ISSUERS` setting is provided as a fallback to accept v1 tokens without changing your app registration.
 
 === "Terraform"
 

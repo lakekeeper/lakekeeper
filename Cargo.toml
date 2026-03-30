@@ -21,7 +21,7 @@ anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-async-nats = { version = "0.46.0", default-features = false, features = [
+async-nats = { git = "https://github.com/lakekeeper/nats.rs.git", tag = "async-nats/v0.46.0-lakekeeper.1", default-features = false, features = [
     "server_2_10",
     "server_2_11",
     "server_2_12",
