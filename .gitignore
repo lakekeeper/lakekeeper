@@ -1,6 +1,6 @@
 iceberg-rest-openapi-axum
 iceberg-rest-openapi
-
+.vscode/
 local
 .DS_Store
 env.list
