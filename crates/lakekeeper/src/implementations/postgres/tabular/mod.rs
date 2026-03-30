@@ -738,7 +738,12 @@ where
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+        ORDER BY st.created_at, st.tabular_id ASC
         "#,
+        // The CTE has ORDER BY but PostgreSQL does not preserve row order through
+        // JOINs. Without the outer ORDER BY, the last row (used to derive the
+        // next-page cursor) may not be the maximum (created_at, tabular_id),
+        // causing the next page to re-fetch already-returned rows.
         *warehouse_id,
         namespace_id.map(|n| *n),
         typ as _,
