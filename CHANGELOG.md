@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.4](https://github.com/lakekeeper/lakekeeper/compare/v0.11.3...v0.11.4) (2026-03-30)
+
+
+### Bug Fixes
+
+* list_tabulars returning duplicate pagination results ([#1682](https://github.com/lakekeeper/lakekeeper/issues/1682)) ([3317422](https://github.com/lakekeeper/lakekeeper/commit/3317422ecce1b18df6afbe397bc1c69d7ae2a60e))
+
+
+### Miscellaneous Chores
+
+* Release as 0.11.4 ([8fa4c0b](https://github.com/lakekeeper/lakekeeper/commit/8fa4c0bec475e2dc25576f544a50bbfe8f580550))
+
 ## [0.11.3](https://github.com/lakekeeper/lakekeeper/compare/v0.11.2...v0.11.3) (2026-03-14)
 
 
