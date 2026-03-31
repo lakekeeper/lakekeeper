@@ -564,7 +564,6 @@ fn decode_blob_name_from_storage(name: &str) -> String {
     name.replace("%3F", "?")
         .replace("%3f", "?")
         .replace("%23", "#")
-        .replace("%23", "#")
 }
 
 /// Percent-encodes characters in a blob name that would break URL parsing.

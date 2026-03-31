@@ -3,7 +3,10 @@ use std::{
     time::Duration,
 };
 
-use azure_core::credentials::TokenCredential;
+use azure_core::{
+    credentials::TokenCredential,
+    http::{ClientOptions, ExponentialRetryOptions, HttpClient, RetryOptions, Transport},
+};
 use azure_identity::{
     ClientSecretCredential, ClientSecretCredentialOptions, ManagedIdentityCredential,
     WorkloadIdentityCredential,
@@ -11,6 +14,21 @@ use azure_identity::{
 use azure_storage_blob::{BlobServiceClient, BlobServiceClientOptions};
 use url::Url;
 use veil::Redact;
+
+/// A single shared `reqwest 0.13` client injected into every `BlobServiceClient`.
+///
+/// `typespec_client_core` (used by the Azure SDK) implements `HttpClient` for
+/// `reqwest 0.13`.  `reqwest::Client` (0.12, used for S3/GCS) is a *different*
+/// crate version and does **not** satisfy that trait.  We therefore alias the
+/// 0.13 crate as `reqwest-0-13` in `Cargo.toml` (see `storage-adls` feature)
+/// and use it exclusively here for Azure blob transport.
+///
+/// `reqwest::Client` is cheaply `Clone`-able (it wraps an `Arc` internally),
+/// so sharing one instance reuses the same connection pool and TLS context
+/// across all Azure blob operations instead of allocating a fresh one on every
+/// `BlobServiceClient::new()` call.
+static AZURE_BLOB_HTTP_CLIENT: LazyLock<Arc<dyn HttpClient>> =
+    LazyLock::new(|| Arc::new(reqwest_0_13::Client::new()));
 
 mod adls_error;
 mod adls_location;
@@ -122,6 +140,31 @@ pub struct AzureSettings {
 }
 
 impl AzureSettings {
+    /// Returns [`BlobServiceClientOptions`] with an explicit exponential retry policy and a
+    /// shared HTTP transport.
+    ///
+    /// The new Azure SDK defaults to exponential retry already, but we make it explicit so
+    /// the configuration is visible and easy to adjust.
+    ///
+    /// All `BlobServiceClient` instances share a single `reqwest::Client` (via `AZURE_BLOB_HTTP_CLIENT`)
+    /// so they also share the same connection pool and TLS context rather than allocating a fresh
+    /// one on every call.
+    fn default_service_client_options() -> BlobServiceClientOptions {
+        BlobServiceClientOptions {
+            client_options: ClientOptions {
+                retry: RetryOptions::exponential(ExponentialRetryOptions {
+                    max_retries: 8,
+                    initial_delay: time::Duration::milliseconds(200),
+                    max_delay: time::Duration::seconds(30),
+                    max_total_elapsed: time::Duration::seconds(60),
+                }),
+                transport: Some(Transport::new(AZURE_BLOB_HTTP_CLIENT.clone())),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     /// Creates a new [`AzureSettings`] instance.
     ///
     /// # Errors
@@ -189,7 +232,7 @@ impl AzureSettings {
                     self.cloud_location.account().to_string(),
                     Secret::new(key.clone()),
                 ));
-                let mut options = BlobServiceClientOptions::default();
+                let mut options = Self::default_service_client_options();
                 options
                     .client_options
                     .per_try_policies
@@ -211,7 +254,12 @@ impl AzureSettings {
         };
 
         let endpoint = self.cloud_location.blob_endpoint();
-        BlobServiceClient::new(&endpoint, credential, None).map_err(|e| InitializeClientError {
+        BlobServiceClient::new(
+            &endpoint,
+            credential,
+            Some(Self::default_service_client_options()),
+        )
+        .map_err(|e| InitializeClientError {
             reason: format!(
                 "Failed to create Azure BlobServiceClient for endpoint '{endpoint}': {e}"
             ),
@@ -283,18 +331,14 @@ impl AzureSettings {
         SYSTEM_IDENTITY_CACHE
             .try_get_with(cache_key.clone(), async move {
                 // Try WorkloadIdentityCredential first (Kubernetes), fall back to ManagedIdentityCredential
-                let cred: Arc<dyn TokenCredential> = if WorkloadIdentityCredential::new(None)
-                    .is_ok()
-                {
-                    WorkloadIdentityCredential::new(None).map_err(|e| InitializeClientError {
-                        reason: format!("Failed to create WorkloadIdentityCredential: {e}"),
-                        source: Some(Box::new(e)),
-                    })?
-                } else {
-                    ManagedIdentityCredential::new(None).map_err(|e| InitializeClientError {
-                        reason: format!("Failed to create ManagedIdentityCredential: {e}"),
-                        source: Some(Box::new(e)),
-                    })?
+                let cred: Arc<dyn TokenCredential> = match WorkloadIdentityCredential::new(None) {
+                    Ok(wic) => wic,
+                    Err(_) => {
+                        ManagedIdentityCredential::new(None).map_err(|e| InitializeClientError {
+                            reason: format!("Failed to create ManagedIdentityCredential: {e}"),
+                            source: Some(Box::new(e)),
+                        })?
+                    }
                 };
                 Ok::<Arc<dyn TokenCredential>, InitializeClientError>(cred)
             })

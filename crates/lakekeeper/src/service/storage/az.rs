@@ -88,6 +88,13 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
 
+/// Shared `reqwest::Client` for Azure REST calls (user delegation key, etc.).
+///
+/// `reqwest::Client` is `Clone`-able at zero cost (it wraps an internal `Arc`),
+/// so sharing a single instance reuses the same connection pool and TLS context
+/// across all SAS delegation-key requests.
+static AZURE_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_SAS_TOKEN_VALIDITY_SECONDS_I64: i64 = 7 * 24 * 60 * 60;
 const SAS_TOKEN_DEFAULT_VALIDITY_SECONDS: u64 = 3600;
@@ -479,7 +486,7 @@ impl AdlsProfile {
 </KeyInfo>"#
         );
 
-        let response = reqwest::Client::new()
+        let response = AZURE_HTTP_CLIENT
             .post(&url)
             .bearer_auth(access_token.token.secret())
             .header("x-ms-version", SERVICE_SAS_VERSION)
@@ -677,7 +684,7 @@ fn permissions_string(permissions: StoragePermissions) -> String {
     match permissions {
         StoragePermissions::Read => "rl".to_string(),
         StoragePermissions::ReadWrite => "racwl".to_string(),
-        StoragePermissions::ReadWriteDelete => "racwdxyl".to_string(),
+        StoragePermissions::ReadWriteDelete => "racwdl".to_string(),
     }
 }
 
@@ -956,15 +963,27 @@ fn parse_user_delegation_key(
     xml: &str,
     fallback_expiry: OffsetDateTime,
 ) -> Result<UserDelegationKey, String> {
-    fn extract(xml: &str, tag: &str) -> Option<String> {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        let start = xml.find(&open)? + open.len();
-        let end = xml.find(&close)?;
-        if end < start {
-            return None;
-        }
-        Some(xml[start..end].trim().to_string())
+    /// Serde-deserializable mirror of the Azure `UserDelegationKey` XML element.
+    ///
+    /// All fields are `Option<String>` so that missing elements do not cause a
+    /// hard deserialisation error; mandatory fields are checked afterwards.
+    #[derive(serde::Deserialize)]
+    #[serde(rename = "UserDelegationKey")]
+    struct UserDelegationKeyXml {
+        #[serde(rename = "SignedOid")]
+        signed_oid: Option<String>,
+        #[serde(rename = "SignedTid")]
+        signed_tid: Option<String>,
+        #[serde(rename = "SignedStart")]
+        signed_start: Option<String>,
+        #[serde(rename = "SignedExpiry")]
+        signed_expiry: Option<String>,
+        #[serde(rename = "SignedService")]
+        signed_service: Option<String>,
+        #[serde(rename = "SignedVersion")]
+        signed_version: Option<String>,
+        #[serde(rename = "Value")]
+        value: Option<String>,
     }
 
     fn parse_dt(s: &str, fallback: OffsetDateTime) -> OffsetDateTime {
@@ -972,20 +991,41 @@ fn parse_user_delegation_key(
         OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).unwrap_or(fallback)
     }
 
-    let signed_oid = extract(xml, "SignedOid")
+    let parsed: UserDelegationKeyXml = quick_xml::de::from_str(xml)
+        .map_err(|e| format!("Failed to parse UserDelegationKey XML: {e}"))?;
+
+    let signed_oid = parsed
+        .signed_oid
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| "Missing <SignedOid> in user delegation key response".to_string())?;
-    let signed_tid = extract(xml, "SignedTid")
+    let signed_tid = parsed
+        .signed_tid
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| "Missing <SignedTid> in user delegation key response".to_string())?;
-    let signed_service = extract(xml, "SignedService").unwrap_or_else(|| "b".to_string());
-    let signed_version =
-        extract(xml, "SignedVersion").unwrap_or_else(|| SERVICE_SAS_VERSION.to_string());
-    let value = extract(xml, "Value")
+    let value = parsed
+        .value
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| "Missing <Value> in user delegation key response".to_string())?;
 
-    let signed_start =
-        extract(xml, "SignedStart").map_or(fallback_expiry, |s| parse_dt(&s, fallback_expiry));
-    let signed_expiry =
-        extract(xml, "SignedExpiry").map_or(fallback_expiry, |s| parse_dt(&s, fallback_expiry));
+    let signed_service = parsed
+        .signed_service
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "b".to_string());
+    let signed_version = parsed
+        .signed_version
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| SERVICE_SAS_VERSION.to_string());
+
+    let signed_start = parsed
+        .signed_start
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map_or(fallback_expiry, |s| parse_dt(s, fallback_expiry));
+    let signed_expiry = parsed
+        .signed_expiry
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map_or(fallback_expiry, |s| parse_dt(s, fallback_expiry));
 
     Ok(UserDelegationKey {
         signed_oid,
