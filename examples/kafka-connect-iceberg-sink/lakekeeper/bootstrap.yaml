@@ -58,7 +58,7 @@ spec:
                   "storage-credential": {
                     "type": "s3",
                     "credential-type": "access-key",
-                    "aws-access-key-id": "minioadmin",
-                    "aws-secret-access-key": "minioadmin"
+                    "access-key-id": "minioadmin",
+                    "secret-access-key": "minioadmin"
                   }
                 }'

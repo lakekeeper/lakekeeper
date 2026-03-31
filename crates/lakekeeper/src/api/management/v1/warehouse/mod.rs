@@ -1543,8 +1543,8 @@ mod test {
     fn s3_access_key_credential() -> StorageCredential {
         StorageCredential::S3(crate::service::storage::S3Credential::AccessKey(
             S3AccessKeyCredential {
-                aws_access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
-                aws_secret_access_key: "secret".to_string(),
+                access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+                secret_access_key: "secret".to_string(),
                 external_id: None,
             },
         ))

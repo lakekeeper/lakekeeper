@@ -219,9 +219,11 @@ pub enum S3Credential {
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "open-api", schema(title = "S3CredentialAccessKey"))]
 pub struct S3AccessKeyCredential {
-    pub aws_access_key_id: String,
+    #[serde(alias = "aws-access-key-id")]
+    pub access_key_id: String,
     #[redact(partial)]
-    pub aws_secret_access_key: String,
+    #[serde(alias = "aws-secret-access-key")]
+    pub secret_access_key: String,
     #[redact(partial)]
     pub external_id: Option<String>,
 }
@@ -241,9 +243,11 @@ pub struct S3AwsSystemIdentityCredential {
 #[cfg_attr(feature = "open-api", schema(title = "CloudflareR2Credential"))]
 pub struct S3CloudflareR2Credential {
     /// Access key ID used for IO operations of Lakekeeper
+    #[serde(alias = "aws-access-key-id")]
     pub access_key_id: String,
     #[redact(partial)]
     /// Secret key associated with the access key ID.
+    #[serde(alias = "aws-secret-access-key")]
     pub secret_access_key: String,
     #[redact(partial)]
     /// Token associated with the access key ID.
@@ -1252,8 +1256,8 @@ impl From<S3CloudflareR2Credential> for S3Credential {
 impl From<S3AccessKeyCredential> for S3AccessKeyAuth {
     fn from(access_key_credential: S3AccessKeyCredential) -> Self {
         S3AccessKeyAuth {
-            aws_access_key_id: access_key_credential.aws_access_key_id,
-            aws_secret_access_key: access_key_credential.aws_secret_access_key,
+            aws_access_key_id: access_key_credential.access_key_id,
+            aws_secret_access_key: access_key_credential.secret_access_key,
             external_id: access_key_credential.external_id,
         }
     }
@@ -1361,8 +1365,8 @@ pub(crate) mod test {
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
         let expected = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id: "foo".to_string(),
-            aws_secret_access_key: "bar".to_string(),
+            access_key_id: "foo".to_string(),
+            secret_access_key: "bar".to_string(),
             external_id: None,
         });
         assert_eq!(credential, expected);
@@ -1380,11 +1384,77 @@ pub(crate) mod test {
         );
         let credential: S3Credential = serde_json::from_value(secret).unwrap();
         let expected = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id: "foo".to_string(),
-            aws_secret_access_key: "bar".to_string(),
+            access_key_id: "foo".to_string(),
+            secret_access_key: "bar".to_string(),
             external_id: Some("baz".to_string()),
         });
         assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_access_key_new_field_names() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "access-key-id": "foo",
+                "secret-access-key": "bar",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "foo".to_string(),
+            secret_access_key: "bar".to_string(),
+            external_id: None,
+        });
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_access_key_legacy_and_new_produce_same_result() {
+        let legacy = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "aws-access-key-id": "foo",
+                "aws-secret-access-key": "bar",
+                "external-id": "baz",
+            }
+        );
+        let new = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "access-key-id": "foo",
+                "secret-access-key": "bar",
+                "external-id": "baz",
+            }
+        );
+        let legacy_cred: S3Credential = serde_json::from_value(legacy).unwrap();
+        let new_cred: S3Credential = serde_json::from_value(new).unwrap();
+        assert_eq!(legacy_cred, new_cred);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_r2_legacy_field_names() {
+        let legacy = serde_json::json!(
+            {
+                "credential-type": "cloudflare-r2",
+                "aws-access-key-id": "key",
+                "aws-secret-access-key": "secret",
+                "token": "tok",
+                "account-id": "acc",
+            }
+        );
+        let new = serde_json::json!(
+            {
+                "credential-type": "cloudflare-r2",
+                "access-key-id": "key",
+                "secret-access-key": "secret",
+                "token": "tok",
+                "account-id": "acc",
+            }
+        );
+        let legacy_cred: S3Credential = serde_json::from_value(legacy).unwrap();
+        let new_cred: S3Credential = serde_json::from_value(new).unwrap();
+        assert_eq!(legacy_cred, new_cred);
     }
 
     #[test]
@@ -1556,8 +1626,8 @@ pub(crate) mod test {
                 .push_s3_delete_disabled(false)
                 .build();
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: TEST_ACCESS_KEY.clone(),
-                aws_secret_access_key: TEST_SECRET_KEY.clone(),
+                access_key_id: TEST_ACCESS_KEY.clone(),
+                secret_access_key: TEST_SECRET_KEY.clone(),
                 external_id: None,
             });
 
@@ -1610,8 +1680,8 @@ pub(crate) mod test {
                 .push_s3_delete_disabled(false)
                 .build();
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID").unwrap(),
-                aws_secret_access_key: std::env::var("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
+                access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID").unwrap(),
+                secret_access_key: std::env::var("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
                     .unwrap(),
                 external_id: None,
             });
@@ -1827,8 +1897,8 @@ pub(crate) mod test {
                 .push_s3_delete_disabled(false)
                 .build();
             let cred = S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID").unwrap(),
-                aws_secret_access_key: std::env::var("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
+                access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID").unwrap(),
+                secret_access_key: std::env::var("LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY")
                     .unwrap(),
                 external_id: None,
             });

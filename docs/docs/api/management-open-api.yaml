@@ -6417,17 +6417,17 @@ components:
       type: object
       title: S3CredentialAccessKey
       required:
-        - aws-access-key-id
-        - aws-secret-access-key
+        - access-key-id
+        - secret-access-key
       properties:
-        aws-access-key-id:
-          type: string
-        aws-secret-access-key:
+        access-key-id:
           type: string
         external-id:
           type:
             - string
             - 'null'
+        secret-access-key:
+          type: string
     S3AwsSystemIdentityCredential:
       type: object
       title: S3CredentialSystemIdentity
