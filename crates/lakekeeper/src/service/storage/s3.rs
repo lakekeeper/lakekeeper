@@ -1392,6 +1392,72 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_storage_secret_deserialization_access_key_new_field_names() {
+        let secret = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "access-key-id": "foo",
+                "secret-access-key": "bar",
+            }
+        );
+        let credential: S3Credential = serde_json::from_value(secret).unwrap();
+        let expected = S3Credential::AccessKey(S3AccessKeyCredential {
+            access_key_id: "foo".to_string(),
+            secret_access_key: "bar".to_string(),
+            external_id: None,
+        });
+        assert_eq!(credential, expected);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_access_key_legacy_and_new_produce_same_result() {
+        let legacy = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "aws-access-key-id": "foo",
+                "aws-secret-access-key": "bar",
+                "external-id": "baz",
+            }
+        );
+        let new = serde_json::json!(
+            {
+                "credential-type": "access-key",
+                "access-key-id": "foo",
+                "secret-access-key": "bar",
+                "external-id": "baz",
+            }
+        );
+        let legacy_cred: S3Credential = serde_json::from_value(legacy).unwrap();
+        let new_cred: S3Credential = serde_json::from_value(new).unwrap();
+        assert_eq!(legacy_cred, new_cred);
+    }
+
+    #[test]
+    fn test_storage_secret_deserialization_r2_legacy_field_names() {
+        let legacy = serde_json::json!(
+            {
+                "credential-type": "cloudflare-r2",
+                "aws-access-key-id": "key",
+                "aws-secret-access-key": "secret",
+                "token": "tok",
+                "account-id": "acc",
+            }
+        );
+        let new = serde_json::json!(
+            {
+                "credential-type": "cloudflare-r2",
+                "access-key-id": "key",
+                "secret-access-key": "secret",
+                "token": "tok",
+                "account-id": "acc",
+            }
+        );
+        let legacy_cred: S3Credential = serde_json::from_value(legacy).unwrap();
+        let new_cred: S3Credential = serde_json::from_value(new).unwrap();
+        assert_eq!(legacy_cred, new_cred);
+    }
+
+    #[test]
     fn test_storage_secret_deserialization_system_identity_1() {
         let secret = serde_json::json!(
             {
