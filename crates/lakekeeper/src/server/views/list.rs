@@ -500,4 +500,106 @@ mod test {
         .unwrap();
         assert_eq!(all.identifiers.len(), 10);
     }
+
+    /// Regression test: paginated list must not return duplicate views across pages.
+    ///
+    /// The `list_tabulars` query uses a CTE with `ORDER BY ... LIMIT` to select rows,
+    /// then LEFT JOINs view/table properties in the outer SELECT. Without an ORDER BY
+    /// on the outer SELECT, `PostgreSQL` may return rows in a different order than the CTE,
+    /// causing the next-page-token (derived from the last returned row) to point to the
+    /// wrong cursor position — leading to overlapping/duplicate results on subsequent pages.
+    #[sqlx::test]
+    async fn test_view_pagination_no_duplicates(pool: sqlx::PgPool) {
+        let prof = crate::server::test::memory_io_profile();
+
+        let authz: HidingAuthorizer = HidingAuthorizer::new();
+        authz.block_can_list_everything();
+
+        let (ctx, warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            Some(UserId::new_unchecked("oidc", "test-user-id")),
+        )
+        .await;
+        let ns = crate::server::test::create_ns(
+            ctx.clone(),
+            warehouse.warehouse_id.to_string(),
+            "ns1".to_string(),
+        )
+        .await;
+        let ns_params = NamespaceParameters {
+            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
+            namespace: ns.namespace.clone(),
+        };
+
+        // Create 300 views (with properties via create_view_request) to match the
+        // bug report scenario (~300 views, pagination breaks at ~43+ per page).
+        let n_views: usize = 300;
+        for i in 0..n_views {
+            CatalogServer::create_view(
+                ns_params.clone(),
+                create_view_request(Some(&format!("view-{i:04}")), None),
+                ctx.clone(),
+                DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                },
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Paginate through all views with a small page size
+        let page_size = 100;
+        let mut all_names: Vec<String> = Vec::new();
+        let mut page_token = PageToken::NotSpecified;
+        let mut pages: usize = 0;
+
+        loop {
+            let page = CatalogServer::list_views(
+                ns_params.clone(),
+                ListTablesQuery {
+                    page_token,
+                    page_size: Some(page_size),
+                    return_uuids: false,
+                    return_protection_status: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+
+            all_names.extend(page.identifiers.iter().map(|i| i.name.clone()));
+            pages += 1;
+
+            match page.next_page_token {
+                Some(token) => page_token = PageToken::Present(token),
+                None => break,
+            }
+
+            // Safety valve
+            assert!(pages <= n_views, "Too many pages, likely infinite loop");
+        }
+
+        // Must have all views with no duplicates
+        assert_eq!(
+            all_names.len(),
+            n_views,
+            "Expected {n_views} total views across all pages, got {}",
+            all_names.len()
+        );
+
+        let unique_names: std::collections::HashSet<&String> = all_names.iter().collect();
+        assert_eq!(
+            unique_names.len(),
+            all_names.len(),
+            "Found duplicate view names across pages: {:?}",
+            all_names.iter().duplicates().collect::<Vec<_>>()
+        );
+    }
 }
