@@ -1,19 +1,15 @@
 use std::{
     collections::HashMap,
+    fmt,
     str::FromStr,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
-use azure_storage::{
-    CloudLocation,
-    prelude::{BlobSasPermissions, BlobSignedResource},
-    shared_access_signature::{
-        SasToken,
-        service_sas::{BlobSharedAccessSignature, SasKey},
-    },
+use azure_core::{
+    credentials::{Secret, TokenCredential},
+    hmac::hmac_sha256,
 };
-use azure_storage_blobs::prelude::BlobServiceClient;
 use iceberg::io::ADLS_AUTHORITY_HOST;
 use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
@@ -212,14 +208,14 @@ impl AdlsProfile {
         Ok(location)
     }
 
-    fn cloud_location(&self) -> CloudLocation {
+    fn cloud_location(&self) -> lakekeeper_io::adls::CloudLocation {
         if let Some(host) = &self.host {
-            CloudLocation::Custom {
+            lakekeeper_io::adls::CloudLocation::Custom {
                 account: self.account_name.clone(),
                 uri: host.clone(),
             }
         } else {
-            CloudLocation::Public {
+            lakekeeper_io::adls::CloudLocation::Public {
                 account: self.account_name.clone(),
             }
         }
@@ -230,18 +226,6 @@ impl AdlsProfile {
             authority_host: self.authority_host.clone(),
             cloud_location: self.cloud_location(),
         }
-    }
-
-    async fn blob_service_client(
-        &self,
-        credential: &AzCredential,
-    ) -> Result<BlobServiceClient, CredentialsError> {
-        let azure_auth = AzureAuth::try_from(credential.clone())?;
-
-        self.azure_settings()
-            .get_blob_service_client(&azure_auth)
-            .await
-            .map_err(Into::into)
     }
 
     /// Get the Lakekeeper IO for this storage profile.
@@ -299,12 +283,17 @@ impl AdlsProfile {
             );
             let (sas, expiration) = match credential {
                 AzCredential::ClientCredentials { .. } => {
-                    let client = self.blob_service_client(credential).await?;
+                    let azure_auth = AzureAuth::try_from(credential.clone())?;
+                    let token_cred = self
+                        .azure_settings()
+                        .get_token_credential(&azure_auth)
+                        .await
+                        .map_err(CredentialsError::from)?;
                     self.sas_via_delegation_key(
                         sas_token_start,
                         requested_sas_token_end,
                         &stc_request,
-                        client,
+                        token_cred,
                     )
                     .await?
                 }
@@ -312,17 +301,22 @@ impl AdlsProfile {
                     let sas = self.sas(
                         &stc_request,
                         requested_sas_token_end,
-                        azure_core::auth::Secret::new(key.clone()),
+                        &SasSigningKey::SharedKey(Secret::new(key.clone())),
                     )?;
                     (sas, requested_sas_token_end)
                 }
                 AzCredential::AzureSystemIdentity {} => {
-                    let client = self.blob_service_client(credential).await?;
+                    let azure_auth = AzureAuth::try_from(credential.clone())?;
+                    let token_cred = self
+                        .azure_settings()
+                        .get_token_credential(&azure_auth)
+                        .await
+                        .map_err(CredentialsError::from)?;
                     self.sas_via_delegation_key(
                         sas_token_start,
                         requested_sas_token_end,
                         &stc_request,
-                        client,
+                        token_cred,
                     )
                     .await
                     .map_err(|e| {
@@ -454,28 +448,89 @@ impl AdlsProfile {
         sas_token_start: OffsetDateTime,
         sas_token_end: OffsetDateTime,
         stc_request: &ShortTermCredentialsRequest,
-        client: BlobServiceClient,
+        token_cred: Arc<dyn TokenCredential>,
     ) -> Result<(String, OffsetDateTime), CredentialsError> {
         tracing::debug!(
             "Requesting user delegation key from azure for sas token generation - Valid from {sas_token_start} to {sas_token_end}",
         );
-        let delegation_key = client
-            .get_user_deligation_key(sas_token_start, sas_token_end)
+
+        // Get a Bearer token scoped to Azure Storage
+        let access_token = token_cred
+            .get_token(&["https://storage.azure.com/.default"], None)
             .await
             .map_err(|e| CredentialsError::ShortTermCredential {
-                reason: "Error getting azure user delegation key.".to_string(),
+                reason: "Failed to get Azure access token for user delegation key request."
+                    .to_string(),
                 source: Some(Box::new(e)),
             })?;
-        let signed_expiry = delegation_key.user_deligation_key.signed_expiry;
 
-        tracing::debug!(
-            "Successfully obtained user delegation key from azure for sas token generation - Valid from {} until {signed_expiry}",
-            delegation_key.user_deligation_key.signed_start
+        // Build the user delegation key endpoint
+        let blob_endpoint = self.cloud_location().blob_endpoint();
+        let url = format!("{blob_endpoint}?restype=service&comp=userdelegationkey");
+
+        // Build the XML request body
+        let start_str = format_iso8601(sas_token_start);
+        let end_str = format_iso8601(sas_token_end);
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<KeyInfo>
+  <Start>{start_str}</Start>
+  <Expiry>{end_str}</Expiry>
+</KeyInfo>"#
         );
 
-        let key = delegation_key.user_deligation_key;
+        let response = reqwest::Client::new()
+            .post(&url)
+            .bearer_auth(access_token.token.secret())
+            .header("x-ms-version", SERVICE_SAS_VERSION)
+            .header("Content-Type", "application/xml")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                reason: "HTTP request for user delegation key failed.".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
-        let sas = self.sas(stc_request, signed_expiry, key)?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(CredentialsError::ShortTermCredential {
+                reason: format!(
+                    "User delegation key request returned HTTP {}: {body}",
+                    status.as_u16()
+                ),
+                source: None,
+            });
+        }
+
+        let xml_body =
+            response
+                .text()
+                .await
+                .map_err(|e| CredentialsError::ShortTermCredential {
+                    reason: "Failed to read user delegation key response body.".to_string(),
+                    source: Some(Box::new(e)),
+                })?;
+
+        let key = parse_user_delegation_key(&xml_body, sas_token_end).map_err(|reason| {
+            CredentialsError::ShortTermCredential {
+                reason,
+                source: None,
+            }
+        })?;
+
+        tracing::debug!(
+            "Successfully obtained user delegation key from azure for sas token generation - Valid until {}",
+            key.signed_expiry
+        );
+
+        let signed_expiry = key.signed_expiry;
+        let sas = self.sas(
+            stc_request,
+            signed_expiry,
+            &SasSigningKey::UserDelegation(key),
+        )?;
         Ok((sas, signed_expiry))
     }
 
@@ -483,7 +538,7 @@ impl AdlsProfile {
         &self,
         stc_request: &ShortTermCredentialsRequest,
         signed_expiry: OffsetDateTime,
-        key: impl Into<SasKey>,
+        key: &SasSigningKey,
     ) -> Result<String, CredentialsError> {
         let path = reduce_scheme_string(stc_request.table_location.as_ref());
         let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
@@ -497,24 +552,20 @@ impl AdlsProfile {
         );
 
         tracing::debug!(
-            "Generationg SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
+            "Generating SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
             stc_request.storage_permissions
         );
 
-        let sas = BlobSharedAccessSignature::new(
-            key,
-            canonical_resource,
-            stc_request.storage_permissions.into(),
-            signed_expiry,
-            BlobSignedResource::Directory,
-        )
-        .signed_directory_depth(depth);
+        let permissions = permissions_string(stc_request.storage_permissions);
+        let sas_token =
+            build_sas_token(key, &canonical_resource, &permissions, signed_expiry, depth).map_err(
+                |e| CredentialsError::ShortTermCredential {
+                    reason: format!("Error building Azure SAS token: {e}"),
+                    source: Some(Box::new(e)),
+                },
+            )?;
 
-        sas.token()
-            .map_err(|e| CredentialsError::ShortTermCredential {
-                reason: "Error getting azure sas token.".to_string(),
-                source: Some(Box::new(e)),
-            })
+        Ok(sas_token)
     }
 
     fn iceberg_sas_property_key(&self) -> String {
@@ -622,34 +673,11 @@ pub enum AzCredential {
     AzureSystemIdentity {},
 }
 
-impl From<StoragePermissions> for BlobSasPermissions {
-    fn from(value: StoragePermissions) -> Self {
-        match value {
-            StoragePermissions::Read => BlobSasPermissions {
-                read: true,
-                list: true,
-                ..Default::default()
-            },
-            StoragePermissions::ReadWrite => BlobSasPermissions {
-                read: true,
-                write: true,
-                tags: true,
-                add: true,
-                list: true,
-                ..Default::default()
-            },
-            StoragePermissions::ReadWriteDelete => BlobSasPermissions {
-                read: true,
-                write: true,
-                tags: true,
-                add: true,
-                delete: true,
-                list: true,
-                delete_version: true,
-                permanent_delete: true,
-                ..Default::default()
-            },
-        }
+fn permissions_string(permissions: StoragePermissions) -> String {
+    match permissions {
+        StoragePermissions::Read => "rl".to_string(),
+        StoragePermissions::ReadWrite => "racwl".to_string(),
+        StoragePermissions::ReadWriteDelete => "racwdxyl".to_string(),
     }
 }
 
@@ -721,6 +749,253 @@ impl TryFrom<AzCredential> for AzureAuth {
             AzCredential::AzureSystemIdentity {} => AzureAuth::AzureSystemIdentity,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// SAS token generation helpers
+// ---------------------------------------------------------------------------
+//
+// NOTE: The `build_sas_token`, `parse_user_delegation_key`, and
+// `sas_via_delegation_key` functions below implement SAS URL creation
+// manually because `azure_storage_blob` 0.10 does not yet provide this
+// capability.  Once https://github.com/Azure/azure-sdk-for-rust/issues/3330
+// is resolved and the SDK exposes a SAS-generation API, these helpers (and
+// the raw `reqwest` call in `sas_via_delegation_key`) can be replaced with
+// the upstream implementation.
+
+/// Azure Storage SAS API version used for token signing.
+const SERVICE_SAS_VERSION: &str = "2022-11-02";
+
+/// Signing key for a SAS token – either a raw shared account key or a
+/// user-delegation key obtained from the Azure Storage REST API.
+enum SasSigningKey {
+    SharedKey(Secret),
+    UserDelegation(UserDelegationKey),
+}
+
+/// A user-delegation key as returned by the Azure Blob Storage
+/// `Get User Delegation Key` REST operation.
+struct UserDelegationKey {
+    /// Object-id of the Azure AD principal that requested the key.
+    signed_oid: String,
+    /// Tenant-id of the Azure AD principal.
+    signed_tid: String,
+    /// Start of the key's validity period.
+    signed_start: OffsetDateTime,
+    /// End of the key's validity period.
+    signed_expiry: OffsetDateTime,
+    /// Service (`b` = Blob).
+    signed_service: String,
+    /// SAS version the key was issued for.
+    signed_version: String,
+    /// The actual signing key material (base64-encoded).
+    value: Secret,
+}
+
+/// A simple error type for SAS-building failures so that the error can be
+/// boxed and stored inside `CredentialsError::ShortTermCredential`.
+#[derive(Debug)]
+struct SasError(String);
+
+impl fmt::Display for SasError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SasError {}
+
+/// Format an [`OffsetDateTime`] as `YYYY-MM-DDTHH:MM:SSZ` (ISO 8601 / RFC 3339
+/// truncated to seconds), which is what Azure SAS tokens require.
+fn format_iso8601(dt: OffsetDateTime) -> String {
+    // OffsetDateTime::format is fallible but with a static format string it
+    // will never panic in practice.
+    let fmt = time::format_description::parse("[year]-[month]-[day]T[hour]:[minute]:[second]Z")
+        .expect("static format string is valid");
+    dt.to_offset(time::UtcOffset::UTC)
+        .format(&fmt)
+        .expect("formatting OffsetDateTime failed")
+}
+
+/// Build a Service SAS token URL query-string for a blob or directory
+/// resource.
+///
+/// `depth` is the number of path components in the resource path (used for
+/// the `sdd` / signed directory depth parameter for hierarchical namespace).
+///
+/// # Errors
+/// Returns [`SasError`] if HMAC signing fails (e.g. bad base64 key).
+fn build_sas_token(
+    key: &SasSigningKey,
+    canonical_resource: &str,
+    permissions: &str,
+    expiry: OffsetDateTime,
+    depth: usize,
+) -> Result<String, SasError> {
+    // Resource type: "d" for directory, "b" for blob.
+    // A path with depth >= 1 is treated as a directory prefix.
+    let resource = "d";
+    let expiry_str = format_iso8601(expiry);
+    let version = SERVICE_SAS_VERSION;
+
+    // Build the string-to-sign.  The exact field order must match the Azure
+    // documentation for service-SAS version 2022-11-02.
+    let string_to_sign = match key {
+        SasSigningKey::SharedKey(_) => {
+            // SharedKey SAS string-to-sign (16 fields, joined by \n):
+            // signedPermissions, signedStart, signedExpiry, canonicalizedResource,
+            // signedIdentifier, signedIP, signedProtocol, signedVersion,
+            // signedResource, signedSnapshotTime, signedEncryptionScope,
+            // rscc, rscd, rsce, rscl, rsct
+            [
+                permissions, // sp
+                "",          // st  (no start time)
+                &expiry_str, // se
+                canonical_resource,
+                "",       // si  (no stored access policy)
+                "",       // sip (no IP restriction)
+                "",       // spr (no protocol restriction)
+                version,  // sv
+                resource, // sr
+                "",       // snapshot time
+                "",       // signed encryption scope
+                "",       // rscc
+                "",       // rscd
+                "",       // rsce
+                "",       // rscl
+                "",       // rsct
+            ]
+            .join("\n")
+        }
+        SasSigningKey::UserDelegation(udk) => {
+            // User-delegation SAS string-to-sign (24 fields, joined by \n):
+            // signedPermissions, signedStart, signedExpiry, canonicalizedResource,
+            // signedKeyObjectId, signedKeyTenantId, signedKeyStart, signedKeyExpiry,
+            // signedKeyService, signedKeyVersion,
+            // signedAuthorizedUserObjectId, signedUnauthorizedUserObjectId,
+            // signedCorrelationId,
+            // signedIP, signedProtocol, signedVersion, signedResource,
+            // signedSnapshotTime, signedEncryptionScope,
+            // rscc, rscd, rsce, rscl, rsct
+            let key_start = format_iso8601(udk.signed_start);
+            let key_expiry = format_iso8601(udk.signed_expiry);
+            [
+                permissions, // sp
+                "",          // st
+                &expiry_str, // se
+                canonical_resource,
+                &udk.signed_oid,     // skoid
+                &udk.signed_tid,     // sktid
+                &key_start,          // skt
+                &key_expiry,         // ske
+                &udk.signed_service, // sks
+                &udk.signed_version, // skv
+                "",                  // saoid (authorised user OID)
+                "",                  // suoid (unauthorised user OID)
+                "",                  // scid (correlation id)
+                "",                  // sip
+                "",                  // spr
+                version,             // sv
+                resource,            // sr
+                "",                  // snapshot time
+                "",                  // signed encryption scope
+                "",                  // rscc
+                "",                  // rscd
+                "",                  // rsce
+                "",                  // rscl
+                "",                  // rsct
+            ]
+            .join("\n")
+        }
+    };
+
+    let signing_key = match key {
+        SasSigningKey::SharedKey(secret) => secret,
+        SasSigningKey::UserDelegation(udk) => &udk.value,
+    };
+
+    let signature = hmac_sha256(&string_to_sign, signing_key)
+        .map_err(|e| SasError(format!("HMAC-SHA256 signing failed: {e}")))?;
+
+    let depth_param = if depth > 0 { depth } else { 1 };
+
+    // Build the query string.
+    let mut params: Vec<(&str, String)> = Vec::new();
+    if let SasSigningKey::UserDelegation(udk) = key {
+        params.push(("skoid", udk.signed_oid.clone()));
+        params.push(("sktid", udk.signed_tid.clone()));
+        params.push(("skt", format_iso8601(udk.signed_start)));
+        params.push(("ske", format_iso8601(udk.signed_expiry)));
+        params.push(("sks", udk.signed_service.clone()));
+        params.push(("skv", udk.signed_version.clone()));
+    }
+    params.push(("sv", version.to_string()));
+    params.push(("sp", permissions.to_string()));
+    params.push(("sr", resource.to_string()));
+    params.push(("se", expiry_str));
+    params.push(("sdd", depth_param.to_string()));
+    params.push(("sig", signature));
+
+    let token = params
+        .iter()
+        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    Ok(token)
+}
+
+/// Parse an Azure `UserDelegationKey` XML response body.
+///
+/// `fallback_expiry` is used as the `signed_expiry` if the XML field is
+/// absent or cannot be parsed.
+///
+/// Returns `Err(String)` with a human-readable error description on failure.
+#[allow(clippy::similar_names)]
+fn parse_user_delegation_key(
+    xml: &str,
+    fallback_expiry: OffsetDateTime,
+) -> Result<UserDelegationKey, String> {
+    fn extract(xml: &str, tag: &str) -> Option<String> {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let start = xml.find(&open)? + open.len();
+        let end = xml.find(&close)?;
+        if end < start {
+            return None;
+        }
+        Some(xml[start..end].trim().to_string())
+    }
+
+    fn parse_dt(s: &str, fallback: OffsetDateTime) -> OffsetDateTime {
+        // Azure returns ISO 8601 like "2022-08-22T15:11:43.0000000Z"
+        OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).unwrap_or(fallback)
+    }
+
+    let signed_oid = extract(xml, "SignedOid")
+        .ok_or_else(|| "Missing <SignedOid> in user delegation key response".to_string())?;
+    let signed_tid = extract(xml, "SignedTid")
+        .ok_or_else(|| "Missing <SignedTid> in user delegation key response".to_string())?;
+    let signed_service = extract(xml, "SignedService").unwrap_or_else(|| "b".to_string());
+    let signed_version =
+        extract(xml, "SignedVersion").unwrap_or_else(|| SERVICE_SAS_VERSION.to_string());
+    let value = extract(xml, "Value")
+        .ok_or_else(|| "Missing <Value> in user delegation key response".to_string())?;
+
+    let signed_start =
+        extract(xml, "SignedStart").map_or(fallback_expiry, |s| parse_dt(&s, fallback_expiry));
+    let signed_expiry =
+        extract(xml, "SignedExpiry").map_or(fallback_expiry, |s| parse_dt(&s, fallback_expiry));
+
+    Ok(UserDelegationKey {
+        signed_oid,
+        signed_tid,
+        signed_start,
+        signed_expiry,
+        signed_service,
+        signed_version,
+        value: Secret::new(value),
+    })
 }
 
 #[cfg(test)]

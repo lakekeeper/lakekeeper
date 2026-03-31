@@ -1,47 +1,54 @@
 use std::{
     collections::HashMap,
-    num::NonZeroU32,
     str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
-use azure_core::prelude::Range;
-use azure_storage::CloudLocation;
-use azure_storage_datalake::prelude::{
-    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, Path,
+use azure_storage_blob::{
+    BlobServiceClient,
+    models::{
+        BlobClientDownloadOptions, BlobClientDownloadResultHeaders,
+        BlobClientGetPropertiesResultHeaders, BlobContainerClientListBlobsOptions,
+        ListBlobsIncludeItem,
+    },
 };
 use bytes::Bytes;
 use chrono::DateTime;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use tokio;
 
 use crate::{
     DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
     Location, ReadError, WriteError,
-    adls::{AdlsLocation, adls_error::parse_error},
+    adls::{AdlsLocation, CloudLocation, adls_error::parse_error},
     calculate_ranges, delete_not_found_is_ok,
     error::ErrorKind,
-    execute_with_parallelism, safe_usize_to_i64, validate_file_size,
+    execute_with_parallelism, validate_file_size,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AdlsStorage {
-    data_lake_client: DataLakeClient,
+    blob_service_client: Arc<BlobServiceClient>,
     cloud_location: CloudLocation,
+}
+
+impl std::fmt::Debug for AdlsStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdlsStorage")
+            .field("account", &self.cloud_location.account())
+            .finish_non_exhaustive()
+    }
 }
 
 const MAX_BYTES_PER_REQUEST: usize = 7 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
 
 impl AdlsStorage {
-    /// Returns a [`FileSystemClient`] for the Azure Storage account.
-    ///
-    /// # Errors
-    /// - If the specified account in the location does not match the location's account name.
-    pub fn get_filesystem_client(
-        &self,
-        location: &AdlsLocation,
-    ) -> Result<FileSystemClient, InvalidLocationError> {
+    /// Validates that the location matches this storage's account and returns the container name.
+    fn check_account(&self, location: &AdlsLocation) -> Result<(), InvalidLocationError> {
         if self.cloud_location.account() != location.account_name() {
             return Err(InvalidLocationError::new(
                 location.to_string(),
@@ -52,51 +59,22 @@ impl AdlsStorage {
                 ),
             ));
         }
-
-        // Get the container client for the filesystem
-        let container_client = self
-            .data_lake_client
-            .file_system_client(location.filesystem());
-        Ok(container_client)
-    }
-
-    /// Returns a [`FileClient`] for the Azure Storage account.
-    ///
-    /// # Errors
-    /// - If the filesystem client cannot be retrieved or initialized.
-    pub fn get_file_client(
-        &self,
-        location: &AdlsLocation,
-    ) -> Result<FileClient, InvalidLocationError> {
-        let filesystem_client = self.get_filesystem_client(location)?;
-        Ok(filesystem_client.into_file_client(location.blob_name()))
-    }
-
-    /// Returns a [`DirectoryClient`] for the Azure Storage account.
-    ///
-    /// # Errors
-    /// - If the filesystem client cannot be retrieved or initialized.
-    pub fn get_directory_client(
-        &self,
-        location: &AdlsLocation,
-    ) -> Result<DirectoryClient, InvalidLocationError> {
-        let filesystem_client = self.get_filesystem_client(location)?;
-        Ok(filesystem_client.into_directory_client(location.blob_name()))
+        Ok(())
     }
 }
 
 impl AdlsStorage {
     #[must_use]
-    pub fn new(client: DataLakeClient, cloud_location: CloudLocation) -> Self {
+    pub fn new(client: BlobServiceClient, cloud_location: CloudLocation) -> Self {
         Self {
-            data_lake_client: client,
+            blob_service_client: Arc::new(client),
             cloud_location,
         }
     }
 
     #[must_use]
-    pub fn client(&self) -> &DataLakeClient {
-        &self.data_lake_client
+    pub fn client(&self) -> &BlobServiceClient {
+        &self.blob_service_client
     }
 }
 
@@ -105,21 +83,23 @@ impl LakekeeperStorage for AdlsStorage {
         let path = path.as_ref();
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
-        // Get container client from service client
-        let client = self.get_file_client(&adls_location)?;
+        self.check_account(&adls_location)?;
 
-        let mut delete_response = client.delete().into_stream();
-        while let Some(result) = delete_response.next().await {
-            let result = result.map_err(|e| parse_error(e, path)).map(|_| ());
-            let result = delete_not_found_is_ok(result);
-            if let Err(e) = result {
-                return Err(e.into());
-            }
+        let blob_client = self
+            .blob_service_client
+            .blob_client(adls_location.filesystem(), &adls_location.blob_name());
+
+        let result = blob_client
+            .delete(None)
+            .await
+            .map_err(|e| parse_error(e, path))
+            .map(|_| ());
+        let result = delete_not_found_is_ok(result);
+        if let Err(e) = result {
+            return Err(e.into());
         }
 
-        // Check if deletion was successful
         Ok(())
     }
 
@@ -127,39 +107,33 @@ impl LakekeeperStorage for AdlsStorage {
         &self,
         paths: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<(), DeleteBatchError> {
-        // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
-        // Create futures for parallel deletion
         let mut delete_futures = Vec::new();
 
-        // Create delete operations for each path
         for ((_account, _filesystem), paths) in grouped_paths {
             if paths.is_empty() {
-                continue; // Skip empty groups
+                continue;
             }
-            let filesystem_client = self.get_filesystem_client(&paths[0])?;
 
-            for path in paths {
-                let file_client = filesystem_client.get_file_client(path.blob_name());
-                let mut deletion_stream = file_client.delete().into_stream();
+            for adls_loc in paths {
+                let svc = Arc::clone(&self.blob_service_client);
+                let path_str = adls_loc.location().to_string();
 
                 let future = async move {
-                    let mut last_err = None;
-                    while let Some(result) = deletion_stream.next().await {
-                        let result = result
-                            .map_err(|e| parse_error(e, path.location().as_str()))
-                            .map(|_| ());
-                        let result = delete_not_found_is_ok(result);
-                        if let Err(e) = result {
-                            last_err = Some(e);
-                        }
-                    }
+                    let blob_client = svc.blob_client(adls_loc.filesystem(), &adls_loc.blob_name());
+                    let result = blob_client
+                        .delete(None)
+                        .await
+                        .map_err(|e| parse_error(e, &path_str))
+                        .map(|_| ());
+                    let result = delete_not_found_is_ok(result);
 
-                    if let Some(e) = last_err {
-                        Ok::<(AdlsLocation, Option<IOError>), DeleteBatchError>((path, Some(e)))
-                    } else {
-                        Ok((path, None))
+                    match result {
+                        Ok(()) => Ok::<(AdlsLocation, Option<IOError>), DeleteBatchError>((
+                            adls_loc, None,
+                        )),
+                        Err(e) => Ok((adls_loc, Some(e))),
                     }
                 };
 
@@ -202,81 +176,20 @@ impl LakekeeperStorage for AdlsStorage {
         let path = path.as_ref();
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
+        self.check_account(&adls_location)
+            .map_err(WriteError::from)?;
 
-        let client = self.get_file_client(&adls_location)?;
+        let blob_client = self
+            .blob_service_client
+            .blob_client(adls_location.filesystem(), &adls_location.blob_name());
 
-        let _create_result = client
-            .create()
+        // The new SDK's upload() does a single-call block blob upload and overwrites by default.
+        // This replaces the old create + append + flush pattern.
+        blob_client
+            .upload(bytes.into(), None)
             .await
             .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
-
-        let file_length = safe_usize_to_i64(bytes.len(), path)?;
-
-        // If the data is small enough, upload in a single request
-        if bytes.len() <= MAX_BYTES_PER_REQUEST {
-            // ToDo: Use a single request: https://github.com/Azure/azure-sdk-for-rust/issues/2911
-            let append = client.append(0, bytes);
-
-            append
-                .await
-                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
-
-            client
-                .flush(file_length)
-                .close(true)
-                .await
-                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
-        } else {
-            // Split data into chunks and upload concurrently
-            let chunks: Vec<_> = bytes
-                .chunks(DEFAULT_BYTES_PER_REQUEST)
-                .enumerate()
-                .map(|(i, chunk)| {
-                    let offset = i64::try_from(i * DEFAULT_BYTES_PER_REQUEST).unwrap_or(i64::MAX);
-                    (offset, Bytes::copy_from_slice(chunk))
-                })
-                .collect();
-
-            // Create futures for concurrent uploads with a limit of 10 parallel requests
-            let upload_futures: Vec<_> = chunks
-                .into_iter()
-                .map(|(offset, chunk)| {
-                    let client = client.clone();
-                    let path = path.to_string();
-
-                    async move {
-                        client
-                            .append(offset, chunk)
-                            .await
-                            .map_err(|e| WriteError::IOError(parse_error(e, &path)))
-                    }
-                })
-                .collect();
-
-            // Wait for all uploads to complete
-            let upload_stream = execute_with_parallelism(upload_futures, 10).map(|result| {
-                result.map_err(|join_err| {
-                    WriteError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Task join error during multipart upload: {join_err}"),
-                        "multipart_upload".to_string(),
-                    ))
-                })
-            });
-            tokio::pin!(upload_stream);
-
-            while let Some(result) = upload_stream.next().await {
-                let _ = result?;
-            }
-
-            client
-                .flush(file_length)
-                .close(true)
-                .await
-                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
-        }
 
         Ok(())
     }
@@ -285,56 +198,97 @@ impl LakekeeperStorage for AdlsStorage {
         let path = path.as_ref();
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
+        self.check_account(&adls_location)
+            .map_err(ReadError::from)?;
 
-        let client = self.get_file_client(&adls_location)?;
+        let blob_client = self
+            .blob_service_client
+            .blob_client(adls_location.filesystem(), &adls_location.blob_name());
 
-        let read_file_response = client.read().await.map_err(|e| {
+        let response = blob_client.download(None).await.map_err(|e| {
             ReadError::IOError(
-                parse_error(e, path).with_context("Failed to read ADLS file in single request."),
+                parse_error(e, path).with_context("Failed to read ADLS blob in single request."),
             )
         })?;
 
-        Ok(read_file_response.data)
+        let bytes: Bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| ReadError::IOError(parse_error(e, path)))?;
+
+        Ok(bytes)
     }
 
     async fn read(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
         let path = path.as_ref();
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
+        self.check_account(&adls_location)
+            .map_err(ReadError::from)?;
 
-        let client = self.get_file_client(&adls_location)?;
-        let status = client.get_properties().await.map_err(|e| {
-            ReadError::IOError(parse_error(e, path).with_context("Failed to get ADLS file status"))
+        let blob_client = self
+            .blob_service_client
+            .blob_client(adls_location.filesystem(), &adls_location.blob_name());
+
+        // Get properties to check file size and last_modified for multi-part read
+        let props = blob_client.get_properties(None).await.map_err(|e| {
+            ReadError::IOError(
+                parse_error(e, path).with_context("Failed to get ADLS blob properties"),
+            )
         })?;
 
-        let Some(content_length) = status.content_length else {
+        let content_length: Option<u64> = props
+            .content_length()
+            .map_err(|e| ReadError::IOError(parse_error(e, path)))?;
+
+        let Some(content_length) = content_length else {
             return self.read_single(path).await;
         };
 
-        let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
+        let file_size = validate_file_size(
+            i64::try_from(content_length).unwrap_or(i64::MAX),
+            adls_location.location().as_str(),
+        )?;
 
         if file_size < MAX_BYTES_PER_REQUEST {
-            // If the file is small enough, read it in a single request
             return self.read_single(path).await;
         }
 
+        // For multi-part reads, get last_modified from properties for consistency check
+        let props_last_modified = props
+            .last_modified()
+            .map_err(|e| ReadError::IOError(parse_error(e, path)))?;
+
         let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
+
+        let svc = Arc::clone(&self.blob_service_client);
+        let filesystem = adls_location.filesystem().to_string();
+        let blob_name = adls_location.blob_name().clone();
 
         let download_futures: Vec<_> = chunks
             .into_iter()
             .enumerate()
             .map(|(chunk_index, (start, end))| {
-                let client = client.clone();
+                let svc = Arc::clone(&svc);
+                let filesystem = filesystem.clone();
+                let blob_name = blob_name.clone();
                 let path = path.to_string();
+                let expected_last_modified = props_last_modified;
 
                 async move {
-                    let chunk_data = client
-                        .read()
-                        .range(Range::new(start as u64, (end + 1) as u64))
+                    let blob_client = svc.blob_client(&filesystem, &blob_name);
+                    // Azure range header format: "bytes=start-end" (inclusive)
+                    let range_str = format!("bytes={start}-{end}");
+                    let opts = BlobClientDownloadOptions {
+                        range: Some(range_str),
+                        ..Default::default()
+                    };
+
+                    let response = blob_client
+                        .download(Some(opts))
                         .await
                         .map_err(|e| {
                             ReadError::IOError(parse_error(e, &path).with_context(format!(
@@ -342,19 +296,27 @@ impl LakekeeperStorage for AdlsStorage {
                             )))
                         })?;
 
-                    if chunk_data.last_modified != status.last_modified {
+                    let chunk_last_modified = response
+                        .last_modified()
+                        .map_err(|e| ReadError::IOError(parse_error(e, &path)))?;
+
+                    if chunk_last_modified != expected_last_modified {
                         return Err(ReadError::IOError(IOError::new(
                             ErrorKind::Unexpected,
                             format!(
-                                "File was modified during multi-part download: expected last modified time {}, got {}",
-                                status.last_modified,
-                                chunk_data.last_modified
+                                "File was modified during multi-part download: expected last modified time {expected_last_modified:?}, got {chunk_last_modified:?}"
                             ),
                             path.clone(),
                         )));
                     }
 
-                    Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.data))
+                    let chunk_data: Bytes = response
+                        .into_body()
+                        .collect()
+                        .await
+                        .map_err(|e| ReadError::IOError(parse_error(e, &path)))?;
+
+                    Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data))
                 }
             })
             .collect();
@@ -372,7 +334,6 @@ impl LakekeeperStorage for AdlsStorage {
         });
         tokio::pin!(download_stream);
 
-        // Use the shared utility function to assemble chunks
         let bytes =
             crate::assemble_chunks(download_stream, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
 
@@ -390,37 +351,80 @@ impl LakekeeperStorage for AdlsStorage {
             .map_err(|e| e.with_context("List Operation failed"))?;
         let base_location = adls_location.location().clone();
 
-        let client = self.get_filesystem_client(&adls_location)?;
+        self.check_account(&adls_location)?;
 
-        let mut list_op = client.list_paths().directory(adls_location.blob_name());
+        let container_client = self
+            .blob_service_client
+            .blob_container_client(adls_location.filesystem());
 
-        // Set maximum results per page if requested.
-        // By default, ADLS returns 5000 items per page.
-        if let Some(size) = page_size {
-            // Convert to NonZeroU32, ensuring it's at least 1
-            if let Some(max_results) = NonZeroU32::new(u32::try_from(size).unwrap_or(u32::MAX)) {
-                list_op = list_op.max_results(max_results);
-            }
-        }
+        // Prefix: strip leading '/' since blob names don't start with '/'
+        let blob_prefix = adls_location
+            .blob_name()
+            .trim_start_matches('/')
+            .to_string();
+        // Ensure prefix ends with '/' so we only get items under this directory
+        let prefix = if blob_prefix.is_empty() {
+            None
+        } else {
+            let p = if blob_prefix.ends_with('/') {
+                blob_prefix.clone()
+            } else {
+                format!("{blob_prefix}/")
+            };
+            Some(p)
+        };
 
-        let list_stream = list_op.into_stream();
+        let maxresults = page_size
+            .and_then(|s| i32::try_from(s).ok())
+            .and_then(|s| if s > 0 { Some(s) } else { None });
 
-        let stream = list_stream.map(move |result| {
+        let opts = BlobContainerClientListBlobsOptions {
+            prefix,
+            maxresults,
+            // Include metadata so we can detect and skip ADLS Gen2 virtual directories
+            // (identified by hdi_isfolder=true in their metadata).
+            include: Some(vec![ListBlobsIncludeItem::Metadata]),
+            ..Default::default()
+        };
+
+        // list_blobs() returns a Pager<ListBlobsResponse, XmlFormat> which implements Stream
+        // yielding Result<BlobItem>. We want to emit pages of FileInfo.
+        // Use into_pages() to iterate page-by-page.
+        let pager = container_client
+            .list_blobs(Some(opts))
+            .map_err(|e| {
+                InvalidLocationError::new(
+                    path.clone(),
+                    format!("Failed to create list_blobs pager: {e}"),
+                )
+            })?
+            .into_pages();
+
+        let stream = pager.map(move |page_result| {
             let base_location = base_location.clone();
-            let result = result.map_err(|e| {
-                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
-            });
-            if let Err(err) = &result
-                && err.kind() == ErrorKind::NotFound
-            {
-                return Ok(vec![]); // Return empty list if path does not exist
+            match page_result {
+                Err(e) => {
+                    let io_err =
+                        parse_error(e, path.as_str()).with_context("Failed to list ADLS blobs");
+                    if io_err.kind() == ErrorKind::NotFound {
+                        Ok(vec![]) // Return empty list if path does not exist
+                    } else {
+                        Err(io_err)
+                    }
+                }
+                Ok(page) => {
+                    let page_model = page
+                        .into_model()
+                        .map_err(|e| parse_error(e, path.as_str()))?;
+                    let file_infos = page_model
+                        .segment
+                        .blob_items
+                        .into_iter()
+                        .filter_map(|item| try_parse_file_info_from_blob_item(&base_location, item))
+                        .collect::<Vec<_>>();
+                    Ok(file_infos)
+                }
             }
-            result.map(|page| {
-                page.paths
-                    .iter()
-                    .filter_map(try_parse_file_info(&base_location))
-                    .collect::<Vec<_>>()
-            })
         });
 
         Ok(stream.boxed())
@@ -430,44 +434,147 @@ impl LakekeeperStorage for AdlsStorage {
         let path = path.as_ref().trim_end_matches('/');
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
+        self.check_account(&adls_location)?;
 
-        let client = self.get_file_client(&adls_location)?;
-        let mut delete_stream = client.delete().recursive(true).into_stream();
+        // The new SDK has no recursive delete — list all blobs under the prefix and delete each.
+        let container_client = self
+            .blob_service_client
+            .blob_container_client(adls_location.filesystem());
 
-        while let Some(result) = delete_stream.next().await {
-            if let Some(err) = result.err() {
-                return Err(DeleteError::IOError(parse_error(err, path)));
+        let blob_prefix = adls_location
+            .blob_name()
+            .trim_start_matches('/')
+            .to_string();
+        let prefix = if blob_prefix.ends_with('/') {
+            blob_prefix.clone()
+        } else {
+            format!("{blob_prefix}/")
+        };
+
+        let opts = BlobContainerClientListBlobsOptions {
+            prefix: Some(prefix),
+            // Include metadata so we can skip ADLS Gen2 virtual directory blobs.
+            include: Some(vec![ListBlobsIncludeItem::Metadata]),
+            ..Default::default()
+        };
+
+        let mut pager = container_client.list_blobs(Some(opts)).map_err(|e| {
+            DeleteError::IOError(IOError::new(
+                ErrorKind::Unexpected,
+                format!("Failed to create list_blobs pager for remove_all: {e}"),
+                path.to_string(),
+            ))
+        })?;
+
+        // Collect all blob names first (skip virtual ADLS directory entries).
+        let mut blob_names: Vec<String> = Vec::new();
+        while let Some(blob_item) = pager.try_next().await.map_err(|e| {
+            DeleteError::IOError(
+                parse_error(e, path).with_context("Failed to list blobs during remove_all"),
+            )
+        })? {
+            // Skip ADLS Gen2 virtual directory objects — deleting them while they
+            // still contain blobs would result in a 409 DirectoryIsNotEmpty error.
+            if is_adls_directory(&blob_item) {
+                continue;
             }
+            if let Some(name) = blob_item.name {
+                blob_names.push(name);
+            }
+        }
+
+        // Delete each blob
+        for name in blob_names {
+            let blob_client = self
+                .blob_service_client
+                .blob_client(adls_location.filesystem(), &name);
+            blob_client
+                .delete(None)
+                .await
+                .map_err(|e| DeleteError::IOError(parse_error(e, path)))?;
         }
 
         Ok(())
     }
 }
 
-fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<FileInfo> {
-    |path| {
-        // Create a location from account, filesystem and blob name
-        let path_name = if path.is_directory {
-            format!("{}/", path.name.trim_end_matches('/'))
-        } else {
-            path.name.clone()
-        };
-        let full_path = format!(
-            "{}://{}/{}",
-            base_location.scheme(),
-            base_location.authority_with_host(),
-            path_name
-        );
-        let location = Location::from_str(&full_path).ok()?;
-        let last_modified = path.last_modified;
-        let last_modified = DateTime::from_timestamp(last_modified.unix_timestamp(), 0);
-        Some(FileInfo {
-            last_modified,
-            location,
-        })
+fn try_parse_file_info_from_blob_item(
+    base_location: &Location,
+    item: azure_storage_blob::models::BlobItem,
+) -> Option<FileInfo> {
+    // Skip deleted blobs
+    if item.deleted.unwrap_or(false) {
+        return None;
     }
+
+    // Skip ADLS Gen2 virtual directory objects (hdi_isfolder=true in metadata)
+    if is_adls_directory(&item) {
+        return None;
+    }
+
+    let name = item.name?;
+
+    // Decode any percent-encoded characters that `AdlsLocation::blob_name()` may have
+    // encoded when the file was written (e.g. `%3F` → `?`). Azure stores the encoded form
+    // in the blob name, so we need to reverse the encoding to reconstruct the original path.
+    let decoded_name = decode_blob_name_from_storage(&name);
+
+    // Percent-encode characters that would be misinterpreted as URL structural markers
+    // by Location::from_str's URL validation (i.e., '#' → %23).
+    // Note: '?' does NOT need encoding here because Location stores the raw string and
+    // the URL-parse validation does not fail on query-strings.
+    let encoded_name = encode_blob_name_for_url(&decoded_name);
+
+    let full_path = format!(
+        "{}://{}/{}",
+        base_location.scheme(),
+        base_location.authority_with_host(),
+        encoded_name
+    );
+    let location = Location::from_str(&full_path).ok()?;
+
+    let last_modified = item
+        .properties
+        .as_ref()
+        .and_then(|p| p.last_modified)
+        .and_then(|lm| DateTime::from_timestamp(lm.unix_timestamp(), 0));
+
+    Some(FileInfo {
+        last_modified,
+        location,
+    })
+}
+
+/// Returns `true` if the blob item is an ADLS Gen2 virtual directory
+/// (`hdi_isfolder = "true"` in its metadata).
+fn is_adls_directory(item: &azure_storage_blob::models::BlobItem) -> bool {
+    item.metadata
+        .as_ref()
+        .and_then(|m| m.additional_properties.as_ref())
+        .and_then(|p| p.get("hdi_isfolder"))
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+/// Decodes percent-encoded characters that `AdlsLocation::blob_name()` encodes when
+/// writing to Azure Storage. Specifically converts `%3F` → `?` and `%23` → `#`.
+///
+/// Azure stores the encoded form; we need the raw form to reconstruct the original path.
+fn decode_blob_name_from_storage(name: &str) -> String {
+    name.replace("%3F", "?")
+        .replace("%3f", "?")
+        .replace("%23", "#")
+        .replace("%23", "#")
+}
+
+/// Percent-encodes characters in a blob name that would break URL parsing.
+///
+/// `#` must be encoded so that `Location::from_str` does not reject the URL
+/// as having a fragment. `?` does NOT need encoding because `Location` stores
+/// the raw string and the URL-parse validation does not fail on `?`.
+fn encode_blob_name_for_url(name: &str) -> String {
+    // Only '#' causes a hard failure in Location::from_str (fragment rejection).
+    name.replace('#', "%23")
 }
 
 fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
@@ -481,9 +588,6 @@ fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError>
 }
 
 /// Groups paths by account and filesystem (container).
-///
-/// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
-/// vectors of `(blob_path, original_path)` tuples.
 fn group_paths_by_container(
     paths: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<HashMap<(String, String), Vec<AdlsLocation>>, InvalidLocationError> {
@@ -493,7 +597,6 @@ fn group_paths_by_container(
         let path = p.as_ref();
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
-        // Make sure we have a key (blob path)
         require_key(&adls_location)?;
 
         let account = adls_location.account_name().to_string();

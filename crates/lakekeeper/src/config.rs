@@ -950,6 +950,7 @@ where
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::result_large_err)]
     use std::net::Ipv6Addr;
 
     #[allow(unused_imports)]

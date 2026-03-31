@@ -22,12 +22,12 @@ storage-s3 = [
     "dep:aws-sdk-sts",
 ]
 storage-adls = [
-    "dep:azure_storage_blobs",
+    "dep:azure_storage_blob",
     "dep:azure_core",
     "dep:azure_identity",
-    "dep:azure_storage",
-    "dep:azure_storage_datalake",
     "dep:moka",
+    "dep:reqwest-0-13",
+    "dep:time",
 ]
 storage-gcs = [
     "dep:google-cloud-storage",
@@ -41,6 +41,7 @@ default = ["storage-s3", "storage-adls", "storage-gcs"]
 [dependencies]
 anyhow = { workspace = true }
 async-stream = { workspace = true }
+async-trait = { workspace = true }
 aws-config = { workspace = true, features = [
     "behavior-version-latest",
 ], optional = true }
@@ -53,9 +54,7 @@ aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
 azure_core = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
-azure_storage = { workspace = true, optional = true }
-azure_storage_blobs = { workspace = true, optional = true }
-azure_storage_datalake = { workspace = true, optional = true }
+azure_storage_blob = { workspace = true, optional = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 derive_more = { workspace = true }
@@ -66,12 +65,17 @@ jsonwebtoken = { workspace = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }
+# reqwest 0.13 is used by azure_core/typespec_client_core; we add it here to
+# force-enable the `rustls` feature via Cargo feature unification so that HTTPS
+# requests in those crates actually work.
+reqwest-0-13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"], optional = true }
 reqwest-middleware = { version = "0.4", optional = true }
 reqwest-retry = { version = "0.8", optional = true }
 serde = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tryhard = { workspace = true }

@@ -236,6 +236,7 @@ fn default_openfga_max_batch_check_size() -> usize {
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::result_large_err)]
     use super::*;
 
     #[test]

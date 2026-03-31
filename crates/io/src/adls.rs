@@ -3,20 +3,19 @@ use std::{
     time::Duration,
 };
 
-use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_core::credentials::TokenCredential;
 use azure_identity::{
-    DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
+    ClientSecretCredential, ClientSecretCredentialOptions, ManagedIdentityCredential,
+    WorkloadIdentityCredential,
 };
-pub use azure_storage::CloudLocation;
-use azure_storage::StorageCredentials;
-use azure_storage_blobs::prelude::{BlobServiceClient, ClientBuilder};
-use azure_storage_datalake::prelude::{DataLakeClient, DataLakeClientBuilder};
+use azure_storage_blob::{BlobServiceClient, BlobServiceClientOptions};
 use url::Url;
 use veil::Redact;
 
 mod adls_error;
 mod adls_location;
 mod adls_storage;
+pub(crate) mod shared_key_policy;
 
 pub use adls_location::{
     AdlsLocation, InvalidADLSAccountName, InvalidADLSFilesystemName, InvalidADLSHost,
@@ -27,25 +26,15 @@ pub use adls_storage::AdlsStorage;
 use crate::error::InitializeClientError;
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
+const DEFAULT_BLOB_HOST: &str = "blob.core.windows.net";
+
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
-static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
-    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
-        FixedRetryOptions::default()
-            .max_retries(3u32)
-            .max_total_elapsed(std::time::Duration::from_secs(5)),
-    ))
-});
-
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
-// Reqwest client is already cheap to clone. We keep this `HTTP_CLIENT_ARC` because the Azure SDK requires an `Arc<dyn HttpClient>`.
-static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
-    LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
 
 pub(crate) const ADLS_CUSTOM_SCHEMES: [&str; 1] = ["wasbs"];
 
-static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<DefaultAzureCredential>>> =
+static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<dyn TokenCredential>>> =
     LazyLock::new(|| {
         moka::future::Cache::builder()
             .max_capacity(1000)
@@ -74,6 +63,54 @@ pub struct AzureClientCredentialsAuth {
     pub client_secret: String,
 }
 
+/// A simple enum to represent the Azure cloud location, replacing the old `CloudLocation` type.
+#[derive(Debug, Clone)]
+pub enum CloudLocation {
+    /// The public Azure cloud. The endpoint is `https://<account>.blob.core.windows.net/`.
+    Public { account: String },
+    /// A custom Azure cloud with a custom URI suffix.
+    Custom { account: String, uri: String },
+}
+
+impl CloudLocation {
+    #[must_use]
+    pub fn account(&self) -> &str {
+        match self {
+            CloudLocation::Public { account } | CloudLocation::Custom { account, .. } => account,
+        }
+    }
+
+    /// Returns the blob service endpoint URL string.
+    #[must_use]
+    pub fn blob_endpoint(&self) -> String {
+        match self {
+            CloudLocation::Public { account } => {
+                format!("https://{account}.{DEFAULT_BLOB_HOST}/")
+            }
+            CloudLocation::Custom { account, uri } => {
+                // uri may be just "blob.example.com" or "https://account.blob.example.com/"
+                if uri.starts_with("http://") || uri.starts_with("https://") {
+                    // Already a full URI
+                    if uri.ends_with('/') {
+                        uri.clone()
+                    } else {
+                        format!("{uri}/")
+                    }
+                } else {
+                    // It's a host suffix like "dfs.core.windows.net" or "blob.example.com"
+                    // Replace "dfs." prefix with "blob." for the blob endpoint
+                    let blob_host = if let Some(stripped) = uri.strip_prefix("dfs.") {
+                        format!("blob.{stripped}")
+                    } else {
+                        uri.clone()
+                    };
+                    format!("https://{account}.{blob_host}/")
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, typed_builder::TypedBuilder)]
 pub struct AzureSettings {
     // -------- Azure Settings for multiple services --------
@@ -93,64 +130,8 @@ impl AzureSettings {
         &self,
         cred: &AzureAuth,
     ) -> Result<AdlsStorage, InitializeClientError> {
-        let client = self.get_datalake_client(cred).await?;
+        let client = self.get_blob_service_client(cred).await?;
         Ok(AdlsStorage::new(client, self.cloud_location.clone()))
-    }
-
-    /// Returns the Azure Storage credentials based on the provided authentication method.
-    ///
-    /// # Errors
-    /// - If system identity cannot be retrieved or initialized.
-    pub async fn get_azure_storage_credentials(
-        &self,
-        cred: &AzureAuth,
-    ) -> Result<StorageCredentials, InitializeClientError> {
-        let account_name = self.cloud_location.account();
-
-        Ok(match cred {
-            AzureAuth::ClientCredentials(AzureClientCredentialsAuth {
-                tenant_id,
-                client_id,
-                client_secret,
-            }) => {
-                let azure_auth = azure_identity::ClientSecretCredential::new(
-                    HTTP_CLIENT_ARC.clone(),
-                    self.authority_host
-                        .clone()
-                        .unwrap_or(DEFAULT_AUTHORITY_HOST.clone()),
-                    tenant_id.clone(),
-                    client_id.clone(),
-                    client_secret.clone(),
-                );
-
-                StorageCredentials::token_credential(Arc::new(azure_auth))
-            }
-            AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth { key }) => {
-                StorageCredentials::access_key(account_name, key.clone())
-            }
-            AzureAuth::AzureSystemIdentity => {
-                let identity: Arc<DefaultAzureCredential> = self.get_system_identity().await?;
-                StorageCredentials::token_credential(identity)
-            }
-        })
-    }
-
-    /// Returns a [`DataLakeClient`] for the Azure Storage account.
-    ///
-    /// # Errors
-    /// - If system identity cannot be retrieved or initialized.
-    pub async fn get_datalake_client(
-        &self,
-        cred: &AzureAuth,
-    ) -> Result<DataLakeClient, InitializeClientError> {
-        let azure_storage_cred = self.get_azure_storage_credentials(cred).await?;
-
-        Ok(
-            DataLakeClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
-                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-                .client_options(DEFAULT_CLIENT_OPTIONS.clone())
-                .build(),
-        )
     }
 
     /// Returns a [`BlobServiceClient`] for the Azure Storage account.
@@ -161,19 +142,138 @@ impl AzureSettings {
         &self,
         cred: &AzureAuth,
     ) -> Result<BlobServiceClient, InitializeClientError> {
-        let azure_storage_cred = self.get_azure_storage_credentials(cred).await?;
+        let credential: Option<Arc<dyn TokenCredential>> = match cred {
+            AzureAuth::ClientCredentials(AzureClientCredentialsAuth {
+                tenant_id,
+                client_id,
+                client_secret,
+            }) => {
+                let authority_host = self.authority_host.as_ref().map_or_else(
+                    || DEFAULT_AUTHORITY_HOST.as_str().to_string(),
+                    |u| u.as_str().to_string(),
+                );
 
-        Ok(
-            ClientBuilder::with_location(self.cloud_location.clone(), azure_storage_cred)
-                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
-                .client_options(DEFAULT_CLIENT_OPTIONS.clone())
-                .blob_service_client(),
-        )
+                let options = if authority_host == DEFAULT_AUTHORITY_HOST.as_str() {
+                    None
+                } else {
+                    // Set custom authority host via cloud configuration
+                    use azure_core::cloud::{CloudConfiguration, CustomConfiguration};
+                    let mut custom_config = CustomConfiguration::default();
+                    custom_config.authority_host = authority_host;
+                    let client_opts = azure_core::http::ClientOptions {
+                        cloud: Some(Arc::new(CloudConfiguration::Custom(custom_config))),
+                        ..Default::default()
+                    };
+                    Some(ClientSecretCredentialOptions {
+                        client_options: client_opts,
+                    })
+                };
+
+                let cred = ClientSecretCredential::new(
+                    tenant_id,
+                    client_id.clone(),
+                    client_secret.clone().into(),
+                    options,
+                )
+                .map_err(|e| InitializeClientError {
+                    reason: format!("Failed to create Azure ClientSecretCredential: {e}"),
+                    source: Some(Box::new(e)),
+                })?;
+                Some(cred)
+            }
+            AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth { key }) => {
+                use azure_core::{credentials::Secret, http::policies::Policy};
+                use shared_key_policy::SharedKeyAuthorizationPolicy;
+
+                let policy = Arc::new(SharedKeyAuthorizationPolicy::new(
+                    self.cloud_location.account().to_string(),
+                    Secret::new(key.clone()),
+                ));
+                let mut options = BlobServiceClientOptions::default();
+                options
+                    .client_options
+                    .per_try_policies
+                    .push(policy as Arc<dyn Policy>);
+                let endpoint = self.cloud_location.blob_endpoint();
+                return BlobServiceClient::new(&endpoint, None, Some(options)).map_err(|e| {
+                    InitializeClientError {
+                        reason: format!(
+                            "Failed to create Azure BlobServiceClient for endpoint '{endpoint}': {e}"
+                        ),
+                        source: Some(Box::new(e)),
+                    }
+                });
+            }
+            AzureAuth::AzureSystemIdentity => {
+                let identity = self.get_system_identity().await?;
+                Some(identity)
+            }
+        };
+
+        let endpoint = self.cloud_location.blob_endpoint();
+        BlobServiceClient::new(&endpoint, credential, None).map_err(|e| InitializeClientError {
+            reason: format!(
+                "Failed to create Azure BlobServiceClient for endpoint '{endpoint}': {e}"
+            ),
+            source: Some(Box::new(e)),
+        })
     }
 
-    async fn get_system_identity(
+    /// Returns a [`TokenCredential`] for `ClientCredentials` or `AzureSystemIdentity` auth.
+    ///
+    /// # Errors
+    /// - If the credential cannot be created or the system identity is unavailable.
+    pub async fn get_token_credential(
         &self,
-    ) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
+        cred: &AzureAuth,
+    ) -> Result<Arc<dyn TokenCredential>, InitializeClientError> {
+        match cred {
+            AzureAuth::ClientCredentials(AzureClientCredentialsAuth {
+                tenant_id,
+                client_id,
+                client_secret,
+            }) => {
+                let authority_host = self.authority_host.as_ref().map_or_else(
+                    || DEFAULT_AUTHORITY_HOST.as_str().to_string(),
+                    |u| u.as_str().to_string(),
+                );
+
+                let options = if authority_host == DEFAULT_AUTHORITY_HOST.as_str() {
+                    None
+                } else {
+                    use azure_core::cloud::{CloudConfiguration, CustomConfiguration};
+                    let mut custom_config = CustomConfiguration::default();
+                    custom_config.authority_host = authority_host;
+                    let client_opts = azure_core::http::ClientOptions {
+                        cloud: Some(Arc::new(CloudConfiguration::Custom(custom_config))),
+                        ..Default::default()
+                    };
+                    Some(ClientSecretCredentialOptions {
+                        client_options: client_opts,
+                    })
+                };
+
+                let cred = ClientSecretCredential::new(
+                    tenant_id,
+                    client_id.clone(),
+                    client_secret.clone().into(),
+                    options,
+                )
+                .map_err(|e| InitializeClientError {
+                    reason: format!("Failed to create Azure ClientSecretCredential: {e}"),
+                    source: Some(Box::new(e)),
+                })?;
+                Ok(cred as Arc<dyn TokenCredential>)
+            }
+            AzureAuth::AzureSystemIdentity => self.get_system_identity().await,
+            AzureAuth::SharedAccessKey(_) => Err(InitializeClientError {
+                reason: "SharedAccessKey does not support token credential access".to_string(),
+                source: None,
+            }),
+        }
+    }
+
+    async fn get_system_identity(&self) -> Result<Arc<dyn TokenCredential>, InitializeClientError> {
         let authority_host_str = self.authority_host.as_ref().map_or(
             DEFAULT_AUTHORITY_HOST.as_str().to_string(),
             ToString::to_string,
@@ -182,12 +282,21 @@ impl AzureSettings {
 
         SYSTEM_IDENTITY_CACHE
             .try_get_with(cache_key.clone(), async move {
-                let mut options = TokenCredentialOptions::default();
-                options.set_authority_host(authority_host_str);
-                DefaultAzureCredentialBuilder::new()
-                    .with_options(options)
-                    .build()
-                    .map(Arc::new)
+                // Try WorkloadIdentityCredential first (Kubernetes), fall back to ManagedIdentityCredential
+                let cred: Arc<dyn TokenCredential> = if WorkloadIdentityCredential::new(None)
+                    .is_ok()
+                {
+                    WorkloadIdentityCredential::new(None).map_err(|e| InitializeClientError {
+                        reason: format!("Failed to create WorkloadIdentityCredential: {e}"),
+                        source: Some(Box::new(e)),
+                    })?
+                } else {
+                    ManagedIdentityCredential::new(None).map_err(|e| InitializeClientError {
+                        reason: format!("Failed to create ManagedIdentityCredential: {e}"),
+                        source: Some(Box::new(e)),
+                    })?
+                };
+                Ok::<Arc<dyn TokenCredential>, InitializeClientError>(cred)
             })
             .await
             .map_err(|e| {
