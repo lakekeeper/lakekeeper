@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.5](https://github.com/lakekeeper/lakekeeper/compare/v0.11.4...v0.11.5) (2026-04-01)
+
+
+### Bug Fixes
+
+* v2 to v3 migration for tables with data (backport) ([#1692](https://github.com/lakekeeper/lakekeeper/issues/1692)) ([db32bbb](https://github.com/lakekeeper/lakekeeper/commit/db32bbbde40a62e367e2a3380daeb2321feec4dd))
+
 ## [0.11.4](https://github.com/lakekeeper/lakekeeper/compare/v0.11.3...v0.11.4) (2026-03-30)
 
 
