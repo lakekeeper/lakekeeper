@@ -66,7 +66,7 @@ SELECT order_id, customer_id, total_price, order_date, status FROM lk.demo.order
 for i in $(seq 1 12); do
     sleep 10
     echo "  attempt $i/12..."
-    output=$(docker run --rm --network fluss_iceberg_net duckdb/duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
+    output=$(docker compose run --rm -T duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
     if echo "$output" | grep -q 'completed'; then
         echo ""
         echo "--- DuckDB query result ---"

@@ -150,11 +150,11 @@ services:
         curl -fSL -o /jars/flink-lib/fluss-flink-1.20-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-flink-1.20/0.9.0-incubating/fluss-flink-1.20-0.9.0-incubating.jar &&
         curl -fSL -o /jars/flink-lib/fluss-lake-iceberg-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-lake-iceberg/0.9.0-incubating/fluss-lake-iceberg-0.9.0-incubating.jar &&
         curl -fSL -o /jars/flink-lib/fluss-flink-tiering-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-flink-tiering/0.9.0-incubating/fluss-flink-tiering-0.9.0-incubating.jar &&
-        curl -fSL -o /jars/flink-lib/hadoop-apache-3.3.5-2.jar https://repo1.maven.org/maven2/io/trino/hadoop/hadoop-apache/3.3.5-2/hadoop-apache-3.3.5-2.jar &&
+        curl -fSL -o /jars/flink-lib/hadoop-client-api-3.3.5.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-client-api/3.3.5/hadoop-client-api-3.3.5.jar &&
+        curl -fSL -o /jars/flink-lib/hadoop-client-runtime-3.3.5.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-client-runtime/3.3.5/hadoop-client-runtime-3.3.5.jar &&
         curl -fSL -o /jars/flink-lib/fluss-fs-s3-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-fs-s3/0.9.0-incubating/fluss-fs-s3-0.9.0-incubating.jar &&
         curl -fSL -o /jars/flink-lib/iceberg-aws-1.10.1.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws/1.10.1/iceberg-aws-1.10.1.jar &&
         curl -fSL -o /jars/flink-lib/iceberg-aws-bundle-1.10.1.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.10.1/iceberg-aws-bundle-1.10.1.jar &&
-        curl -fSL -o /jars/flink-lib/failsafe-3.3.2.jar https://repo1.maven.org/maven2/dev/failsafe/failsafe/3.3.2/failsafe-3.3.2.jar &&
         echo 'All JARs downloaded.'
     volumes:
       - jars:/jars
@@ -258,6 +258,12 @@ services:
         taskmanager.memory.task.off-heap.size: 128m
     volumes:
       - jars:/tmp/jars:ro
+    networks:
+      iceberg_net:
+
+  duckdb:
+    image: duckdb/duckdb
+    profiles: ["tools"]
     networks:
       iceberg_net:
 

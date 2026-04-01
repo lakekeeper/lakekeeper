@@ -10,7 +10,7 @@
     "region": "us-east-1",
     "path-style-access": true,
     "flavor": "minio",
-    "sts-enabled": false
+    "sts-enabled": true
   },
   "storage-credential": {
     "type": "s3",
