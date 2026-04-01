@@ -1239,7 +1239,7 @@ def test_metadata_queries_tables(spark, namespace):
 def test_upgrade_v2_table_with_data_to_v3(spark, namespace):
     """Upgrade a v2 table that has existing snapshots to v3 (lakekeeper#1690)."""
     spark.sql(
-        f"CREATE TABLE {namespace.spark_name}.upgrade_table (id BIGINT) USING iceberg"
+        f"CREATE TABLE {namespace.spark_name}.upgrade_table (id BIGINT) USING iceberg TBLPROPERTIES ('format-version' = '2')"
     )
     spark.sql(f"INSERT INTO {namespace.spark_name}.upgrade_table VALUES (1)")
     spark.sql(f"INSERT INTO {namespace.spark_name}.upgrade_table VALUES (2)")
