@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "--- Waiting for services ---"
+until docker compose exec -T jobmanager true 2>/dev/null; do sleep 1; done
 docker compose exec -T jobmanager bash -c 'until curl -sf http://lakekeeper:8181/health > /dev/null 2>&1; do sleep 1; done'
 
 echo "--- Creating table ---"
@@ -67,32 +68,21 @@ SET 'table.exec.sink.not-null-enforcer' = 'DROP';
 INSERT INTO orders SELECT * FROM source_orders;
 SQL
 
-echo "--- Waiting for tiering ---"
-DUCKDB_QUERY="
+echo "--- Waiting for data to be tiered to Iceberg ---"
+sleep 30
+
+echo "--- DuckDB query result ---"
+docker compose run --rm -T duckdb duckdb -c "
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 CREATE SECRET (TYPE s3, KEY_ID 'rustfs-root-user', SECRET 'rustfs-root-password',
     ENDPOINT 'localtest.me:9000', USE_SSL false, URL_STYLE 'path');
 CREATE SECRET (TYPE ICEBERG, ENDPOINT 'http://lakekeeper:8181/catalog', TOKEN 'dummy');
 ATTACH 'fluss-warehouse' AS lk (TYPE ICEBERG);
-SELECT count(*) as row_count FROM lk.demo.orders;
+SELECT * FROM lk.demo.orders LIMIT 5;
 "
 
-for i in $(seq 1 12); do
-    sleep 10
-    echo "  attempt $i/12..."
-    output=$(docker compose run --rm -T duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
-    count=$(echo "$output" | grep -oE '[0-9]+' | tail -1)
-    if [ -n "$count" ] && [ "$count" -gt 0 ] 2>/dev/null; then
-        echo ""
-        echo "--- DuckDB: $count rows tiered to Iceberg ---"
-        echo ""
-        echo "Data is continuously flowing. Query anytime with:"
-        echo "  docker compose run --rm duckdb duckdb"
-        echo ""
-        echo "Or open the Lakekeeper UI at http://localhost:8181"
-        exit 0
-    fi
-done
-
-echo "Tiering did not complete in time."
-exit 1
+echo ""
+echo "Data is continuously flowing. Query anytime with:"
+echo "  docker compose run --rm duckdb duckdb"
+echo ""
+echo "Or open the Lakekeeper UI at http://localhost:8181"

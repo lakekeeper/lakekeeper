@@ -121,17 +121,17 @@ services:
       - "9001:9001"
 
   createbuckets:
-    image: minio/mc:latest
+    image: rustfs/rc:latest
     depends_on:
       - rustfs
     restart: on-failure
     entrypoint: >
       /bin/sh -c "
-      until mc alias set storage http://rustfs:9000 rustfs-root-user rustfs-root-password; do
+      until rc alias set storage http://rustfs:9000 rustfs-root-user rustfs-root-password; do
         echo 'Waiting for RustFS...';
         sleep 1;
       done;
-      mc mb --ignore-existing storage/fluss;
+      rc mb --ignore-existing storage/fluss;
       "
     networks:
       iceberg_net:
