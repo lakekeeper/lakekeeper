@@ -2,9 +2,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+wait_for() {
+    local secs=$1 msg=$2; shift 2
+    SECONDS=0
+    until eval "$@" 2>/dev/null; do
+        [ $SECONDS -ge "$secs" ] && echo "$msg" && exit 1
+        sleep 2
+    done
+}
+
 echo "--- Waiting for services ---"
-until docker compose exec -T jobmanager true 2>/dev/null; do sleep 1; done
-docker compose exec -T jobmanager bash -c 'until curl -sf http://lakekeeper:8181/health > /dev/null 2>&1; do sleep 1; done'
+wait_for 120 "jobmanager did not start" "docker compose exec -T jobmanager true"
+wait_for 120 "lakekeeper did not become healthy" "docker compose exec -T jobmanager bash -c 'curl -sf http://lakekeeper:8181/health > /dev/null'"
 
 echo "--- Creating table ---"
 docker compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
@@ -36,7 +45,7 @@ docker compose exec -d jobmanager ./bin/flink run \
     --datalake.iceberg.type rest \
     --datalake.iceberg.uri http://lakekeeper:8181/catalog \
     --datalake.iceberg.warehouse fluss-warehouse
-sleep 5
+wait_for 30 "tiering job did not start" "docker compose exec -T jobmanager ./bin/flink list -r 2>/dev/null | grep -q 'Tiering Service'"
 
 echo "--- Starting continuous ingestion ---"
 docker compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
@@ -68,11 +77,7 @@ SET 'table.exec.sink.not-null-enforcer' = 'DROP';
 INSERT INTO orders SELECT * FROM source_orders;
 SQL
 
-echo "--- Waiting for data to be tiered to Iceberg ---"
-sleep 30
-
-echo "--- DuckDB query result ---"
-docker compose run --rm -T duckdb duckdb -c "
+DUCKDB_QUERY="
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 CREATE SECRET (TYPE s3, KEY_ID 'rustfs-root-user', SECRET 'rustfs-root-password',
     ENDPOINT 'localtest.me:9000', USE_SSL false, URL_STYLE 'path');
@@ -81,8 +86,23 @@ ATTACH 'fluss-warehouse' AS lk (TYPE ICEBERG);
 SELECT * FROM lk.demo.orders LIMIT 5;
 "
 
-echo ""
-echo "Data is continuously flowing. Query anytime with:"
-echo "  docker compose run --rm duckdb duckdb"
-echo ""
-echo "Or open the Lakekeeper UI at http://localhost:8181"
+echo "--- Waiting for data to be tiered to Iceberg ---"
+SECONDS=0
+while [ $SECONDS -lt 120 ]; do
+    output=$(docker compose run --rm -T duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
+    if echo "$output" | grep -q "0 rows"; then
+        sleep 5
+        continue
+    fi
+    echo "--- DuckDB query result ---"
+    echo "$output"
+    echo ""
+    echo "Data is continuously flowing. Query anytime with:"
+    echo "  docker compose run --rm duckdb duckdb"
+    echo ""
+    echo "Or open the Lakekeeper UI at http://localhost:8181"
+    exit 0
+done
+
+echo "Tiering did not produce data within 120s"
+exit 1
