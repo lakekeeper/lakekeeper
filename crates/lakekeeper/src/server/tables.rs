@@ -3167,7 +3167,7 @@ pub(crate) mod test {
             name: "my_migration_table".to_string(),
         };
 
-        // Add a snapshot to the V2 table (without row_range)
+        // Add a snapshot to the V2 table (without row_range, as V2 snapshots don't have it)
         let last_updated = table.metadata.last_updated_ms();
         let builder = (*table.metadata)
             .clone()
@@ -3179,8 +3179,7 @@ pub(crate) mod test {
             .with_sequence_number(1)
             .with_schema_id(0)
             .with_manifest_list("/snap-1.avro")
-            // No row_range for V2 table
-            .with_row_range(0, 50) // row_range is ignored in V2
+            // No row_range for V2 table - this is the realistic scenario
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::from_iter(vec![
