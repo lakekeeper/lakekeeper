@@ -37,7 +37,7 @@ docker compose exec -d jobmanager ./bin/flink run \
     --datalake.iceberg.warehouse fluss-warehouse
 sleep 5
 
-echo "--- Inserting data ---"
+echo "--- Starting continuous ingestion ---"
 docker compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
 CREATE CATALOG fluss_catalog WITH (
     'type' = 'fluss',
@@ -45,32 +45,51 @@ CREATE CATALOG fluss_catalog WITH (
 );
 USE CATALOG fluss_catalog;
 USE demo;
-INSERT INTO orders VALUES
-    (1, 100, 29.99,  DATE '2026-03-01', 'completed'),
-    (2, 101, 49.50,  DATE '2026-03-02', 'pending'),
-    (3, 102, 15.00,  DATE '2026-03-03', 'completed'),
-    (4, 100, 89.99,  DATE '2026-03-04', 'shipped'),
-    (5, 103, 120.00, DATE '2026-03-05', 'completed');
+
+CREATE TEMPORARY TABLE source_orders (
+    order_id BIGINT,
+    customer_id INT NOT NULL,
+    total_price DECIMAL(15, 2),
+    order_date DATE,
+    status STRING
+) WITH (
+    'connector' = 'faker',
+    'rows-per-second' = '5',
+    'fields.order_id.expression' = '#{number.numberBetween ''1'',''1000000''}',
+    'fields.customer_id.expression' = '#{number.numberBetween ''100'',''200''}',
+    'fields.total_price.expression' = '#{number.randomDouble ''2'',''5'',''500''}',
+    'fields.order_date.expression' = '#{date.past ''30'' ''DAYS''}',
+    'fields.status.expression' = '#{regexify ''(completed|pending|shipped){1}''}'
+);
+
+SET 'table.exec.sink.not-null-enforcer' = 'DROP';
+
+INSERT INTO orders SELECT * FROM source_orders;
 SQL
 
 echo "--- Waiting for tiering ---"
 DUCKDB_QUERY="
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 CREATE SECRET (TYPE s3, KEY_ID 'rustfs-root-user', SECRET 'rustfs-root-password',
-    ENDPOINT 'rustfs:9000', USE_SSL false, URL_STYLE 'path');
+    ENDPOINT 'localtest.me:9000', USE_SSL false, URL_STYLE 'path');
 CREATE SECRET (TYPE ICEBERG, ENDPOINT 'http://lakekeeper:8181/catalog', TOKEN 'dummy');
 ATTACH 'fluss-warehouse' AS lk (TYPE ICEBERG);
-SELECT order_id, customer_id, total_price, order_date, status FROM lk.demo.orders ORDER BY order_id;
+SELECT count(*) as row_count FROM lk.demo.orders;
 "
 
 for i in $(seq 1 12); do
     sleep 10
     echo "  attempt $i/12..."
     output=$(docker compose run --rm -T duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
-    if echo "$output" | grep -q 'completed'; then
+    count=$(echo "$output" | grep -oE '[0-9]+' | tail -1)
+    if [ -n "$count" ] && [ "$count" -gt 0 ] 2>/dev/null; then
         echo ""
-        echo "--- DuckDB query result ---"
-        echo "$output"
+        echo "--- DuckDB: $count rows tiered to Iceberg ---"
+        echo ""
+        echo "Data is continuously flowing. Query anytime with:"
+        echo "  docker compose run --rm duckdb duckdb"
+        echo ""
+        echo "Or open the Lakekeeper UI at http://localhost:8181"
         exit 0
     fi
 done

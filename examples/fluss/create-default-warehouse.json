@@ -6,7 +6,7 @@
     "bucket": "fluss",
     "key-prefix": "iceberg",
     "assume-role-arn": null,
-    "endpoint": "http://rustfs:9000",
+    "endpoint": "http://localtest.me:9000",
     "region": "us-east-1",
     "path-style-access": true,
     "flavor": "minio",
