@@ -86,7 +86,7 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "acda05d67eb0bb304ba2f86e135c9ecb6caf793e", features = [
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "9394c0ba6a967db1a0838c5d55a4c5b4739063ad", features = [
     "storage-gcs",
     "storage-azdls",
     "storage-s3",
