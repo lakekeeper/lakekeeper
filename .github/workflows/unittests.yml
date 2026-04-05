@@ -237,7 +237,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
 
       - name: Test
-        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         with:
           max_attempts: 2
           timeout_minutes: 25
