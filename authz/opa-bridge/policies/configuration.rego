@@ -65,7 +65,11 @@ default trino_admin_users := []
 trino_admin_users := admin_users if {
 	admin_csv := object.get(env, "TRINO_ADMIN_USERS", "")
 	admin_csv != ""
-	admin_users := split(admin_csv, ",")
+	admin_users := [trimmed |
+		some entry in split(admin_csv, ",")
+		trimmed := trim_space(entry)
+		trimmed != ""
+	]
 }
 
 # A handful commonly used catalogs are pre-defined and can be configured via environment variables.
