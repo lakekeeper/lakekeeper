@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/lakekeeper/lakekeeper/compare/v0.12.0...v0.12.0) (2026-04-05)
+
+
+### Features
+
+* **opa-bridge:** Support "ADD_FILES" trino operation ([199e7a2](https://github.com/lakekeeper/lakekeeper/commit/199e7a2d3bdcbc7bdfa61e1d07ec866d643a0882))
+
 ## [0.12.0](https://github.com/lakekeeper/lakekeeper/compare/v0.11.2...v0.12.0) (2026-04-01)
 
 
