@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: lakekeeper-image
           path: artifacts
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: lakekeeper-image
           path: artifacts
@@ -121,7 +121,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: lakekeeper-image
           path: artifacts
@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: lakekeeper-image
           path: artifacts
