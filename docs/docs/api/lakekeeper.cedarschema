@@ -247,6 +247,12 @@ namespace Lakekeeper {
       // "[Lakekeeper::User::\"<user-id>\"]"
       // Roles and Users can be mixed in a heterogeneous set.
       users: Set<User>,
+      // source_id of every role parsed from this property value, as plain strings.
+      // Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`.
+      // Mirrors `User.global_role_ids` — enables simple policies like:
+      //   resource.properties.getTag("access_read").global_role_ids.containsAny(principal.global_role_ids)
+      // Prefer `roles` when provider uniqueness cannot be guaranteed.
+      global_role_ids: Set<String>,
   };
 
   // ============================================================================
