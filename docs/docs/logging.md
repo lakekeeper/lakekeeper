@@ -64,7 +64,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
-| `failure_reason`       | String          | Only on failed events. One of: `ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`, `InternalAuthorizationError`, `InternalCatalogError`, `InvalidRequestData` |
+| `failure_reason`       | Object          | Only on failed events. Single-key object identifying the variant — one of `{"ActionForbidden": []}`, `{"ResourceNotFound": []}`, `{"CannotSeeResource": []}`, `{"InternalAuthorizationError": []}`, `{"InternalCatalogError": []}`, `{"InvalidRequestData": []}`. The empty array is the variant payload. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
 **Note:** Empty arrays and objects are omitted from the output. For example, if `stack` is empty, the field will not appear in the log.
@@ -131,11 +131,12 @@ Each entry is **self-contained** — it does not require zipping with the top-le
   "level": "INFO",
   "event_source": "audit",
   "action": {
-    "action_name": "introspect_permissions"
+    "action_name": "create_warehouse",
+    "name": "demo"
   },
   "entity": {
-    "entity_type": "warehouse",
-    "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0"
+    "entity_type": "project",
+    "project-id": "00000000-0000-0000-0000-000000000000"
   },
   "actor": {
     "actor_type": "principal",
@@ -144,15 +145,13 @@ Each entry is **self-contained** — it does not require zipping with the top-le
   "decision": "allowed",
   "authorizations": [
     {
-      "for-principal": {
-        "user": "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"
-      },
       "action": {
-        "action_name": "delete"
+        "action_name": "create_warehouse",
+        "name": "demo"
       },
       "entity": {
-        "entity_type": "warehouse",
-        "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0"
+        "entity_type": "project",
+        "project-id": "00000000-0000-0000-0000-000000000000"
       },
       "allowed": true
     }
@@ -199,7 +198,9 @@ Each entry is **self-contained** — it does not require zipping with the top-le
       "allowed": false
     }
   ],
-  "failure_reason": "ActionForbidden",
+  "failure_reason": {
+    "ActionForbidden": []
+  },
   "error": {
     "type": "Forbidden",
     "message": "Insufficient permissions",
