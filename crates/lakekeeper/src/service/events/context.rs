@@ -21,10 +21,12 @@ use crate::{
         ArcRoleIdent, NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse,
         RoleId, ServerId, TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
-        authz::{ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction},
+        authz::{
+            ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction, UserOrRoleId,
+        },
         events::{
-            AuthorizationError, AuthorizationFailedEvent, AuthorizationFailureSource,
-            AuthorizationSucceededEvent, EventDispatcher,
+            Authorization, AuthorizationError, AuthorizationFailedEvent,
+            AuthorizationFailureSource, AuthorizationSucceededEvent, EventDispatcher,
         },
         storage::StoragePermissions,
         tasks::TaskId,
@@ -590,6 +592,17 @@ where
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
     pub(super) extra_context: HashMap<String, String>,
+    /// When `Some`, replaces the per-(entity, action) default that
+    /// `emit_authz`/`emit_authz_failure_event` would otherwise synthesise.
+    /// Used by batch-style call sites (e.g. `introspect_permissions`) to
+    /// attach one entry per inner check.
+    pub(super) authorizations_override: Option<Vec<Authorization>>,
+    /// When `Some`, the synthesised default authorisation entries are stamped
+    /// with this principal in their `for_principal` field. Lets endpoints that
+    /// introspect another user's permissions (`for_user=...`) record the
+    /// audit-relevant principal without overriding the whole entry list.
+    /// Ignored when `authorizations_override` is set.
+    pub(super) for_principal_override: Option<UserOrRoleId>,
 }
 
 // ── Core impl (Unresolved) ──────────────────────────────────────────────────
@@ -611,6 +624,8 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             action: Arc::new(action),
             _authz: std::marker::PhantomData,
             extra_context: HashMap::new(),
+            authorizations_override: None,
+            for_principal_override: None,
         }
     }
 
@@ -629,6 +644,8 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             action,
             _authz: std::marker::PhantomData,
             extra_context: HashMap::new(),
+            authorizations_override: None,
+            for_principal_override: None,
         }
     }
 }
@@ -651,6 +668,8 @@ impl<P: UserProvidedEntity, A: APIEventActions, Z: AuthzState>
             action: self.action,
             _authz: std::marker::PhantomData,
             extra_context: self.extra_context,
+            authorizations_override: self.authorizations_override,
+            for_principal_override: self.for_principal_override,
         }
     }
 }
@@ -936,6 +955,30 @@ where
         self.extra_context.insert(key.into(), value.into());
     }
 
+    /// Replace the per-decision `authorizations` list that will be attached to
+    /// the emitted event.
+    ///
+    /// Call this from batch-style endpoints (e.g. `introspect_permissions`)
+    /// where the audit-relevant unit of work is each inner check rather than
+    /// the wrapping API call. When unset, the emit path synthesises one entry
+    /// per (entity, action) pair from the context's existing fields.
+    pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
+        self.authorizations_override = Some(authorizations);
+    }
+
+    /// Record that this event's authorisation check is being made on behalf
+    /// of a different principal than the request actor (e.g. an introspection
+    /// endpoint with `?for_user=...`).
+    ///
+    /// The synthesised default `authorizations[]` will stamp every entry with
+    /// this principal in `for_principal`. The top-level `actor` field still
+    /// reflects the API caller, so audit consumers can see both: who asked
+    /// (the actor) and whose permissions were evaluated (`for_principal`).
+    /// Has no effect when `set_authorizations` has been called.
+    pub fn set_for_principal(&mut self, principal: UserOrRoleId) {
+        self.for_principal_override = Some(principal);
+    }
+
     #[must_use]
     pub fn extra_context(&self) -> &HashMap<String, String> {
         &self.extra_context
@@ -987,11 +1030,23 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     {
         match result {
             Ok(value) => {
+                let entities = Arc::new(self.user_provided_entity.event_entities());
+                let actions = Arc::new(self.action.event_actions());
+                let authorizations =
+                    Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
+                        synthesise_authorizations(
+                            &entities,
+                            &actions,
+                            self.for_principal_override.as_ref(),
+                            true,
+                        )
+                    }));
                 let event = AuthorizationSucceededEvent {
                     request_metadata: self.request_metadata.clone(),
-                    entities: Arc::new(self.user_provided_entity.event_entities()),
-                    actions: Arc::new(self.action.event_actions()),
+                    entities,
+                    actions,
                     extra_context: Arc::new(self.extra_context.clone()),
+                    authorizations,
                 };
                 let dispatcher = self.dispatcher.clone();
                 let span = tracing::Span::current();
@@ -1039,13 +1094,24 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
             error.skip_log = true; // Already emitted in more detail by audit logger
         }
 
+        let entities = Arc::new(self.user_provided_entity.event_entities());
+        let actions = Arc::new(self.action.event_actions());
+        let authorizations = Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
+            synthesise_authorizations(
+                &entities,
+                &actions,
+                self.for_principal_override.as_ref(),
+                false,
+            )
+        }));
         let event = AuthorizationFailedEvent {
             request_metadata: self.request_metadata.clone(),
-            entities: Arc::new(self.user_provided_entity.event_entities()),
-            actions: Arc::new(self.action.event_actions()),
+            entities,
+            actions,
             failure_reason,
             error: Arc::new(AuthorizationError::clone_from_error_model(&error)),
             extra_context: Arc::new(self.extra_context.clone()),
+            authorizations,
         };
         let dispatcher = self.dispatcher.clone();
         let span = tracing::Span::current();
@@ -1091,6 +1157,57 @@ where
             resolved_entity: context.resolved_entity,
             _authz: std::marker::PhantomData,
             extra_context: context.extra_context,
+            authorizations_override: context.authorizations_override,
+            for_principal_override: context.for_principal_override,
         }
     }
+}
+
+/// Synthesise a default `authorizations` list for an event whose call site
+/// did not explicitly populate one. Produces one entry per (entity, action)
+/// pair so the array is never empty for a well-formed event; if either input
+/// is empty (shouldn't happen for real events) we still emit a single entry
+/// describing whatever is available, since downstream consumers expect at
+/// least one row.
+fn synthesise_authorizations(
+    entities: &EventEntities,
+    actions: &[ActionDescriptor],
+    for_principal: Option<&UserOrRoleId>,
+    allowed: bool,
+) -> Vec<Authorization> {
+    let mut out = Vec::with_capacity(entities.entities.len().max(1) * actions.len().max(1));
+    for entity in &entities.entities {
+        for action in actions {
+            out.push(Authorization {
+                id: None,
+                for_principal: for_principal.cloned(),
+                action: action.clone(),
+                entity: entity.clone(),
+                allowed: Some(allowed),
+            });
+        }
+    }
+    if out.is_empty() {
+        // Defensive: never emit a zero-length array. Real events always have
+        // at least one entity and one action, but if a degenerate event slips
+        // through we still want a row consumers can rely on.
+        out.push(Authorization {
+            id: None,
+            for_principal: for_principal.cloned(),
+            action: actions
+                .first()
+                .cloned()
+                .unwrap_or_else(|| ActionDescriptor {
+                    action_name: "unknown",
+                    context: Vec::new(),
+                }),
+            entity: entities
+                .entities
+                .first()
+                .cloned()
+                .unwrap_or_else(|| EntityDescriptor::new("unknown")),
+            allowed: Some(allowed),
+        });
+    }
+    out
 }

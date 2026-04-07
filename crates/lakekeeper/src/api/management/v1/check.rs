@@ -21,16 +21,25 @@ use crate::{
         SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId,
         ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            MustUse, RequireNamespaceActionError, RequireTableActionError,
-            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
-            UserOrRole as AuthzUserOrRole,
+            ActionDescriptor, ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
+            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogAction, CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, MustUse,
+            RequireNamespaceActionError, RequireTableActionError, RequireWarehouseActionError,
+            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
-        events::{APIEventContext, context::IntrospectPermissions},
+        events::{
+            APIEventContext, Authorization,
+            context::{
+                ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT, ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE,
+                ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE, EntityDescriptor, FIELD_NAME_NAMESPACE,
+                FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE,
+                FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID, FIELD_NAME_WAREHOUSE_ID,
+                IntrospectPermissions,
+            },
+        },
         namespace_cache::namespace_ident_to_cache_key,
     },
 };
@@ -247,20 +256,123 @@ pub struct CatalogActionsBatchCheckResult {
     allowed: bool,
 }
 
-/// One entry in the structured audit payload attached to the
-/// `introspect_permissions` event. Self-contained: carries the input tuple
-/// alongside its decision so audit consumers don't have to zip parallel arrays.
-/// `allowed` is `None` only when the batch failed before producing decisions.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
-struct AuditCheckEntry<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    for_principal: Option<&'a UserOrRole>,
-    operation: &'a CatalogActionCheckOperation,
-    #[serde(skip_serializing_if = "Option::is_none")]
+/// Convert a request-side `UserOrRole` (which only carries identifiers) to
+/// the service-level [`UserOrRoleId`] used in audit `Authorization` entries.
+/// This avoids forcing a Role lookup just for logging.
+fn principal_for_audit(identity: &UserOrRole) -> UserOrRoleId {
+    match identity {
+        UserOrRole::User(id) => UserOrRoleId::User(id.clone()),
+        UserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role_id()),
+    }
+}
+
+impl CatalogActionCheckOperation {
+    /// Map this operation to the `(entity, action)` pair that the audit layer
+    /// records. The shape mirrors what other audit events emit for the same
+    /// resource type, so consumers see one uniform schema across single-check
+    /// and batch-check events.
+    fn to_audit_entity_action(&self) -> (EntityDescriptor, ActionDescriptor) {
+        match self {
+            CatalogActionCheckOperation::Server { action } => (
+                EntityDescriptor::new(ENTITY_TYPE_SERVER),
+                action.action_descriptor(),
+            ),
+            CatalogActionCheckOperation::Project { action, project_id } => {
+                let mut entity = EntityDescriptor::new(ENTITY_TYPE_PROJECT);
+                if let Some(pid) = project_id {
+                    entity = entity.field(FIELD_NAME_PROJECT_ID, pid);
+                }
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::Warehouse {
+                action,
+                warehouse_id,
+            } => (
+                EntityDescriptor::new(ENTITY_TYPE_WAREHOUSE)
+                    .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id),
+                action.action_descriptor(),
+            ),
+            CatalogActionCheckOperation::Namespace { action, namespace } => {
+                let entity = match namespace {
+                    NamespaceIdentOrUuid::Id {
+                        namespace_id,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE_ID, namespace_id),
+                    NamespaceIdentOrUuid::Name {
+                        namespace,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string()),
+                };
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::Table { action, table } => {
+                let entity = match table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_TABLE_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_TABLE, table),
+                };
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::View { action, view } => {
+                let entity = match view {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_VIEW_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_VIEW, table),
+                };
+                (entity, action.action_descriptor())
+            }
+        }
+    }
+}
+
+/// Convert a single batch-check tuple into an [`Authorization`] suitable for
+/// the audit `authorizations` array. Self-contained: each entry carries its
+/// own id, principal, entity, action, and decision.
+///
+/// `index` is the position of this tuple in the request array; it's used as
+/// a stable fallback `id` when the client did not supply one. This mirrors
+/// the API response's index-as-id convention so every audit entry can be
+/// correlated 1:1 with the corresponding response entry, and so individual
+/// decisions can be pinpointed in the logs even when no client id was set.
+fn check_to_authorization(
+    item: &CatalogActionCheckItem,
+    index: usize,
     allowed: Option<bool>,
+) -> Authorization {
+    let (entity, action) = item.operation.to_audit_entity_action();
+    Authorization {
+        id: Some(item.id.clone().unwrap_or_else(|| index.to_string())),
+        for_principal: item.identity.as_ref().map(principal_for_audit),
+        action,
+        entity,
+        allowed,
+    }
 }
 
 // Type aliases for complex grouped check types
@@ -1537,9 +1649,8 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
         IntrospectPermissions {},
     );
 
-    // Keep a copy of the input tuples so we can zip them with the per-tuple
-    // decisions and attach a single structured `checks` payload to the audit
-    // event below.
+    // Keep the input tuples so we can pair them with their decisions and
+    // attach one structured `Authorization` per tuple to the audit event.
     let checks_for_audit = checks.clone();
 
     let authz_result = spawn_check_and_collect_results::<C, _>(
@@ -1551,26 +1662,23 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
     )
     .await;
 
-    // Build one self-contained audit payload per tuple: each entry carries its
-    // own `id`, `for-principal`, `operation` and (when available) the `allowed`
-    // decision. This makes the single `introspect_permissions` audit event
-    // record both *what was asked* and *what was answered*, with no
-    // index-zipping required by log consumers. Order matches the input.
+    // Build one structured `Authorization` per input tuple. Each entry carries
+    // its own `id`, `for-principal`, `entity`, `action` and (when the batch
+    // produced decisions) the `allowed` flag — so the single
+    // `introspect_permissions` audit event records both *what was asked* and
+    // *what was answered*, in the same shape as every other audit event, with
+    // no index-zipping required by log consumers. Order matches the input.
     let audit_decisions: Option<&[CatalogActionsBatchCheckResult]> =
         authz_result.as_ref().ok().map(Vec::as_slice);
-    let audit_entries: Vec<AuditCheckEntry<'_>> = checks_for_audit
+    let authorizations: Vec<Authorization> = checks_for_audit
         .iter()
         .enumerate()
-        .map(|(i, c)| AuditCheckEntry {
-            id: c.id.as_deref(),
-            for_principal: c.identity.as_ref(),
-            operation: &c.operation,
-            allowed: audit_decisions.and_then(|r| r.get(i)).map(|r| r.allowed),
+        .map(|(i, c)| {
+            let allowed = audit_decisions.and_then(|r| r.get(i)).map(|r| r.allowed);
+            check_to_authorization(c, i, allowed)
         })
         .collect();
-    if let Ok(s) = serde_json::to_string(&audit_entries) {
-        event_ctx.push_extra_context("checks", s);
-    }
+    event_ctx.set_authorizations(authorizations);
 
     let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
 

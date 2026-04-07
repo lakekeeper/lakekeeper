@@ -1,15 +1,98 @@
 use std::fmt::Display;
 
-use valuable::{Mappable, Valuable, Value, Visit};
+use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
 use crate::service::{
     authn::{Actor, InternalActor},
-    authz::{ActionDescriptor, ContextValue},
+    authz::{ActionDescriptor, ContextValue, UserOrRoleId},
     events::{
-        AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
+        Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
         context::EntityDescriptor,
     },
 };
+
+/// Newtype around `Vec<Authorization>` so we can implement `Valuable` /
+/// `Listable` for it without an orphan-rule violation. Borrowed because the
+/// audit emit path holds the Vec via `Arc`.
+struct AuthorizationsList<'a>(&'a [Authorization]);
+
+impl Valuable for AuthorizationsList<'_> {
+    fn as_value(&self) -> Value<'_> {
+        Value::Listable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        for entry in self.0 {
+            visit.visit_value(entry.as_value());
+        }
+    }
+}
+
+impl Listable for AuthorizationsList<'_> {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.0.len(), Some(self.0.len()))
+    }
+}
+
+impl Valuable for Authorization {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        if let Some(id) = &self.id {
+            visit.visit_entry(Value::String("id"), Value::String(id));
+        }
+        if let Some(principal) = &self.for_principal {
+            let wrapped = UserOrRoleIdValue(principal);
+            visit.visit_entry(Value::String("for-principal"), wrapped.as_value());
+        }
+        visit.visit_entry(Value::String("action"), self.action.as_value());
+        visit.visit_entry(Value::String("entity"), self.entity.as_value());
+        if let Some(allowed) = self.allowed {
+            visit.visit_entry(Value::String("allowed"), Value::Bool(allowed));
+        }
+    }
+}
+
+impl Mappable for Authorization {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = 2
+            + usize::from(self.id.is_some())
+            + usize::from(self.for_principal.is_some())
+            + usize::from(self.allowed.is_some());
+        (len, Some(len))
+    }
+}
+
+/// Render `UserOrRoleId` as a single-key map (`{"user": "..."}` or
+/// `{"role": "..."}`) for the `for-principal` field of an `Authorization`.
+struct UserOrRoleIdValue<'a>(&'a UserOrRoleId);
+
+impl Valuable for UserOrRoleIdValue<'_> {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        match self.0 {
+            UserOrRoleId::User(id) => {
+                let s = id.to_string();
+                visit.visit_entry(Value::String("user"), Value::String(&s));
+            }
+            UserOrRoleId::Role(id) => {
+                let s = id.to_string();
+                visit.visit_entry(Value::String("role"), Value::String(&s));
+            }
+        }
+    }
+}
+
+impl Mappable for UserOrRoleIdValue<'_> {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (1, Some(1))
+    }
+}
 
 /// Emits an audit `tracing::info!` event, using singular field names (`action`/`entity`)
 /// when only one item is present, and plural (`actions`/`entities`) otherwise.
@@ -62,6 +145,7 @@ impl Display for AuditEventListener {
 #[async_trait::async_trait]
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
+        let authorizations = AuthorizationsList(&event.authorizations);
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
@@ -70,6 +154,7 @@ impl EventListener for AuditEventListener {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
+                    authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -83,6 +168,7 @@ impl EventListener for AuditEventListener {
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
+                    authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -95,12 +181,14 @@ impl EventListener for AuditEventListener {
         &self,
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
+        let authorizations = AuthorizationsList(&event.authorizations);
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
                 &*event.entities,
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
@@ -112,6 +200,7 @@ impl EventListener for AuditEventListener {
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
+                    authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
