@@ -247,6 +247,22 @@ pub struct CatalogActionsBatchCheckResult {
     allowed: bool,
 }
 
+/// One entry in the structured audit payload attached to the
+/// `introspect_permissions` event. Self-contained: carries the input tuple
+/// alongside its decision so audit consumers don't have to zip parallel arrays.
+/// `allowed` is `None` only when the batch failed before producing decisions.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct AuditCheckEntry<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    for_principal: Option<&'a UserOrRole>,
+    operation: &'a CatalogActionCheckOperation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed: Option<bool>,
+}
+
 // Type aliases for complex grouped check types
 type ServerChecksMap = HashMap<Option<UserOrRole>, Vec<(usize, CatalogServerAction)>>;
 type ProjectChecksMap =
@@ -1514,12 +1530,17 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
         ));
     }
 
-    let event_ctx = APIEventContext::new(
+    let mut event_ctx = APIEventContext::new(
         Arc::new(metadata),
         api_context.v1_state.events,
         (authorizer.server_id(), checks.clone()),
         IntrospectPermissions {},
     );
+
+    // Keep a copy of the input tuples so we can zip them with the per-tuple
+    // decisions and attach a single structured `checks` payload to the audit
+    // event below.
+    let checks_for_audit = checks.clone();
 
     let authz_result = spawn_check_and_collect_results::<C, _>(
         checks,
@@ -1529,6 +1550,27 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
         error_on_not_found,
     )
     .await;
+
+    // Build one self-contained audit payload per tuple: each entry carries its
+    // own `id`, `for-principal`, `operation` and (when available) the `allowed`
+    // decision. This makes the single `introspect_permissions` audit event
+    // record both *what was asked* and *what was answered*, with no
+    // index-zipping required by log consumers. Order matches the input.
+    let audit_decisions: Option<&[CatalogActionsBatchCheckResult]> =
+        authz_result.as_ref().ok().map(Vec::as_slice);
+    let audit_entries: Vec<AuditCheckEntry<'_>> = checks_for_audit
+        .iter()
+        .enumerate()
+        .map(|(i, c)| AuditCheckEntry {
+            id: c.id.as_deref(),
+            for_principal: c.identity.as_ref(),
+            operation: &c.operation,
+            allowed: audit_decisions.and_then(|r| r.get(i)).map(|r| r.allowed),
+        })
+        .collect();
+    if let Ok(s) = serde_json::to_string(&audit_entries) {
+        event_ctx.push_extra_context("checks", s);
+    }
 
     let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
 
