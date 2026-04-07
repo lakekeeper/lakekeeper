@@ -12,7 +12,7 @@ use crate::{
         management::v1::{
             check::{
                 CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
-                TabularIdentOrUuid, UserOrRole as APIUserOrRole,
+                TabularIdentOrUuid,
             },
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
@@ -26,7 +26,8 @@ use crate::{
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
-            AuthorizationFailureSource, AuthorizationSucceededEvent, EventDispatcher,
+            AuthorizationFailureReason, AuthorizationFailureSource, AuthorizationSucceededEvent,
+            EventDispatcher,
         },
         storage::StoragePermissions,
         tasks::TaskId,
@@ -48,7 +49,6 @@ pub const FIELD_NAME_ROLE_ID: &str = "role-id";
 pub const FIELD_NAME_ROLE_SOURCE_ID: &str = "role-source-id";
 pub const FIELD_NAME_ROLE_PROVIDER_ID: &str = "role-provider-id";
 pub const FIELD_NAME_USER_ID: &str = "user-id";
-pub const FIELD_FOR_USER: &str = "for-user";
 
 pub const ENTITY_TYPE_SERVER: &str = "server";
 pub const ENTITY_TYPE_PROJECT: &str = "project";
@@ -361,7 +361,7 @@ impl UserProvidedEntity for UserProvidedTask {
 impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
     fn event_entities(&self) -> EventEntities {
         EventEntities::many(self.1.iter().map(|item| {
-            let mut desc = match &item.operation {
+            match &item.operation {
                 CatalogActionCheckOperation::Server { .. } => {
                     EntityDescriptor::new(ENTITY_TYPE_SERVER).field(FIELD_NAME_SERVER_ID, &self.0)
                 }
@@ -422,19 +422,8 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                         .field(FIELD_NAME_NAMESPACE, namespace)
                         .field(FIELD_NAME_VIEW, table),
                 },
-            };
-            if let Some(identity) = &item.identity {
-                desc = desc.field(FIELD_FOR_USER, &for_user_or_role_str(identity));
             }
-            desc
         }))
-    }
-}
-
-fn for_user_or_role_str(for_user: &APIUserOrRole) -> String {
-    match for_user {
-        APIUserOrRole::User(user_id) => format!("User({user_id})"),
-        APIUserOrRole::Role(assignee) => format!("Role({})", assignee.role_id()),
     }
 }
 
@@ -963,7 +952,15 @@ where
     /// the wrapping API call. When unset, the emit path synthesises one entry
     /// per (entity, action) pair from the context's existing fields.
     pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
-        self.authorizations_override = Some(authorizations);
+        // Treat an empty Vec as "unset" so the emit-path's synthesised
+        // fallback still produces a non-empty `authorizations[]` array.
+        // Storing `Some(vec![])` here would clobber the fallback and break
+        // the always-non-empty invariant audit consumers rely on.
+        self.authorizations_override = if authorizations.is_empty() {
+            None
+        } else {
+            Some(authorizations)
+        };
     }
 
     /// Record that this event's authorisation check is being made on behalf
@@ -1038,7 +1035,7 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
                             &entities,
                             &actions,
                             self.for_principal_override.as_ref(),
-                            true,
+                            Some(true),
                         )
                     }));
                 let event = AuthorizationSucceededEvent {
@@ -1096,12 +1093,13 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
 
         let entities = Arc::new(self.user_provided_entity.event_entities());
         let actions = Arc::new(self.action.event_actions());
+        let synthesised_allowed = synthesised_allowed_for_failure(&failure_reason);
         let authorizations = Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
             synthesise_authorizations(
                 &entities,
                 &actions,
                 self.for_principal_override.as_ref(),
-                false,
+                synthesised_allowed,
             )
         }));
         let event = AuthorizationFailedEvent {
@@ -1173,7 +1171,7 @@ fn synthesise_authorizations(
     entities: &EventEntities,
     actions: &[ActionDescriptor],
     for_principal: Option<&UserOrRoleId>,
-    allowed: bool,
+    allowed: Option<bool>,
 ) -> Vec<Authorization> {
     let mut out = Vec::with_capacity(entities.entities.len().max(1) * actions.len().max(1));
     for entity in &entities.entities {
@@ -1183,7 +1181,7 @@ fn synthesise_authorizations(
                 for_principal: for_principal.cloned(),
                 action: action.clone(),
                 entity: entity.clone(),
-                allowed: Some(allowed),
+                allowed,
             });
         }
     }
@@ -1206,8 +1204,29 @@ fn synthesise_authorizations(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| EntityDescriptor::new("unknown")),
-            allowed: Some(allowed),
+            allowed,
         });
     }
     out
+}
+
+/// Map a top-level [`AuthorizationFailureReason`] to the per-entry `allowed`
+/// value used when synthesising a default `authorizations[]` list for a
+/// failed event.
+///
+/// Definitive denials (`ActionForbidden`, `ResourceNotFound`,
+/// `CannotSeeResource`) become `Some(false)`. Outcomes where the system
+/// could not actually decide (`InternalAuthorizationError`,
+/// `InternalCatalogError`, `InvalidRequestData`) become `None`, so the audit
+/// log records "we never reached a verdict" instead of misrepresenting a
+/// backend failure as an explicit deny.
+fn synthesised_allowed_for_failure(reason: &AuthorizationFailureReason) -> Option<bool> {
+    match reason {
+        AuthorizationFailureReason::ActionForbidden
+        | AuthorizationFailureReason::ResourceNotFound
+        | AuthorizationFailureReason::CannotSeeResource => Some(false),
+        AuthorizationFailureReason::InternalAuthorizationError
+        | AuthorizationFailureReason::InternalCatalogError
+        | AuthorizationFailureReason::InvalidRequestData => None,
+    }
 }

@@ -271,7 +271,17 @@ impl CatalogActionCheckOperation {
     /// records. The shape mirrors what other audit events emit for the same
     /// resource type, so consumers see one uniform schema across single-check
     /// and batch-check events.
-    fn to_audit_entity_action(&self) -> (EntityDescriptor, ActionDescriptor) {
+    ///
+    /// `ambient_project_id` is the request-scoped fallback used for `Project`
+    /// operations whose request body did not specify a `project_id` — the
+    /// same value [`RequestMetadata::require_project_id`] would resolve.
+    /// Passing it ensures every project audit entry carries
+    /// `FIELD_NAME_PROJECT_ID`, matching what the actual authorization check
+    /// runs against.
+    fn to_audit_entity_action(
+        &self,
+        ambient_project_id: Option<&ProjectId>,
+    ) -> (EntityDescriptor, ActionDescriptor) {
         match self {
             CatalogActionCheckOperation::Server { action } => (
                 EntityDescriptor::new(ENTITY_TYPE_SERVER),
@@ -279,7 +289,7 @@ impl CatalogActionCheckOperation {
             ),
             CatalogActionCheckOperation::Project { action, project_id } => {
                 let mut entity = EntityDescriptor::new(ENTITY_TYPE_PROJECT);
-                if let Some(pid) = project_id {
+                if let Some(pid) = project_id.as_ref().or(ambient_project_id) {
                     entity = entity.field(FIELD_NAME_PROJECT_ID, pid);
                 }
                 (entity, action.action_descriptor())
@@ -363,9 +373,10 @@ impl CatalogActionCheckOperation {
 fn check_to_authorization(
     item: &CatalogActionCheckItem,
     index: usize,
+    ambient_project_id: Option<&ProjectId>,
     allowed: Option<bool>,
 ) -> Authorization {
-    let (entity, action) = item.operation.to_audit_entity_action();
+    let (entity, action) = item.operation.to_audit_entity_action(ambient_project_id);
     Authorization {
         id: Some(item.id.clone().unwrap_or_else(|| index.to_string())),
         for_principal: item.identity.as_ref().map(principal_for_audit),
@@ -1670,14 +1681,24 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
     // no index-zipping required by log consumers. Order matches the input.
     let audit_decisions: Option<&[CatalogActionsBatchCheckResult]> =
         authz_result.as_ref().ok().map(Vec::as_slice);
+    // Resolve the ambient project once so `Project` checks that omit
+    // `project_id` in the request body still record a fully-populated
+    // entity (matching what the authorizer actually evaluated).
+    let ambient_project_id = event_ctx.request_metadata().preferred_project_id();
+    let ambient_project_id_ref = ambient_project_id.as_deref();
     let authorizations: Vec<Authorization> = checks_for_audit
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let allowed = audit_decisions.and_then(|r| r.get(i)).map(|r| r.allowed);
-            check_to_authorization(c, i, allowed)
+            check_to_authorization(c, i, ambient_project_id_ref, allowed)
         })
         .collect();
+    // For an empty batch (`POST {"checks": []}`) `set_authorizations`
+    // intentionally treats this as "unset" so the emit-path's synthesised
+    // default fires instead, recording a single
+    // "server / introspect_permissions / allowed" row — meaningful as
+    // "the call succeeded but checked nothing".
     event_ctx.set_authorizations(authorizations);
 
     let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;

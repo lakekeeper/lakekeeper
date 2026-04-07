@@ -112,11 +112,11 @@ Each entry is **self-contained** — it does not require zipping with the top-le
 
 | Field           | Type    | Description                                                                          |
 |-----------------|---------|--------------------------------------------------------------------------------------|
-| `id`            | String  | Stable identifier for this entry. On batch-check events: the client-supplied `id` from the request item, falling back to the item's zero-based index in the request array (matching the API response's index-as-id convention) so individual decisions can always be pinpointed and correlated 1:1 with the response. Absent on synthesised single-check entries. |
+| `id`            | String  | Stable identifier for this entry. When the client supplies an `id` on a batch-check input it appears verbatim here, and the API response echoes the same value so the two can be correlated 1:1. When the client omits `id`, the API response omits it too; the audit log instead substitutes the request item's zero-based index as an internal bookkeeping fallback so individual decisions can still be pinpointed in the logs. **Do not assume the API response carries index-based ids — that fallback exists only in audit entries.** Absent on synthesised single-check entries. |
 | `for-principal` | Object  | Optional. The principal whose permission was evaluated, when different from the request actor. Shape: `{"user": "..."}` or `{"role": "..."}`. Absent means the request actor itself. |
 | `action`        | Object  | Same shape as the top-level `action` field.                                          |
 | `entity`        | Object  | Same shape as the top-level `entity` field.                                          |
-| `allowed`       | Boolean | The decision for *this* tuple. Only absent when an upstream error prevented this entry from producing a decision. |
+| `allowed`       | Boolean | The decision for *this* tuple. Absent when no definitive verdict was reached — e.g. on `InternalAuthorizationError`, `InternalCatalogError`, or `InvalidRequestData` failures, where the system never actually evaluated the request. Definitive denials (`ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`) are recorded as `false`. |
 
 **Top-level vs. per-entry semantics.** The top-level `actor` always reflects the *API caller* (the bearer token holder); `authorizations[].for-principal` reflects *whose permissions were checked*. For most calls these are the same and `for-principal` is omitted. For introspection endpoints like `GET /lakekeeper/v1/permissions/...?for-user=X` the actor is the caller while every entry's `for-principal` is `X` — both facts are recorded structurally on the same event, no `context.for-user` string needed.
 
@@ -225,10 +225,18 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "action": {
     "action_name": "introspect_permissions"
   },
-  "entity": {
-    "entity_type": "warehouse",
-    "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241"
-  },
+  "entities": [
+    {
+      "entity_type": "warehouse",
+      "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241"
+    },
+    {
+      "entity_type": "table",
+      "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241",
+      "namespace": "production",
+      "table": "events"
+    }
+  ],
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
@@ -542,10 +550,10 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .actor.pr
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .entity.table == "my_table")'
 
 # Any individual denied decision (single-check OR a denied entry inside a batch event)
-cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and (.authorizations // [])[] | .allowed == false)'
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.authorizations // [])[]; .allowed == false))'
 
 # Permissions checked on behalf of a specific user (introspection / batch-check)
-cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and (.authorizations // [])[] | .["for-principal"].user == "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8")'
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.authorizations // [])[]; .["for-principal"].user == "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"))'
 ```
 
 ## Best Practices
