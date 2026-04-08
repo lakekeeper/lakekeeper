@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: 3.x
-      - uses: extractions/setup-just@v3
+      - uses: extractions/setup-just@v4
         with:
           just-version: 1.x
       - name: Deploy Lakekeeper documentation
