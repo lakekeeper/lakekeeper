@@ -2,7 +2,7 @@ mod undrop;
 
 use std::sync::Arc;
 
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt as _};
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ pub use crate::service::{
     WarehouseStatus,
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
-        S3Profile, StorageCredential, StorageProfile,
+        S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
     },
 };
 use crate::{
@@ -182,7 +182,7 @@ pub struct UpdateWarehouseStorageRequest {
     /// Storage profile to use for the warehouse.
     /// The new profile must point to the same location as the existing profile
     /// to avoid data loss. For S3 this means that you may not change the
-    /// bucket, key prefix, or region.
+    /// bucket or key prefix. The region may only be changed if an endpoint is set.
     pub storage_profile: StorageProfile,
     /// Optional storage credential to use for the warehouse.
     /// The existing credential is not re-used. If no credential is
@@ -249,6 +249,12 @@ pub struct GetWarehouseResponse {
     pub project_id: ArcProjectId,
     /// Storage profile used for the warehouse.
     pub storage_profile: StorageProfile,
+    /// Best-effort indicator of the storage credential type. When present it
+    /// reflects the detected credential kind; when absent the warehouse may
+    /// either have no credential configured or the secret lookup may have
+    /// failed. Does not contain secret values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_credential_type: Option<StorageCredentialType>,
     /// Delete profile used for the warehouse.
     pub delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is active.
@@ -348,14 +354,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             Arc::new(request_metadata),
             context.v1_state.events.clone(),
             project_id,
-            Arc::new(CatalogProjectAction::CreateWarehouse),
+            Arc::new(CatalogProjectAction::CreateWarehouse {
+                name: Some(warehouse_name.clone()),
+            }),
         );
 
         let authz_result = authorizer
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity_arc_ref(),
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
 
@@ -400,6 +408,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         validation_result?;
         overlap_result?;
 
+        let credential_type = storage_credential
+            .as_ref()
+            .map(StorageCredential::credential_type);
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let secret_id = if let Some(storage_credential) = storage_credential {
             Some(
@@ -434,9 +445,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         event_ctx.emit_warehouse_created(resolved_warehouse.clone());
 
-        Ok(CreateWarehouseResponse(
-            (*resolved_warehouse).clone().into(),
-        ))
+        let response =
+            GetWarehouseResponse::from_resolved((*resolved_warehouse).clone(), credential_type);
+        Ok(CreateWarehouseResponse(response))
     }
 
     async fn list_warehouses(
@@ -444,6 +455,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<ListWarehousesResponse> {
+        const MAX_CONCURRENT_SECRET_LOOKUPS: usize = 32;
         // ------------------- AuthZ -------------------
         let project_id = request_metadata.require_project_id(request.project_id)?;
 
@@ -459,7 +471,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .require_project_action(
                 event_ctx.request_metadata(),
                 event_ctx.user_provided_entity_arc_ref(),
-                *event_ctx.action(),
+                event_ctx.action().clone(),
             )
             .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -472,7 +484,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
 
-        let warehouses = authorizer
+        let allowed_warehouses: Vec<_> = authorizer
             .are_allowed_warehouse_actions_vec(
                 event_ctx.request_metadata(),
                 None,
@@ -486,12 +498,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .into_inner()
             .into_iter()
             .zip(warehouses)
-            .filter_map(|(allowed, warehouse)| {
-                if allowed {
-                    Some((*warehouse).clone().into())
-                } else {
-                    None
-                }
+            .filter_map(|(allowed, warehouse)| if allowed { Some(warehouse) } else { None })
+            .collect();
+
+        // Collect futures first to avoid for<'a> lifetime issues with stream combinators.
+        let futs: Vec<_> = allowed_warehouses
+            .iter()
+            .map(|w| resolve_credential_type(w, &context.v1_state.secrets))
+            .collect();
+        let credential_types: Vec<_> = futures::stream::iter(futs)
+            .buffered(MAX_CONCURRENT_SECRET_LOOKUPS)
+            .collect()
+            .await;
+        let warehouses: Vec<GetWarehouseResponse> = allowed_warehouses
+            .into_iter()
+            .zip(credential_types)
+            .map(|(warehouse, credential_type)| {
+                GetWarehouseResponse::from_resolved((*warehouse).clone(), credential_type)
             })
             .collect();
 
@@ -528,7 +551,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await;
         let (_event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
-        Ok((*warehouse).clone().into())
+        let credential_type = resolve_credential_type(&warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn get_warehouse_statistics(
@@ -714,7 +741,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
-        Ok((*updated_warehouse).clone().into())
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn update_warehouse_delete_profile(
@@ -759,7 +791,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
 
-        Ok((*updated_warehouse).clone().into())
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn deactivate_warehouse(
@@ -905,6 +942,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
         .await?;
 
+        let credential_type = storage_credential
+            .as_ref()
+            .map(StorageCredential::credential_type);
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let storage_profile = warehouse
             .storage_profile
@@ -949,7 +989,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .ok();
         }
 
-        Ok((*updated_warehouse).clone().into())
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn update_storage_credential(
@@ -991,6 +1034,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let UpdateWarehouseCredentialRequest {
             new_storage_credential,
         } = request;
+        let credential_type = new_storage_credential
+            .as_ref()
+            .map(StorageCredential::credential_type);
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
         let old_secret_id = warehouse.storage_secret_id;
 
@@ -1042,7 +1088,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .ok();
         }
 
-        Ok((*updated_warehouse).clone().into())
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
     }
 
     async fn undrop_tabulars(
@@ -1400,18 +1449,47 @@ impl axum::response::IntoResponse for GetWarehouseResponse {
     }
 }
 
-impl From<crate::service::ResolvedWarehouse> for GetWarehouseResponse {
-    fn from(warehouse: crate::service::ResolvedWarehouse) -> Self {
+impl GetWarehouseResponse {
+    fn from_resolved(
+        warehouse: crate::service::ResolvedWarehouse,
+        storage_credential_type: Option<StorageCredentialType>,
+    ) -> Self {
         Self {
             warehouse_id: warehouse.warehouse_id,
             id: warehouse.warehouse_id,
             name: warehouse.name,
             project_id: warehouse.project_id,
             storage_profile: warehouse.storage_profile,
+            storage_credential_type,
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
             updated_at: warehouse.updated_at,
+        }
+    }
+}
+
+/// Resolves the credential type for a warehouse by looking up the secret.
+/// Returns `None` if the warehouse has no storage secret configured, or if the
+/// secret lookup fails. Failures are logged as warnings rather than propagated
+/// so that warehouses with broken credentials can still be loaded and fixed via
+/// the UI.
+async fn resolve_credential_type<S: SecretStore>(
+    warehouse: &crate::service::ResolvedWarehouse,
+    secrets: &S,
+) -> Option<StorageCredentialType> {
+    let secret_id = warehouse.storage_secret_id?;
+    match secrets.require_storage_secret_by_id(secret_id).await {
+        Ok(secret) => Some(secret.secret.credential_type()),
+        Err(e) => {
+            tracing::warn!(
+                error=e.error.message,
+                secret_id=?secret_id,
+                warehouse_id = %warehouse.warehouse_id,
+                warehouse_name = %warehouse.name,
+                "Failed to resolve storage credential type for warehouse"
+            );
+            None
         }
     }
 }
@@ -1439,6 +1517,168 @@ fn validate_warehouse_name(warehouse_name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod test {
+    use super::{GetWarehouseResponse, StorageCredentialType, resolve_credential_type};
+    use crate::service::{
+        ResolvedWarehouse, WarehouseStatus,
+        health::{Health, HealthExt},
+        secrets::{Secret, SecretId, SecretInStorage, SecretStore},
+        storage::{S3CredentialType, StorageCredential, s3::S3AccessKeyCredential},
+    };
+
+    fn test_warehouse(storage_secret_id: Option<SecretId>) -> ResolvedWarehouse {
+        ResolvedWarehouse {
+            warehouse_id: uuid::Uuid::new_v4().into(),
+            name: "test-warehouse".to_string(),
+            project_id: Arc::new(uuid::Uuid::new_v4().into()),
+            storage_profile: crate::service::storage::MemoryProfile::default().into(),
+            storage_secret_id,
+            status: WarehouseStatus::Active,
+            tabular_delete_profile: super::TabularDeleteProfile::Hard {},
+            protected: false,
+            updated_at: None,
+            version: crate::service::WarehouseVersion::from(0),
+        }
+    }
+
+    fn s3_access_key_credential() -> StorageCredential {
+        StorageCredential::S3(crate::service::storage::S3Credential::AccessKey(
+            S3AccessKeyCredential {
+                access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+                secret_access_key: "secret".to_string(),
+                external_id: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn from_resolved_includes_credential_type_when_present() {
+        let warehouse = test_warehouse(None);
+        let cred_type = Some(StorageCredentialType::S3(S3CredentialType::AccessKey));
+        let response = GetWarehouseResponse::from_resolved(warehouse, cred_type);
+
+        assert_eq!(
+            response.storage_credential_type,
+            Some(StorageCredentialType::S3(S3CredentialType::AccessKey))
+        );
+
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            json["storage-credential-type"],
+            serde_json::json!({"type": "s3", "credential-type": "access-key"})
+        );
+    }
+
+    #[test]
+    fn from_resolved_omits_credential_type_when_none() {
+        let warehouse = test_warehouse(None);
+        let response = GetWarehouseResponse::from_resolved(warehouse, None);
+
+        assert_eq!(response.storage_credential_type, None);
+
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(
+            json.get("storage-credential-type").is_none(),
+            "storage-credential-type should be absent when None (skip_serializing_if)"
+        );
+    }
+
+    // --- Mock secret store for resolve_credential_type tests ---
+
+    #[derive(Debug, Clone)]
+    struct MockSecretStore {
+        result: std::result::Result<Secret<Arc<StorageCredential>>, ()>,
+    }
+
+    #[async_trait::async_trait]
+    impl HealthExt for MockSecretStore {
+        async fn health(&self) -> Vec<Health> {
+            vec![]
+        }
+        async fn update_health(&self) {}
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for MockSecretStore {
+        async fn get_secret_by_id_impl<S: SecretInStorage>(
+            &self,
+            secret_id: SecretId,
+        ) -> crate::api::Result<Option<Secret<S>>> {
+            match &self.result {
+                Ok(secret) => {
+                    // Re-serialize the credential through JSON to produce Secret<S>
+                    let json = serde_json::to_value(&*secret.secret).unwrap();
+                    let deserialized: S = serde_json::from_value(json).unwrap();
+                    Ok(Some(Secret {
+                        secret_id,
+                        secret: deserialized,
+                        created_at: secret.created_at,
+                        updated_at: secret.updated_at,
+                    }))
+                }
+                Err(()) => Err(iceberg_ext::catalog::rest::ErrorModel::internal(
+                    "mock failure",
+                    "MockError",
+                    None,
+                )
+                .into()),
+            }
+        }
+
+        async fn create_secret_impl<S: SecretInStorage>(
+            &self,
+            _secret: S,
+        ) -> crate::api::Result<SecretId> {
+            unimplemented!()
+        }
+
+        async fn delete_secret_impl(&self, _secret_id: &SecretId) -> crate::api::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_type_returns_none_when_no_secret_id() {
+        let warehouse = test_warehouse(None);
+        let store = MockSecretStore {
+            result: Err(()), // shouldn't be called
+        };
+        let result = resolve_credential_type(&warehouse, &store).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_credential_type_returns_type_on_success() {
+        let secret_id = SecretId::from(uuid::Uuid::new_v4());
+        let warehouse = test_warehouse(Some(secret_id));
+
+        let store = MockSecretStore {
+            result: Ok(Secret {
+                secret_id,
+                secret: Arc::new(s3_access_key_credential()),
+                created_at: chrono::Utc::now(),
+                updated_at: None,
+            }),
+        };
+
+        let result = resolve_credential_type(&warehouse, &store).await;
+        assert_eq!(
+            result,
+            Some(StorageCredentialType::S3(S3CredentialType::AccessKey))
+        );
+    }
+
+    #[tokio::test]
+    // The update storage profile endpoint might be used to fix broken credentials,
+    // so we want to ensure that a failure to look up the secret doesn't cause the entire request to fail.
+    async fn resolve_credential_type_returns_none_on_secret_store_failure() {
+        let secret_id = SecretId::from(uuid::Uuid::new_v4());
+        let warehouse = test_warehouse(Some(secret_id));
+        let store = MockSecretStore { result: Err(()) };
+
+        let result = resolve_credential_type(&warehouse, &store).await;
+        assert_eq!(result, None);
+    }
+
     #[test]
     fn test_de_create_warehouse_request() {
         let request = serde_json::json!({

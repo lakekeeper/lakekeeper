@@ -182,8 +182,8 @@ mod tests {
         let state = SecretsState::from_pools(pool.clone(), pool);
 
         let secret: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id: "my access key".to_string(),
-            aws_secret_access_key: "my secret key".to_string(),
+            access_key_id: "my access key".to_string(),
+            secret_access_key: "my secret key".to_string(),
             external_id: None,
         })
         .into();
@@ -210,8 +210,8 @@ mod tests {
         let state = SecretsState::from_pools(pool.clone(), pool);
 
         let secret: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id: "my access key".to_string(),
-            aws_secret_access_key: "my secret key".to_string(),
+            access_key_id: "my access key".to_string(),
+            secret_access_key: "my secret key".to_string(),
             external_id: None,
         })
         .into();

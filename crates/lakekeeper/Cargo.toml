@@ -98,6 +98,7 @@ strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+tokio-metrics = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
@@ -123,6 +124,7 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 assert-json-diff = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
 lakekeeper = { path = ".", features = ["test-utils"] }

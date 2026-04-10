@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.11.2"
+version = "0.12.0"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
 rust-version = "1.88.0"
@@ -21,7 +21,7 @@ anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-async-nats = { version = "0.46.0", default-features = false, features = [
+async-nats = { git = "https://github.com/lakekeeper/nats.rs.git", tag = "async-nats/v0.46.0-lakekeeper.1", default-features = false, features = [
     "server_2_10",
     "server_2_11",
     "server_2_12",
@@ -100,7 +100,11 @@ jwks_client_rs = { version = "0.5.1", default-features = false, features = [
 ] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = [
+    "kubernetes",
+    "axum",
+    "rustls-tls",
+] }
 maplit = "1.0.2"
 md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }
@@ -145,12 +149,17 @@ sqlx = { version = "0.8.6", default-features = false, features = [
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
 thiserror = "2.0.0"
+tikv-jemallocator = { version = "0.6" }
 time = "0.3.36"
 tokio = { version = "1.41", default-features = false, features = [
     "signal",
     "rt-multi-thread",
     "macros",
     "time",
+] }
+tokio-metrics = { version = "0.4.9", features = [
+    "metrics-rs-integration",
+    "rt",
 ] }
 tokio-util = { version = "^0.7" }
 tower = { version = "^0.5" }

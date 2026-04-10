@@ -113,7 +113,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          node-version: 23
+          node-version: 24
 
       - name: Build [Cargo]
         run: cargo build --all-features --release --locked --target ${{ matrix.target }}

@@ -22,6 +22,7 @@ use crate::{
         ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
+        idempotency::IdempotencyKey,
     },
 };
 
@@ -73,6 +74,7 @@ pub struct RequestMetadata {
     request_method: Method,
     user_agent: Option<UserAgent>,
     engine: Option<TrustedEngine>,
+    idempotency_key: Option<IdempotencyKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +156,12 @@ impl RequestMetadata {
         self.engine.as_ref()
     }
 
+    /// Idempotency key from the `Idempotency-Key` request header, if present.
+    #[must_use]
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.idempotency_key.as_ref()
+    }
+
     pub fn set_token_roles(&mut self, token_roles: TokenRoles) -> &mut Self {
         self.token_roles = Some(token_roles);
         self
@@ -203,6 +211,7 @@ impl RequestMetadata {
             user_agent: None,
             engine: None,
             token_roles: None,
+            idempotency_key: None,
         }
     }
 
@@ -227,6 +236,7 @@ impl RequestMetadata {
             user_agent: None,
             engine: None,
             token_roles: None,
+            idempotency_key: None,
         }
     }
 
@@ -264,6 +274,7 @@ impl RequestMetadata {
             user_agent: None,
             engine: None,
             token_roles: None,
+            idempotency_key: None,
         }
     }
 
@@ -299,6 +310,7 @@ impl RequestMetadata {
             user_agent: None,
             engine: None,
             token_roles: None,
+            idempotency_key: None,
         }
     }
 
@@ -323,6 +335,7 @@ impl RequestMetadata {
             user_agent: None,
             engine: None,
             token_roles: None,
+            idempotency_key: None,
         }
     }
 
@@ -483,6 +496,15 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .and_then(|hv| hv.to_str().ok())
         .map(UserAgent::parse);
 
+    let idempotency_key = if CONFIG.idempotency.enabled {
+        match IdempotencyKey::from_headers(&headers) {
+            Ok(key) => key,
+            Err(err) => return err.into_response(),
+        }
+    } else {
+        None
+    };
+
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
@@ -494,6 +516,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         request_method,
         user_agent,
         engine: None,
+        idempotency_key,
     });
     next.run(request).await
 }

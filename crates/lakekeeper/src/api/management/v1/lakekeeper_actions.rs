@@ -21,7 +21,7 @@ use crate::{
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
             CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogUserAction,
             CatalogViewAction, CatalogWarehouseAction, RequireProjectActionError,
-            RequireRoleActionError, RoleAssignee, UserOrRole,
+            RequireRoleActionError, RoleAssignee, UserOrRole, UserOrRoleId,
             fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -93,16 +93,21 @@ macro_rules! action_response {
     };
 }
 
-fn push_for_user_context<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
+/// Records the on-behalf-of principal on an introspection event so the
+/// audit log's synthesised `authorizations[]` entries carry it as
+/// `for_principal`. The top-level `actor` field continues to reflect the API
+/// caller, so audit consumers see both: who asked, and whose permissions
+/// were evaluated.
+fn set_for_user<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
     event_ctx: &mut APIEventContext<P, R, A>,
     for_user: Option<&APIUserOrRole>,
 ) {
     if let Some(for_user) = for_user {
-        let s = match for_user {
-            APIUserOrRole::User(id) => format!("User({id})"),
-            APIUserOrRole::Role(assignee) => format!("Role({})", assignee.role_id()),
+        let id = match for_user {
+            APIUserOrRole::User(id) => UserOrRoleId::User(id.clone()),
+            APIUserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role_id()),
         };
-        event_ctx.push_extra_context("for-user", s);
+        event_ctx.set_for_principal(id);
     }
 }
 
@@ -149,7 +154,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
     query: GetAccessQuery,
 ) -> Result<Vec<CatalogServerAction>, ErrorModel> {
     let for_user_api = query.try_parse()?.principal;
-    let actions = CatalogServerAction::VARIANTS;
+    let actions = CatalogServerAction::variants();
 
     let mut event_ctx = APIEventContext::for_server(
         Arc::new(request_metadata),
@@ -157,7 +162,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
         IntrospectPermissions {},
         state.v1_state.authz.server_id(),
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result: Result<_, AuthZError> = async {
         let for_user = resolve_principal::<C>(for_user_api, state.v1_state.catalog.clone()).await?;
@@ -180,7 +185,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
         .zip(actions)
         .filter_map(
             |(allowed, action)| {
-                if *allowed { Some(*action) } else { None }
+                if *allowed { Some(action.clone()) } else { None }
             },
         )
         .collect();
@@ -202,7 +207,7 @@ pub(super) async fn get_allowed_user_actions<C: CatalogStore, A: Authorizer, S: 
         object,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let allowed_actions = authorize_get_user_actions::<C>(
         event_ctx.request_metadata(),
@@ -280,7 +285,7 @@ pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: 
         role_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_role_actions::<C>(
         event_ctx.request_metadata(),
@@ -374,7 +379,7 @@ pub(super) async fn get_allowed_project_actions<C: CatalogStore, A: Authorizer, 
         object.clone(),
         Arc::new(IntrospectPermissions {}),
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_project_actions::<C>(
         event_ctx.request_metadata(),
@@ -397,7 +402,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogProjectAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state).await?;
-    let actions = CatalogProjectAction::VARIANTS;
+    let actions = CatalogProjectAction::variants();
     let can_see_permission = CatalogProjectAction::GetMetadata;
 
     let results = authorizer
@@ -406,7 +411,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (object, *action))
+                .map(|action| (object, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -421,7 +426,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }
@@ -430,7 +435,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
 
     if !can_see {
         let err: RequireProjectActionError =
-            AuthZProjectActionForbidden::new(object.clone(), can_see_permission).into();
+            AuthZProjectActionForbidden::new(object.clone(), &can_see_permission).into();
         return Err(err.into());
     }
 
@@ -455,7 +460,7 @@ pub(super) async fn get_allowed_warehouse_actions<
         object,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_warehouse_actions::<C>(
         event_ctx.request_metadata(),
@@ -545,7 +550,7 @@ pub(super) async fn get_allowed_namespace_actions<
         provided_namespace_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_namespace_actions::<C>(
         event_ctx.request_metadata(),
@@ -645,7 +650,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
         table_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_table_actions::<C>(
         event_ctx.request_metadata(),
@@ -761,7 +766,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
         view_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_view_actions::<C>(
         event_ctx.request_metadata(),

@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, LazyLock},
+    time::Duration,
 };
 
 use aws_config::{
@@ -8,8 +9,7 @@ use aws_config::{
     timeout::TimeoutConfig,
 };
 use aws_sdk_s3::config::{
-    IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient,
-    SharedIdentityCache, http::HttpRequest,
+    IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient, http::HttpRequest,
 };
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
@@ -32,13 +32,12 @@ mod s3_storage;
 pub use s3_location::{InvalidBucketName, S3Location, validate_bucket_name};
 pub use s3_storage::S3Storage;
 
-static IDENTITY_CACHE: LazyLock<SharedIdentityCache> =
-    LazyLock::new(|| IdentityCache::lazy().build());
 static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
     aws_smithy_http_client::Builder::new()
         .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
             aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
         ))
+        .pool_idle_timeout(Duration::from_secs(60))
         .build_https()
 });
 
@@ -52,9 +51,24 @@ static SLEEP_IMPL: LazyLock<SharedAsyncSleep> =
 
 const S3_CUSTOM_SCHEMES: [&str; 2] = ["s3a", "s3n"];
 
-/// Macro to apply common AWS configuration to any builder that supports these methods
+/// Shared identity cache for system identity (IMDS/ECS task role).
+/// Safe as a global static because there is only one system identity,
+/// so only one cache partition is ever created.
+static SYSTEM_IDENTITY_CACHE: LazyLock<aws_sdk_s3::config::SharedIdentityCache> =
+    LazyLock::new(|| IdentityCache::lazy().build());
+
+/// Macro to apply common AWS configuration to any builder that supports these methods.
+/// Uses `no_cache` by default to avoid the unbounded partition growth described in
+/// `<https://github.com/smithy-lang/smithy-rs/issues/4340>`.
+/// Pass `system_identity` to use a shared cache for IMDS/ECS credential resolution.
 macro_rules! apply_aws_config {
     ($builder:expr, $region:expr) => {
+        apply_aws_config!($builder, $region, IdentityCache::no_cache())
+    };
+    ($builder:expr, $region:expr, system_identity) => {
+        apply_aws_config!($builder, $region, SYSTEM_IDENTITY_CACHE.clone())
+    };
+    ($builder:expr, $region:expr, $identity_cache:expr) => {
         $builder
             .region($region)
             .retry_config(RETRY_CONFIG.clone())
@@ -63,7 +77,7 @@ macro_rules! apply_aws_config {
             .sleep_impl(SLEEP_IMPL.clone())
             .behavior_version(BehaviorVersion::latest())
             .http_client((*SMITHY_HTTP_CLIENT).clone())
-            .identity_cache(IDENTITY_CACHE.clone())
+            .identity_cache($identity_cache)
             .app_name(AppName::new("lakekeeper").unwrap())
     };
 }
@@ -115,6 +129,10 @@ pub struct S3Settings {
     pub sts_session_tags: BTreeMap<String, String>,
     #[builder(default)]
     pub endpoint: Option<url::Url>,
+    /// Optional separate endpoint for STS requests.
+    /// If not set, the S3 `endpoint` is used for STS as well.
+    #[builder(default)]
+    pub sts_endpoint: Option<url::Url>,
     pub region: String,
     // -------- S3 specific settings --------
     #[builder(default)]
@@ -148,6 +166,7 @@ impl S3Settings {
             assume_role_arn,
             sts_session_tags,
             endpoint,
+            sts_endpoint,
             region,
             // S3 specific settings
             path_style_access: _,
@@ -182,7 +201,8 @@ impl S3Settings {
             Some(S3Auth::AwsSystemIdentity(S3AwsSystemIdentityAuth {
                 external_id: _, // External ID handled below in this function in the assume role path
             })) => {
-                let mut builder = apply_aws_config!(aws_config::from_env(), region);
+                let mut builder =
+                    apply_aws_config!(aws_config::from_env(), region, system_identity);
                 if let Some(endpoint) = endpoint {
                     builder = builder.endpoint_url(endpoint.to_string());
                 }
@@ -198,8 +218,20 @@ impl S3Settings {
         };
 
         if let Some(assume_role_arn) = assume_role_arn {
+            // If a separate STS endpoint is configured, build a dedicated SdkConfig
+            // so that STS calls go to the correct endpoint.
+            let sts_sdk_config;
+            let configure_from = if let Some(sts_ep) = sts_endpoint {
+                sts_sdk_config = sdk_config
+                    .to_builder()
+                    .endpoint_url(sts_ep.to_string())
+                    .build();
+                &sts_sdk_config
+            } else {
+                &sdk_config
+            };
             let mut assume_role_provider = AssumeRoleProvider::builder(assume_role_arn)
-                .configure(&sdk_config)
+                .configure(configure_from)
                 .session_name("lakekeeper-assume-role");
 
             if let Some(external_id) = s3_credential.and_then(S3Auth::external_id) {

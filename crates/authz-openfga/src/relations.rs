@@ -379,7 +379,7 @@ impl ReducedRelation for CatalogServerAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogServerAction::CreateProject => ServerRelation::CanCreateProject,
+            CatalogServerAction::CreateProject { .. } => ServerRelation::CanCreateProject,
             CatalogServerAction::UpdateUsers => ServerRelation::CanUpdateUsers,
             CatalogServerAction::DeleteUsers => ServerRelation::CanDeleteUsers,
             CatalogServerAction::ListUsers => ServerRelation::CanListUsers,
@@ -667,13 +667,13 @@ impl ReducedRelation for CatalogProjectAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogProjectAction::CreateWarehouse => ProjectRelation::CanCreateWarehouse,
+            CatalogProjectAction::CreateWarehouse { .. } => ProjectRelation::CanCreateWarehouse,
             CatalogProjectAction::Delete => ProjectRelation::CanDelete,
             CatalogProjectAction::Rename => ProjectRelation::CanRename,
             CatalogProjectAction::GetMetadata => ProjectRelation::CanGetMetadata,
             CatalogProjectAction::ListWarehouses => ProjectRelation::CanListWarehouses,
             CatalogProjectAction::IncludeInList => ProjectRelation::CanIncludeInList,
-            CatalogProjectAction::CreateRole => ProjectRelation::CanCreateRole,
+            CatalogProjectAction::CreateRole { .. } => ProjectRelation::CanCreateRole,
             CatalogProjectAction::ListRoles => ProjectRelation::CanListRoles,
             CatalogProjectAction::SearchRoles => ProjectRelation::CanSearchRoles,
             CatalogProjectAction::GetEndpointStatistics => {

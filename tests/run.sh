@@ -56,6 +56,8 @@ if [[ "$1" == *"openfga"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-s3-system-identity-overlay.yaml")
     elif [[ "$1" == *"legacy_md5"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-legacy-md5-overlay.yaml")
+    elif [[ "$1" == *"separate_endpoint"* ]]; then
+    COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-sts-endpoint-overlay.yaml")
 fi
 
 exec docker compose "${COMPOSE_ARGS[@]}" run --quiet-pull spark \

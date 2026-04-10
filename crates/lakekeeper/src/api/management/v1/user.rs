@@ -437,7 +437,11 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
 
         let authz_result = authorizer
-            .require_server_action(event_ctx.request_metadata(), None, *event_ctx.action())
+            .require_server_action(
+                event_ctx.request_metadata(),
+                None,
+                event_ctx.action().clone(),
+            )
             .await;
         event_ctx.emit_authz(authz_result)?;
 

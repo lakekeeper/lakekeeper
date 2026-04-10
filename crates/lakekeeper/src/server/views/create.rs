@@ -61,6 +61,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     }
 
     let action = CatalogNamespaceAction::CreateView {
+        name: Some(request.name.clone()),
         properties: Arc::new(request.properties.clone().into_iter().collect()),
     };
     let event_ctx = APIEventContext::for_namespace(
@@ -77,9 +78,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         .load_and_authorize_namespace_action::<C>(
             &request_metadata,
             UserProvidedNamespace::new(warehouse_id, provided_ns.clone()),
-            CatalogNamespaceAction::CreateView {
-                properties: Arc::new(request.properties.clone().into_iter().collect()),
-            },
+            action.clone(),
             CachePolicy::Use,
             state.v1_state.catalog.clone(),
         )

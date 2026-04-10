@@ -61,9 +61,10 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `properties`, `updated-properties`, `removed-properties`). See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
-| `decision`             | String          | `"allowed"` or `"denied"`         |
+| `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
+| `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
-| `failure_reason`       | String          | Only on failed events. One of: `ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`, `InternalAuthorizationError`, `InternalCatalogError`, `InvalidRequestData` |
+| `failure_reason`       | Object          | Only on failed events. Single-key object identifying the variant — one of `{"ActionForbidden": []}`, `{"ResourceNotFound": []}`, `{"CannotSeeResource": []}`, `{"InternalAuthorizationError": []}`, `{"InternalCatalogError": []}`, `{"InvalidRequestData": []}`. The empty array is the variant payload. |
 | `error`                | Object          | Only on failed events. Contains `type`, `message`, `code`, `error_id`, `stack` |
 
 **Note:** Empty arrays and objects are omitted from the output. For example, if `stack` is empty, the field will not appear in the log.
@@ -101,6 +102,24 @@ Each action is a structured object containing the operation name and optional co
 
 When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
 
+#### Per-decision breakdown (`authorizations`)
+
+Every authorization event carries an `authorizations` array with **at least one entry**. For ordinary single-check API calls the array has exactly one entry, synthesised from the event's top-level fields. For batch-style endpoints (e.g. `/management/v1/action/batch-check` and the various `get_*_actions` introspection endpoints) the array contains one entry per inner check, in request order.
+
+This means audit consumers can use **one query path** for both single and batch events: iterate `authorizations[]` and read the per-entry `allowed` flag, instead of switching between top-level `decision` and a per-batch breakdown.
+
+Each entry is **self-contained** — it does not require zipping with the top-level fields:
+
+| Field           | Type    | Description                                                                          |
+|-----------------|---------|--------------------------------------------------------------------------------------|
+| `id`            | String  | Stable identifier for this entry. When the client supplies an `id` on a batch-check input it appears verbatim here, and the API response echoes the same value so the two can be correlated 1:1. When the client omits `id`, the API response omits it too; the audit log instead substitutes the request item's zero-based index as an internal bookkeeping fallback so individual decisions can still be pinpointed in the logs. **Do not assume the API response carries index-based ids — that fallback exists only in audit entries.** Absent on synthesised single-check entries. |
+| `for-principal` | Object  | Optional. The principal whose permission was evaluated, when different from the request actor. Shape: `{"user": "..."}` or `{"role": "..."}`. Absent means the request actor itself. |
+| `action`        | Object  | Same shape as the top-level `action` field.                                          |
+| `entity`        | Object  | Same shape as the top-level `entity` field.                                          |
+| `allowed`       | Boolean | The decision for *this* tuple. Absent when no definitive verdict was reached — e.g. on `InternalAuthorizationError`, `InternalCatalogError`, or `InvalidRequestData` failures, where the system never actually evaluated the request. Definitive denials (`ActionForbidden`, `ResourceNotFound`, `CannotSeeResource`) are recorded as `false`. |
+
+**Top-level vs. per-entry semantics.** The top-level `actor` always reflects the *API caller* (the bearer token holder); `authorizations[].for-principal` reflects *whose permissions were checked*. For most calls these are the same and `for-principal` is omitted. For introspection endpoints like `GET /lakekeeper/v1/permissions/...?for-user=X` the actor is the caller while every entry's `for-principal` is `X` — both facts are recorded structurally on the same event, no `context.for-user` string needed.
+
 **Examples:**
 
 <details>
@@ -112,17 +131,31 @@ When only a single action is involved, it appears as the `action` field. When mu
   "level": "INFO",
   "event_source": "audit",
   "action": {
-    "action_name": "introspect_permissions"
+    "action_name": "create_warehouse",
+    "name": "demo"
   },
   "entity": {
-    "entity_type": "warehouse",
-    "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0"
+    "entity_type": "project",
+    "project-id": "00000000-0000-0000-0000-000000000000"
   },
   "actor": {
     "actor_type": "principal",
-    "principal": "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"
+    "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
   "decision": "allowed",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "create_warehouse",
+        "name": "demo"
+      },
+      "entity": {
+        "entity_type": "project",
+        "project-id": "00000000-0000-0000-0000-000000000000"
+      },
+      "allowed": true
+    }
+  ],
   "message": "Authorization succeeded event",
   "target": "lakekeeper::service::events::backends::audit"
 }
@@ -151,7 +184,23 @@ When only a single action is involved, it appears as the `action` field. When mu
     "principal": "oidc~user@example.com"
   },
   "decision": "denied",
-  "failure_reason": "ActionForbidden",
+  "authorizations": [
+    {
+      "action": {
+        "action_name": "drop"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse-id": "414b18f0-0a6d-11f1-b2d7-f31430431ca0",
+        "namespace": "production",
+        "table": "sensitive_data"
+      },
+      "allowed": false
+    }
+  ],
+  "failure_reason": {
+    "ActionForbidden": []
+  },
   "error": {
     "type": "Forbidden",
     "message": "Insufficient permissions",
@@ -159,6 +208,74 @@ When only a single action is involved, it appears as the `action` field. When mu
     "error_id": "01234567-89ab-cdef-0123-456789abcdef"
   },
   "message": "Authorization failed event",
+  "target": "lakekeeper::service::events::backends::audit"
+}
+```
+</details>
+
+<details>
+<summary>Batch check (introspect_permissions) — multiple inner decisions</summary>
+
+A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` asking whether `oidc~cfb55bf6-…` may `delete` a warehouse and `read_data` from a table. Top-level `actor` is the caller; each `authorizations[]` entry records the on-behalf-of principal and its individual decision.
+
+```json
+{
+  "timestamp": "2026-04-07T17:58:34.358975Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "action": {
+    "action_name": "introspect_permissions"
+  },
+  "entities": [
+    {
+      "entity_type": "warehouse",
+      "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241"
+    },
+    {
+      "entity_type": "table",
+      "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241",
+      "namespace": "production",
+      "table": "events"
+    }
+  ],
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
+  },
+  "decision": "allowed",
+  "authorizations": [
+    {
+      "id": "warehouse-delete",
+      "for-principal": {
+        "user": "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"
+      },
+      "action": {
+        "action_name": "delete"
+      },
+      "entity": {
+        "entity_type": "warehouse",
+        "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241"
+      },
+      "allowed": true
+    },
+    {
+      "id": "1",
+      "for-principal": {
+        "user": "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"
+      },
+      "action": {
+        "action_name": "read_data"
+      },
+      "entity": {
+        "entity_type": "table",
+        "warehouse-id": "255a8f5c-32ab-11f1-889e-4706b6f66241",
+        "namespace": "production",
+        "table": "events"
+      },
+      "allowed": false
+    }
+  ],
+  "message": "Authorization succeeded event",
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
@@ -238,14 +355,17 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 ```
 </details>
 
-**Role provider chain (`operation = "chain_resolve_roles"`):**
+**Role resolution (`operation = "resolve_roles"`):**
 
 | `outcome`                | When emitted                                      |
 |--------------------------|---------------------------------------------------|
 | `no_provider_applicable` | No configured role provider matched this user.    |
+| `roles_resolved`         | At least one role was resolved. Disabled by default — enable with `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_ROLE_ASSIGNMENTS=true`. The `context` contains `role_count`, the full `roles` list, and `sources` showing where each provider's roles came from (`fresh`, `cache_hit`, `stale_fallback`, or `in_request`). |
 | `error`                  | A matched provider failed to resolve roles (e.g. LDAP connection error). The request proceeds with an empty role set. |
 
 The `no_provider_applicable` outcome is enabled by default and can be controlled via `LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`. A `no_provider_applicable` outcome for a user that you expect to be covered indicates a misconfigured domain filter or a missing provider. Set the variable to `false` to suppress these events if some users are intentionally not covered.
+
+The `roles_resolved` outcome is **disabled by default** because it fires on every authenticated request and contains the full list of resolved role names. Enable it temporarily to debug role-provider configuration — do not leave it on in production.
 
 The `error` outcome always fires when role resolution fails. It is accompanied by a general application warning in the non-audit log stream (without PII).
 
@@ -257,7 +377,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "timestamp": "2026-03-07T10:00:00.000000Z",
   "level": "INFO",
   "event_source": "audit",
-  "operation": "chain_resolve_roles",
+  "operation": "resolve_roles",
   "actor": {
     "actor_type": "principal",
     "principal": "oidc~unknown@other-domain.com"
@@ -267,6 +387,30 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
     "providers_checked": ["ldap-prod"]
   },
   "message": "No role provider handled user; user will have no provider-assigned roles"
+}
+```
+</details>
+
+<details>
+<summary>Roles resolved (debug)</summary>
+
+```json
+{
+  "timestamp": "2026-03-07T10:00:01.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice@corp.example.com"
+  },
+  "outcome": "roles_resolved",
+  "context": {
+    "role_count": 2,
+    "roles": ["my-ldap~devs", "my-ldap~admins"],
+    "sources": {"my-ldap": "cache_hit", "oidc": "in_request"}
+  },
+  "message": "Resolved role assignments for user"
 }
 ```
 </details>
@@ -405,6 +549,12 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .actor.pr
 
 # Specific table access
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .entity.table == "my_table")'
+
+# Any individual denied decision (single-check OR a denied entry inside a batch event)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.authorizations // [])[]; .allowed == false))'
+
+# Permissions checked on behalf of a specific user (introspection / batch-check)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.authorizations // [])[]; .["for-principal"].user == "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"))'
 ```
 
 ## Best Practices

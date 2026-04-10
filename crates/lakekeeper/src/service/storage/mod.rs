@@ -1002,6 +1002,77 @@ pub enum StorageCredential {
     Gcs(GcsCredential),
 }
 
+/// The type of storage credential configured for a warehouse, without secret values.
+///
+/// This is returned in API responses so clients know which credential type
+/// was selected (e.g. to restore radio button state in the UI).
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", content = "credential-type", rename_all = "kebab-case")]
+pub enum StorageCredentialType {
+    /// S3 credential type
+    #[serde(rename = "s3")]
+    S3(S3CredentialType),
+    /// Azure credential type
+    #[serde(rename = "az")]
+    Az(AzCredentialType),
+    /// GCS credential type
+    #[serde(rename = "gcs")]
+    Gcs(GcsCredentialType),
+}
+
+/// The type of S3 credential.
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum S3CredentialType {
+    AccessKey,
+    AwsSystemIdentity,
+    CloudflareR2,
+}
+
+/// The type of Azure credential.
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum AzCredentialType {
+    ClientCredentials,
+    SharedAccessKey,
+    AzureSystemIdentity,
+}
+
+/// The type of GCS credential.
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum GcsCredentialType {
+    ServiceAccountKey,
+    GcpSystemIdentity,
+}
+
+impl StorageCredential {
+    /// Returns the credential type discriminant without secret values.
+    #[must_use]
+    pub fn credential_type(&self) -> StorageCredentialType {
+        match self {
+            StorageCredential::S3(s3) => StorageCredentialType::S3(match s3 {
+                S3Credential::AccessKey(_) => S3CredentialType::AccessKey,
+                S3Credential::AwsSystemIdentity(_) => S3CredentialType::AwsSystemIdentity,
+                S3Credential::CloudflareR2(_) => S3CredentialType::CloudflareR2,
+            }),
+            StorageCredential::Az(az) => StorageCredentialType::Az(match az {
+                AzCredential::ClientCredentials { .. } => AzCredentialType::ClientCredentials,
+                AzCredential::SharedAccessKey { .. } => AzCredentialType::SharedAccessKey,
+                AzCredential::AzureSystemIdentity {} => AzCredentialType::AzureSystemIdentity,
+            }),
+            StorageCredential::Gcs(gcs) => StorageCredentialType::Gcs(match gcs {
+                GcsCredential::ServiceAccountKey { .. } => GcsCredentialType::ServiceAccountKey,
+                GcsCredential::GcpSystemIdentity {} => GcsCredentialType::GcpSystemIdentity,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Hash, Copy, Clone, PartialEq, derive_more::From)]
 enum StorageCredentialBorrowed<'a> {
     S3(&'a S3Credential),
@@ -1178,11 +1249,11 @@ mod tests {
     #[test]
     fn test_redact_s3_access_key() {
         let secrets: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-            aws_access_key_id: "
+            access_key_id: "
                 AKIAIOSFODNN7EXAMPLE
             "
             .to_string(),
-            aws_secret_access_key: "
+            secret_access_key: "
                 wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
             "
             .to_string(),
@@ -1256,8 +1327,8 @@ mod tests {
         assert_eq!(
             secret,
             StorageCredential::S3(S3Credential::AccessKey(S3AccessKeyCredential {
-                aws_access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
-                aws_secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+                secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
                 external_id: None
             }))
         );
@@ -1394,12 +1465,17 @@ mod tests {
             crate::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
-                    let bucket = std::env::var("AWS_S3_BUCKET").unwrap();
-                    let region = std::env::var("AWS_S3_REGION").unwrap();
-                    let sts_role_arn = std::env::var("AWS_S3_STS_ROLE_ARN").unwrap();
+                    let bucket = std::env::var("LAKEKEEPER_TEST__AWS_S3_BUCKET").unwrap();
+                    let region = std::env::var("LAKEKEEPER_TEST__AWS_S3_REGION").unwrap();
+                    let sts_role_arn =
+                        std::env::var("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN").unwrap();
                     let cred: StorageCredential = S3Credential::AccessKey(S3AccessKeyCredential {
-                        aws_access_key_id: std::env::var("AWS_S3_ACCESS_KEY_ID").unwrap(),
-                        aws_secret_access_key: std::env::var("AWS_S3_SECRET_ACCESS_KEY").unwrap(),
+                        access_key_id: std::env::var("LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID")
+                            .unwrap(),
+                        secret_access_key: std::env::var(
+                            "LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY",
+                        )
+                        .unwrap(),
                         external_id: None,
                     })
                     .into();

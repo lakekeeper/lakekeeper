@@ -64,6 +64,7 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
         Cache::builder()
             .max_capacity(CONFIG.cache.role.capacity)
             .initial_capacity(100)
+            .time_to_live(Duration::from_secs(CONFIG.cache.role.time_to_live_secs))
             .build()
     });
 
@@ -112,6 +113,8 @@ fn update_cache_size_metric() {
     let () = &*METRICS_INITIALIZED; // Ensure metrics are described
     metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role")
         .set(ROLE_CACHE.entry_count() as f64);
+    metrics::gauge!(METRIC_ROLE_CACHE_SIZE, "cache_type" => "role_ident_to_id")
+        .set(IDENT_TO_ID_CACHE.entry_count() as f64);
 }
 
 pub(super) async fn role_cache_get_by_id(role_id: RoleId) -> Option<ArcRole> {
@@ -150,6 +153,7 @@ pub(crate) async fn role_ident_insert(
 ) {
     if CONFIG.cache.role.enabled {
         IDENT_TO_ID_CACHE.insert((project_id, ident), role_id).await;
+        update_cache_size_metric();
     }
 }
 
@@ -160,9 +164,11 @@ pub(super) async fn role_cache_get_by_ident(
     update_cache_size_metric();
     let ident_key = (project_id, ident.clone());
     let Some(role_id) = IDENT_TO_ID_CACHE.get(&ident_key).await else {
-        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
+        metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role_ident_to_id")
+            .increment(1);
         return None;
     };
+    metrics::counter!(METRIC_ROLE_CACHE_HITS, "cache_type" => "role_ident_to_id").increment(1);
     tracing::debug!("Role ident {ident} resolved in ident-to-id cache to id {role_id}");
 
     if let Some(role) = ROLE_CACHE.get(&role_id).await {
@@ -174,6 +180,7 @@ pub(super) async fn role_cache_get_by_ident(
             "Role id {role_id} not found in cache, invalidating stale ident mapping for {ident}"
         );
         IDENT_TO_ID_CACHE.remove(&ident_key).await;
+        update_cache_size_metric();
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         None
     }
@@ -296,6 +303,20 @@ mod tests {
             updated_at: None,
             version: RoleVersion::new(version),
         })
+    }
+
+    #[tokio::test]
+    async fn test_ident_to_id_cache_has_ttl_matching_primary() {
+        let primary_ttl = ROLE_CACHE.policy().time_to_live();
+        let secondary_ttl = IDENT_TO_ID_CACHE.policy().time_to_live();
+        assert_eq!(
+            primary_ttl, secondary_ttl,
+            "IDENT_TO_ID_CACHE TTL must match ROLE_CACHE TTL"
+        );
+        assert!(
+            secondary_ttl.is_some(),
+            "IDENT_TO_ID_CACHE must have a TTL configured"
+        );
     }
 
     #[tokio::test]

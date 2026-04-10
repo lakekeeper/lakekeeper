@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
 
+use http::StatusCode;
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
 use lakekeeper_io::Location;
@@ -7,9 +8,12 @@ use uuid::Uuid;
 
 use crate::{
     SecretId,
-    api::iceberg::v1::{
-        ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
-        ViewParameters,
+    api::{
+        endpoints::EndpointFlat,
+        iceberg::v1::{
+            ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
+            ViewParameters,
+        },
     },
     request_metadata::RequestMetadata,
     server::{
@@ -23,12 +27,13 @@ use crate::{
         views::validate_view_updates,
     },
     service::{
-        AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogStore, CatalogView, CatalogViewOps,
-        InternalParseLocationError, State, TabularListFlags, Transaction, ViewCommit, ViewId,
-        ViewInfo,
+        AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore,
+        CatalogView, CatalogViewOps, InternalParseLocationError, State, TabularListFlags,
+        Transaction, ViewCommit, ViewId, ViewInfo,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         events::{APIEventContext, ViewEventTransition, context::ResolvedView},
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::{StoragePermissions, StorageProfile},
     },
@@ -48,20 +53,30 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
 
-    let CommitViewRequest {
-        identifier,
-        requirements,
-        updates,
-    } = &request;
-
-    let view_ident = determine_table_ident(&parameters.view, identifier.as_ref())?;
+    let view_ident = determine_table_ident(&parameters.view, request.identifier.as_ref())?;
     validate_table_or_view_ident(&view_ident)?;
-    validate_view_updates(updates)?;
+    validate_view_updates(&request.updates)?;
 
-    // ------------------- AUTHZ -------------------
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            return super::load::load_view::<C, A, S>(
+                parameters,
+                state,
+                data_access,
+                request_metadata,
+            )
+            .await;
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let (property_updates, property_removals) = parse_view_property_updates(updates);
+    let (property_updates, property_removals) = parse_view_property_updates(&request.updates);
     let action = CatalogViewAction::Commit {
         updated_properties: Arc::new(property_updates.clone()),
         removed_properties: Arc::new(property_removals.clone()),
@@ -95,7 +110,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- BUSINESS LOGIC -------------------
     // Verify assertions
-    check_requirements(requirements.as_ref(), view_id)?;
+    check_requirements(request.requirements.as_ref(), view_id)?;
 
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
@@ -114,6 +129,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             },
             &state,
             event_ctx.request_metadata(),
+            idempotency_key.as_ref(),
         )
         .await;
 
@@ -159,7 +175,9 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
 ) -> Result<(LoadViewResult, ViewEventTransition)> {
+    let warehouse_id = ctx.view_info.warehouse_id;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
@@ -264,6 +282,37 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             ctx.view_info,
         )
         .await?;
+
+    // Insert idempotency key in the same transaction.
+    if let Some(key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1ReplaceView)
+                .http_status(StatusCode::OK)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        // Best-effort cleanup: delete the metadata file we wrote before rollback.
+        let _ = remove_all(&file_io, &new_view.metadata_location)
+            .await
+            .inspect_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to clean up metadata file after idempotency rollback"
+                );
+            });
+        return Err(ErrorModel::request_in_progress().into());
+    }
 
     // Commit transaction
     t.commit().await?;

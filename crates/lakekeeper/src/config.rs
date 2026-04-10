@@ -14,6 +14,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
+use figment::value::Uncased;
 use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -42,9 +43,24 @@ fn get_config() -> DynAppConfig {
 
     let file_keys = &["kafka_config"];
 
+    let config_keys_map = &[("METRICS_PORT", "METRICS__PORT")];
+
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        let env = figment::providers::Env::prefixed(prefix).split("__");
+        let env = figment::providers::Env::prefixed(prefix)
+            .map(|env_key| {
+                config_keys_map
+                    .iter()
+                    .find_map(|(k, v)| {
+                        if *k == env_key {
+                            Some(Uncased::from_borrowed(v))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(env_key.into())
+            })
+            .split("__");
         config = config
             .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
             .merge(env);
@@ -151,8 +167,6 @@ pub struct DynAppConfig {
     /// This is used as the "uri" and "s3.signer.url"
     /// while generating the Catalog Config
     pub base_uri: Option<url::Url>,
-    /// Port under which we serve metrics
-    pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
     /// Bind IP the server listens on.
@@ -322,6 +336,10 @@ pub struct DynAppConfig {
     pub pagination_size_default: u32,
     pub pagination_size_max: u32,
 
+    // ------------- Metrics -------------
+    #[serde(default)]
+    pub(crate) metrics: Metrics,
+
     // ------------- Stats -------------
     /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
     ///
@@ -342,6 +360,10 @@ pub struct DynAppConfig {
 
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
+
+    // ------------- Idempotency -------------
+    #[serde(default)]
+    pub idempotency: IdempotencyConfig,
 
     // ------------- Debug -------------
     #[serde(default)]
@@ -506,6 +528,52 @@ pub enum SecretBackend {
     KV2,
     #[serde(alias = "postgres")]
     Postgres,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct IdempotencyConfig {
+    /// Whether idempotency key support is enabled.
+    /// When enabled, `idempotency-key-lifetime` is advertised in getConfig.
+    pub enabled: bool,
+    /// How long idempotency records are kept (ISO-8601 duration).
+    /// This value is advertised to clients via getConfig.
+    /// Default: PT30M (30 minutes)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub lifetime: Duration,
+    /// Grace period added on top of lifetime for clock skew / transit delays (ISO-8601 duration).
+    /// Default: PT5M (5 minutes)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub grace_period: Duration,
+    /// Maximum time a background cleanup task may run before being considered dead.
+    /// If a cleanup exceeds this, the next attempt takes over.
+    /// Default: PT30S (30 seconds)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub cleanup_timeout: Duration,
+}
+
+impl Default for IdempotencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            lifetime: Duration::from_secs(30 * 60),
+            grace_period: Duration::from_secs(5 * 60),
+            cleanup_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl IdempotencyConfig {
+    /// Returns the lifetime as an ISO-8601 duration string for advertising in getConfig.
+    #[must_use]
+    pub fn lifetime_iso8601(&self) -> String {
+        crate::utils::time_conversion::std_duration_to_iso_8601_string(&self.lifetime)
+    }
+
+    /// Total retention duration (lifetime + grace).
+    #[must_use]
+    pub fn total_retention(&self) -> Duration {
+        self.lifetime + self.grace_period
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
@@ -692,11 +760,54 @@ impl std::default::Default for RoleCache {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct Metrics {
+    /// Port under which to serve metrics
+    ///
+    /// default: 9000
+    pub(crate) port: u16,
+
+    pub(crate) tokio: Tokio,
+}
+
+impl std::default::Default for Metrics {
+    fn default() -> Self {
+        Self {
+            port: 9000,
+            tokio: Tokio::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct Tokio {
+    /// Interval to report Tokio Runtime metrics
+    ///
+    /// Accepts a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds
+    ///
+    /// default: 30s
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub(crate) report_interval: Duration,
+}
+
+impl std::default::Default for Tokio {
+    fn default() -> Self {
+        Tokio {
+            report_interval: Duration::from_secs(30),
+        }
+    }
+}
+
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
             base_uri: None,
-            metrics_port: 9000,
             enable_default_project: true,
             use_x_forwarded_headers: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -760,9 +871,11 @@ impl Default for DynAppConfig {
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
+            metrics: Metrics::default(),
             endpoint_stat_flush_interval: Duration::from_secs(30),
             serve_swagger_ui: true,
             skip_storage_validation: false,
+            idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
@@ -1640,6 +1753,103 @@ mod test {
             assert_eq!(prod_config.idp_id, "keycloak-prod");
             assert_eq!(prod_config.security_model_property, "trino.run-as-owner");
 
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_secs(30 * 60));
+            assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
+            assert_eq!(config.idempotency.lifetime_iso8601(), "PT30M");
+            assert_eq!(
+                config.idempotency.total_retention(),
+                Duration::from_secs(35 * 60)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__ENABLED", "false");
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", "PT1H");
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__GRACE_PERIOD", "PT10M");
+            let config = get_config();
+            assert!(!config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_secs(3600));
+            assert_eq!(config.idempotency.grace_period, Duration::from_secs(600));
+            assert_eq!(config.idempotency.lifetime_iso8601(), "PT1H");
+            assert_eq!(
+                config.idempotency.total_retention(),
+                Duration::from_secs(4200)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_partial_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", "PT15M");
+            let config = get_config();
+            // lifetime overridden, grace_period keeps default
+            assert!(config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_secs(15 * 60));
+            assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_metrics_default_values_as_expected() {
+        figment::Jail::expect_with(|_| {
+            let config = get_config();
+            assert_eq!(config.metrics.port, 9000);
+            assert_eq!(
+                config.metrics.tokio.report_interval,
+                Duration::from_secs(30),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_metrics_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
+            jail.set_env("LAKEKEEPER_TEST__METRICS__TOKIO__REPORT_INTERVAL", "100ms");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 2);
+            assert_eq!(
+                config.metrics.tokio.report_interval,
+                Duration::from_millis(100),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_flat_metrics_port_config_is_mapped() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS_PORT", "1");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 1);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_nested_metrics_port_config_takes_precedence() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS_PORT", "1");
+            jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 2);
             Ok(())
         });
     }

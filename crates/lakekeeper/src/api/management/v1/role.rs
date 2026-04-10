@@ -307,7 +307,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.into(),
             context.v1_state.events.clone(),
             project_id.clone(),
-            Arc::new(CatalogProjectAction::CreateRole),
+            Arc::new(CatalogProjectAction::CreateRole {
+                name: Some(request.name.clone()),
+            }),
         );
         let catalog_state = context.v1_state.catalog;
         let authz_result =
@@ -525,7 +527,7 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
     authorizer
-        .require_project_action(request_metadata, project_id, *action)
+        .require_project_action(request_metadata, project_id, action.clone())
         .await?;
 
     // -------------------- Business Logic --------------------
@@ -569,7 +571,7 @@ async fn authorize_list_roles<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
     authorizer
-        .require_project_action(request_metadata, &project_id, *action)
+        .require_project_action(request_metadata, &project_id, action.clone())
         .await?;
 
     // -------------------- Business Logic --------------------
@@ -635,7 +637,7 @@ async fn authorize_search_role<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
     authorizer
-        .require_project_action(request_metadata, project_id, *action)
+        .require_project_action(request_metadata, project_id, action.clone())
         .await?;
 
     // -------------------- Business Logic --------------------
