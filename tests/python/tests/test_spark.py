@@ -1617,14 +1617,14 @@ def test_encryption_key_id_immutable(spark, namespace):
         spark.sql(
             f"ALTER TABLE {namespace.spark_name}.encrypted_table SET TBLPROPERTIES ('encryption.key-id' = 'different-key')"
         )
-    assert "ImmutablePropertyModification" in str(e.value)
+    assert "Cannot modify immutable property" in str(e.value)
 
     # Removing encryption.key-id must fail
     with pytest.raises(Exception) as e:
         spark.sql(
             f"ALTER TABLE {namespace.spark_name}.encrypted_table UNSET TBLPROPERTIES ('encryption.key-id')"
         )
-    assert "ImmutablePropertyRemoval" in str(e.value)
+    assert "Cannot remove immutable property" in str(e.value)
 
     # Verify property is unchanged
     props = (
