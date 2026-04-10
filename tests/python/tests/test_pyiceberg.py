@@ -6,7 +6,7 @@ import time
 import pyiceberg.io as io
 from pyiceberg import exceptions as exc
 import requests
-from urllib.parse import quote_plus, quote
+from urllib.parse import quote
 import uuid
 
 
@@ -322,6 +322,164 @@ def test_write_read(namespace: conftest.Namespace):
     read_df = read_table.to_pandas()
 
     assert read_df.equals(df)
+
+
+def _commit_table_url(warehouse: conftest.Warehouse, namespace_name, table_name):
+    """Build the REST API URL for committing updates to a table."""
+    ns = "%1F".join(namespace_name)
+    return (
+        warehouse.server.catalog_url.rstrip("/")
+        + "/"
+        + "/".join(
+            [
+                "v1",
+                str(warehouse.warehouse_id),
+                "namespaces",
+                ns,
+                "tables",
+                table_name,
+            ]
+        )
+    )
+
+
+def _auth_headers(warehouse: conftest.Warehouse):
+    return {"Authorization": f"Bearer {warehouse.access_token}"}
+
+
+def test_encryption_key_add_and_remove(namespace: conftest.Namespace):
+    """Test add-encryption-key and remove-encryption-key REST API updates on a v3 table."""
+    catalog = namespace.pyiceberg_catalog
+    table_name = "encryption_keys_table"
+    schema = pa.schema([pa.field("id", pa.int64())])
+    catalog.create_table(
+        (*namespace.name, table_name),
+        schema=schema,
+        properties={"format-version": "3", "encryption.key-id": "master-key"},
+    )
+
+    table = catalog.load_table((*namespace.name, table_name))
+    assert table.properties["encryption.key-id"] == "master-key"
+
+    commit_url = _commit_table_url(namespace.warehouse, namespace.name, table_name)
+    headers = _auth_headers(namespace.warehouse)
+
+    # Add an encryption key
+    import base64
+
+    key_metadata = base64.b64encode(b"some-encrypted-key-bytes").decode()
+    resp = requests.post(
+        commit_url,
+        headers=headers,
+        json={
+            "requirements": [],
+            "updates": [
+                {
+                    "action": "add-encryption-key",
+                    "encryption-key": {
+                        "key-id": "dek-1",
+                        "encrypted-key-metadata": key_metadata,
+                        "encrypted-by-id": "master-key",
+                        "properties": {"created-at": "2026-01-01"},
+                    },
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, f"add-encryption-key failed: {resp.text}"
+
+    # Verify the key is in metadata
+    metadata = resp.json()["metadata"]
+    enc_keys = metadata.get("encryption-keys", [])
+    assert any(k["key-id"] == "dek-1" for k in enc_keys), f"Key not found in {enc_keys}"
+
+    # Add a second key
+    key_metadata_2 = base64.b64encode(b"another-encrypted-key").decode()
+    resp = requests.post(
+        commit_url,
+        headers=headers,
+        json={
+            "requirements": [],
+            "updates": [
+                {
+                    "action": "add-encryption-key",
+                    "encryption-key": {
+                        "key-id": "dek-2",
+                        "encrypted-key-metadata": key_metadata_2,
+                        "encrypted-by-id": "master-key",
+                    },
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, f"add second key failed: {resp.text}"
+    enc_keys = resp.json()["metadata"].get("encryption-keys", [])
+    key_ids = {k["key-id"] for k in enc_keys}
+    assert key_ids == {"dek-1", "dek-2"}, f"Expected both keys, got {key_ids}"
+
+    # Remove the first key
+    resp = requests.post(
+        commit_url,
+        headers=headers,
+        json={
+            "requirements": [],
+            "updates": [{"action": "remove-encryption-key", "key-id": "dek-1"}],
+        },
+    )
+    assert resp.status_code == 200, f"remove-encryption-key failed: {resp.text}"
+    enc_keys = resp.json()["metadata"].get("encryption-keys", [])
+    key_ids = {k["key-id"] for k in enc_keys}
+    assert key_ids == {"dek-2"}, f"Expected only dek-2, got {key_ids}"
+
+
+def test_encryption_key_id_immutable_via_rest(namespace: conftest.Namespace):
+    """Test that encryption.key-id cannot be modified or removed via the REST API."""
+    catalog = namespace.pyiceberg_catalog
+    table_name = "encryption_immutable_rest"
+    schema = pa.schema([pa.field("id", pa.int64())])
+    catalog.create_table(
+        (*namespace.name, table_name),
+        schema=schema,
+        properties={"encryption.key-id": "my-key"},
+    )
+
+    commit_url = _commit_table_url(namespace.warehouse, namespace.name, table_name)
+    headers = _auth_headers(namespace.warehouse)
+
+    # Attempt to modify encryption.key-id
+    resp = requests.post(
+        commit_url,
+        headers=headers,
+        json={
+            "requirements": [],
+            "updates": [
+                {
+                    "action": "set-properties",
+                    "updates": {"encryption.key-id": "different-key"},
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+    assert "ImmutablePropertyModification" in resp.text
+
+    # Attempt to remove encryption.key-id
+    resp = requests.post(
+        commit_url,
+        headers=headers,
+        json={
+            "requirements": [],
+            "updates": [
+                {"action": "remove-properties", "removals": ["encryption.key-id"]}
+            ],
+        },
+    )
+    assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+    assert "ImmutablePropertyRemoval" in resp.text
+
+    # Verify property is still intact
+    table = catalog.load_table((*namespace.name, table_name))
+    assert table.properties["encryption.key-id"] == "my-key"
 
 
 def test_write_read_multiple_tables(namespace: conftest.Namespace):
