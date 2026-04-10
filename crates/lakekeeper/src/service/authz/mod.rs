@@ -126,6 +126,28 @@ pub enum UserOrRole {
     Role(RoleAssignee),
 }
 
+/// Identifier-only sibling of [`UserOrRole`].
+///
+/// Carries just the principal id (no resolved `Arc<Role>`), so it's cheap to
+/// construct from request payloads where only the role's UUID is known and
+/// safe to embed in audit events without forcing a Role lookup. Both the
+/// service-level [`UserOrRole`] and API-level `UserOrRole` types convert into
+/// it via `From` impls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserOrRoleId {
+    User(UserId),
+    Role(RoleId),
+}
+
+impl From<&UserOrRole> for UserOrRoleId {
+    fn from(value: &UserOrRole) -> Self {
+        match value {
+            UserOrRole::User(id) => UserOrRoleId::User(id.clone()),
+            UserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role().id()),
+        }
+    }
+}
+
 pub trait CatalogAction
 where
     Self: std::fmt::Debug + Send + Sync + 'static,

@@ -4,8 +4,37 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     api::RequestMetadata,
-    service::{authz::ActionDescriptor, events::context::EventEntities},
+    service::{
+        authz::{ActionDescriptor, UserOrRoleId},
+        events::context::{EntityDescriptor, EventEntities},
+    },
 };
+
+/// One authorization decision recorded on an audit event.
+///
+/// Every emitted authorization event carries an `authorizations` array with at
+/// least one entry. Single-check events produce a length-1 array synthesised
+/// from the event's top-level fields; batch-style events (e.g.
+/// `introspect_permissions`) populate one entry per inner check via
+/// [`crate::service::events::context::APIEventContext::set_authorizations`].
+///
+/// Each entry is self-contained on purpose — log consumers should not have
+/// to zip parallel arrays or fall back to top-level fields to learn what was
+/// checked or what the answer was.
+#[derive(Clone, Debug)]
+pub struct Authorization {
+    /// Optional client-supplied identifier (used by batch-check requests so
+    /// callers can correlate inputs with results).
+    pub id: Option<String>,
+    /// Whose permission was evaluated. `None` means the request actor itself.
+    pub for_principal: Option<UserOrRoleId>,
+    pub action: ActionDescriptor,
+    pub entity: EntityDescriptor,
+    /// `Some(true)` if allowed, `Some(false)` if denied. `None` only when an
+    /// upstream error prevented this entry from producing a decision (e.g. a
+    /// batch failed before the inner tuples were evaluated).
+    pub allowed: Option<bool>,
+}
 
 /// Trait for extracting failure reason from authorization errors
 pub trait AuthorizationFailureSource: Send + Sized {
@@ -96,6 +125,11 @@ pub struct AuthorizationFailedEvent {
 
     /// Any additional context that may be useful for debugging or auditing
     pub extra_context: Arc<HashMap<String, String>>,
+
+    /// Per-decision breakdown of the authorizations rolled up into this event.
+    /// Always non-empty: single-check events carry one synthesised entry,
+    /// batch-style events carry one entry per inner check.
+    pub authorizations: Arc<Vec<Authorization>>,
 }
 
 /// Event emitted when an authorization check succeeds during request processing.
@@ -115,6 +149,11 @@ pub struct AuthorizationSucceededEvent {
 
     /// Any additional context that may be useful for debugging or auditing
     pub extra_context: Arc<HashMap<String, String>>,
+
+    /// Per-decision breakdown of the authorizations rolled up into this event.
+    /// Always non-empty: single-check events carry one synthesised entry,
+    /// batch-style events carry one entry per inner check.
+    pub authorizations: Arc<Vec<Authorization>>,
 }
 
 // ===== Resource-Specific Authorization Failed Events =====
