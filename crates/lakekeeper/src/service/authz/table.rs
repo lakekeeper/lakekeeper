@@ -17,11 +17,10 @@ use crate::{
         ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
         TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
         authz::{
-            AuthZError, AuthZViewActionForbidden, AuthZViewOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
+            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -271,6 +270,8 @@ pub struct AuthZCannotSeeTable {
     warehouse_id: WarehouseId,
     table: TableIdentOrId,
     internal_resource_not_found: bool,
+    /// Set when the table was accessed via a DEFINER referenced-by chain
+    is_delegated_execution: Option<bool>,
 }
 impl AuthZCannotSeeTable {
     #[must_use]
@@ -283,6 +284,7 @@ impl AuthZCannotSeeTable {
             warehouse_id,
             table: table.into(),
             internal_resource_not_found: resource_not_found,
+            is_delegated_execution: None,
         }
     }
 
@@ -295,6 +297,12 @@ impl AuthZCannotSeeTable {
     pub fn new_forbidden(warehouse_id: WarehouseId, table: impl Into<TableIdentOrId>) -> Self {
         Self::new(warehouse_id, table, false)
     }
+
+    #[must_use]
+    pub fn with_delegated_execution(mut self, is_delegated: bool) -> Self {
+        self.is_delegated_execution = Some(is_delegated);
+        self
+    }
 }
 
 impl AuthorizationFailureSource for AuthZCannotSeeTable {
@@ -303,10 +311,14 @@ impl AuthorizationFailureSource for AuthZCannotSeeTable {
             warehouse_id,
             table,
             internal_resource_not_found: _,
+            is_delegated_execution,
         } = self;
-        TabularNotFound::new(warehouse_id, table)
-            .append_detail("Table not found or access denied")
-            .into()
+        let mut err = TabularNotFound::new(warehouse_id, table);
+        if is_delegated_execution == Some(true) {
+            err = err
+                .append_detail("Access denied during delegated execution via DEFINER view chain");
+        }
+        err.into()
     }
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
         if self.internal_resource_not_found {
@@ -1283,8 +1295,18 @@ mod tests {
         .await
         .unwrap();
 
-        let table_info = infos[0].clone().into_table_info().unwrap();
-        let view_info = infos[1].clone().into_view_info().unwrap();
+        let table_info = infos
+            .get(&table_ident)
+            .unwrap()
+            .clone()
+            .into_table_info()
+            .unwrap();
+        let view_info = infos
+            .get(&view_ident)
+            .unwrap()
+            .clone()
+            .into_view_info()
+            .unwrap();
 
         // Get namespace hierarchy
         let warehouse = PostgresBackend::get_active_warehouse_by_id(
@@ -1382,8 +1404,18 @@ mod tests {
         .await
         .unwrap();
 
-        let table_info = infos[0].clone().into_table_info().unwrap();
-        let view_info = infos[1].clone().into_view_info().unwrap();
+        let table_info = infos
+            .get(&table_ident)
+            .unwrap()
+            .clone()
+            .into_table_info()
+            .unwrap();
+        let view_info = infos
+            .get(&view_ident)
+            .unwrap()
+            .clone()
+            .into_view_info()
+            .unwrap();
 
         // Hide the table
         authz.hide(&format!(
@@ -1492,9 +1524,24 @@ mod tests {
         .await
         .unwrap();
 
-        let table1_info = infos[0].clone().into_table_info().unwrap();
-        let view1_info = infos[1].clone().into_view_info().unwrap();
-        let table2_info = infos[2].clone().into_table_info().unwrap();
+        let table1_info = infos
+            .get(&table1_ident)
+            .unwrap()
+            .clone()
+            .into_table_info()
+            .unwrap();
+        let view1_info = infos
+            .get(&view1_ident)
+            .unwrap()
+            .clone()
+            .into_view_info()
+            .unwrap();
+        let table2_info = infos
+            .get(&table2_ident)
+            .unwrap()
+            .clone()
+            .into_table_info()
+            .unwrap();
 
         // Hide table2 and block view action
         authz.hide(&format!(

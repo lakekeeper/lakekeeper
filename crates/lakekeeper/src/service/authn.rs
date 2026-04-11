@@ -265,35 +265,38 @@ pub(crate) async fn auth_middleware_fn<
 
         request_metadata.set_authentication(actor.clone(), authentication.clone());
 
-        // Identify engine based on audience (aud) and IdP ID
-        let matching_engines: Vec<_> = authentication
+        // Identify trusted engines based on token identity (IdP, audiences, subject).
+        // Each engine defines `identities` specifying who may act as that engine.
+        // Multiple engines may match — this is intentional (e.g. an admin token
+        // whose audience appears in several engine configs).
+        let token_idp_id = authentication.subject().idp_id();
+        let token_audiences: std::collections::HashSet<&str> = authentication
             .audiences()
             .iter()
-            .filter_map(|aud| {
-                CONFIG.trusted_engines.get(aud).filter(|cfg| {
-                    authentication
-                        .subject()
-                        .idp_id()
-                        .is_some_and(|idp| idp == cfg.idp_id())
-                })
-            })
+            .map(String::as_str)
             .collect();
+        let token_subject = Some(authentication.subject().subject_in_idp());
 
-        match matching_engines.as_slice() {
-            [engine_config] => {
-                tracing::debug!("Identified trusted engine from audience and IdP ID");
-                request_metadata.set_engine((*engine_config).clone());
-            }
-            [] => {}
-            _ => {
-                // Multiple matching engines - ambiguous, reject request
-                tracing::warn!("Multiple matching engines found for token audiences");
-                return ErrorModel::unauthorized(
-                    "Ambiguous engine identification: multiple matching engines found",
-                    "EngineIdentificationAmbiguous",
-                    None,
-                )
-                .into_response();
+        if let Some(token_idp) = token_idp_id {
+            let matching_engines: Vec<_> = CONFIG
+                .trusted_engines
+                .iter()
+                .filter(|(_key, engine)| {
+                    engine
+                        .identities()
+                        .iter()
+                        .any(|id| id.matches(token_idp, &token_audiences, token_subject))
+                })
+                .map(|(_, engine)| engine.clone())
+                .collect();
+
+            if !matching_engines.is_empty() {
+                tracing::debug!(
+                    count = matching_engines.len(),
+                    "Identified trusted engine(s) from token identity"
+                );
+                request_metadata
+                    .set_engines(crate::config::MatchedEngines::new(matching_engines));
             }
         }
 

@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    str::FromStr as _,
+    sync::Arc,
+};
 
 use http::StatusCode;
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
@@ -12,9 +16,10 @@ use crate::{
         endpoints::EndpointFlat,
         iceberg::v1::{
             ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
-            ViewParameters,
+            ViewParameters, views::LoadViewRequest,
         },
     },
+    config::{MatchedEngines, TrustedEngine},
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
@@ -65,8 +70,11 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         if check.is_replay() {
             return super::load::load_view::<C, A, S>(
                 parameters,
+                LoadViewRequest {
+                    data_access,
+                    referenced_by: None,
+                },
                 state,
-                data_access,
                 request_metadata,
             )
             .await;
@@ -77,6 +85,16 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     let authorizer = state.v1_state.authz.clone();
 
     let (property_updates, property_removals) = parse_view_property_updates(&request.updates);
+
+    // Security: Trusted engine properties (e.g. `trino.run-as-owner`) determine the
+    // DEFINER/INVOKER security model. Only the corresponding trusted engine may set or
+    // remove these properties — otherwise a user could escalate privileges.
+    validate_trusted_engine_property_changes(
+        &property_updates,
+        &property_removals,
+        &request_metadata,
+    )?;
+
     let action = CatalogViewAction::Commit {
         updated_properties: Arc::new(property_updates.clone()),
         removed_properties: Arc::new(property_removals.clone()),
@@ -461,6 +479,184 @@ pub(crate) fn parse_view_property_updates(
     }
 
     (property_updates, property_removals)
+}
+
+/// Checks that none of the given property keys correspond to a trusted engine's
+/// security model property unless the request comes from that engine.
+///
+/// These properties control DEFINER/INVOKER security model and are a privilege escalation
+/// vector if modifiable by untrusted users.
+fn check_protected_properties<'a>(
+    property_keys: impl Iterator<Item = &'a str>,
+    trusted_engines: &HashMap<String, TrustedEngine>,
+    matched_engines: &MatchedEngines,
+) -> Result<()> {
+    let protected: HashSet<&str> = trusted_engines
+        .values()
+        .map(TrustedEngine::security_model_property)
+        .collect();
+
+    if protected.is_empty() {
+        return Ok(());
+    }
+
+    for key in property_keys {
+        if protected.contains(key) && !matched_engines.owns_property(key) {
+            return Err(ErrorModel::builder()
+                .code(StatusCode::FORBIDDEN.as_u16())
+                .r#type("ProtectedPropertyModification")
+                .message(format!(
+                    "Property '{key}' controls the view security model and may only be modified by the corresponding trusted engine"
+                ))
+                .build()
+                .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_trusted_engine_property_changes(
+    property_updates: &BTreeMap<String, String>,
+    property_removals: &[String],
+    request_metadata: &RequestMetadata,
+) -> Result<()> {
+    let all_keys = property_updates
+        .keys()
+        .map(String::as_str)
+        .chain(property_removals.iter().map(String::as_str));
+    check_protected_properties(
+        all_keys,
+        &crate::config::CONFIG.trusted_engines,
+        request_metadata.engines(),
+    )
+}
+
+pub(super) fn validate_trusted_engine_properties_on_create(
+    properties: &std::collections::HashMap<String, String>,
+    request_metadata: &RequestMetadata,
+) -> Result<()> {
+    check_protected_properties(
+        properties.keys().map(String::as_str),
+        &crate::config::CONFIG.trusted_engines,
+        request_metadata.engines(),
+    )
+}
+
+#[cfg(test)]
+mod test_check_protected_properties {
+    use std::collections::HashMap;
+
+    use super::check_protected_properties;
+    use crate::config::{MatchedEngines, TrinoEngineConfig, TrustedEngine};
+
+    fn trino_engine() -> (String, TrustedEngine) {
+        (
+            "trino".to_string(),
+            TrustedEngine::Trino(TrinoEngineConfig {
+
+                security_model_property: "trino.run-as-owner".to_string(),
+                identities: Vec::new(),
+            }),
+        )
+    }
+
+    #[test]
+    fn allows_unrelated_property() {
+        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
+        let result = check_protected_properties(
+            ["some.other.property"].into_iter(),
+            &engines,
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_protected_property_from_non_engine() {
+        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &engines,
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_protected_property_from_wrong_engine() {
+        let other_matched = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
+
+            security_model_property: "other.property".to_string(),
+            identities: Vec::new(),
+        }));
+        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &engines,
+            &other_matched,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_protected_property_from_correct_engine() {
+        let (_, trino) = trino_engine();
+        let engines: HashMap<String, TrustedEngine> =
+            [("trino".to_string(), trino.clone())].into_iter().collect();
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &engines,
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn allows_all_properties_when_no_engines_configured() {
+        let engines: HashMap<String, TrustedEngine> = HashMap::new();
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &engines,
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_when_one_of_many_properties_is_protected() {
+        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
+        let result = check_protected_properties(
+            ["safe.prop", "trino.run-as-owner", "another.safe"].into_iter(),
+            &engines,
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_property_when_any_matched_engine_owns_it() {
+        let trino_a = TrustedEngine::Trino(TrinoEngineConfig {
+
+            security_model_property: "trino.run-as-owner".to_string(),
+            identities: Vec::new(),
+        });
+        let trino_b = TrustedEngine::Trino(TrinoEngineConfig {
+
+            security_model_property: "spark.run-as-owner".to_string(),
+            identities: Vec::new(),
+        });
+        let all_engines: HashMap<String, TrustedEngine> = [
+            ("trino_a".to_string(), trino_a.clone()),
+            ("trino_b".to_string(), trino_b.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let matched = MatchedEngines::new(vec![trino_a, trino_b]);
+        let result =
+            check_protected_properties(["trino.run-as-owner"].into_iter(), &all_engines, &matched);
+        assert!(result.is_ok());
+    }
 }
 
 #[cfg(test)]

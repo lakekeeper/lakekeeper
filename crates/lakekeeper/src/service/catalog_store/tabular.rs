@@ -1343,7 +1343,7 @@ where
         tabulars: &[TabularIdentBorrowed<'_>],
         list_flags: TabularListFlags,
         catalog_state: Self::State,
-    ) -> Result<Vec<ViewOrTableInfo>, GetTabularInfoError> {
+    ) -> Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError> {
         Self::get_tabular_infos_by_ident_impl(warehouse_id, tabulars, list_flags, catalog_state)
             .await
     }
@@ -1362,7 +1362,7 @@ where
         let tables =
             Self::get_tabular_infos_by_ident(warehouse_id, &tabulars, list_flags, catalog_state)
                 .await?
-                .into_iter()
+                .into_values()
                 .map(|info| {
                     let tabular_id = info.tabular_id();
                     info.into_table_info().ok_or_else(|| {
@@ -1412,6 +1412,8 @@ where
                 let borrowed = tabular_ident.as_borrowed();
                 Self::get_tabular_infos_by_ident(warehouse_id, &[borrowed], filter, catalog_state)
                     .await?
+                    .into_values()
+                    .collect()
             }
             TableIdentOrId::Id(id) => {
                 Self::get_tabular_infos_by_id(warehouse_id, &[id.into()], filter, catalog_state)
@@ -1451,6 +1453,8 @@ where
                 let borrowed = tabular_ident.as_borrowed();
                 Self::get_tabular_infos_by_ident(warehouse_id, &[borrowed], filter, catalog_state)
                     .await?
+                    .into_values()
+                    .collect()
             }
             ViewIdentOrId::Id(id) => {
                 Self::get_tabular_infos_by_id(warehouse_id, &[id.into()], filter, catalog_state)

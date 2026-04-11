@@ -11,10 +11,10 @@ use crate::{
         ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
-            ActionOnView, AuthZError, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
-            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
+            ActionOnView, AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -46,6 +46,8 @@ pub struct AuthZCannotSeeView {
     /// Whether the resource was confirmed not to exist (for audit logging)
     /// HTTP response is deliberately ambiguous, but audit log should be concrete
     internal_resource_not_found: bool,
+    /// Set when the view was accessed via a DEFINER referenced-by chain
+    is_delegated_execution: Option<bool>,
 }
 impl AuthZCannotSeeView {
     #[must_use]
@@ -58,6 +60,7 @@ impl AuthZCannotSeeView {
             warehouse_id,
             view: view.into(),
             internal_resource_not_found: resource_not_found,
+            is_delegated_execution: None,
         }
     }
 
@@ -70,6 +73,12 @@ impl AuthZCannotSeeView {
     pub fn new_forbidden(warehouse_id: WarehouseId, view: impl Into<ViewIdentOrId>) -> Self {
         Self::new(warehouse_id, view, false)
     }
+
+    #[must_use]
+    pub fn with_delegated_execution(mut self, is_delegated: bool) -> Self {
+        self.is_delegated_execution = Some(is_delegated);
+        self
+    }
 }
 impl AuthorizationFailureSource for AuthZCannotSeeView {
     fn into_error_model(self) -> ErrorModel {
@@ -77,8 +86,14 @@ impl AuthorizationFailureSource for AuthZCannotSeeView {
             warehouse_id,
             view,
             internal_resource_not_found: _,
+            is_delegated_execution,
         } = self;
-        TabularNotFound::new(warehouse_id, view).into()
+        let mut err = TabularNotFound::new(warehouse_id, view);
+        if is_delegated_execution == Some(true) {
+            err = err
+                .append_detail("Access denied during delegated execution via DEFINER view chain");
+        }
+        err.into()
     }
 
     fn to_failure_reason(&self) -> AuthorizationFailureReason {

@@ -1164,7 +1164,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert!(infos.is_empty());
         drop(table_ident);
 
@@ -1178,7 +1180,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert!(infos.is_empty());
 
         let infos = get_tabular_infos_by_idents(
@@ -1191,7 +1195,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         let info = &infos[0];
         assert_eq!(info.tabular_id(), table.table_id.into());
@@ -1217,7 +1223,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
@@ -1230,7 +1238,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let infos = get_tabular_infos_by_idents(
@@ -1243,7 +1253,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].tabular_id(), table_1.table_id.into());
 
@@ -1260,7 +1272,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         // Only table_2 should be returned (table_1 is staged)
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].tabular_id(), table_2.table_id.into());
@@ -1278,7 +1292,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         // Both tables should be returned
         assert_eq!(infos.len(), 2);
         let ids: std::collections::HashSet<_> =
@@ -1338,7 +1354,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         // Should find the table by case-insensitive match
         assert_eq!(infos[0].tabular_id(), created.table_id.into());
@@ -1355,11 +1373,12 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        // Both queries should resolve to the same table, but we should get 2 results
-        // (one for each queried identifier)
+        // Both queries should resolve to the same table, but keyed by the input casing
         assert_eq!(infos.len(), 2);
-        let id_lower = infos[0].tabular_id();
-        let id_upper = infos[1].tabular_id();
+        assert!(infos.contains_key(&table_ident_lower));
+        assert!(infos.contains_key(&table_ident_upper));
+        let id_lower = infos[&table_ident_lower].tabular_id();
+        let id_upper = infos[&table_ident_upper].tabular_id();
         assert_eq!(id_lower, id_upper);
         assert_eq!(id_lower, created.table_id.into());
     }
@@ -1395,7 +1414,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let exists = get_tabular_infos_by_idents(
@@ -1405,7 +1426,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         // Table id should be the same
         assert_eq!(exists.len(), 1);
         assert_eq!(exists[0].tabular_id(), table.table_id.into());
@@ -1445,7 +1468,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let infos = get_tabular_infos_by_idents(
@@ -1455,7 +1480,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].tabular_id(), table.table_id.into());
     }

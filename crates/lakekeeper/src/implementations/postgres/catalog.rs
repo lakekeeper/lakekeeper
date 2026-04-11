@@ -229,7 +229,7 @@ impl CatalogStore for super::PostgresBackend {
         tabulars: &[TabularIdentBorrowed<'_>],
         list_flags: TabularListFlags,
         catalog_state: Self::State,
-    ) -> std::result::Result<Vec<ViewOrTableInfo>, GetTabularInfoError> {
+    ) -> std::result::Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError> {
         get_tabular_infos_by_idents(
             warehouse_id,
             tabulars,

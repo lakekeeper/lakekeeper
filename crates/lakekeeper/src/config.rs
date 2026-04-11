@@ -113,10 +113,48 @@ fn get_config() -> DynAppConfig {
     config
 }
 
+/// Identifies who is trusted to act as this engine.
+///
+/// A token matches an identity if:
+/// - `idp_id` matches the token's `IdP`, AND
+/// - any configured `audience` appears in the token's audiences,
+///   OR any configured `subject` matches the token's subject.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EngineIdentity {
+    pub idp_id: String,
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    #[serde(default)]
+    pub subjects: Vec<String>,
+}
+
+impl EngineIdentity {
+    /// Check whether a token with the given `IdP`, audiences, and subject matches this identity.
+    #[must_use]
+    pub fn matches(
+        &self,
+        token_idp: &str,
+        token_audiences: &HashSet<&str>,
+        token_subject: Option<&str>,
+    ) -> bool {
+        if self.idp_id != token_idp {
+            return false;
+        }
+        let audience_match = self
+            .audiences
+            .iter()
+            .any(|a| token_audiences.contains(a.as_str()));
+        let subject_match = token_subject
+            .is_some_and(|sub| self.subjects.iter().any(|s| s == sub));
+        audience_match || subject_match
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TrinoEngineConfig {
-    pub idp_id: String,
     pub security_model_property: String,
+    #[serde(default)]
+    pub identities: Vec<EngineIdentity>,
 }
 
 impl TrinoEngineConfig {
@@ -145,17 +183,80 @@ pub enum SecurityModel {
 
 impl TrustedEngine {
     #[must_use]
-    pub fn idp_id(&self) -> &str {
-        match self {
-            TrustedEngine::Trino(c) => &c.idp_id,
-        }
-    }
-
-    #[must_use]
     pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
         match self {
             TrustedEngine::Trino(c) => c.determine_security_model(properties),
         }
+    }
+
+    #[must_use]
+    pub fn security_model_property(&self) -> &str {
+        match self {
+            TrustedEngine::Trino(c) => &c.security_model_property,
+        }
+    }
+
+    #[must_use]
+    pub fn identities(&self) -> &[EngineIdentity] {
+        match self {
+            TrustedEngine::Trino(c) => &c.identities,
+        }
+    }
+}
+
+/// The set of trusted engines that matched the current request's token.
+///
+/// Consumers should use the high-level methods instead of iterating over engines.
+#[derive(Debug, Clone, Default)]
+pub struct MatchedEngines {
+    engines: Vec<TrustedEngine>,
+}
+
+impl MatchedEngines {
+    #[must_use]
+    pub fn new(engines: Vec<TrustedEngine>) -> Self {
+        Self { engines }
+    }
+
+    #[must_use]
+    pub fn single(engine: TrustedEngine) -> Self {
+        Self {
+            engines: vec![engine],
+        }
+    }
+
+    /// Whether the request comes from any trusted engine.
+    #[must_use]
+    pub fn is_trusted(&self) -> bool {
+        !self.engines.is_empty()
+    }
+
+    /// Determine security model from view properties.
+    /// Returns `Definer` if any matched engine's security model property is set.
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        for engine in &self.engines {
+            if let SecurityModel::Definer(owner) = engine.determine_security_model(properties) {
+                return SecurityModel::Definer(owner);
+            }
+        }
+        SecurityModel::Invoker
+    }
+
+    /// Whether this request is allowed to modify the given property.
+    /// True if any matched engine's security model property matches.
+    #[must_use]
+    pub fn owns_property(&self, property: &str) -> bool {
+        self.engines
+            .iter()
+            .any(|e| e.security_model_property() == property)
+    }
+
+    /// All distinct security model properties across matched engines.
+    pub fn security_model_properties(&self) -> impl Iterator<Item = &str> {
+        self.engines
+            .iter()
+            .map(TrustedEngine::security_model_property)
     }
 }
 
@@ -1011,6 +1112,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod test {
     use std::net::Ipv6Addr;
 
@@ -1713,48 +1815,58 @@ mod test {
             Ok(())
         });
 
+        // Verify env var configuration
         figment::Jail::expect_with(|jail| {
             jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__TYPE",
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV__TYPE",
                 "trino",
             );
             jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__IDP_ID",
-                "keycloak-dev",
-            );
-            jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV_CLIENT__SECURITY_MODEL_PROPERTY",
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV__SECURITY_MODEL_PROPERTY",
                 "trino.dev.run-as-owner",
             );
-
-            jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__TYPE",
-                "trino",
-            );
-            jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__IDP_ID",
-                "keycloak-prod",
-            );
-            jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO-PROD-CLIENT__SECURITY_MODEL_PROPERTY",
-                "trino.run-as-owner",
-            );
-
+            // identities is a nested array — figment's Env provider cannot
+            // construct sequences from `__`-separated keys. In production,
+            // identities are configured via config file (TOML/YAML/JSON).
+            // Here we verify the basic engine structure parses from env vars.
             let config = get_config();
-            let trusted_engines = &config.trusted_engines;
-
-            let trino_dev_engine = trusted_engines.get("trino_dev_client").unwrap();
-            let TrustedEngine::Trino(dev_config) = trino_dev_engine;
-            assert_eq!(dev_config.idp_id, "keycloak-dev");
-            assert_eq!(dev_config.security_model_property, "trino.dev.run-as-owner");
-
-            let trino_prod_engine = trusted_engines.get("trino-prod-client").unwrap();
-            let TrustedEngine::Trino(prod_config) = trino_prod_engine;
-            assert_eq!(prod_config.idp_id, "keycloak-prod");
-            assert_eq!(prod_config.security_model_property, "trino.run-as-owner");
-
+            let engine = config.trusted_engines.get("trino_dev").unwrap();
+            let TrustedEngine::Trino(c) = engine;
+            assert_eq!(c.security_model_property, "trino.dev.run-as-owner");
+            assert!(c.identities.is_empty());
             Ok(())
         });
+
+        // Verify full deserialization including identities (from config file / JSON)
+        let json = serde_json::json!({
+            "trino_dev": {
+                "type": "trino",
+                "security_model_property": "trino.dev.run-as-owner",
+                "identities": [
+                    {
+                        "idp_id": "keycloak-dev",
+                        "audiences": ["trino_dev"],
+                        "subjects": ["trino-sa"]
+                    },
+                    {
+                        "idp_id": "azure",
+                        "audiences": ["trino_prod"]
+                    }
+                ]
+            }
+        });
+        let engines: HashMap<String, TrustedEngine> =
+            serde_json::from_value(json).expect("valid config");
+        let engine = engines.get("trino_dev").unwrap();
+        let TrustedEngine::Trino(config) = engine;
+        assert_eq!(config.security_model_property, "trino.dev.run-as-owner");
+        assert_eq!(config.identities.len(), 2);
+        assert_eq!(config.identities[0].idp_id, "keycloak-dev");
+        assert_eq!(config.identities[0].audiences, vec!["trino_dev"]);
+        assert_eq!(config.identities[0].subjects, vec!["trino-sa"]);
+        assert_eq!(config.identities[1].idp_id, "azure");
+        assert_eq!(config.identities[1].audiences, vec!["trino_prod"]);
+        assert!(config.identities[1].subjects.is_empty());
     }
 
     #[test]
@@ -1852,5 +1964,172 @@ mod test {
             assert_eq!(config.metrics.port, 2);
             Ok(())
         });
+    }
+
+    fn test_engine(property: &str) -> TrustedEngine {
+        TrustedEngine::Trino(TrinoEngineConfig {
+
+            security_model_property: property.to_string(),
+            identities: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn test_determine_security_model_returns_definer_when_property_set() {
+        let config = TrinoEngineConfig {
+
+            security_model_property: "trino.run-as-owner".to_string(),
+            identities: Vec::new(),
+        };
+        let properties = HashMap::from([("trino.run-as-owner".to_string(), "alice".to_string())]);
+        assert_eq!(
+            config.determine_security_model(&properties),
+            SecurityModel::Definer("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_security_model_returns_invoker_when_property_absent() {
+        let config = TrinoEngineConfig {
+
+            security_model_property: "trino.run-as-owner".to_string(),
+            identities: Vec::new(),
+        };
+        assert_eq!(
+            config.determine_security_model(&HashMap::new()),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_determine_security_model_ignores_unrelated_properties() {
+        let config = TrinoEngineConfig {
+
+            security_model_property: "trino.run-as-owner".to_string(),
+            identities: Vec::new(),
+        };
+        let properties = HashMap::from([("some.other.property".to_string(), "value".to_string())]);
+        assert_eq!(
+            config.determine_security_model(&properties),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_trusted_engine_delegates_to_trino_config() {
+        let engine = test_engine("trino.run-as-owner");
+        assert_eq!(engine.security_model_property(), "trino.run-as-owner");
+
+        let properties = HashMap::from([("trino.run-as-owner".to_string(), "bob".to_string())]);
+        assert_eq!(
+            engine.determine_security_model(&properties),
+            SecurityModel::Definer("bob".to_string())
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_default_is_not_trusted() {
+        let m = MatchedEngines::default();
+        assert!(!m.is_trusted());
+        assert!(!m.owns_property("anything"));
+        assert_eq!(
+            m.determine_security_model(&HashMap::new()),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_single() {
+        let m = MatchedEngines::single(test_engine("trino.run-as-owner"));
+        assert!(m.is_trusted());
+        assert!(m.owns_property("trino.run-as-owner"));
+        assert!(!m.owns_property("spark.run-as-owner"));
+    }
+
+    #[test]
+    fn test_matched_engines_multiple_determine_security_model() {
+        let m = MatchedEngines::new(vec![
+            test_engine("trino.run-as-owner"),
+            test_engine("spark.run-as-owner"),
+        ]);
+
+        let props = HashMap::from([("spark.run-as-owner".to_string(), "alice".to_string())]);
+        assert_eq!(
+            m.determine_security_model(&props),
+            SecurityModel::Definer("alice".to_string())
+        );
+
+        assert!(m.owns_property("trino.run-as-owner"));
+        assert!(m.owns_property("spark.run-as-owner"));
+        assert!(!m.owns_property("other.property"));
+    }
+
+    #[test]
+    fn test_matched_engines_invoker_when_no_property_matches() {
+        let m = MatchedEngines::single(test_engine("trino.run-as-owner"));
+        let props = HashMap::from([("unrelated".to_string(), "value".to_string())]);
+        assert_eq!(m.determine_security_model(&props), SecurityModel::Invoker);
+    }
+
+    #[test]
+    fn test_identities_accessor() {
+        let engine = TrustedEngine::Trino(TrinoEngineConfig {
+            security_model_property: "trino.run-as-owner".to_string(),
+            identities: vec![
+                EngineIdentity {
+                    idp_id: "keycloak".to_string(),
+                    audiences: vec!["trino_dev".to_string()],
+                    subjects: Vec::new(),
+                },
+                EngineIdentity {
+                    idp_id: "azure".to_string(),
+                    audiences: Vec::new(),
+                    subjects: vec!["trino-sa".to_string()],
+                },
+            ],
+        });
+        assert_eq!(engine.identities().len(), 2);
+        assert_eq!(engine.identities()[0].idp_id, "keycloak");
+        assert_eq!(engine.identities()[1].idp_id, "azure");
+    }
+
+    #[test]
+    fn test_engine_identity_matches_audience() {
+        let id = EngineIdentity {
+            idp_id: "kc".to_string(),
+            audiences: vec!["trino".to_string()],
+            subjects: Vec::new(),
+        };
+        let auds: HashSet<&str> = ["trino"].into_iter().collect();
+        assert!(id.matches("kc", &auds, None));
+        assert!(!id.matches("other-idp", &auds, None));
+        assert!(!id.matches("kc", &HashSet::new(), None));
+    }
+
+    #[test]
+    fn test_engine_identity_matches_subject() {
+        let id = EngineIdentity {
+            idp_id: "kc".to_string(),
+            audiences: Vec::new(),
+            subjects: vec!["trino-sa".to_string()],
+        };
+        assert!(id.matches("kc", &HashSet::new(), Some("trino-sa")));
+        assert!(!id.matches("kc", &HashSet::new(), Some("other")));
+        assert!(!id.matches("kc", &HashSet::new(), None));
+    }
+
+    #[test]
+    fn test_engine_identity_matches_audience_or_subject() {
+        let id = EngineIdentity {
+            idp_id: "kc".to_string(),
+            audiences: vec!["trino".to_string()],
+            subjects: vec!["admin-sa".to_string()],
+        };
+        let auds: HashSet<&str> = ["other_aud"].into_iter().collect();
+        // Subject matches even though audience doesn't
+        assert!(id.matches("kc", &auds, Some("admin-sa")));
+        // Audience matches even though subject doesn't
+        let auds: HashSet<&str> = ["trino"].into_iter().collect();
+        assert!(id.matches("kc", &auds, Some("other")));
     }
 }

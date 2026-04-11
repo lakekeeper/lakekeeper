@@ -27,9 +27,9 @@ use crate::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, MustUse, RequireNamespaceActionError,
-            RequireTableActionError, RequireWarehouseActionError,
-            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            CatalogWarehouseAction, MustUse, RequireNamespaceActionError, RequireTableActionError,
+            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
@@ -637,7 +637,8 @@ async fn fetch_tabulars<C: CatalogStore>(
                         TabularListFlags::all(),
                         catalog_state,
                     )
-                    .await,
+                    .await
+                    .map(|m| m.into_values().collect()),
                 )
             });
             count += 1;

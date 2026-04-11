@@ -34,6 +34,8 @@ mod endpoint_stats;
 #[cfg(test)]
 mod namespace_ops;
 #[cfg(test)]
+mod referenced_by;
+#[cfg(test)]
 mod role_ops;
 #[cfg(test)]
 mod soft_deletion;

@@ -5,9 +5,7 @@ use lakekeeper::{
     service::{
         NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
         authn::{Actor, UserId},
-        authz::{
-            RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole,
-        },
+        authz::{RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole},
     },
 };
 

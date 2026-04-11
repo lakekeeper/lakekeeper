@@ -1483,6 +1483,9 @@ pub(crate) mod tests {
         pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
+        /// Per-user object hiding. Key: `user_id`, Value: set of object strings.
+        /// When a user-specific rule exists, it takes precedence over the global `hidden` set.
+        hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
     }
 
@@ -1491,6 +1494,7 @@ pub(crate) mod tests {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
+                hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
             }
         }
@@ -1499,8 +1503,30 @@ pub(crate) mod tests {
             !self.hidden.read().unwrap().contains(object)
         }
 
+        fn check_available_for_user(&self, object: &str, user: Option<&UserOrRole>) -> bool {
+            if let Some(user) = user {
+                let user_key = format!("{user:?}");
+                let per_user = self.hidden_for_user.read().unwrap();
+                if let Some(user_hidden) = per_user.get(&user_key) {
+                    return !user_hidden.contains(object);
+                }
+            }
+            self.check_available(object)
+        }
+
         pub(crate) fn hide(&self, object: &str) {
             self.hidden.write().unwrap().insert(object.to_string());
+        }
+
+        /// Hide an object for a specific user only. Other users can still see it.
+        pub(crate) fn hide_for_user(&self, user: &UserOrRole, object: &str) {
+            let user_key = format!("{user:?}");
+            self.hidden_for_user
+                .write()
+                .unwrap()
+                .entry(user_key)
+                .or_default()
+                .insert(object.to_string());
         }
 
         fn action_is_blocked(&self, action: &str) -> bool {
@@ -1719,7 +1745,8 @@ pub(crate) mod tests {
                     }
                     let table_id = action.info.table_id();
                     let warehouse_id = action.info.warehouse_id();
-                    self.check_available(format!("table:{warehouse_id}/{table_id}").as_str())
+                    let object = format!("table:{warehouse_id}/{table_id}");
+                    self.check_available_for_user(&object, action.user)
                 })
                 .collect();
             Ok(results)
@@ -1745,7 +1772,8 @@ pub(crate) mod tests {
                     }
                     let view_id = action.info.view_id();
                     let warehouse_id = action.info.warehouse_id();
-                    self.check_available(format!("view:{warehouse_id}/{view_id}").as_str())
+                    let object = format!("view:{warehouse_id}/{view_id}");
+                    self.check_available_for_user(&object, action.user)
                 })
                 .collect();
             Ok(results)

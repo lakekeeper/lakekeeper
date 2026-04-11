@@ -15,7 +15,7 @@ use crate::{
         maybe_get_secret, require_warehouse_id,
         tables::{require_active_warehouse, validate_table_or_view_ident},
         tabular::determine_tabular_location,
-        views::validate_view_properties,
+        views::{commit::validate_trusted_engine_properties_on_create, validate_view_properties},
     },
     service::{
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
@@ -50,6 +50,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     validate_table_or_view_ident(&view)?;
     validate_view_properties(request.properties.keys())?;
+    validate_trusted_engine_properties_on_create(&request.properties, &request_metadata)?;
 
     if request.view_version.representations().is_empty() {
         return Err(ErrorModel::bad_request(

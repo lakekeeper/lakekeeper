@@ -1,4 +1,4 @@
-mod commit;
+pub(crate) mod commit;
 pub(crate) mod create;
 mod drop;
 mod exists;
@@ -15,7 +15,7 @@ use crate::{
         v1::{
             ApiContext, CommitViewRequest, CreateViewRequest, DataAccessMode, ListTablesQuery,
             ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RenameTableRequest,
-            Result, ViewParameters,
+            Result, ViewParameters, views::LoadViewRequest,
         },
     },
     request_metadata::RequestMetadata,
@@ -50,11 +50,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     /// Load a view from the catalog
     async fn load_view(
         parameters: ViewParameters,
+        request: LoadViewRequest,
         state: ApiContext<State<A, C, S>>,
-        data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult> {
-        load::load_view(parameters, state, data_access, request_metadata).await
+        load::load_view(parameters, request, state, request_metadata).await
     }
 
     /// Commit updates to a view
