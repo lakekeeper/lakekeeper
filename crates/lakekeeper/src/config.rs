@@ -144,8 +144,7 @@ impl EngineIdentity {
             .audiences
             .iter()
             .any(|a| token_audiences.contains(a.as_str()));
-        let subject_match = token_subject
-            .is_some_and(|sub| self.subjects.iter().any(|s| s == sub));
+        let subject_match = token_subject.is_some_and(|sub| self.subjects.iter().any(|s| s == sub));
         audience_match || subject_match
     }
 }
@@ -1817,10 +1816,7 @@ mod test {
 
         // Verify env var configuration
         figment::Jail::expect_with(|jail| {
-            jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV__TYPE",
-                "trino",
-            );
+            jail.set_env("LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV__TYPE", "trino");
             jail.set_env(
                 "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO_DEV__SECURITY_MODEL_PROPERTY",
                 "trino.dev.run-as-owner",
@@ -1968,7 +1964,6 @@ mod test {
 
     fn test_engine(property: &str) -> TrustedEngine {
         TrustedEngine::Trino(TrinoEngineConfig {
-
             security_model_property: property.to_string(),
             identities: Vec::new(),
         })
@@ -1977,7 +1972,6 @@ mod test {
     #[test]
     fn test_determine_security_model_returns_definer_when_property_set() {
         let config = TrinoEngineConfig {
-
             security_model_property: "trino.run-as-owner".to_string(),
             identities: Vec::new(),
         };
@@ -1991,7 +1985,6 @@ mod test {
     #[test]
     fn test_determine_security_model_returns_invoker_when_property_absent() {
         let config = TrinoEngineConfig {
-
             security_model_property: "trino.run-as-owner".to_string(),
             identities: Vec::new(),
         };
@@ -2004,7 +1997,6 @@ mod test {
     #[test]
     fn test_determine_security_model_ignores_unrelated_properties() {
         let config = TrinoEngineConfig {
-
             security_model_property: "trino.run-as-owner".to_string(),
             identities: Vec::new(),
         };

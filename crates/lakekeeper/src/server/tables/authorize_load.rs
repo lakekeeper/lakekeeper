@@ -636,9 +636,13 @@ mod tests {
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
         let tabulars = vec![(table.clone().into(), namespace.clone())];
 
-        let tabulars =
-            resolve_users_for_authorize_load_tabular(&tabulars, &actor, &MatchedEngines::default(), None)
-                .unwrap();
+        let tabulars = resolve_users_for_authorize_load_tabular(
+            &tabulars,
+            &actor,
+            &MatchedEngines::default(),
+            None,
+        )
+        .unwrap();
 
         assert_eq!(tabulars[0].tabular, ViewOrTableInfo::from(table));
         assert_eq!(tabulars[0].user, actor.to_user_or_role());
@@ -652,7 +656,6 @@ mod tests {
 
         let security_model_property = "trino.run-as-owner".to_string();
         let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-
             security_model_property: security_model_property.clone(),
             identities: Vec::new(),
         }));
@@ -675,7 +678,8 @@ mod tests {
         ];
 
         let tabulars =
-            resolve_users_for_authorize_load_tabular(&tabulars, &actor, &engines, Some("test")).unwrap();
+            resolve_users_for_authorize_load_tabular(&tabulars, &actor, &engines, Some("test"))
+                .unwrap();
 
         assert_eq!(tabulars.len(), 3);
         assert_eq!(tabulars[0].tabular, ViewOrTableInfo::from(view_1));
@@ -700,7 +704,6 @@ mod tests {
 
         let security_model_property = "trino.run-as-owner".to_string();
         let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-
             security_model_property: security_model_property.clone(),
             identities: Vec::new(),
         }));
@@ -744,8 +747,13 @@ mod tests {
             (table.clone().into(), table_namespace.clone()),
         ];
 
-        let tabulars =
-            resolve_users_for_authorize_load_tabular(&tabulars, &actor_test, &engines, Some("test")).unwrap();
+        let tabulars = resolve_users_for_authorize_load_tabular(
+            &tabulars,
+            &actor_test,
+            &engines,
+            Some("test"),
+        )
+        .unwrap();
 
         assert_eq!(tabulars.len(), 5);
         assert_eq!(tabulars[0].tabular, ViewOrTableInfo::from(view_1));

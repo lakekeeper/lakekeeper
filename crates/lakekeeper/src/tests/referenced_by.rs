@@ -32,7 +32,6 @@ const ENGINE_IDP: &str = "test-idp";
 
 fn trino_engine() -> TrustedEngine {
     TrustedEngine::Trino(TrinoEngineConfig {
-
         security_model_property: "trino.run-as-owner".to_string(),
         identities: Vec::new(),
     })

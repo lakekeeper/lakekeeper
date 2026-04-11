@@ -554,7 +554,6 @@ mod test_check_protected_properties {
         (
             "trino".to_string(),
             TrustedEngine::Trino(TrinoEngineConfig {
-
                 security_model_property: "trino.run-as-owner".to_string(),
                 identities: Vec::new(),
             }),
@@ -586,7 +585,6 @@ mod test_check_protected_properties {
     #[test]
     fn rejects_protected_property_from_wrong_engine() {
         let other_matched = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-
             security_model_property: "other.property".to_string(),
             identities: Vec::new(),
         }));
@@ -637,12 +635,10 @@ mod test_check_protected_properties {
     #[test]
     fn allows_property_when_any_matched_engine_owns_it() {
         let trino_a = TrustedEngine::Trino(TrinoEngineConfig {
-
             security_model_property: "trino.run-as-owner".to_string(),
             identities: Vec::new(),
         });
         let trino_b = TrustedEngine::Trino(TrinoEngineConfig {
-
             security_model_property: "spark.run-as-owner".to_string(),
             identities: Vec::new(),
         });

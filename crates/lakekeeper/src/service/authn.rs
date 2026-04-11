@@ -295,8 +295,7 @@ pub(crate) async fn auth_middleware_fn<
                     count = matching_engines.len(),
                     "Identified trusted engine(s) from token identity"
                 );
-                request_metadata
-                    .set_engines(crate::config::MatchedEngines::new(matching_engines));
+                request_metadata.set_engines(crate::config::MatchedEngines::new(matching_engines));
             }
         }
 
