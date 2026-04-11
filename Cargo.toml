@@ -72,12 +72,12 @@ figment_file_provider_adapter = "0.1.1"
 flate2 = "^1.0"
 futures = "^0.3"
 gcloud-token = "1.0.0"
-google-cloud-auth = { package = "gcloud-auth", version = "1.2", features = [
+google-cloud-auth = { package = "gcloud-auth", version = "~1.2", features = [
     "rustls-tls",
     "jwt-aws-lc-rs",
     "external-account",
 ], default-features = false }
-google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-features = false, features = [
+google-cloud-storage = { package = "gcloud-storage", version = "~1.2", default-features = false, features = [
     "rustls-tls",
     "auth",
 ] }
