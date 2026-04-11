@@ -117,8 +117,8 @@ utoipa = { workspace = true, features = ["uuid"], optional = true }
 utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
 valuable = { workspace = true, features = ["derive"] }
-vaultrs = "0.7.2"
-vaultrs-login = "0.2.1"
+vaultrs = "0.8"
+vaultrs-login = "0.2.4"
 veil = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
