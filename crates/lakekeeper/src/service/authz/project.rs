@@ -188,8 +188,9 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         project_id: &ArcProjectId,
-        action: CatalogProjectAction,
+        action: impl Into<Self::ProjectAction> + Send + Sync + Clone,
     ) -> Result<(), RequireProjectActionError> {
+        let action = action.into();
         if self
             .is_allowed_project_action(metadata, None, project_id, action.clone())
             .await?

@@ -608,6 +608,7 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod test {
     use http::{HeaderMap, header::HeaderValue};
 
