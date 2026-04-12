@@ -1011,6 +1011,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod test {
     use std::net::Ipv6Addr;
 
