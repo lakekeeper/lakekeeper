@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use http::StatusCode;
 
 use crate::{
@@ -7,8 +9,10 @@ use crate::{
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
-        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
-        CatalogWarehouseOps, Result, SecretStore, State, Transaction, authz::Authorizer,
+        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogStore, Result, SecretStore, State,
+        Transaction,
+        authz::{Authorizer, CatalogGenericTableAction},
+        events::{APIEventContext, context::ResolvedNamespace},
         idempotency::IdempotencyInfo,
     },
 };
@@ -24,6 +28,7 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         table_name,
     } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
+    let authorizer = &state.v1_state.authz;
 
     // ------------------- IDEMPOTENCY CHECK -------------------
     let idempotency_key = request_metadata.idempotency_key().copied();
@@ -35,24 +40,36 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         }
     }
 
-    let _warehouse = C::get_active_warehouse_by_id(warehouse_id, state.v1_state.catalog.clone())
-        .await?
-        .ok_or_else(|| {
-            ErrorModel::not_found("Warehouse not found".to_string(), "WarehouseNotFound", None)
-        })?;
-
-    let ns = C::get_namespace(
+    // ------------------- AUTHZ -------------------
+    let event_ctx = APIEventContext::for_namespace(
+        Arc::new(request_metadata.clone()),
+        state.v1_state.events.clone(),
         warehouse_id,
         namespace.clone(),
-        state.v1_state.catalog.clone(),
-    )
-    .await?
-    .ok_or_else(|| {
-        ErrorModel::not_found("Namespace not found".to_string(), "NamespaceNotFound", None)
-    })?;
+        CatalogGenericTableAction::Drop,
+    );
 
-    let namespace_id = ns.namespace.namespace.namespace_id;
+    let (event_ctx, (warehouse, ns_hierarchy, _info)) = event_ctx.emit_authz(
+        super::load_and_authorize_generic_table_operation::<C, A>(
+            authorizer,
+            &request_metadata,
+            warehouse_id,
+            namespace.clone(),
+            &table_name,
+            CatalogGenericTableAction::Drop,
+            state.v1_state.catalog.clone(),
+        )
+        .await,
+    )?;
 
+    let _event_ctx = event_ctx.resolve(ResolvedNamespace {
+        warehouse: warehouse.clone(),
+        namespace: ns_hierarchy.namespace.clone(),
+    });
+
+    let namespace_id = ns_hierarchy.namespace.namespace_id();
+
+    // ------------------- DROP -------------------
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let generic_table_id =
         C::drop_generic_table(warehouse_id, namespace_id, &table_name, t.transaction()).await?;
@@ -81,9 +98,8 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
 
     t.commit().await?;
 
-    state
-        .v1_state
-        .authz
+    // Post-commit: clean up authz state (best-effort)
+    authorizer
         .delete_generic_table(warehouse_id, generic_table_id)
         .await
         .inspect_err(|e| {

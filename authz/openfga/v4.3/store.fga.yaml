@@ -58,6 +58,12 @@ tuples:
   - user: namespace:namespace_1_2
     relation: parent
     object: lakekeeper_view:warehouse_1/view_1
+  - user: lakekeeper_generic_table:warehouse_1/generic_table_1
+    relation: child
+    object: namespace:namespace_1_2
+  - user: namespace:namespace_1_2
+    relation: parent
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
   # Hierarchies: warehouse_2 -> namespace_2_1 -> namespace_2_2 -> table_2_2
   - user: warehouse:warehouse_2
     relation: parent
@@ -118,6 +124,13 @@ tuples:
   - user: role:select_table_3#assignee
     relation: select
     object: lakekeeper_table:warehouse_1/table_3
+  # Roles (Select on Generic Table 1)
+  - user: user:select_generic_table_1
+    relation: assignee
+    object: role:select_generic_table_1
+  - user: role:select_generic_table_1#assignee
+    relation: select
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
   # Roles (Owner on warehouse_2)
   - user: user:warehouse_2_owner
     relation: ownership
@@ -229,6 +242,8 @@ tests:
           can_create_table: false
           can_create_view: false
           can_create_namespace: false
+          can_create_generic_table: false
+          can_list_generic_tables: false
           can_delete: false
           can_update_properties: false
           can_get_metadata: false
@@ -243,6 +258,14 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
+      - user: user:admin
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: false
+          can_write_data: false
+          can_read_data: false
+          can_get_metadata: false
+          can_include_in_list: false
       - user: user:admin
         object: lakekeeper_table:warehouse_1/table_3
         assertions:
@@ -320,6 +343,8 @@ tests:
           can_create_table: true
           can_create_view: true
           can_create_namespace: true
+          can_create_generic_table: true
+          can_list_generic_tables: true
           can_delete: true
           can_update_properties: true
           can_get_metadata: true
@@ -361,6 +386,20 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_modify: true
+          can_change_ownership: true
+      - user: user:project_1_project_admin
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: true
+          can_write_data: true
+          can_read_data: true
+          can_get_metadata: true
+          can_include_in_list: true
+          can_grant_pass_grants: true
+          can_grant_manage_grants: true
+          can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
   - name: Security Admin can manage grants and navigate but not see data
@@ -411,6 +450,8 @@ tests:
           can_create_table: false
           can_create_view: false
           can_create_namespace: false
+          can_create_generic_table: false
+          can_list_generic_tables: true
           can_delete: false
           can_update_properties: false
           can_get_metadata: true
@@ -453,6 +494,20 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_modify: true
+          can_change_ownership: true
+      - user: user:project_1_security_admin
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: false
+          can_write_data: false
+          can_read_data: false
+          can_get_metadata: true
+          can_include_in_list: true
+          can_grant_pass_grants: true
+          can_grant_manage_grants: true
+          can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
   - name: Warehouse Admin can manage data and objects but not grants
@@ -503,6 +558,8 @@ tests:
           can_create_table: true
           can_create_view: true
           can_create_namespace: true
+          can_create_generic_table: true
+          can_list_generic_tables: true
           can_delete: true
           can_update_properties: true
           can_get_metadata: true
@@ -547,6 +604,20 @@ tests:
           can_grant_describe: false
           can_grant_modify: false
           can_change_ownership: false
+      - user: user:project_1_data_admin
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: true
+          can_write_data: true
+          can_read_data: true
+          can_get_metadata: true
+          can_include_in_list: true
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_grant_describe: false
+          can_grant_select: false
+          can_grant_modify: false
+          can_change_ownership: false
   - name: Warehouse Owner can do everything in its Warehouse
     check:
       - user: user:warehouse_1_owner
@@ -581,6 +652,8 @@ tests:
           can_create_table: true
           can_create_view: true
           can_create_namespace: true
+          can_create_generic_table: true
+          can_list_generic_tables: true
           can_delete: true
           can_update_properties: true
           can_get_metadata: true
@@ -595,6 +668,20 @@ tests:
           can_grant_select: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
+          can_change_ownership: true
+      - user: user:warehouse_1_owner
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: true
+          can_write_data: true
+          can_read_data: true
+          can_get_metadata: true
+          can_include_in_list: true
+          can_grant_pass_grants: true
+          can_grant_manage_grants: true
+          can_grant_describe: true
+          can_grant_select: true
+          can_grant_modify: true
           can_change_ownership: true
       - user: user:warehouse_1_owner
         object: lakekeeper_table:warehouse_1/table_3
@@ -650,6 +737,8 @@ tests:
           can_create_table: true
           can_create_view: true
           can_create_namespace: true
+          can_create_generic_table: true
+          can_list_generic_tables: true
           can_delete: true
           can_update_properties: true
           can_get_metadata: true
@@ -671,6 +760,8 @@ tests:
           can_create_table: false
           can_create_view: false
           can_create_namespace: false
+          can_create_generic_table: false
+          can_list_generic_tables: false
           can_delete: false
           can_update_properties: false
           can_get_metadata: false
@@ -714,6 +805,20 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_modify: true
+          can_change_ownership: true
+      - user: user:namespace_1_1_owner
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: true
+          can_write_data: true
+          can_read_data: true
+          can_get_metadata: true
+          can_include_in_list: true
+          can_grant_pass_grants: true
+          can_grant_manage_grants: true
+          can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
   - name: Select Table 3 bubbles list up
@@ -788,6 +893,8 @@ tests:
           can_create_table: false
           can_create_view: false
           can_create_namespace: false
+          can_create_generic_table: false
+          can_list_generic_tables: true
           can_delete: false
           can_update_properties: false
           can_get_metadata: true
@@ -819,6 +926,15 @@ tests:
           can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
+      # select_table_3 has no access to generic tables
+      - user: user:select_table_3
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: false
+          can_write_data: false
+          can_read_data: false
+          can_get_metadata: false
+          can_include_in_list: false
   - name: Managed access on warehouse owner can modify warehouse and below
     check:
       - user: user:warehouse_2_owner
@@ -1251,3 +1367,46 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_change_ownership: false
+  - name: Select on generic table grants read but not write
+    check:
+      - user: user:select_generic_table_1
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: false
+          can_write_data: false
+          can_read_data: true
+          can_get_metadata: true
+          can_include_in_list: true
+          can_read_assignments: false
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_grant_describe: false
+          can_grant_select: false
+          can_grant_modify: false
+          can_change_ownership: false
+      # User with select on generic_table can see parent namespace metadata
+      - user: user:select_generic_table_1
+        object: namespace:namespace_1_2
+        assertions:
+          can_create_table: false
+          can_create_view: false
+          can_create_namespace: false
+          can_create_generic_table: false
+          can_list_generic_tables: true
+          can_delete: false
+          can_update_properties: false
+          can_get_metadata: true
+          can_list_tables: true
+          can_list_views: true
+          can_list_namespaces: true
+          can_list_everything: false
+          can_include_in_list: true
+      # Unrelated user has no access to tables
+      - user: user:select_generic_table_1
+        object: lakekeeper_table:warehouse_1/table_3
+        assertions:
+          can_drop: false
+          can_write_data: false
+          can_read_data: false
+          can_get_metadata: false
+          can_include_in_list: false

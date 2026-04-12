@@ -7,8 +7,8 @@ use lakekeeper_io::Location;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BasicTabularInfo, define_simple_error, define_transparent_error, impl_error_stack_methods,
-    impl_from_with_detail,
+    AuthZGenericTableInfo, BasicTabularInfo, define_simple_error, define_transparent_error,
+    impl_error_stack_methods, impl_from_with_detail,
 };
 use crate::{
     WarehouseId,
@@ -116,6 +116,32 @@ impl BasicTabularInfo for GenericTableInfo {
     }
 }
 
+impl AuthZGenericTableInfo for GenericTableInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn generic_table_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+
+    fn generic_table_id(&self) -> GenericTableId {
+        self.generic_table_id
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
+
+    fn is_protected(&self) -> bool {
+        self.protected
+    }
+
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.properties
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GenericTableCreation {
     pub generic_table_id: GenericTableId,
@@ -133,10 +159,41 @@ pub struct GenericTableCreation {
 #[derive(Debug, Clone)]
 pub struct GenericTableListEntry {
     pub generic_table_id: GenericTableId,
+    pub warehouse_id: WarehouseId,
+    pub namespace_id: NamespaceId,
     pub name: String,
+    pub tabular_ident: TableIdent,
     pub format: GenericTableFormat,
     pub namespace_ident: NamespaceIdent,
+    pub protected: bool,
+    pub properties: HashMap<String, String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl AuthZGenericTableInfo for GenericTableListEntry {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+
+    fn generic_table_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+
+    fn generic_table_id(&self) -> GenericTableId {
+        self.generic_table_id
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
+
+    fn is_protected(&self) -> bool {
+        self.protected
+    }
+
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.properties
+    }
 }
 
 define_simple_error!(GenericTableAlreadyExists, "Generic table already exists");

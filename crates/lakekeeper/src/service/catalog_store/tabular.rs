@@ -391,6 +391,67 @@ impl ViewInfo {
         }
     }
 }
+
+#[cfg(feature = "test-utils")]
+impl GenericTabularInfo {
+    #[must_use]
+    pub fn test_default(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        generic_table_id: GenericTableId,
+    ) -> Self {
+        use std::str::FromStr;
+        let tabular_ident = TableIdent::new(
+            iceberg::NamespaceIdent::new("test".to_string()),
+            format!("generic_table_{generic_table_id}"),
+        );
+        let location = Location::from_str(&format!(
+            "s3://bucket/path/to/generic_table_{generic_table_id}"
+        ))
+        .unwrap();
+        GenericTabularInfo {
+            warehouse_id,
+            namespace_id,
+            namespace_version: 0.into(),
+            warehouse_version: 0.into(),
+            tabular_ident,
+            tabular_id: generic_table_id,
+            metadata_location: None,
+            location,
+            protected: false,
+            updated_at: None,
+            properties: HashMap::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl GenericTabularInfo {
+    pub(crate) fn new_random(warehouse_id: WarehouseId) -> Self {
+        use std::str::FromStr;
+
+        let gt_id = GenericTableId::new_random();
+        let tabular_ident = TableIdent::new(
+            iceberg::NamespaceIdent::new("test".to_string()),
+            format!("generic_table_{gt_id}"),
+        );
+        let location =
+            Location::from_str(&format!("s3://bucket/path/to/generic_table_{gt_id}")).unwrap();
+        GenericTabularInfo {
+            warehouse_id,
+            namespace_id: NamespaceId::new_random(),
+            namespace_version: 0.into(),
+            warehouse_version: 0.into(),
+            tabular_ident,
+            tabular_id: gt_id,
+            metadata_location: None,
+            location,
+            protected: false,
+            updated_at: Some(chrono::Utc::now()),
+            properties: HashMap::new(),
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableNamed {
     pub warehouse_id: WarehouseId,
@@ -421,6 +482,17 @@ pub trait AuthZViewInfo: Send + Sync {
     fn namespace_id(&self) -> NamespaceId;
     fn namespace_ident(&self) -> &NamespaceIdent {
         self.view_ident().namespace()
+    }
+    fn is_protected(&self) -> bool;
+    fn properties(&self) -> &HashMap<String, String>;
+}
+pub trait AuthZGenericTableInfo: Send + Sync {
+    fn warehouse_id(&self) -> WarehouseId;
+    fn generic_table_ident(&self) -> &TableIdent;
+    fn generic_table_id(&self) -> GenericTableId;
+    fn namespace_id(&self) -> NamespaceId;
+    fn namespace_ident(&self) -> &NamespaceIdent {
+        self.generic_table_ident().namespace()
     }
     fn is_protected(&self) -> bool;
     fn properties(&self) -> &HashMap<String, String>;
@@ -486,6 +558,48 @@ impl AuthZViewInfo for ViewInfo {
     }
     fn properties(&self) -> &HashMap<String, String> {
         &self.properties
+    }
+}
+
+impl AuthZGenericTableInfo for GenericTabularInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+    fn generic_table_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+    fn generic_table_id(&self) -> GenericTableId {
+        self.tabular_id
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
+    fn is_protected(&self) -> bool {
+        self.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.properties
+    }
+}
+
+impl AuthZGenericTableInfo for GenericTableDeletionInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.tabular.warehouse_id
+    }
+    fn generic_table_ident(&self) -> &TableIdent {
+        &self.tabular.tabular_ident
+    }
+    fn generic_table_id(&self) -> GenericTableId {
+        self.tabular.tabular_id
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.tabular.namespace_id
+    }
+    fn is_protected(&self) -> bool {
+        self.tabular.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.tabular.properties
     }
 }
 
@@ -868,6 +982,7 @@ macro_rules! define_ident_or_id {
 }
 define_ident_or_id!(TableIdentOrId, TableId, Table);
 define_ident_or_id!(ViewIdentOrId, ViewId, View);
+define_ident_or_id!(GenericTableIdentOrId, GenericTableId, GenericTable);
 
 #[derive(Hash, Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum TabularIdentOrId {

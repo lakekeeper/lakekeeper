@@ -1042,8 +1042,13 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
             TabularId::View(v) => {
                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *v).into());
             }
-            TabularId::GenericTable(_) => {
-                // TODO: add generic table authorization
+            TabularId::GenericTable(id) => {
+                return Err(
+                    crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
+                        warehouse_id, *id,
+                    )
+                    .into(),
+                );
             }
         }
     }
@@ -1284,8 +1289,13 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::View(v) => {
                     return Err(AuthZCannotSeeView::new_not_found(warehouse.warehouse_id, v).into());
                 }
-                TabularId::GenericTable(_) => {
-                    // TODO: add generic table authorization
+                TabularId::GenericTable(id) => {
+                    return Err(
+                        crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
+                            warehouse.warehouse_id, id,
+                        )
+                        .into(),
+                    );
                 }
             }
         }

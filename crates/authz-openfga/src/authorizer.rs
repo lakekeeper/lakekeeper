@@ -10,9 +10,9 @@ use lakekeeper::{
     async_trait,
     axum::Router,
     service::{
-        Actor, ArcProjectId, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore,
-        ErrorModel, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore,
-        ServerId, State, TableId, UserId, ViewId,
+        Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
+        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
         authz::{
             ActionOnTable, ActionOnView, Authorizer, AuthzBackendErrorOrBadRequest,
             CannotInspectPermissions, CatalogProjectAction, CatalogUserAction,
@@ -43,8 +43,9 @@ use crate::{
     },
     models::OpenFgaType,
     relations::{
-        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, ReducedRelation, RoleRelation,
-        ServerRelation, TableRelation, ViewRelation, WarehouseRelation,
+        self, GenericTableRelation, NamespaceRelation, OpenFgaRelation, ProjectRelation,
+        ReducedRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
+        WarehouseRelation,
     },
 };
 
@@ -81,6 +82,7 @@ impl Authorizer for OpenFGAAuthorizer {
     type NamespaceAction = NamespaceRelation;
     type TableAction = TableRelation;
     type ViewAction = ViewRelation;
+    type GenericTableAction = GenericTableRelation;
     type UserAction = CatalogUserAction;
     type RoleAction = RoleRelation;
 
@@ -592,6 +594,104 @@ impl Authorizer for OpenFGAAuthorizer {
         }));
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
+    }
+
+    async fn are_allowed_generic_table_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            &impl AuthZGenericTableInfo,
+            Self::GenericTableAction,
+        )],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
+
+        let items: Vec<_> = actions
+            .iter()
+            .map(|(_ns, gt, a)| CheckRequestTupleKey {
+                user: user.clone(),
+                relation: a.to_string(),
+                object: (gt.warehouse_id(), gt.generic_table_id()).to_openfga(),
+            })
+            .collect();
+
+        let guard_tuples = if for_user.is_some() {
+            let unique_gts: HashSet<_> = actions
+                .iter()
+                .map(|(_ns, gt, _)| (gt.warehouse_id(), gt.generic_table_id()).to_openfga())
+                .collect();
+            unique_gts
+                .into_iter()
+                .map(|object| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: GenericTableRelation::CanGetMetadata.to_string(),
+                    object,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
+    }
+
+    async fn create_generic_table(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        parent: NamespaceId,
+    ) -> AuthorizerResult<()> {
+        let actor = metadata.actor();
+        let parent_id = parent.to_openfga();
+        let this_id = (warehouse_id, generic_table_id).to_openfga();
+
+        self.require_no_relations(&(warehouse_id, generic_table_id))
+            .await?;
+
+        self.write_higher_consistency(
+            Some(vec![
+                TupleKey {
+                    user: actor.to_openfga(),
+                    relation: GenericTableRelation::Ownership.to_string(),
+                    object: this_id.clone(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: parent_id.clone(),
+                    relation: GenericTableRelation::Parent.to_string(),
+                    object: this_id.clone(),
+                    condition: None,
+                },
+                TupleKey {
+                    user: this_id.clone(),
+                    relation: NamespaceRelation::Child.to_string(),
+                    object: parent_id.clone(),
+                    condition: None,
+                },
+            ]),
+            None,
+        )
+        .await
+        .map_err(authz_to_error_no_audit)
+        .map_err(Into::into)
+    }
+
+    async fn delete_generic_table(
+        &self,
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+    ) -> AuthorizerResult<()> {
+        self.delete_all_relations(&(warehouse_id, generic_table_id))
             .await
     }
 
@@ -1875,8 +1975,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
 
-            // Check target user's permissions (not the admin's)
-            // Target user has no permissions
+            // Check target user's permissions
             let results = authorizer
                 .are_allowed_project_actions_vec(
                     &metadata,
@@ -1891,6 +1990,96 @@ pub(crate) mod tests {
                 .into_inner();
 
             assert_eq!(results, vec![true, false]);
+        }
+
+        #[tokio::test]
+        async fn test_generic_table_permissions_lifecycle() {
+            use std::collections::HashMap;
+
+            use lakekeeper::service::{
+                GenericTableId, GenericTabularInfo, Namespace, NamespaceId, NamespaceWithParent,
+                ResolvedWarehouse, WarehouseId,
+            };
+
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", "gt_test_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+            let warehouse_id = WarehouseId::from(uuid::Uuid::now_v7());
+            let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
+            let generic_table_id = GenericTableId::from(uuid::Uuid::now_v7());
+            let warehouse = ResolvedWarehouse::new_with_id(warehouse_id);
+            let ns = NamespaceWithParent::test_default(namespace_id, warehouse_id);
+            let parent_namespaces: HashMap<NamespaceId, NamespaceWithParent> =
+                HashMap::from([(namespace_id, ns.clone())]);
+
+            let gt_info =
+                GenericTabularInfo::test_default(warehouse_id, namespace_id, generic_table_id);
+
+            // Before creating any tuples, all actions should be denied
+            let results = authorizer
+                .are_allowed_generic_table_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &parent_namespaces,
+                    &[
+                        (&ns, &gt_info, GenericTableRelation::CanGetMetadata),
+                        (&ns, &gt_info, GenericTableRelation::CanReadData),
+                        (&ns, &gt_info, GenericTableRelation::CanWriteData),
+                        (&ns, &gt_info, GenericTableRelation::CanDrop),
+                        (&ns, &gt_info, GenericTableRelation::CanIncludeInList),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false, false, false, false, false]);
+
+            // Create the generic table in authorizer (sets ownership + parent)
+            authorizer
+                .create_generic_table(&metadata, warehouse_id, generic_table_id, namespace_id)
+                .await
+                .unwrap();
+
+            // Now the creator should have full permissions via ownership
+            let results = authorizer
+                .are_allowed_generic_table_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &parent_namespaces,
+                    &[
+                        (&ns, &gt_info, GenericTableRelation::CanGetMetadata),
+                        (&ns, &gt_info, GenericTableRelation::CanReadData),
+                        (&ns, &gt_info, GenericTableRelation::CanWriteData),
+                        (&ns, &gt_info, GenericTableRelation::CanDrop),
+                        (&ns, &gt_info, GenericTableRelation::CanIncludeInList),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true, true, true, true, true]);
+
+            // Delete the generic table from authorizer
+            authorizer
+                .delete_generic_table(warehouse_id, generic_table_id)
+                .await
+                .unwrap();
+
+            // After deletion, all actions should be denied again
+            let results = authorizer
+                .are_allowed_generic_table_actions_impl(
+                    &metadata,
+                    None,
+                    &warehouse,
+                    &parent_namespaces,
+                    &[
+                        (&ns, &gt_info, GenericTableRelation::CanGetMetadata),
+                        (&ns, &gt_info, GenericTableRelation::CanDrop),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false, false]);
         }
     }
 }

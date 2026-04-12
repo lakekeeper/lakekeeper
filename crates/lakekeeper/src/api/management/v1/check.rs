@@ -21,14 +21,14 @@ use crate::{
         ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
             ActionDescriptor, ActionOnTable, ActionOnTableOrView, ActionOnView,
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, MustUse, RequireNamespaceActionError, RequireTableActionError,
-            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
-            UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
+            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogAction, CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, MustUse,
+            RequireNamespaceActionError, RequireTableActionError, RequireWarehouseActionError,
+            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
@@ -851,10 +851,10 @@ fn convert_tabular_action<'a, 'u>(
                 is_delegated_execution: false,
             })
         }),
-        ViewOrTableInfo::GenericTable(_) => {
-            // TODO: add generic table authorization
-            None
-        }
+        // Generic tables are authorized through their own dedicated endpoints.
+        // In batch tabular checks they pass through as allowed (the enum variant
+        // returns true in are_allowed_tabular_actions_vec).
+        ViewOrTableInfo::GenericTable(_) => Some(ActionOnTableOrView::GenericTable),
     }
 }
 
@@ -1450,8 +1450,8 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::View(view_id) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *view_id).into());
                             }
-                            TabularId::GenericTable(_) => {
-                                // TODO: add generic table authorization
+                            TabularId::GenericTable(gt_id) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
                             }
                         }
                     }
@@ -1566,8 +1566,8 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             TabularIdentOwned::View(view_ident) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, view_ident.clone()).into());
                             }
-                            TabularIdentOwned::GenericTable(_) => {
-                                // TODO: add generic table authorization
+                            TabularIdentOwned::GenericTable(gt_ident) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
                             }
                         }
                     }

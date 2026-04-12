@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use iceberg::TableIdent;
 use uuid::Uuid;
 
@@ -37,8 +39,11 @@ struct GenericTableFullRow {
 
 struct GenericTableListRow {
     generic_table_id: Uuid,
+    warehouse_id: Uuid,
+    namespace_id: Uuid,
     name: String,
     format: String,
+    protected: bool,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -262,8 +267,11 @@ pub(crate) async fn list_generic_tables(
         r#"
         SELECT
             t.tabular_id as generic_table_id,
+            t.warehouse_id,
+            t.namespace_id,
             t.name,
             gt.format,
+            t.protected,
             t.created_at
         FROM tabular t
         INNER JOIN generic_table gt ON gt.warehouse_id = t.warehouse_id AND gt.generic_table_id = t.tabular_id
@@ -301,11 +309,17 @@ pub(crate) async fn list_generic_tables(
             .to_string(),
         );
 
+        let tabular_ident = TableIdent::new(namespace_ident.clone(), row.name.clone());
         entries.push(GenericTableListEntry {
             generic_table_id: row.generic_table_id.into(),
+            warehouse_id: row.warehouse_id.into(),
+            namespace_id: row.namespace_id.into(),
             name: row.name.clone(),
+            tabular_ident,
             format: GenericTableFormat::from(row.format.clone()),
             namespace_ident: namespace_ident.clone(),
+            protected: row.protected,
+            properties: HashMap::new(),
             created_at: row.created_at,
         });
     }
@@ -361,4 +375,225 @@ pub(crate) async fn drop_generic_table(
     })?;
 
     Ok(generic_table_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use iceberg::NamespaceIdent;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use crate::{
+        implementations::postgres::{
+            CatalogState, namespace::tests::initialize_namespace,
+            warehouse::test::initialize_warehouse,
+        },
+        service::{GenericTableCreation, GenericTableFormat, GenericTableId, NamespaceId},
+    };
+
+    use super::*;
+
+    async fn setup(pool: PgPool) -> (CatalogState, PgPool, crate::WarehouseId, NamespaceId) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_project_id, warehouse_id) =
+            initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::new(Uuid::now_v7().to_string());
+        let ns = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id = ns.namespace_id();
+        (state, pool, warehouse_id, namespace_id)
+    }
+
+    fn test_creation(
+        warehouse_id: crate::WarehouseId,
+        namespace_id: NamespaceId,
+        name: &str,
+    ) -> GenericTableCreation {
+        GenericTableCreation {
+            generic_table_id: GenericTableId::from(Uuid::now_v7()),
+            namespace_id,
+            warehouse_id,
+            name: name.to_string(),
+            format: GenericTableFormat::Unknown("lance".to_string()),
+            location: format!("s3://bucket/path/{name}").parse().unwrap(),
+            doc: Some("test doc".to_string()),
+            schema: None,
+            statistics: None,
+            properties: HashMap::from([("key".to_string(), "value".to_string())]),
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_create_and_load(pool: PgPool) {
+        let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
+        let creation = test_creation(warehouse_id, namespace_id, "test-gt");
+
+        let mut t = pool.begin().await.unwrap();
+        let info = create_generic_table(creation.clone(), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(info.name, "test-gt");
+        assert_eq!(
+            info.format,
+            GenericTableFormat::Unknown("lance".to_string())
+        );
+        assert_eq!(info.doc, Some("test doc".to_string()));
+        assert_eq!(info.properties.get("key").unwrap(), "value");
+
+        // Load it back
+        let mut t = pool.begin().await.unwrap();
+        let loaded = load_generic_table(warehouse_id, namespace_id, "test-gt", &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(loaded.generic_table_id, info.generic_table_id);
+        assert_eq!(loaded.name, "test-gt");
+        assert_eq!(loaded.properties.get("key").unwrap(), "value");
+    }
+
+    #[sqlx::test]
+    async fn test_create_duplicate_fails(pool: PgPool) {
+        let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
+
+        let mut t = pool.begin().await.unwrap();
+        create_generic_table(test_creation(warehouse_id, namespace_id, "dup"), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let err = create_generic_table(test_creation(warehouse_id, namespace_id, "dup"), &mut t)
+            .await
+            .expect_err("duplicate should fail");
+        t.rollback().await.ok();
+
+        assert!(
+            matches!(err, CreateGenericTableError::GenericTableAlreadyExists(_)),
+            "expected AlreadyExists, got: {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_list_with_pagination(pool: PgPool) {
+        let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
+        let ns_ident = NamespaceIdent::new("test".to_string());
+
+        // Create 3 tables
+        for name in ["a", "b", "c"] {
+            let mut t = pool.begin().await.unwrap();
+            create_generic_table(test_creation(warehouse_id, namespace_id, name), &mut t)
+                .await
+                .unwrap();
+            t.commit().await.unwrap();
+        }
+
+        // List with page_size=2
+        let mut t = pool.begin().await.unwrap();
+        let (page1, token) =
+            list_generic_tables(warehouse_id, namespace_id, &ns_ident, Some(2), None, &mut t)
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(page1.len(), 2);
+        assert!(token.is_some());
+
+        // Second page
+        let mut t = pool.begin().await.unwrap();
+        let (page2, token2) = list_generic_tables(
+            warehouse_id,
+            namespace_id,
+            &ns_ident,
+            Some(2),
+            token.as_deref(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(page2.len(), 1);
+        // token2 may be Some (pointing past the last item) — fetch next page to confirm empty
+        if token2.is_some() {
+            let mut t = pool.begin().await.unwrap();
+            let (page3, _) = list_generic_tables(
+                warehouse_id,
+                namespace_id,
+                &ns_ident,
+                Some(2),
+                token2.as_deref(),
+                &mut t,
+            )
+            .await
+            .unwrap();
+            t.commit().await.unwrap();
+            assert!(page3.is_empty());
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_drop_and_verify_gone(pool: PgPool) {
+        let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
+
+        let mut t = pool.begin().await.unwrap();
+        create_generic_table(test_creation(warehouse_id, namespace_id, "to-drop"), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = pool.begin().await.unwrap();
+        let dropped_id = drop_generic_table(warehouse_id, namespace_id, "to-drop", &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_ne!(*dropped_id, Uuid::nil());
+
+        // Verify load fails
+        let mut t = pool.begin().await.unwrap();
+        let err = load_generic_table(warehouse_id, namespace_id, "to-drop", &mut t)
+            .await
+            .expect_err("should be gone");
+        t.commit().await.unwrap();
+
+        assert!(
+            matches!(err, LoadGenericTableError::GenericTableNotFound(_)),
+            "expected NotFound, got: {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_drop_not_found(pool: PgPool) {
+        let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
+
+        let mut t = pool.begin().await.unwrap();
+        let err = drop_generic_table(warehouse_id, namespace_id, "ghost", &mut t)
+            .await
+            .expect_err("should not exist");
+        t.rollback().await.ok();
+
+        assert!(
+            matches!(err, DropGenericTableError::GenericTableNotFound(_)),
+            "expected NotFound, got: {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_load_not_found(pool: PgPool) {
+        let (_state, pool, warehouse_id, namespace_id) = setup(pool).await;
+
+        let mut t = pool.begin().await.unwrap();
+        let err = load_generic_table(warehouse_id, namespace_id, "nope", &mut t)
+            .await
+            .expect_err("should not exist");
+        t.commit().await.unwrap();
+
+        assert!(
+            matches!(err, LoadGenericTableError::GenericTableNotFound(_)),
+            "expected NotFound, got: {err:?}"
+        );
+    }
 }

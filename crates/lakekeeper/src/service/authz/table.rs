@@ -41,7 +41,7 @@ const CAN_SEE_PERMISSION: CatalogTableAction = CatalogTableAction::GetMetadata;
 /// It checks warehouse and namespace ID and version consistency, refetching if necessary.
 /// Warehouse and namespace refetches are performed in parallel when both are required.
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn refresh_warehouse_and_namespace_if_needed<C, A, T>(
+pub async fn refresh_warehouse_and_namespace_if_needed<C, A, T>(
     warehouse: &ResolvedWarehouse,
     namespace: NamespaceHierarchy,
     tabular_info: &T,
@@ -1079,6 +1079,9 @@ pub trait AuthZTableOps: Authorizer {
                     view_idx += 1;
                     result
                 }
+                // Generic tables are checked separately at call sites via
+                // are_allowed_generic_table_actions_vec. Return true here so
+                // batch operations that mix entity types don't block on them.
                 ActionOnTableOrView::GenericTable => true,
             })
             .collect();
@@ -1266,7 +1269,9 @@ impl<I: AuthZViewInfo, A> std::fmt::Debug for ActionOnView<'_, '_, I, A> {
 pub enum ActionOnTableOrView<'a, 'u, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
     Table(ActionOnTable<'a, 'u, IT, AT>),
     View(ActionOnView<'a, 'u, IV, AV>),
-    // TODO: add generic table authorization
+    /// Generic tables are handled separately in batch authz via
+    /// `are_allowed_generic_table_actions_vec`. This variant carries no data;
+    /// the batch function extracts generic table info at the call site.
     GenericTable,
 }
 
@@ -1277,13 +1282,21 @@ mod tests {
 
     use super::*;
     use crate::{
+        api::ApiContext,
         implementations::postgres::PostgresBackend,
         service::{
-            CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
-            authz::{CatalogTableAction, CatalogViewAction, tests::HidingAuthorizer},
+            CatalogGenericTableOps, CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
+            Transaction,
+            authz::{
+                AuthZGenericTableOps, CatalogGenericTableAction, CatalogTableAction,
+                CatalogViewAction, tests::HidingAuthorizer,
+            },
             catalog_store::TabularListFlags,
         },
-        tests::{SetupTestCatalog, create_ns, create_table, create_view, memory_io_profile},
+        tests::{
+            SetupTestCatalog, create_generic_table, create_ns, create_table, create_view,
+            memory_io_profile,
+        },
     };
 
     #[sqlx::test]
@@ -1656,5 +1669,242 @@ mod tests {
 
         // Expected: table1 allowed, view1 drop blocked, table2 hidden, view1 get allowed
         assert_eq!(result, vec![true, false, false, true]);
+    }
+
+    /// Helper to load generic table info + warehouse + namespace hierarchy for tests.
+    async fn load_generic_table_test_ctx(
+        ctx: &ApiContext<
+            crate::service::State<
+                HidingAuthorizer,
+                PostgresBackend,
+                crate::implementations::postgres::SecretsState,
+            >,
+        >,
+        warehouse_id: crate::service::WarehouseId,
+        ns: &iceberg_ext::catalog::rest::CreateNamespaceResponse,
+        gt_name: &str,
+    ) -> (
+        std::sync::Arc<crate::service::ResolvedWarehouse>,
+        crate::service::NamespaceHierarchy,
+        crate::service::GenericTableInfo,
+    ) {
+        let ns_id = crate::service::NamespaceId::from(
+            ns.properties
+                .as_ref()
+                .unwrap()
+                .get("namespace_id")
+                .unwrap()
+                .parse::<uuid::Uuid>()
+                .unwrap(),
+        );
+        let mut t = <PostgresBackend as CatalogStore>::Transaction::begin_read(
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        let gt_info =
+            PostgresBackend::load_generic_table(warehouse_id, ns_id, gt_name, t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+
+        let warehouse =
+            PostgresBackend::get_active_warehouse_by_id(warehouse_id, ctx.v1_state.catalog.clone())
+                .await
+                .unwrap()
+                .unwrap();
+        let ns_hierarchy = PostgresBackend::get_namespace(
+            warehouse_id,
+            &ns.namespace,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        (warehouse, ns_hierarchy, gt_info)
+    }
+
+    #[sqlx::test]
+    async fn test_generic_table_actions_all_allowed(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _gt = create_generic_table(ctx.clone(), &prefix, "test_ns", "gt1")
+            .await
+            .unwrap();
+
+        let (warehouse, ns_hierarchy, gt_info) =
+            load_generic_table_test_ctx(&ctx, warehouse_resp.warehouse_id, &ns, "gt1").await;
+        let parents = ns_hierarchy
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
+
+        let result = authz
+            .are_allowed_generic_table_actions_vec(
+                &crate::tests::random_request_metadata(),
+                None,
+                &warehouse,
+                &parents,
+                &[
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::GetMetadata,
+                    ),
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::ReadData,
+                    ),
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::WriteData,
+                    ),
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::Drop,
+                    ),
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::IncludeInList,
+                    ),
+                ],
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(result, vec![true, true, true, true, true]);
+    }
+
+    #[sqlx::test]
+    async fn test_generic_table_actions_hidden(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _gt = create_generic_table(ctx.clone(), &prefix, "test_ns", "gt1")
+            .await
+            .unwrap();
+
+        let (warehouse, ns_hierarchy, gt_info) =
+            load_generic_table_test_ctx(&ctx, warehouse_resp.warehouse_id, &ns, "gt1").await;
+
+        // Hide the generic table
+        authz.hide(&format!(
+            "generic_table:{}/{}",
+            warehouse_resp.warehouse_id, gt_info.generic_table_id
+        ));
+
+        let parents = ns_hierarchy
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
+
+        let result = authz
+            .are_allowed_generic_table_actions_vec(
+                &crate::tests::random_request_metadata(),
+                None,
+                &warehouse,
+                &parents,
+                &[
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::GetMetadata,
+                    ),
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::Drop,
+                    ),
+                ],
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Both denied — generic table is hidden
+        assert_eq!(result, vec![false, false]);
+    }
+
+    #[sqlx::test]
+    async fn test_generic_table_actions_blocked(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _gt = create_generic_table(ctx.clone(), &prefix, "test_ns", "gt1")
+            .await
+            .unwrap();
+
+        let (warehouse, ns_hierarchy, gt_info) =
+            load_generic_table_test_ctx(&ctx, warehouse_resp.warehouse_id, &ns, "gt1").await;
+
+        // Block Drop but not GetMetadata
+        authz.block_action(&format!(
+            "generic_table:{:?}",
+            CatalogGenericTableAction::Drop
+        ));
+
+        let parents = ns_hierarchy
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
+
+        let result = authz
+            .are_allowed_generic_table_actions_vec(
+                &crate::tests::random_request_metadata(),
+                None,
+                &warehouse,
+                &parents,
+                &[
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::GetMetadata,
+                    ),
+                    (
+                        &ns_hierarchy.namespace,
+                        &gt_info,
+                        CatalogGenericTableAction::Drop,
+                    ),
+                ],
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        // GetMetadata allowed, Drop blocked
+        assert_eq!(result, vec![true, false]);
     }
 }
