@@ -632,7 +632,7 @@ impl Authorizer for OpenFGAAuthorizer {
                 .into_iter()
                 .map(|object| CheckRequestTupleKey {
                     user: metadata.actor().to_openfga(),
-                    relation: GenericTableRelation::CanGetMetadata.to_string(),
+                    relation: GenericTableRelation::CanReadAssignments.to_string(),
                     object,
                 })
                 .collect()
