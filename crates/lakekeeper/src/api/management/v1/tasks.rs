@@ -1045,7 +1045,8 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
             TabularId::GenericTable(id) => {
                 return Err(
                     crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
-                        warehouse_id, *id,
+                        warehouse_id,
+                        *id,
                     )
                     .into(),
                 );
@@ -1292,7 +1293,8 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::GenericTable(id) => {
                     return Err(
                         crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
-                            warehouse.warehouse_id, id,
+                            warehouse.warehouse_id,
+                            id,
                         )
                         .into(),
                     );
