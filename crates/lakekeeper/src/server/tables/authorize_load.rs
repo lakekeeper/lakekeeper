@@ -363,10 +363,8 @@ mod tests {
     fn test_get_relevant_namespaces_to_authorize_load_tabular_contains_base_tabular_namespace() {
         let namespace_ident = NamespaceIdent::from_strs(vec!["ns_a", "ns_b"])
             .expect("NamespaceIdent should be able to be build");
-        let table = TabularIdentBorrowed::Table(&TableIdent::new(
-            namespace_ident.clone(),
-            "table".to_string(),
-        ));
+        let table_ident = TableIdent::new(namespace_ident.clone(), "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
         let namespaces = get_relevant_namespaces_to_authorize_load_tabular(&table, None);
         assert!(namespaces.contains(&namespace_ident));
     }
@@ -383,8 +381,8 @@ mod tests {
         let referencing_views = vec![ReferencingView::new(view_a), ReferencingView::new(view_b)];
 
         let namespace_c = NamespaceIdent::from_strs(vec!["ns_c"]).unwrap();
-        let table =
-            TabularIdentBorrowed::Table(&TableIdent::new(namespace_c.clone(), "table".to_string()));
+        let table_ident = TableIdent::new(namespace_c.clone(), "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
 
         let namespaces =
             get_relevant_namespaces_to_authorize_load_tabular(&table, Some(&referencing_views));
@@ -403,8 +401,8 @@ mod tests {
         let view_b = TableIdent::new(namespace.clone(), "view_b".to_string());
         let referencing_views = vec![ReferencingView::new(view_a), ReferencingView::new(view_b)];
 
-        let table =
-            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+        let table_ident = TableIdent::new(namespace.clone(), "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
 
         let namespaces =
             get_relevant_namespaces_to_authorize_load_tabular(&table, Some(&referencing_views));
@@ -417,8 +415,8 @@ mod tests {
     fn test_get_relevant_namespaces_to_authorize_load_tabular_empty_referenced_by_returns_only_base()
      {
         let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
-        let table =
-            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+        let table_ident = TableIdent::new(namespace.clone(), "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
 
         let namespaces = get_relevant_namespaces_to_authorize_load_tabular(&table, None);
 
@@ -429,7 +427,8 @@ mod tests {
     #[test]
     fn test_get_relevant_tabulars_to_authorize_load_tabular_contains_base_tabular() {
         let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
-        let table = TabularIdentBorrowed::Table(&TableIdent::new(namespace, "table".to_string()));
+        let table_ident = TableIdent::new(namespace, "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
 
         let tabulars = get_relevant_tabulars_to_authorize_load_tabular(table.clone(), None);
 
@@ -451,8 +450,8 @@ mod tests {
         ];
 
         let namespace_c = NamespaceIdent::from_strs(vec!["ns_c"]).unwrap();
-        let table =
-            TabularIdentBorrowed::Table(&TableIdent::new(namespace_c.clone(), "table".to_string()));
+        let table_ident = TableIdent::new(namespace_c.clone(), "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
 
         let tabulars = get_relevant_tabulars_to_authorize_load_tabular(
             table.clone(),
@@ -469,8 +468,8 @@ mod tests {
     fn test_get_relevant_tabulars_to_authorize_load_tabular_empty_referenced_by_returns_only_base()
     {
         let namespace = NamespaceIdent::from_strs(vec!["ns"]).unwrap();
-        let table =
-            TabularIdentBorrowed::Table(&TableIdent::new(namespace.clone(), "table".to_string()));
+        let table_ident = TableIdent::new(namespace.clone(), "table".to_string());
+        let table = TabularIdentBorrowed::Table(&table_ident);
 
         let tabulars = get_relevant_tabulars_to_authorize_load_tabular(table.clone(), None);
 

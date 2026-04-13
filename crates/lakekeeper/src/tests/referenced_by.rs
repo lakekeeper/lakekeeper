@@ -44,7 +44,7 @@ fn matched_engines() -> MatchedEngines {
 }
 
 fn request_with_engine() -> RequestMetadata {
-    let mut m = random_request_metadata();
+    let mut m = RequestMetadata::test_user(UserId::new_unchecked(ENGINE_IDP, "engine-user"));
     m.set_engines(matched_engines());
     m
 }
