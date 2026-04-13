@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use iceberg::{NamespaceIdent, TableIdent};
 use sqlx::PgPool;
 
@@ -32,8 +34,8 @@ const ENGINE_IDP: &str = "test-idp";
 
 fn trino_engine() -> TrustedEngine {
     TrustedEngine::Trino(TrinoEngineConfig {
-        security_model_property: "trino.run-as-owner".to_string(),
-        identities: Vec::new(),
+        owner_property: "trino.run-as-owner".to_string(),
+        identities: HashMap::new(),
     })
 }
 

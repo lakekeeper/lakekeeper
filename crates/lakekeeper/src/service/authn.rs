@@ -284,8 +284,8 @@ pub(crate) async fn auth_middleware_fn<
                 .filter(|(_key, engine)| {
                     engine
                         .identities()
-                        .iter()
-                        .any(|id| id.matches(token_idp, &token_audiences, token_subject))
+                        .get(token_idp)
+                        .is_some_and(|id| id.matches(&token_audiences, token_subject))
                 })
                 .map(|(_, engine)| engine.clone())
                 .collect();

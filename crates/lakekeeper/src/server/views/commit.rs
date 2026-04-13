@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     str::FromStr as _,
     sync::Arc,
 };
@@ -19,7 +19,7 @@ use crate::{
             ViewParameters, views::LoadViewRequest,
         },
     },
-    config::{MatchedEngines, TrustedEngine},
+    config::MatchedEngines,
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
@@ -482,26 +482,21 @@ pub(crate) fn parse_view_property_updates(
 }
 
 /// Checks that none of the given property keys correspond to a trusted engine's
-/// security model property unless the request comes from that engine.
+/// owner property unless the request comes from that engine.
 ///
-/// These properties control DEFINER/INVOKER security model and are a privilege escalation
+/// These properties control delegated execution and are a privilege escalation
 /// vector if modifiable by untrusted users.
 fn check_protected_properties<'a>(
     property_keys: impl Iterator<Item = &'a str>,
-    trusted_engines: &HashMap<String, TrustedEngine>,
+    protected_properties: &HashSet<String>,
     matched_engines: &MatchedEngines,
 ) -> Result<()> {
-    let protected: HashSet<&str> = trusted_engines
-        .values()
-        .map(TrustedEngine::security_model_property)
-        .collect();
-
-    if protected.is_empty() {
+    if protected_properties.is_empty() {
         return Ok(());
     }
 
     for key in property_keys {
-        if protected.contains(key) && !matched_engines.owns_property(key) {
+        if protected_properties.contains(key) && !matched_engines.owns_property(key) {
             return Err(ErrorModel::builder()
                 .code(StatusCode::FORBIDDEN.as_u16())
                 .r#type("ProtectedPropertyModification")
@@ -527,7 +522,7 @@ fn validate_trusted_engine_property_changes(
         .chain(property_removals.iter().map(String::as_str));
     check_protected_properties(
         all_keys,
-        &crate::config::CONFIG.trusted_engines,
+        &crate::config::CONFIG.protected_properties,
         request_metadata.engines(),
     )
 }
@@ -538,34 +533,27 @@ pub(super) fn validate_trusted_engine_properties_on_create(
 ) -> Result<()> {
     check_protected_properties(
         properties.keys().map(String::as_str),
-        &crate::config::CONFIG.trusted_engines,
+        &crate::config::CONFIG.protected_properties,
         request_metadata.engines(),
     )
 }
 
 #[cfg(test)]
 mod test_check_protected_properties {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::check_protected_properties;
     use crate::config::{MatchedEngines, TrinoEngineConfig, TrustedEngine};
 
-    fn trino_engine() -> (String, TrustedEngine) {
-        (
-            "trino".to_string(),
-            TrustedEngine::Trino(TrinoEngineConfig {
-                security_model_property: "trino.run-as-owner".to_string(),
-                identities: Vec::new(),
-            }),
-        )
+    fn protected() -> HashSet<String> {
+        ["trino.run-as-owner".to_string()].into_iter().collect()
     }
 
     #[test]
     fn allows_unrelated_property() {
-        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
         let result = check_protected_properties(
             ["some.other.property"].into_iter(),
-            &engines,
+            &protected(),
             &MatchedEngines::default(),
         );
         assert!(result.is_ok());
@@ -573,10 +561,9 @@ mod test_check_protected_properties {
 
     #[test]
     fn rejects_protected_property_from_non_engine() {
-        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
         let result = check_protected_properties(
             ["trino.run-as-owner"].into_iter(),
-            &engines,
+            &protected(),
             &MatchedEngines::default(),
         );
         assert!(result.is_err());
@@ -585,13 +572,12 @@ mod test_check_protected_properties {
     #[test]
     fn rejects_protected_property_from_wrong_engine() {
         let other_matched = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-            security_model_property: "other.property".to_string(),
-            identities: Vec::new(),
+            owner_property: "other.property".to_string(),
+            identities: HashMap::new(),
         }));
-        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
         let result = check_protected_properties(
             ["trino.run-as-owner"].into_iter(),
-            &engines,
+            &protected(),
             &other_matched,
         );
         assert!(result.is_err());
@@ -599,12 +585,13 @@ mod test_check_protected_properties {
 
     #[test]
     fn allows_protected_property_from_correct_engine() {
-        let (_, trino) = trino_engine();
-        let engines: HashMap<String, TrustedEngine> =
-            [("trino".to_string(), trino.clone())].into_iter().collect();
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        });
         let result = check_protected_properties(
             ["trino.run-as-owner"].into_iter(),
-            &engines,
+            &protected(),
             &MatchedEngines::single(trino),
         );
         assert!(result.is_ok());
@@ -612,10 +599,9 @@ mod test_check_protected_properties {
 
     #[test]
     fn allows_all_properties_when_no_engines_configured() {
-        let engines: HashMap<String, TrustedEngine> = HashMap::new();
         let result = check_protected_properties(
             ["trino.run-as-owner"].into_iter(),
-            &engines,
+            &HashSet::new(),
             &MatchedEngines::default(),
         );
         assert!(result.is_ok());
@@ -623,10 +609,9 @@ mod test_check_protected_properties {
 
     #[test]
     fn rejects_when_one_of_many_properties_is_protected() {
-        let engines: HashMap<String, TrustedEngine> = [trino_engine()].into_iter().collect();
         let result = check_protected_properties(
             ["safe.prop", "trino.run-as-owner", "another.safe"].into_iter(),
-            &engines,
+            &protected(),
             &MatchedEngines::default(),
         );
         assert!(result.is_err());
@@ -635,22 +620,20 @@ mod test_check_protected_properties {
     #[test]
     fn allows_property_when_any_matched_engine_owns_it() {
         let trino_a = TrustedEngine::Trino(TrinoEngineConfig {
-            security_model_property: "trino.run-as-owner".to_string(),
-            identities: Vec::new(),
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
         });
         let trino_b = TrustedEngine::Trino(TrinoEngineConfig {
-            security_model_property: "spark.run-as-owner".to_string(),
-            identities: Vec::new(),
+            owner_property: "spark.run-as-owner".to_string(),
+            identities: HashMap::new(),
         });
-        let all_engines: HashMap<String, TrustedEngine> = [
-            ("trino_a".to_string(), trino_a.clone()),
-            ("trino_b".to_string(), trino_b.clone()),
-        ]
-        .into_iter()
-        .collect();
+        let protected: HashSet<String> = ["trino.run-as-owner", "spark.run-as-owner"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let matched = MatchedEngines::new(vec![trino_a, trino_b]);
         let result =
-            check_protected_properties(["trino.run-as-owner"].into_iter(), &all_engines, &matched);
+            check_protected_properties(["trino.run-as-owner"].into_iter(), &protected, &matched);
         assert!(result.is_ok());
     }
 }

@@ -654,10 +654,10 @@ mod tests {
     fn test_resolve_users_for_authorize_load_tabular_adds_request_user_if_all_views_are_invoker() {
         let warehouse_id = WarehouseId::new_random();
 
-        let security_model_property = "trino.run-as-owner".to_string();
+        let owner_property = "trino.run-as-owner".to_string();
         let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-            security_model_property: security_model_property.clone(),
-            identities: Vec::new(),
+            owner_property: owner_property.clone(),
+            identities: HashMap::new(),
         }));
 
         let actor = Actor::Principal(UserId::new_unchecked("test", "test"));
@@ -702,10 +702,10 @@ mod tests {
     fn test_resolve_users_for_authorize_load_tabular_changes_to_view_owner_if_a_views_is_definer() {
         let warehouse_id = WarehouseId::new_random();
 
-        let security_model_property = "trino.run-as-owner".to_string();
+        let owner_property = "trino.run-as-owner".to_string();
         let engines = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
-            security_model_property: security_model_property.clone(),
-            identities: Vec::new(),
+            owner_property: owner_property.clone(),
+            identities: HashMap::new(),
         }));
 
         let actor_test_name = "test";
@@ -718,10 +718,9 @@ mod tests {
         let actor_peter = Actor::Principal(UserId::new_unchecked("test", actor_peter_name));
 
         let mut view_1 = ViewInfo::new_random(warehouse_id);
-        view_1.properties.insert(
-            security_model_property.clone(),
-            actor_trino_name.to_string(),
-        );
+        view_1
+            .properties
+            .insert(owner_property.clone(), actor_trino_name.to_string());
         let view_1_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_1.namespace_id);
 
         let view_2 = ViewInfo::new_random(warehouse_id);
@@ -730,7 +729,7 @@ mod tests {
         let mut view_3 = ViewInfo::new_random(warehouse_id);
         view_3
             .properties
-            .insert(security_model_property, actor_peter_name.to_string());
+            .insert(owner_property, actor_peter_name.to_string());
         let view_3_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_3.namespace_id);
 
         let view_4 = ViewInfo::new_random(warehouse_id);
@@ -787,7 +786,7 @@ mod tests {
      {
         let warehouse_id = WarehouseId::new_random();
 
-        let security_model_property = "trino.run-as-owner".to_string();
+        let owner_property = "trino.run-as-owner".to_string();
         let idp_id = "test";
 
         let actor_test_name = "test";
@@ -798,10 +797,9 @@ mod tests {
         let actor_peter_name = "peter";
 
         let mut view_1 = ViewInfo::new_random(warehouse_id);
-        view_1.properties.insert(
-            security_model_property.clone(),
-            actor_trino_name.to_string(),
-        );
+        view_1
+            .properties
+            .insert(owner_property.clone(), actor_trino_name.to_string());
         let view_1_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_1.namespace_id);
 
         let view_2 = ViewInfo::new_random(warehouse_id);
@@ -810,7 +808,7 @@ mod tests {
         let mut view_3 = ViewInfo::new_random(warehouse_id);
         view_3
             .properties
-            .insert(security_model_property, actor_peter_name.to_string());
+            .insert(owner_property, actor_peter_name.to_string());
         let view_3_namespace = NamespaceHierarchy::new_with_id(warehouse_id, view_3.namespace_id);
 
         let view_4 = ViewInfo::new_random(warehouse_id);
