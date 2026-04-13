@@ -250,6 +250,7 @@ fn interpret_authz_results_for_load_view(
     }
 
     let mut target_view_info: Option<ViewInfo> = None;
+    let mut target_is_delegated = false;
     let mut can_get_metadata = false;
 
     for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
@@ -260,6 +261,7 @@ fn interpret_authz_results_for_load_view(
                 // by matching its ident.
                 if view_action.info.tabular_ident == *view {
                     target_view_info = Some(view_action.info.clone());
+                    target_is_delegated = view_action.is_delegated_execution;
                     if matches!(view_action.action, CatalogViewAction::GetMetadata) {
                         can_get_metadata = allowed;
                     }
@@ -273,8 +275,10 @@ fn interpret_authz_results_for_load_view(
                 }
             }
             ActionOnTableOrView::Table(_) => {
-                // Tables shouldn't appear in a loadView chain, but if they do
-                // from the referenced-by views, just skip them.
+                // Unreachable: all referenced-by entries are looked up as views
+                // (TabularIdentBorrowed::View) and the target is also a view,
+                // so the DB type filter prevents tables from appearing here.
+                debug_assert!(false, "Table action in loadView authorization chain");
             }
         }
     }
@@ -283,7 +287,11 @@ fn interpret_authz_results_for_load_view(
         .ok_or_else(|| AuthZCannotSeeView::new_not_found(warehouse_id, view.clone()))?;
 
     if !can_get_metadata {
-        return Err(AuthZCannotSeeView::new_forbidden(warehouse_id, view.clone()).into());
+        return Err(
+            AuthZCannotSeeView::new_forbidden(warehouse_id, view.clone())
+                .with_delegated_execution(target_is_delegated)
+                .into(),
+        );
     }
 
     // Views loaded via loadView always get read storage permissions

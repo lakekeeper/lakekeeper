@@ -515,6 +515,9 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                  RawQuery(load_table_credentials_query): RawQuery,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
+                    // Deserialization cannot fail: StrDeserializer always provides a
+                    // string, and LoadTableCredentialsQuery::visit_str always returns
+                    // Ok (it delegates to parse_referenced_by_param which returns Option).
                     let load_table_credentials_query = load_table_credentials_query
                         .as_deref()
                         .and_then(|q| {

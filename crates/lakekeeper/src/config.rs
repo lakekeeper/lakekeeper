@@ -179,6 +179,13 @@ pub enum SecurityModel {
     Definer(String),
 }
 
+/// Multiple matched engines resolved to different owners for the same view.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Ambiguous security model: multiple engines resolve to different owners: {owners:?}")]
+pub struct AmbiguousSecurityModel {
+    pub owners: Vec<String>,
+}
+
 impl TrustedEngine {
     #[must_use]
     pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
@@ -230,15 +237,29 @@ impl MatchedEngines {
     }
 
     /// Determine security model from view properties.
-    /// Returns `Definer` if any matched engine's security model property is set.
-    #[must_use]
-    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+    ///
+    /// Returns `Definer` if any matched engine's owner property is set.
+    /// Returns an error if multiple engines resolve to different owners
+    /// (ambiguous delegation).
+    pub fn determine_security_model(
+        &self,
+        properties: &HashMap<String, String>,
+    ) -> Result<SecurityModel, AmbiguousSecurityModel> {
+        let mut found_owner: Option<String> = None;
         for engine in &self.engines {
             if let SecurityModel::Definer(owner) = engine.determine_security_model(properties) {
-                return SecurityModel::Definer(owner);
+                if let Some(ref prev) = found_owner {
+                    if *prev != owner {
+                        return Err(AmbiguousSecurityModel {
+                            owners: vec![prev.clone(), owner],
+                        });
+                    }
+                } else {
+                    found_owner = Some(owner);
+                }
             }
         }
-        SecurityModel::Invoker
+        Ok(found_owner.map_or(SecurityModel::Invoker, SecurityModel::Definer))
     }
 
     /// Whether this request is allowed to modify the given property.
@@ -2030,7 +2051,7 @@ mod test {
         assert!(!m.is_trusted());
         assert!(!m.owns_property("anything"));
         assert_eq!(
-            m.determine_security_model(&HashMap::new()),
+            m.determine_security_model(&HashMap::new()).unwrap(),
             SecurityModel::Invoker
         );
     }
@@ -2052,7 +2073,7 @@ mod test {
 
         let props = HashMap::from([("spark.run-as-owner".to_string(), "alice".to_string())]);
         assert_eq!(
-            m.determine_security_model(&props),
+            m.determine_security_model(&props).unwrap(),
             SecurityModel::Definer("alice".to_string())
         );
 
@@ -2065,7 +2086,39 @@ mod test {
     fn test_matched_engines_invoker_when_no_property_matches() {
         let m = MatchedEngines::single(test_engine("trino.run-as-owner"));
         let props = HashMap::from([("unrelated".to_string(), "value".to_string())]);
-        assert_eq!(m.determine_security_model(&props), SecurityModel::Invoker);
+        assert_eq!(
+            m.determine_security_model(&props).unwrap(),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_same_owner_across_engines_is_ok() {
+        let m = MatchedEngines::new(vec![
+            test_engine("trino.run-as-owner"),
+            test_engine("spark.run-as-owner"),
+        ]);
+        let props = HashMap::from([
+            ("trino.run-as-owner".to_string(), "alice".to_string()),
+            ("spark.run-as-owner".to_string(), "alice".to_string()),
+        ]);
+        assert_eq!(
+            m.determine_security_model(&props).unwrap(),
+            SecurityModel::Definer("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_different_owners_is_ambiguous() {
+        let m = MatchedEngines::new(vec![
+            test_engine("trino.run-as-owner"),
+            test_engine("spark.run-as-owner"),
+        ]);
+        let props = HashMap::from([
+            ("trino.run-as-owner".to_string(), "alice".to_string()),
+            ("spark.run-as-owner".to_string(), "bob".to_string()),
+        ]);
+        assert!(m.determine_security_model(&props).is_err());
     }
 
     #[test]

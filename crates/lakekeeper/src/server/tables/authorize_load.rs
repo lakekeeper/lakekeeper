@@ -279,7 +279,10 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
             is_delegated_execution: delegated,
             namespace: namespace.clone(),
         });
-        match engines.determine_security_model(tabular.properties()) {
+        match engines
+            .determine_security_model(tabular.properties())
+            .map_err(|e| AuthZError::from(AuthzBadRequest::new(e.to_string())))?
+        {
             SecurityModel::Invoker => {}
             SecurityModel::Definer(owner) => {
                 current_user = if let Some(cached) = owners_cache.get(&owner) {

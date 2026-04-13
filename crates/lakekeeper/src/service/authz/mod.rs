@@ -1504,6 +1504,11 @@ pub(crate) mod tests {
         }
 
         fn check_available_for_user(&self, object: &str, user: Option<&UserOrRole>) -> bool {
+            // Check global hidden set first
+            if !self.check_available(object) {
+                return false;
+            }
+            // Then check per-user hidden set
             if let Some(user) = user {
                 let user_key = format!("{user:?}");
                 let per_user = self.hidden_for_user.read().unwrap();
@@ -1511,7 +1516,7 @@ pub(crate) mod tests {
                     return !user_hidden.contains(object);
                 }
             }
-            self.check_available(object)
+            true
         }
 
         pub(crate) fn hide(&self, object: &str) {

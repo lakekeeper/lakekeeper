@@ -16,7 +16,7 @@ With the INVOKER security model, the **calling user's** permissions are checked 
 
 **Example:** User Alice queries a view that references a table.
 
-```
+```text
 Alice --> View (INVOKER) --> Table
                 |                |
           Check: Alice     Check: Alice
@@ -30,7 +30,7 @@ With the DEFINER security model, the **view owner's** permissions are used for r
 
 **Example:** User Alice queries a DEFINER view owned by Bob that references a table.
 
-```
+```text
 Alice --> View (DEFINER, owner=Bob) --> Table
                 |                          |
           Check: Alice               Check: Bob
@@ -44,7 +44,7 @@ Views can reference other views, creating chains. The security model is evaluate
 
 **Example:** A chain with mixed security models.
 
-```
+```text
 Alice --> View1 (DEFINER, owner=Bob) --> View2 (INVOKER) --> View3 (DEFINER, owner=Carol) --> Table
               |                              |                            |                     |
         Check: Alice                   Check: Bob                   Check: Bob            Check: Carol
