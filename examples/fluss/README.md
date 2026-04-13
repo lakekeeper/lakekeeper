@@ -4,14 +4,19 @@
 
 No authentication or authorization is configured.
 
+> **NOTE**:
+> This example will continously produce data as long as it is running.
+> You need to explicitly terminate the example (f. ex. `docker compose down` if
+> you are using Docker.)
+
 ## Services
 
 | Service          | URL                   |
 |------------------|-----------------------|
-| Lakekeeper       | http://localhost:8181  |
-| Flink Web UI     | http://localhost:8083  |
-| RustFS Console   | http://localhost:9001  |
-| RustFS API       | http://localhost:9000  |
+| Lakekeeper       | [http://localhost:8181](http://localhost:8181) |
+| Flink Web UI     | [http://localhost:8083](http://localhost:8083) |
+| RustFS Console   | [http://localhost:9001](http://localhost:9001) |
+| RustFS API       | [http://localhost:9000](http://localhost:9000) |
 
 RustFS credentials: `rustfs-root-user` / `rustfs-root-password`
 

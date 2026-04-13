@@ -5,18 +5,43 @@ cd "$(dirname "$0")"
 wait_for() {
     local secs=$1 msg=$2; shift 2
     SECONDS=0
-    until eval "$@" 2>/dev/null; do
+    until "$@" 2>/dev/null; do
         [ $SECONDS -ge "$secs" ] && echo "$msg" && exit 1
         sleep 2
     done
 }
 
+detect_engine() {
+    for cmd in docker podman nerdctl; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            echo "$cmd"
+            return 0
+        fi
+    done
+
+    echo "No container engine found (docker/podman/nerdctl)" >&2
+    return 1
+}
+
+tiering_job_running() {
+    "$CONTAINER_CMD" compose exec -T jobmanager ./bin/flink list -r 2>/dev/null \
+        | grep -q 'Tiering Service'
+}
+
+if [ -z "${CONTAINER_CMD:-}" ]; then
+    CONTAINER_CMD=$(detect_engine) || exit 1
+fi
+echo "Using $CONTAINER_CMD as container engine"
+
 echo "--- Waiting for services ---"
-wait_for 120 "jobmanager did not start" "docker compose exec -T jobmanager true"
-wait_for 120 "lakekeeper did not become healthy" "docker compose exec -T jobmanager bash -c 'curl -sf http://lakekeeper:8181/health > /dev/null'"
+wait_for 120 "jobmanager did not start" \
+    "$CONTAINER_CMD" compose exec -T jobmanager true
+wait_for 120 "lakekeeper did not become healthy" \
+    "$CONTAINER_CMD" compose exec -T jobmanager \
+    curl -sf http://lakekeeper:8181/health
 
 echo "--- Creating table ---"
-docker compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
+$CONTAINER_CMD compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
 CREATE CATALOG fluss_catalog WITH (
     'type' = 'fluss',
     'bootstrap.servers' = 'coordinator-server:9123'
@@ -38,17 +63,17 @@ CREATE TABLE IF NOT EXISTS orders (
 SQL
 
 echo "--- Starting tiering job ---"
-docker compose exec -d jobmanager ./bin/flink run \
+$CONTAINER_CMD compose exec -d jobmanager ./bin/flink run \
     /opt/flink/lib/fluss-flink-tiering-0.9.0-incubating.jar \
     --fluss.bootstrap.servers coordinator-server:9123 \
     --datalake.format iceberg \
     --datalake.iceberg.type rest \
     --datalake.iceberg.uri http://lakekeeper:8181/catalog \
     --datalake.iceberg.warehouse fluss-warehouse
-wait_for 30 "tiering job did not start" "docker compose exec -T jobmanager ./bin/flink list -r 2>/dev/null | grep -q 'Tiering Service'"
+wait_for 30 "tiering job did not start" tiering_job_running
 
 echo "--- Starting continuous ingestion ---"
-docker compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
+$CONTAINER_CMD compose exec -T jobmanager ./bin/sql-client.sh embedded <<'SQL'
 CREATE CATALOG fluss_catalog WITH (
     'type' = 'fluss',
     'bootstrap.servers' = 'coordinator-server:9123'
@@ -89,7 +114,7 @@ SELECT * FROM lk.demo.orders LIMIT 5;
 echo "--- Waiting for data to be tiered to Iceberg ---"
 SECONDS=0
 while [ $SECONDS -lt 120 ]; do
-    output=$(docker compose run --rm -T duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
+    output=$($CONTAINER_CMD compose run --rm -T duckdb duckdb -c "$DUCKDB_QUERY" 2>&1)
     if echo "$output" | grep -q "0 rows"; then
         sleep 5
         continue
@@ -98,7 +123,7 @@ while [ $SECONDS -lt 120 ]; do
     echo "$output"
     echo ""
     echo "Data is continuously flowing. Query anytime with:"
-    echo "  docker compose run --rm duckdb duckdb"
+    echo "  $CONTAINER_CMD compose run --rm duckdb duckdb"
     echo ""
     echo "Or open the Lakekeeper UI at http://localhost:8181"
     exit 0

@@ -486,3 +486,18 @@ SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 -- Set persistent for the system
 ALTER SYSTEM SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 ```
+
+## <img src="/assets/fluss.svg" width="30"> Apache Fluss
+
+[Apache Fluss](https://fluss.apache.org/) is a streaming storage system that can tier streaming data into Iceberg tables via its [Streaming Lakehouse](https://fluss.apache.org/docs/streaming-lakehouse/overview/) feature. Lakekeeper can be used as the Iceberg REST catalog for this tiering, so that tiered data is immediately queryable by any Iceberg-compatible engine through Lakekeeper. For details on how Fluss integrates with Iceberg specifically, see the [Fluss Iceberg integration docs](https://fluss.apache.org/docs/streaming-lakehouse/integrate-data-lakes/iceberg/).
+
+To point Fluss at Lakekeeper, set the following properties in `server.yaml`. Fluss strips the `datalake.iceberg.` prefix and passes the remainder as native Iceberg REST catalog properties. The snippet below assumes Lakekeeper is running without authentication; if authentication is enabled, additional properties need to be set (see f. ex. [Spark](#spark)).
+
+```yaml
+datalake.format: iceberg
+datalake.iceberg.type: rest
+datalake.iceberg.uri: http://<lakekeeper-host>:<lakekeeper-port>/catalog
+datalake.iceberg.warehouse: <warehouse-name>
+```
+
+A Docker Compose example including Fluss, the tiering service, and Lakekeeper is available in the `examples/fluss` directory of the Lakekeeper repository.
