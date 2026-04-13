@@ -23,7 +23,7 @@ To get started quickly with the latest version of Lakekeeper check our [Getting 
 ## Identifier Case Sensitivity
 All entity names in Lakekeeper — including Projects, Warehouses, Namespaces, Tables, Views, and Roles — are **case-insensitive but case-preserving**:
 
-- **Case-insensitive matching**: Looking up `my_table`, `My Table`, or `MY_TABLE` all resolve to the same entity. This applies to all operations: reads, writes, renames, drops, and listing.
+- **Case-insensitive matching**: Looking up `my_table`, `My_Table`, or `MY_TABLE` all resolve to the same entity. This applies to all operations: reads, writes, renames, drops, and listing.
 - **Case-preserving storage**: The name you provide at creation time is stored exactly as given. Lakekeeper does not normalize names to lowercase.
 - **No case-only duplicates**: You cannot create two entities whose names differ only in case within the same scope. For example, creating namespace `Analytics` and then `analytics` in the same warehouse will fail with a conflict error.
 - **Requested case in responses**: API responses return entity names using the case from the *request*, not the case stored in the database. For example, if a table was created as `my_table` and you query for `MY_TABLE`, the response will contain `MY_TABLE`.
