@@ -2302,7 +2302,10 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(found.is_some(), "Namespace should be found case-insensitively");
+        assert!(
+            found.is_some(),
+            "Namespace should be found case-insensitively"
+        );
 
         let ns_lower = NamespaceIdent::from_vec(vec!["analytics".to_string()]).unwrap();
         let found = PostgresBackend::get_namespace_cache_aware(
@@ -2313,6 +2316,9 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(found.is_some(), "Namespace should be found case-insensitively");
+        assert!(
+            found.is_some(),
+            "Namespace should be found case-insensitively"
+        );
     }
 }

@@ -1982,8 +1982,7 @@ pub(crate) mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
-        let namespace =
-            NamespaceIdent::from_vec(vec!["My_Namespace".to_string()]).unwrap();
+        let namespace = NamespaceIdent::from_vec(vec!["My_Namespace".to_string()]).unwrap();
         let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
             .await
             .namespace_id();

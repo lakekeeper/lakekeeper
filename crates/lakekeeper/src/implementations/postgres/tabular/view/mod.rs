@@ -869,8 +869,7 @@ pub(crate) mod tests {
         tx.commit().await.unwrap();
 
         // Lookup with uppercase name and namespace
-        let upper_namespace =
-            NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap();
+        let upper_namespace = NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap();
         let upper_ident = TableIdent {
             namespace: upper_namespace,
             name: "MY_VIEW".to_string(),
