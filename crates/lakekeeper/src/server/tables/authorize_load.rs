@@ -274,6 +274,18 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
             is_delegated_execution: delegated,
             namespace: namespace.clone(),
         });
+        // Only views have a security model. Tables can only appear as the
+        // last entry (the target) because all referenced-by entries are looked
+        // up as TabularIdentBorrowed::View and the DB filters by type.
+        if matches!(tabular, ViewOrTableInfo::Table(_)) {
+            debug_assert!(
+                tabulars
+                    .last()
+                    .is_some_and(|(t, _)| std::ptr::eq(t, tabular)),
+                "Table appeared as intermediate entry in authorization chain"
+            );
+            continue;
+        }
         match engines
             .determine_security_model(tabular.properties())
             .map_err(|e| AuthZError::from(AuthzBadRequest::new(e.to_string())))?

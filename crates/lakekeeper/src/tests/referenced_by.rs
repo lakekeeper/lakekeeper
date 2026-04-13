@@ -226,6 +226,39 @@ async fn test_load_table_referenced_by_without_engine_ignores_views(pool: PgPool
 }
 
 #[sqlx::test]
+async fn test_load_table_referenced_by_with_engine_rejects_missing_view(pool: PgPool) {
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(AllowAllAuthorizer::default())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+
+    let result = Server::<AllowAllAuthorizer>::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident(
+                "ns",
+                "nonexistent_view",
+            )])))
+            .build(),
+        ctx.clone(),
+        request_with_engine(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "with engine, nonexistent view in referenced_by should fail: {result:?}"
+    );
+}
+
+#[sqlx::test]
 async fn test_load_table_with_chained_views(pool: PgPool) {
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
