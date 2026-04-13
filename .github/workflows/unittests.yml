@@ -40,7 +40,7 @@ jobs:
     name: MSRV check
     runs-on: ubuntu-24.04
     env:
-      RUSTFLAGS: "" # override workflow-level -D warnings; MSRV builds may emit new warnings
+      RUSTFLAGS: --cfg tracing_unstable --cfg tokio_unstable # drop -D warnings; MSRV builds may emit new warnings
     steps:
       - uses: actions/checkout@v6
       - name: Read MSRV from Cargo.toml
