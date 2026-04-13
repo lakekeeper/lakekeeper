@@ -418,7 +418,7 @@ Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/ap
 
 ### Audit Logging
 
-Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Audit Logging Guide](./audit-logging.md).
+Lakekeeper can generate detailed audit logs for all authorization events. Audit logs are written to the standard logging output and can be filtered by the `event_source = "audit"` field. For more information, see the [Logging Guide](./logging.md).
 
 | Variable                                           | Example | Description   |
 |----------------------------------------------------|---------|---------------|

@@ -1236,6 +1236,44 @@ def test_metadata_queries_tables(spark, namespace):
 @pytest.mark.skipif(
     conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
 )
+def test_upgrade_v2_table_with_data_to_v3(spark, namespace):
+    """Upgrade a v2 table that has existing snapshots to v3 (lakekeeper#1690)."""
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.upgrade_table (id BIGINT) USING iceberg TBLPROPERTIES ('format-version' = '2')"
+    )
+    spark.sql(f"INSERT INTO {namespace.spark_name}.upgrade_table VALUES (1)")
+    spark.sql(f"INSERT INTO {namespace.spark_name}.upgrade_table VALUES (2)")
+
+    # Upgrade to v3 - this previously failed with:
+    # "v3 Snapshots must have first-row-id and rows-added fields set"
+    spark.sql(
+        f"ALTER TABLE {namespace.spark_name}.upgrade_table SET TBLPROPERTIES ('format-version' = '3')"
+    )
+
+    table_props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.upgrade_table")
+        .toPandas()
+        .set_index("key")
+    )
+    assert table_props.loc["format-version"]["value"] == "3"
+
+    # Verify data is still readable after upgrade
+    pdf = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.upgrade_table ORDER BY id"
+    ).toPandas()
+    assert pdf["id"].tolist() == [1, 2]
+
+    # Verify we can still write to the table after upgrade
+    spark.sql(f"INSERT INTO {namespace.spark_name}.upgrade_table VALUES (3)")
+    pdf = spark.sql(
+        f"SELECT * FROM {namespace.spark_name}.upgrade_table ORDER BY id"
+    ).toPandas()
+    assert pdf["id"].tolist() == [1, 2, 3]
+
+
+@pytest.mark.skipif(
+    conftest.settings.spark_supports_v3 is not True, reason="Iceberg v3 not supported"
+)
 def test_create_table_v3(spark, namespace):
     spark.sql(
         f"CREATE TABLE {namespace.spark_name}.my_table (my_ints INT, my_floats DOUBLE, strings STRING) USING iceberg TBLPROPERTIES ('format-version' = '3')"
@@ -1557,3 +1595,61 @@ def test_variant_null_and_missing_fields(spark, namespace):
     assert int(pdf["age"].tolist()[2]) == 25
     assert pdf["name"].isna().tolist()[3]  # explicit null → NULL
     assert pdf["age"].isna().tolist()[3]  # explicit null → NULL
+
+
+def test_encryption_key_id_immutable(spark, namespace):
+    """Catalog must ensure encryption.key-id cannot be modified or removed (Iceberg spec)."""
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.encrypted_table (id BIGINT, data STRING) USING iceberg "
+        f"TBLPROPERTIES ('encryption.key-id' = 'my-master-key')"
+    )
+
+    # Verify property is set
+    props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.encrypted_table")
+        .toPandas()
+        .set_index("key")
+    )
+    assert props.loc["encryption.key-id"]["value"] == "my-master-key"
+
+    # Modifying encryption.key-id must fail
+    with pytest.raises(Exception) as e:
+        spark.sql(
+            f"ALTER TABLE {namespace.spark_name}.encrypted_table SET TBLPROPERTIES ('encryption.key-id' = 'different-key')"
+        )
+    assert "Cannot modify immutable property" in str(e.value)
+
+    # Removing encryption.key-id must fail
+    with pytest.raises(Exception) as e:
+        spark.sql(
+            f"ALTER TABLE {namespace.spark_name}.encrypted_table UNSET TBLPROPERTIES ('encryption.key-id')"
+        )
+    assert "Cannot remove immutable property" in str(e.value)
+
+    # Verify property is unchanged
+    props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.encrypted_table")
+        .toPandas()
+        .set_index("key")
+    )
+    assert props.loc["encryption.key-id"]["value"] == "my-master-key"
+
+
+def test_encryption_key_id_set_same_value(spark, namespace):
+    """Setting encryption.key-id to the same value should succeed (idempotent)."""
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.encrypted_idempotent (id BIGINT) USING iceberg "
+        f"TBLPROPERTIES ('encryption.key-id' = 'my-master-key')"
+    )
+
+    # Setting the same value should succeed
+    spark.sql(
+        f"ALTER TABLE {namespace.spark_name}.encrypted_idempotent SET TBLPROPERTIES ('encryption.key-id' = 'my-master-key')"
+    )
+
+    props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.encrypted_idempotent")
+        .toPandas()
+        .set_index("key")
+    )
+    assert props.loc["encryption.key-id"]["value"] == "my-master-key"

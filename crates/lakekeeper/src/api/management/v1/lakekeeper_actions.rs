@@ -21,8 +21,8 @@ use crate::{
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
             RequireProjectActionError, RequireRoleActionError, RoleAssignee, UserOrRole,
-            fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
-            refresh_warehouse_and_namespace_if_needed,
+            UserOrRoleId, fetch_warehouse_namespace_table_by_id,
+            fetch_warehouse_namespace_view_by_id, refresh_warehouse_and_namespace_if_needed,
         },
         events::{
             APIEventContext,
@@ -92,16 +92,21 @@ macro_rules! action_response {
     };
 }
 
-fn push_for_user_context<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
+/// Records the on-behalf-of principal on an introspection event so the
+/// audit log's synthesised `authorizations[]` entries carry it as
+/// `for_principal`. The top-level `actor` field continues to reflect the API
+/// caller, so audit consumers see both: who asked, and whose permissions
+/// were evaluated.
+fn set_for_user<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
     event_ctx: &mut APIEventContext<P, R, A>,
     for_user: Option<&APIUserOrRole>,
 ) {
     if let Some(for_user) = for_user {
-        let s = match for_user {
-            APIUserOrRole::User(id) => format!("User({id})"),
-            APIUserOrRole::Role(assignee) => format!("Role({})", assignee.role_id()),
+        let id = match for_user {
+            APIUserOrRole::User(id) => UserOrRoleId::User(id.clone()),
+            APIUserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role_id()),
         };
-        event_ctx.push_extra_context("for-user", s);
+        event_ctx.set_for_principal(id);
     }
 }
 
@@ -123,7 +128,11 @@ action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
 
 /// Resolve an API-level principal (which may contain only a `RoleId`) into the authz `UserOrRole`
 /// by fetching the full role from the catalog when needed.
-async fn resolve_principal<C: CatalogStore>(
+///
+/// Exposed so downstream crates (e.g. enterprise authorizers) that accept an API-level
+/// `UserOrRole` in request bodies can convert it to the authz form without duplicating the
+/// role-lookup logic.
+pub async fn resolve_principal<C: CatalogStore>(
     principal: Option<APIUserOrRole>,
     catalog_state: C::State,
 ) -> Result<Option<UserOrRole>, AuthZError> {
@@ -156,7 +165,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
         IntrospectPermissions {},
         state.v1_state.authz.server_id(),
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result: Result<_, AuthZError> = async {
         let for_user = resolve_principal::<C>(for_user_api, state.v1_state.catalog.clone()).await?;
@@ -201,7 +210,7 @@ pub(super) async fn get_allowed_user_actions<C: CatalogStore, A: Authorizer, S: 
         object,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let allowed_actions = authorize_get_user_actions::<C>(
         event_ctx.request_metadata(),
@@ -279,7 +288,7 @@ pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: 
         role_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_role_actions::<C>(
         event_ctx.request_metadata(),
@@ -373,7 +382,7 @@ pub(super) async fn get_allowed_project_actions<C: CatalogStore, A: Authorizer, 
         object.clone(),
         Arc::new(IntrospectPermissions {}),
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_project_actions::<C>(
         event_ctx.request_metadata(),
@@ -454,7 +463,7 @@ pub(super) async fn get_allowed_warehouse_actions<
         object,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_warehouse_actions::<C>(
         event_ctx.request_metadata(),
@@ -544,7 +553,7 @@ pub(super) async fn get_allowed_namespace_actions<
         provided_namespace_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_namespace_actions::<C>(
         event_ctx.request_metadata(),
@@ -644,7 +653,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
         table_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_table_actions::<C>(
         event_ctx.request_metadata(),
@@ -751,7 +760,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
         view_id,
         IntrospectPermissions {},
     );
-    push_for_user_context(&mut event_ctx, for_user_api.as_ref());
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
 
     let authz_result = authorize_get_view_actions::<C>(
         event_ctx.request_metadata(),

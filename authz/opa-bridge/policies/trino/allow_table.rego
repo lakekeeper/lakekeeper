@@ -123,6 +123,7 @@ allow_table_procedure if {
 		"EXPIRE_SNAPSHOTS",
 		"DROP_EXTENDED_STATS",
 		"REMOVE_ORPHAN_FILES",
+		"ADD_FILES",
 	]
 	table := input.action.resource.table.tableName
 	is_metadata_table(table) == false
