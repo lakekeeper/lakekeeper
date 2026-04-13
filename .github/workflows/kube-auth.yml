@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: engineerd/setup-kind@71e45b960fc8dd50b4aeabf6eb6ef2ca0920b4c1 # v0.6.2
+      - uses: engineerd/setup-kind@v0.6.2 # does not support hash pinning (no dist/ in commit)
         with:
           version: "v0.24.0"
       - name: Restore binary
