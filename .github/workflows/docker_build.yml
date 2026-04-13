@@ -26,10 +26,10 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
 
       - name: Docker info
         run: docker info
@@ -41,7 +41,7 @@ jobs:
           docker save -o /tmp/${{ inputs.image_name }}-${{ inputs.platform }}.tar localhost/${{ inputs.image_name }}:${{ inputs.platform }}
 
       - name: Save Docker
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: lakekeeper-image
           path: /tmp/*.tar

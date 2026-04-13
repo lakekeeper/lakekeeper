@@ -20,10 +20,10 @@ jobs:
       current_test: ${{ inputs.test_name }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -69,10 +69,10 @@ jobs:
         run: cat dump.sql | gzip -9 > dump.sql.gz
       - name: Upload dump
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: db-dump-${{ inputs.test_name }}
           path: dump.sql.gz
       - name: Dump docker logs on failure
         if: always()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2

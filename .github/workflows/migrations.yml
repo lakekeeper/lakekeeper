@@ -40,7 +40,7 @@ jobs:
     outputs:
       initial-versions: ${{ steps.initial-versions.outputs.initial-versions }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Get initial versions
         id: initial-versions
         run: |
@@ -61,11 +61,11 @@ jobs:
       - define-initial-versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: extractions/setup-just@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -85,4 +85,4 @@ jobs:
             './create-warehouse/${{ matrix.delete_profile }}.json'
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
