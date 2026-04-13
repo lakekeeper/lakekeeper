@@ -181,7 +181,7 @@ pub enum SecurityModel {
 
 /// Multiple matched engines resolved to different owners for the same view.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Ambiguous security model: multiple engines resolve to different owners: {owners:?}")]
+#[error("Ambiguous security model: multiple engines resolve to different owners")]
 pub struct AmbiguousSecurityModel {
     pub owners: Vec<String>,
 }
@@ -269,10 +269,6 @@ impl MatchedEngines {
         self.engines.iter().any(|e| e.owner_property() == property)
     }
 
-    /// All distinct security model properties across matched engines.
-    pub fn security_model_properties(&self) -> impl Iterator<Item = &str> {
-        self.engines.iter().map(TrustedEngine::owner_property)
-    }
 }
 
 #[allow(clippy::struct_excessive_bools)]

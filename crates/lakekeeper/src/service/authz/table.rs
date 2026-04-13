@@ -945,9 +945,7 @@ pub trait AuthZTableOps: Authorizer {
                 auto_approved.push(Some(true));
             } else {
                 auto_approved.push(None);
-                let mut normalized_action = action.clone();
-                normalized_action.user = normalized_user;
-                actions_to_check.push((*ns, normalized_action));
+                actions_to_check.push((*ns, action.clone()));
             }
         }
 

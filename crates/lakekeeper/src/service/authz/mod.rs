@@ -1483,8 +1483,9 @@ pub(crate) mod tests {
         pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
-        /// Per-user object hiding. Key: `user_id`, Value: set of object strings.
-        /// When a user-specific rule exists, it takes precedence over the global `hidden` set.
+        /// Per-user object hiding. Key: `format!("{user:?}")`, Value: set of object strings.
+        /// Global `hidden` is checked first; per-user entries hide additional objects
+        /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
     }

@@ -262,11 +262,6 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
             .collect());
     }
 
-    let idp_id = token_idp_id.ok_or_else(|| {
-        AuthZError::from(AuthzBadRequest::new(
-            "Trusted engine matched but token has no IdP ID".to_string(),
-        ))
-    })?;
     let mut current_user: Actor = actor.clone();
     let mut delegated = false;
     let mut owners_cache: HashMap<String, Actor> = HashMap::new();
@@ -288,6 +283,11 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
                 current_user = if let Some(cached) = owners_cache.get(&owner) {
                     cached.clone()
                 } else {
+                    let idp_id = token_idp_id.ok_or_else(|| {
+                        AuthZError::from(AuthzBadRequest::new(
+                            "DEFINER view requires token with IdP ID".to_string(),
+                        ))
+                    })?;
                     let subject = limes::Subject::new(Some(idp_id.to_string()), owner.clone());
                     let user_id = UserId::try_new(subject).map_err(|e| {
                         AuthZError::from(AuthzBadRequest::new(format!(
