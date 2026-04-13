@@ -198,6 +198,7 @@ where
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Redact)]
+#[allow(clippy::result_large_err)]
 struct OpenFGAConfigSerde {
     /// GRPC Endpoint Url
     endpoint: Url,

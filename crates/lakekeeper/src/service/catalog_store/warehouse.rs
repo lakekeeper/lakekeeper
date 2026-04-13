@@ -159,7 +159,7 @@ impl_error_stack_methods!(WarehouseIdNotFound);
 impl From<WarehouseIdNotFound> for ErrorModel {
     fn from(err: WarehouseIdNotFound) -> Self {
         ErrorModel::builder()
-            .r#type("WarehouseNotFound")
+            .r#type("NoSuchWarehouseException")
             .code(StatusCode::NOT_FOUND.as_u16())
             .message(err.to_string())
             .stack(err.stack)
@@ -217,7 +217,7 @@ impl_error_stack_methods!(WarehouseNameNotFound);
 impl From<WarehouseNameNotFound> for ErrorModel {
     fn from(err: WarehouseNameNotFound) -> Self {
         ErrorModel::builder()
-            .r#type("WarehouseNotFound")
+            .r#type("NoSuchWarehouseException")
             .code(StatusCode::NOT_FOUND.as_u16())
             .message(err.to_string())
             .stack(err.stack)

@@ -1595,3 +1595,61 @@ def test_variant_null_and_missing_fields(spark, namespace):
     assert int(pdf["age"].tolist()[2]) == 25
     assert pdf["name"].isna().tolist()[3]  # explicit null → NULL
     assert pdf["age"].isna().tolist()[3]  # explicit null → NULL
+
+
+def test_encryption_key_id_immutable(spark, namespace):
+    """Catalog must ensure encryption.key-id cannot be modified or removed (Iceberg spec)."""
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.encrypted_table (id BIGINT, data STRING) USING iceberg "
+        f"TBLPROPERTIES ('encryption.key-id' = 'my-master-key')"
+    )
+
+    # Verify property is set
+    props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.encrypted_table")
+        .toPandas()
+        .set_index("key")
+    )
+    assert props.loc["encryption.key-id"]["value"] == "my-master-key"
+
+    # Modifying encryption.key-id must fail
+    with pytest.raises(Exception) as e:
+        spark.sql(
+            f"ALTER TABLE {namespace.spark_name}.encrypted_table SET TBLPROPERTIES ('encryption.key-id' = 'different-key')"
+        )
+    assert "Cannot modify immutable property" in str(e.value)
+
+    # Removing encryption.key-id must fail
+    with pytest.raises(Exception) as e:
+        spark.sql(
+            f"ALTER TABLE {namespace.spark_name}.encrypted_table UNSET TBLPROPERTIES ('encryption.key-id')"
+        )
+    assert "Cannot remove immutable property" in str(e.value)
+
+    # Verify property is unchanged
+    props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.encrypted_table")
+        .toPandas()
+        .set_index("key")
+    )
+    assert props.loc["encryption.key-id"]["value"] == "my-master-key"
+
+
+def test_encryption_key_id_set_same_value(spark, namespace):
+    """Setting encryption.key-id to the same value should succeed (idempotent)."""
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.encrypted_idempotent (id BIGINT) USING iceberg "
+        f"TBLPROPERTIES ('encryption.key-id' = 'my-master-key')"
+    )
+
+    # Setting the same value should succeed
+    spark.sql(
+        f"ALTER TABLE {namespace.spark_name}.encrypted_idempotent SET TBLPROPERTIES ('encryption.key-id' = 'my-master-key')"
+    )
+
+    props = (
+        spark.sql(f"SHOW TBLPROPERTIES {namespace.spark_name}.encrypted_idempotent")
+        .toPandas()
+        .set_index("key")
+    )
+    assert props.loc["encryption.key-id"]["value"] == "my-master-key"

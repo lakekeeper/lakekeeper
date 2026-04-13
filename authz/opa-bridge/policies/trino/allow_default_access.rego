@@ -69,6 +69,10 @@ allow_default_access if {
 	allow_view_own_queries
 }
 
+allow_default_access if {
+	allow_read_system_information
+}
+
 # Every authenticated user can execute queries.
 allow_execute_query if {
 	input.action.operation == "ExecuteQuery"
@@ -168,4 +172,11 @@ allow_admin_system_access if {
 allow_view_own_queries if {
 	input.action.operation in ["FilterViewQueryOwnedBy", "ViewQueryOwnedBy"]
 	input.action.resource.user.user == input.context.identity.user
+}
+
+# Allow access to ReadSystemInformation, is required
+# for Trino in order to allow access to the API /metrics endpoint
+# see: https://trino.io/docs/current/admin/openmetrics.html
+allow_read_system_information if {
+	input.action.operation == "ReadSystemInformation"
 }
