@@ -61,11 +61,16 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
     let mut t = C::Transaction::begin_read(catalog_state.clone())
         .await
         .map_err(iceberg_err_to_authz)?;
-    let Ok(info) =
-        C::load_generic_table(warehouse_id, namespace_id, table_name, t.transaction()).await
-    else {
-        // Map not-found and catalog errors to "cannot see" for consistent 404 behavior
-        return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, table_ident).into());
+    let info = match C::load_generic_table(warehouse_id, namespace_id, table_name, t.transaction())
+        .await
+    {
+        Ok(info) => info,
+        Err(crate::service::LoadGenericTableError::GenericTableNotFound(_)) => {
+            return Err(
+                AuthZCannotSeeGenericTable::new_not_found(warehouse_id, table_ident).into(),
+            );
+        }
+        Err(e) => return Err(iceberg_err_to_authz(e)),
     };
     t.commit().await.map_err(iceberg_err_to_authz)?;
 

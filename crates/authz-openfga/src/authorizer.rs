@@ -1997,7 +1997,7 @@ pub(crate) mod tests {
             use std::collections::HashMap;
 
             use lakekeeper::service::{
-                GenericTableId, GenericTabularInfo, Namespace, NamespaceId, NamespaceWithParent,
+                GenericTableId, GenericTabularInfo, NamespaceId, NamespaceWithParent,
                 ResolvedWarehouse, WarehouseId,
             };
 

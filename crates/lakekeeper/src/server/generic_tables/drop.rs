@@ -41,11 +41,11 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
     }
 
     // ------------------- AUTHZ -------------------
-    let event_ctx = APIEventContext::for_namespace(
+    let event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
         state.v1_state.events.clone(),
         warehouse_id,
-        namespace.clone(),
+        iceberg::TableIdent::new(namespace.clone(), table_name.clone()),
         CatalogGenericTableAction::Drop,
     );
 

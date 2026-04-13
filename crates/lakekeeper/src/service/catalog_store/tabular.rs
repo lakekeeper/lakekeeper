@@ -394,6 +394,10 @@ impl ViewInfo {
 
 #[cfg(feature = "test-utils")]
 impl GenericTabularInfo {
+    /// Create a test `GenericTabularInfo` with the given IDs and dummy values.
+    ///
+    /// # Panics
+    /// Panics if the hardcoded S3 location cannot be parsed (never in practice).
     #[must_use]
     pub fn test_default(
         warehouse_id: WarehouseId,
