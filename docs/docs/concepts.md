@@ -70,13 +70,13 @@ This matters most for **UI and management tools**. Dashboards, the Lakekeeper UI
 | Snowflake reads table created by Spark | :white_check_mark: | :x: |
 | Spark reads table created by Snowflake | :white_check_mark: | :x: |
 | Trino reads table created by Spark | :white_check_mark: | :white_check_mark: |
-| PyIceberg reads table created by Spark | :white_check_mark: | :white_check_mark:[^1] |
+| PyIceberg reads table created by Spark | :white_check_mark: | :white_check_mark: (1) |
 | Trino with quoted `"MyTable"` finds Spark's `mytable` | :white_check_mark: | :x: |
-| Athena reads table created by any engine | :white_check_mark: | :x:[^2] |
+| Athena reads table created by any engine | :white_check_mark: | :x: (2) |
 | UI shows `Monthly Revenue` + all engines can query it | :white_check_mark: | :x: |
 
-[^1]: Only if PyIceberg uses the exact same case that the creating engine sent (typically lowercase).
-[^2]: Athena always lowercases identifiers, including quoted ones. Tables created with mixed case via PyIceberg or quoted identifiers in Trino are unreachable from Athena in a case-sensitive catalog.
+(1) Only if PyIceberg uses the exact same case that the creating engine sent (typically lowercase).
+(2) Athena always lowercases identifiers, including quoted ones. Tables created with mixed case via PyIceberg or quoted identifiers in Trino are unreachable from Athena in a case-sensitive catalog.
 
 ## Entity Hierarchy
 
