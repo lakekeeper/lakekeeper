@@ -1635,6 +1635,59 @@ def test_encryption_key_id_immutable(spark, namespace):
     assert props.loc["encryption.key-id"]["value"] == "my-master-key"
 
 
+def test_view_case_insensitivity(spark, namespace):
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.view_source (id INT, name STRING) USING iceberg"
+    )
+    spark.sql(f"INSERT INTO {namespace.spark_name}.view_source VALUES (1, 'alice')")
+
+    spark.sql(
+        f"CREATE VIEW {namespace.spark_name}.My_View AS SELECT id FROM {namespace.spark_name}.view_source"
+    )
+
+    # Query with different cases
+    pdf = spark.sql(f"SELECT * FROM {namespace.spark_name}.my_view").toPandas()
+    assert pdf["id"].tolist() == [1]
+
+    pdf = spark.sql(f"SELECT * FROM {namespace.spark_name}.MY_VIEW").toPandas()
+    assert pdf["id"].tolist() == [1]
+
+    spark.sql(f"DROP VIEW {namespace.spark_name}.MY_VIEW")
+
+    # Verify the view is gone
+    with pytest.raises(Exception):
+        spark.sql(f"SELECT * FROM {namespace.spark_name}.my_view").toPandas()
+
+
+def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
+    ns_name = f"Mixed_Case_Ns_{uuid.uuid4().hex[:8]}"
+    spark.sql(
+        f"CREATE NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
+    )
+
+    # Create table using lowercase namespace
+    spark.sql(
+        f"CREATE TABLE {warehouse.normalized_catalog_name}.`{ns_name.lower()}`.case_test (id INT) USING iceberg"
+    )
+    spark.sql(
+        f"INSERT INTO {warehouse.normalized_catalog_name}.`{ns_name.upper()}`.case_test VALUES (42)"
+    )
+
+    # Read using mixed case
+    pdf = spark.sql(
+        f"SELECT * FROM {warehouse.normalized_catalog_name}.`{ns_name}`.case_test"
+    ).toPandas()
+    assert pdf["id"].tolist() == [42]
+
+    # Cleanup
+    spark.sql(
+        f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test"
+    )
+    spark.sql(
+        f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
+    )
+
+
 def test_encryption_key_id_set_same_value(spark, namespace):
     """Setting encryption.key-id to the same value should succeed (idempotent)."""
     spark.sql(

@@ -2249,4 +2249,70 @@ pub(crate) mod tests {
         assert_eq!(parent1.namespace_ident(), &level1);
         assert!(parent1.is_root());
     }
+
+    #[sqlx::test]
+    async fn test_list_namespaces_preserves_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns_mixed = NamespaceIdent::from_vec(vec!["Analytics".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &ns_mixed, None).await;
+
+        let mut transaction = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+
+        let result = list_namespaces(
+            warehouse_id,
+            &ListNamespacesQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(100),
+                parent: None,
+                return_uuids: false,
+                return_protection_status: false,
+            },
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.namespaces.len(), 1);
+        let ns = result.namespaces.into_hashmap();
+        let stored = ns.values().next().unwrap();
+        assert_eq!(stored.namespace_ident(), &ns_mixed);
+    }
+
+    #[sqlx::test]
+    async fn test_get_namespace_case_insensitive_lookup(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns_mixed = NamespaceIdent::from_vec(vec!["Analytics".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &ns_mixed, None).await;
+
+        // Lookup with different case should succeed
+        let ns_upper = NamespaceIdent::from_vec(vec!["ANALYTICS".to_string()]).unwrap();
+        let found = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &ns_upper,
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(found.is_some(), "Namespace should be found case-insensitively");
+
+        let ns_lower = NamespaceIdent::from_vec(vec!["analytics".to_string()]).unwrap();
+        let found = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &ns_lower,
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(found.is_some(), "Namespace should be found case-insensitively");
+    }
 }

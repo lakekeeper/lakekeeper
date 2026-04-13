@@ -85,6 +85,41 @@ def test_create_namespace_already_exists(warehouse: conftest.Warehouse):
         catalog.create_namespace(namespace)
 
 
+def test_namespace_case_insensitivity(warehouse: conftest.Warehouse):
+    catalog = warehouse.pyiceberg_catalog
+    namespace = ("Test_Case_Ns",)
+    catalog.create_namespace(namespace)
+
+    # Creating with different case should fail
+    with pytest.raises(exc.NamespaceAlreadyExistsError):
+        catalog.create_namespace(("test_case_ns",))
+
+    # Loading properties with different case should succeed
+    props = catalog.load_namespace_properties(("test_case_ns",))
+    assert "location" in props
+
+    props_upper = catalog.load_namespace_properties(("TEST_CASE_NS",))
+    assert "location" in props_upper
+
+
+def test_table_case_insensitivity(namespace: conftest.Namespace):
+    catalog = namespace.pyiceberg_catalog
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    catalog.create_table(namespace.name + ("Mixed_Case_Table",), schema=schema)
+
+    # Load with different case
+    table_lower = catalog.load_table(namespace.name + ("mixed_case_table",))
+    assert table_lower is not None
+
+    table_upper = catalog.load_table(namespace.name + ("MIXED_CASE_TABLE",))
+    assert table_upper is not None
+
+    # Creating with different case should fail
+    with pytest.raises(exc.TableAlreadyExistsError):
+        catalog.create_table(namespace.name + ("mixed_case_table",), schema=schema)
+
+
 def test_list_namespaces(warehouse: conftest.Warehouse):
     catalog = warehouse.pyiceberg_catalog
     catalog.create_namespace(("test_list_namespaces_1",))

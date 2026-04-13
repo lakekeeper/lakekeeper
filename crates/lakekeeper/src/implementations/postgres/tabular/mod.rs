@@ -1092,7 +1092,7 @@ pub(crate) async fn rename_tabular(
                 SELECT 1
                 FROM tabular t
                 JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
-                WHERE t.name = $1
+                WHERE t.name = $1 AND t.tabular_id != $2
                 FOR UPDATE
             ),
             updated AS (

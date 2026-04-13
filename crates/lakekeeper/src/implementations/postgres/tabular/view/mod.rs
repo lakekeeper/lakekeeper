@@ -832,6 +832,83 @@ pub(crate) mod tests {
         assert!(matches!(e, DropTabularError::TabularNotFound(_)));
     }
 
+    #[sqlx::test]
+    async fn test_view_case_insensitive_lookup(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id =
+            crate::implementations::postgres::tabular::table::tests::get_namespace_id(
+                state.clone(),
+                warehouse_id,
+                &namespace,
+            )
+            .await;
+
+        let location = "s3://my_bucket/my_view/metadata/bar"
+            .parse::<Location>()
+            .unwrap();
+        let request = view_request(None, &location);
+        let mut tx = pool.begin().await.unwrap();
+        super::create_view(
+            warehouse_id,
+            namespace_id,
+            &format!(
+                "s3://my_bucket/my_view/metadata/bar/metadata-{}.gz.json",
+                Uuid::now_v7()
+            )
+            .parse()
+            .unwrap(),
+            &mut tx,
+            "my_view",
+            &request,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Lookup with uppercase name and namespace
+        let upper_namespace =
+            NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap();
+        let upper_ident = TableIdent {
+            namespace: upper_namespace,
+            name: "MY_VIEW".to_string(),
+        };
+        let infos = super::super::get_tabular_infos_by_idents(
+            warehouse_id,
+            &[TabularIdentBorrowed::View(&upper_ident)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 1);
+
+        // Creating a duplicate view with different case should fail
+        let mut tx = pool.begin().await.unwrap();
+        let err = super::create_view(
+            warehouse_id,
+            namespace_id,
+            &format!(
+                "s3://my_bucket/my_view2/metadata/bar/metadata-{}.gz.json",
+                Uuid::now_v7()
+            )
+            .parse()
+            .unwrap(),
+            &mut tx,
+            "MY_VIEW",
+            &ViewMetadataBuilder::new_from_metadata(request.clone())
+                .assign_uuid(Uuid::now_v7())
+                .build()
+                .unwrap()
+                .metadata,
+        )
+        .await
+        .expect_err("duplicate view name with different case should fail");
+        assert!(matches!(err, CreateViewError::TabularAlreadyExists(_)));
+    }
+
     async fn prepare_view(
         pool: PgPool,
     ) -> (

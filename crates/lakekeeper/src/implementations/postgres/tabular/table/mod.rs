@@ -1903,4 +1903,150 @@ pub(crate) mod tests {
             0
         );
     }
+
+    #[sqlx::test]
+    async fn test_rename_to_different_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            None,
+            None,
+            Some("my_table".to_string()),
+        )
+        .await;
+
+        // Rename to a name that differs only in case
+        let new_table_ident = TableIdent {
+            namespace: table.namespace.clone(),
+            name: "My_Table".to_string(),
+        };
+
+        let mut transaction = pool.begin().await.unwrap();
+        rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            &table.table_ident,
+            &new_table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // Old name should still find it (case-insensitive)
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[TabularIdentBorrowed::Table(&table.table_ident)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].tabular_id(), table.table_id.into());
+
+        // New name should also find it
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[TabularIdentBorrowed::Table(&new_table_ident)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].tabular_id(), table.table_id.into());
+
+        // The stored name should be the new case
+        let listed = list_tabulars(
+            warehouse_id,
+            Some(table.namespace_id),
+            TabularListFlags::active(),
+            &state.read_pool(),
+            None,
+            PaginationQuery::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        let (_, info, _) = listed.into_iter_with_page_tokens().next().unwrap();
+        assert_eq!(info.tabular_ident().name, "My_Table");
+    }
+
+    #[sqlx::test]
+    async fn test_list_tables_case_insensitive_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            NamespaceIdent::from_vec(vec!["My_Namespace".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let _ = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace.clone()),
+            None,
+            Some("table_one".to_string()),
+        )
+        .await;
+        let _ = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace.clone()),
+            None,
+            Some("table_two".to_string()),
+        )
+        .await;
+
+        // Look up both tables using uppercase namespace
+        let upper_ident_1 = TableIdent {
+            namespace: NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap(),
+            name: "TABLE_ONE".to_string(),
+        };
+        let upper_ident_2 = TableIdent {
+            namespace: NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap(),
+            name: "TABLE_TWO".to_string(),
+        };
+
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[
+                TabularIdentBorrowed::Table(&upper_ident_1),
+                TabularIdentBorrowed::Table(&upper_ident_2),
+            ],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 2);
+
+        // Listing by namespace_id should return original case
+        let listed = list_tabulars(
+            warehouse_id,
+            Some(namespace_id),
+            TabularListFlags::active(),
+            &state.read_pool(),
+            None,
+            PaginationQuery::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.len(), 2);
+        let names: std::collections::HashSet<String> = listed
+            .iter()
+            .map(|(_, info)| info.tabular_ident().name.clone())
+            .collect();
+        assert!(names.contains("table_one"));
+        assert!(names.contains("table_two"));
+    }
 }

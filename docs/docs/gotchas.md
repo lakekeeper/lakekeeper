@@ -35,6 +35,10 @@ catalog:
 ```
 
 
+## Identifiers are case-insensitive
+
+All entity names (Warehouses, Namespaces, Tables, Views, Roles) are case-insensitive. If you create a table named `MyTable`, querying for `mytable` or `MYTABLE` will find it. Attempting to create `mytable` in the same namespace where `MyTable` already exists will fail with a conflict error. See [Identifier Case Sensitivity](./concepts.md#identifier-case-sensitivity) for details.
+
 ## I'm using Postgres <15 and the Lakekeeper database migrations fail with syntax error
 
 ```
