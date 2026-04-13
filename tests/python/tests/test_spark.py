@@ -1679,10 +1679,11 @@ def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
     ).toPandas()
     assert pdf["id"].tolist() == [42]
 
-    # Cleanup
+    # Cleanup — wait for soft-delete expiration (2s) before dropping namespace
     spark.sql(
         f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test"
     )
+    time.sleep(3)
     spark.sql(
         f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
     )
