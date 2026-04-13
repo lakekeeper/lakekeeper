@@ -29,6 +29,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - uses: engineerd/setup-kind@v0.6.2 # does not support hash pinning (no dist/ in commit)
         with:
           version: "v0.24.0"
