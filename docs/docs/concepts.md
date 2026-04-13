@@ -58,7 +58,11 @@ The table exists. It has data. Yet three out of four engines cannot see it. The 
 
 **With Lakekeeper, all four queries find the table instantly.** No quoting tricks, no configuration, no coordination between teams about naming conventions.
 
-This design also benefits **UI and management tools**. Since Lakekeeper preserves the original case, dashboards and the Lakekeeper UI can display human-readable names like `Monthly Revenue` or `Customer Events` — proper casing that is easy to read — while every query engine can still access them with whatever case it uses internally. You get readable names for humans and seamless access for machines.
+#### Why not just lowercase everything?
+
+An alternative approach is to normalize all identifiers to lowercase on the catalog side. This solves interoperability but destroys information. If a data team carefully names their gold layer tables `Monthly Revenue`, `Customer Events`, or `Order Line Items`, a normalizing catalog turns them all into `monthly revenue`, `customer events`, and `order line items`. The intent behind the original naming is lost.
+
+This matters most for **UI and management tools**. Dashboards, the Lakekeeper UI, data catalogs, and lineage tools all display table names to humans. `Monthly Revenue` is immediately readable; `monthly revenue` is slightly worse; and once you have hundreds of tables, the difference between well-cased names and a wall of lowercase text adds up. By preserving the original case, Lakekeeper lets teams maintain meaningful, readable names while every query engine can still access them with whatever case it uses internally. You get proper casing for humans and seamless access for machines — without compromise.
 
 | Scenario | Lakekeeper | Case-sensitive catalog |
 |----------|:----------:|:----------------------:|
