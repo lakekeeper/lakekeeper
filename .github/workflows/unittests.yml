@@ -11,7 +11,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.88
+  RUST_TOOLCHAIN: 1.94.1
   RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
@@ -32,8 +32,29 @@ jobs:
       - clippy
       - check-generated-openapi-matches
       - test
+      - msrv-check
     steps:
       - run: exit 0
+
+  msrv-check:
+    name: MSRV check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: echo "version=$(grep '^rust-version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust ${{ steps.msrv.outputs.version }}
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+        env:
+          RUST_CACHE_KEY_OS: rust-msrv-${{ steps.msrv.outputs.version }}-cache-ubuntu-24.04
+      - name: cargo check
+        run: cargo check --workspace
+        env:
+          SQLX_OFFLINE: "true"
+
   sqlx-check:
     runs-on: ubuntu-24.04
     steps:
