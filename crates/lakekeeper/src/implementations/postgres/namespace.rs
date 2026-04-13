@@ -195,6 +195,10 @@ pub(crate) async fn get_namespaces_by_name<
             select array(select jsonb_array_elements_text(r))::text[] as namespace_name
             from unnest($2::jsonb[]) as r
         ),
+        requested_parent_paths as (
+            SELECT DISTINCT namespace_name[1:generate_series(1, array_length(namespace_name, 1))] as parent_name
+            FROM requested_namespaces
+        ),
         selected_ns as (
             select namespace_name
             from namespace
@@ -222,7 +226,7 @@ pub(crate) async fn get_namespaces_by_name<
         )
         SELECT
                 n.namespace_id,
-                n.namespace_name as "namespace_name: Vec<String>",
+                COALESCE(rpp.parent_name, n.namespace_name) as "namespace_name!: Vec<String>",
                 n.warehouse_id,
                 n.protected,
                 n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
@@ -232,6 +236,7 @@ pub(crate) async fn get_namespaces_by_name<
                 p.namespace_id as "parent_namespace_id?",
                 p.version as "parent_version?"
         FROM relevant_namespaces n
+        LEFT JOIN requested_parent_paths rpp ON n.namespace_name = rpp.parent_name
         LEFT JOIN relevant_namespaces p ON array_length(n.namespace_name, 1) = array_length(p.namespace_name, 1) + 1
             AND n.namespace_name[1:array_length(p.namespace_name, 1)] = p.namespace_name
         "#,

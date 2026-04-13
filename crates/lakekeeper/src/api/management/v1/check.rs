@@ -7,7 +7,6 @@ use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use unicase::UniCase;
 
 use crate::{
     ProjectId, WarehouseId,
@@ -883,7 +882,7 @@ async fn fetch_namespaces<C: CatalogStore>(
 ) -> Result<
     (
         HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
-        HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
+        HashMap<(WarehouseId, Vec<String>), NamespaceId>,
     ),
     AuthZError,
 > {
@@ -1266,7 +1265,7 @@ struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
     namespace_checks_by_ident: NamespaceChecksByIdentMap,
     warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
     namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
-    namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
+    namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<String>), NamespaceId>,
     authorizer: &'a A,
     metadata: &'a RequestMetadata,
     error_on_not_found: bool,

@@ -1264,11 +1264,7 @@ async fn test_cache_eviction_invalidates_mapping(pool: PgPool) {
     // Verify both caches have the entry
     assert!(NAMESPACE_CACHE.get(&id).await.is_some());
 
-    let cache_key: Vec<unicase::UniCase<String>> = ident
-        .inner()
-        .into_iter()
-        .map(unicase::UniCase::new)
-        .collect();
+    let cache_key: Vec<String> = ident.as_ref().clone();
     assert!(
         IDENT_TO_ID_CACHE
             .get(&(warehouse_id, cache_key.clone()))
