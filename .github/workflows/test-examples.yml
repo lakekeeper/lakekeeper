@@ -42,10 +42,10 @@ jobs:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -66,16 +66,16 @@ jobs:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
 
   test-example-access-control-simple:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -96,13 +96,13 @@ jobs:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
 
   test-example-access-control-advanced:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Test Make all
         run: |
@@ -118,10 +118,10 @@ jobs:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -142,16 +142,16 @@ jobs:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
 
   test-docker-compose-with-keycloak:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: lakekeeper-image
           path: artifacts
@@ -216,4 +216,4 @@ jobs:
 
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2

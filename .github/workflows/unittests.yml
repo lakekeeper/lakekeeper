@@ -37,7 +37,7 @@ jobs:
   sqlx-check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Cargo sqlx-check
         run: |
           export DEBIAN_FRONTEND=noninteractive 
@@ -49,10 +49,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: sudo snap install --edge --classic just
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
         with:
           components: rustfmt
           toolchain: ${{ env.RUST_TOOLCHAIN }},nightly
@@ -71,10 +71,10 @@ jobs:
       - run: |
           sudo snap install --edge --classic just
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
         with:
           components: clippy
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -91,9 +91,9 @@ jobs:
     steps:
       - run: |
           sudo snap install --edge --classic just
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
         with:
           components: clippy
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -103,7 +103,7 @@ jobs:
         run: just update-management-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: 22
       - name: Build TS Client
@@ -145,7 +145,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Start Minio Docker Container
         run: |
@@ -174,7 +174,7 @@ jobs:
           docker exec minio /usr/bin/mc alias set local http://localhost:9000 minio-root-user minio-root-password
           docker exec minio /usr/bin/mc mb local/tests
 
-      - uses: azure/login@v2
+      - uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
         if: ${{ env.AZURE_CLIENT_ID != '' }}
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
@@ -186,12 +186,12 @@ jobs:
         shell: bash
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@921a4027af787cda265c4f334a0f7f89b21d72e9 # v2
         with:
           tool: cargo-nextest
 
@@ -288,7 +288,7 @@ jobs:
           LAKEKEEPER_TEST__GCS_HNS_BUCKET: ${{ secrets.GCS_HNS_BUCKET }}
           LAKEKEEPER_TEST__GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
       - name: Upload junit
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: junit-pg${{ matrix.postgres-version }}
           path: target/nextest/${{ env.NEXTEST_PROFILE }}/junit.xml

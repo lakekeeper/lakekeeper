@@ -38,7 +38,7 @@ jobs:
         run: |
           echo "Repository name: $GITHUB_REPOSITORY"
           echo "Branch name: $GITHUB_REF"
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
         id: release
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
@@ -102,16 +102,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
         with:
           target: ${{ matrix.target }}
           cache: false
 
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
           node-version: 24
 
@@ -133,7 +133,7 @@ jobs:
           cd -
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: bin-${{ matrix.name }}
           path: ${{ matrix.name }}
@@ -160,10 +160,10 @@ jobs:
           - 5432:5432
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Download Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
 
       - name: List Artifacts
         run: ls -lh
@@ -178,7 +178,7 @@ jobs:
           ls -Rlh
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
 
       - name: Docker info
         run: docker info
@@ -203,7 +203,7 @@ jobs:
           docker save -o /tmp/docker-lakekeeper-arm64.tar localhost/lakekeeper-local:arm64
 
       - name: Save Docker
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: docker-lakekeeper
           path: /tmp/docker-lakekeeper-*.tar
@@ -224,13 +224,13 @@ jobs:
             arch: arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Download Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
 
       - name: Docker info
         run: docker info
@@ -256,7 +256,7 @@ jobs:
 
       - name: Dump docker logs on failure
         if: failure()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
 
   debug:
     name: Debug Artifacts
@@ -267,7 +267,7 @@ jobs:
       - release_please
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
 
       - name: List Artifacts
         run: ls -Rlh
@@ -284,14 +284,14 @@ jobs:
         run: echo ${{ needs.release_please.outputs.tag_name }}
 
       - name: Test Login to Quay.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Test Login to Dockerhub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -306,17 +306,17 @@ jobs:
       - test-docker
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
 
       - name: Login to Quay.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Login to Dockerhub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
@@ -359,7 +359,7 @@ jobs:
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
 
       - name: Publish Release
         run: gh release edit ${{ needs.release_please.outputs.tag_name }} --draft=false --repo=lakekeeper/lakekeeper
@@ -367,7 +367,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build | Add Artifacts to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: bin-lakekeeper-*/lakekeeper-*
           tag_name: ${{ needs.release_please.outputs.tag_name }}
@@ -383,17 +383,17 @@ jobs:
     if: ${{ needs.release_please.outputs.releases_created == 'true' }}
     steps:
       - name: Download Artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
 
       - name: Login to Quay.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: quay.io
           username: lakekeeper+github
           password: ${{ secrets.QUAY_LAKEKEEPER_PASSWORD }}
 
       - name: Login to Dockerhub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
