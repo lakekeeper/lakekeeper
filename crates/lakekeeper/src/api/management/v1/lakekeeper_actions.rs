@@ -128,7 +128,11 @@ action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
 
 /// Resolve an API-level principal (which may contain only a `RoleId`) into the authz `UserOrRole`
 /// by fetching the full role from the catalog when needed.
-async fn resolve_principal<C: CatalogStore>(
+///
+/// Exposed so downstream crates (e.g. enterprise authorizers) that accept an API-level
+/// `UserOrRole` in request bodies can convert it to the authz form without duplicating the
+/// role-lookup logic.
+pub async fn resolve_principal<C: CatalogStore>(
     principal: Option<APIUserOrRole>,
     catalog_state: C::State,
 ) -> Result<Option<UserOrRole>, AuthZError> {

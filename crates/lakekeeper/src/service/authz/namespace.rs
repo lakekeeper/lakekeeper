@@ -12,7 +12,7 @@ use crate::{
         NamespaceHierarchy, NamespaceId, NamespaceIdentOrId, NamespaceNotFound,
         NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzBadRequest, AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch,
             CannotInspectPermissions, CatalogAction, CatalogNamespaceAction, IsAllowedActionError,
             MustUse, RequireWarehouseActionError, UserOrRole,
@@ -272,6 +272,15 @@ delegate_authorization_failure_source!(LoadAndAuthorizeNamespaceError => {
     RequireWarehouseActionError,
     RequireNamespaceActionError,
 });
+
+impl From<LoadAndAuthorizeNamespaceError> for AuthZError {
+    fn from(err: LoadAndAuthorizeNamespaceError) -> Self {
+        match err {
+            LoadAndAuthorizeNamespaceError::RequireWarehouseActionError(e) => e.into(),
+            LoadAndAuthorizeNamespaceError::RequireNamespaceActionError(e) => e.into(),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 pub trait AuthzNamespaceOps: Authorizer {
