@@ -39,11 +39,23 @@ jobs:
   msrv-check:
     name: MSRV check
     runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: "" # override workflow-level -D warnings; MSRV builds may emit new warnings
     steps:
       - uses: actions/checkout@v6
       - name: Read MSRV from Cargo.toml
         id: msrv
-        run: echo "version=$(grep '^rust-version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')" >> "$GITHUB_OUTPUT"
+        run: |
+          python3 -c "
+          import tomllib, pathlib, sys
+          cargo = tomllib.loads(pathlib.Path('Cargo.toml').read_text())
+          v = cargo.get('workspace', {}).get('package', {}).get('rust-version') \
+              or cargo.get('package', {}).get('rust-version')
+          if not v:
+              print('::error::rust-version not found in Cargo.toml')
+              sys.exit(1)
+          print(f'version={v}')
+          " >> "$GITHUB_OUTPUT"
       - name: Setup Rust ${{ steps.msrv.outputs.version }}
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
