@@ -78,7 +78,6 @@ pub(super) async fn load_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         .map_err(AuthorizationFailureSource::into_error_model)?
         .into_inner();
 
-    // Derive storage permissions (matching table handler pattern)
     let storage_permissions = if can_write {
         Some(StoragePermissions::ReadWriteDelete)
     } else if can_read {

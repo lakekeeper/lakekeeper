@@ -229,7 +229,7 @@ where
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
             WHERE w.status = 'active'
                 AND (t.deleted_at is NULL OR $4)
-                AND (t.metadata_location is not NULL OR $5)
+                AND (t.metadata_location is not NULL OR $5 OR t.typ = 'generic-table')
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
@@ -377,7 +377,7 @@ where
             WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
                 AND w.status = 'active'
                 AND (t.deleted_at is NULL OR $5)
-                AND (t.metadata_location is not NULL OR $6)
+                AND (t.metadata_location is not NULL OR $6 OR t.typ = 'generic-table')
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'

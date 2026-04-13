@@ -237,7 +237,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
     let info = C::create_generic_table(creation, t.transaction()).await?;
 
-    // Create in authorizer BEFORE commit (with guard for rollback)
+    // Create in authorizer
     authorizer
         .create_generic_table(
             request_metadata,

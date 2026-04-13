@@ -13,8 +13,8 @@ use crate::{
         ResolvedWarehouse, SecretStore, State, TabularId, ViewOrTableInfo,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireWarehouseActionError,
+            CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -95,6 +95,7 @@ where
                     t.tabular.as_action_request(
                         CatalogViewAction::IncludeInList,
                         CatalogTableAction::IncludeInList,
+                        CatalogGenericTableAction::IncludeInList,
                         None,
                     ),
                 ))

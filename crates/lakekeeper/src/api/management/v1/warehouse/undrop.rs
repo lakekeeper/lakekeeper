@@ -9,8 +9,9 @@ use crate::{
         authz::{
             AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZCannotUseWarehouseId, AuthZError, AuthZTableOps, AuthZWarehouseActionForbidden,
-            Authorizer, AuthzWarehouseOps, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, RequireTableActionError, RequireWarehouseActionError,
+            Authorizer, AuthzWarehouseOps, CatalogGenericTableAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, RequireTableActionError,
+            RequireWarehouseActionError,
         },
         require_namespace_for_tabular,
     },
@@ -98,7 +99,12 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, AuthZCannotSeeNamespace>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(CatalogViewAction::Undrop, CatalogTableAction::Undrop, None),
+                t.as_action_request(
+                    CatalogViewAction::Undrop,
+                    CatalogTableAction::Undrop,
+                    CatalogGenericTableAction::GetMetadata,
+                    None,
+                ),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;

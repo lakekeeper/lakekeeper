@@ -291,12 +291,13 @@ impl ViewOrTableInfo {
         }
     }
 
-    pub fn as_action_request<'u, AV, AT>(
+    pub fn as_action_request<'u, AV, AT, AG>(
         &self,
         view_action: AV,
         table_action: AT,
+        generic_table_action: AG,
         user: Option<&'u UserOrRole>,
-    ) -> ActionOnTableOrView<'_, 'u, TableInfo, ViewInfo, AT, AV> {
+    ) -> ActionOnTableOrView<'_, 'u, TableInfo, ViewInfo, AT, AV, GenericTabularInfo, AG> {
         match self {
             Self::View(view) => ActionOnTableOrView::View(ActionOnView {
                 info: view,
@@ -310,7 +311,7 @@ impl ViewOrTableInfo {
                 user,
                 is_delegated_execution: false,
             }),
-            Self::GenericTable(_) => ActionOnTableOrView::GenericTable,
+            Self::GenericTable(gt) => ActionOnTableOrView::GenericTable((gt, generic_table_action)),
         }
     }
 
@@ -891,12 +892,22 @@ impl ViewOrTableDeletionInfo {
         }
     }
 
-    pub fn as_action_request<'u, AV, AT>(
+    pub fn as_action_request<'u, AV, AT, AG>(
         &self,
         view_action: AV,
         table_action: AT,
+        generic_table_action: AG,
         user: Option<&'u UserOrRole>,
-    ) -> ActionOnTableOrView<'_, 'u, TableDeletionInfo, ViewDeletionInfo, AT, AV> {
+    ) -> ActionOnTableOrView<
+        '_,
+        'u,
+        TableDeletionInfo,
+        ViewDeletionInfo,
+        AT,
+        AV,
+        GenericTableDeletionInfo,
+        AG,
+    > {
         match self {
             Self::View(view) => ActionOnTableOrView::View(ActionOnView {
                 info: view,
@@ -910,7 +921,7 @@ impl ViewOrTableDeletionInfo {
                 user,
                 is_delegated_execution: false,
             }),
-            Self::GenericTable(_) => ActionOnTableOrView::GenericTable,
+            Self::GenericTable(gt) => ActionOnTableOrView::GenericTable((gt, generic_table_action)),
         }
     }
 }

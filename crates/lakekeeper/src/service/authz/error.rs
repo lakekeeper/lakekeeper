@@ -341,6 +341,9 @@ impl From<RequireTabularActionsError> for AuthZError {
             RequireTabularActionsError::AuthorizerValidationFailed(e) => {
                 RequireTableActionError::AuthorizerValidationFailed(e).into()
             }
+            RequireTabularActionsError::AuthZGenericTableActionForbidden(e) => {
+                RequireGenericTableActionError::from(e).into()
+            }
         }
     }
 }

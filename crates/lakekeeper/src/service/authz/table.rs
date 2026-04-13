@@ -11,13 +11,15 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZTableInfo, AuthZViewInfo, CatalogBackendError, CatalogGetNamespaceError,
-        GetTabularInfoByLocationError, GetTabularInfoError, InternalParseLocationError,
-        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, SerializationError, TableId, TableIdentOrId, TableInfo, TabularNotFound,
-        TaskNotFoundError, UnexpectedTabularInResponse, WarehouseStatus,
+        AuthZGenericTableInfo, AuthZTableInfo, AuthZViewInfo, CatalogBackendError,
+        CatalogGetNamespaceError, GetTabularInfoByLocationError, GetTabularInfoError,
+        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
+        NamespaceWithParent, ResolvedWarehouse, SerializationError, TableId, TableIdentOrId,
+        TableInfo, TabularNotFound, TaskNotFoundError, UnexpectedTabularInResponse,
+        WarehouseStatus,
         authz::{
-            AuthZError, AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
+            AuthZError, AuthZGenericTableActionForbidden, AuthZGenericTableOps,
+            AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
             AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
             CatalogAction, CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
@@ -517,6 +519,7 @@ pub enum RequireTabularActionsError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthZViewActionForbidden(AuthZViewActionForbidden),
     AuthZTableActionForbidden(AuthZTableActionForbidden),
+    AuthZGenericTableActionForbidden(AuthZGenericTableActionForbidden),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizerValidationFailed(AuthzBadRequest),
@@ -525,6 +528,7 @@ delegate_authorization_failure_source!(RequireTabularActionsError => {
     AuthorizationBackendUnavailable,
     AuthZViewActionForbidden,
     AuthZTableActionForbidden,
+    AuthZGenericTableActionForbidden,
     AuthorizationCountMismatch,
     CannotInspectPermissions,
     AuthorizerValidationFailed
@@ -1007,8 +1011,9 @@ pub trait AuthZTableOps: Authorizer {
     }
 
     async fn are_allowed_tabular_actions_vec<
-        AT: TableAction + Into<Self::TableAction> + Send + Sync,
-        AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync,
+        AT: TableAction + Into<Self::TableAction> + Send + Sync + Clone,
+        AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync + Clone,
+        AG: Into<Self::GenericTableAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -1016,11 +1021,21 @@ pub trait AuthZTableOps: Authorizer {
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            ActionOnTableOrView<'_, '_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
+            ActionOnTableOrView<
+                '_,
+                '_,
+                impl AuthZTableInfo,
+                impl AuthZViewInfo,
+                AT,
+                AV,
+                impl AuthZGenericTableInfo,
+                AG,
+            >,
         )],
     ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         let mut tables = Vec::new();
         let mut views = Vec::new();
+        let mut generic_tables = Vec::new();
         for (ns, action) in actions {
             match action {
                 ActionOnTableOrView::Table(table_action) => {
@@ -1029,7 +1044,9 @@ pub trait AuthZTableOps: Authorizer {
                 ActionOnTableOrView::View(view_action) => {
                     views.push((*ns, view_action.clone()));
                 }
-                ActionOnTableOrView::GenericTable => {}
+                ActionOnTableOrView::GenericTable((g, a)) => {
+                    generic_tables.push((*ns, *g, a.clone().into()));
+                }
             }
         }
 
@@ -1049,6 +1066,22 @@ pub trait AuthZTableOps: Authorizer {
                 .into_inner()
         };
 
+        let generic_table_results = if generic_tables.is_empty() {
+            Vec::new()
+        } else {
+            // TODO: support per-action user/delegated execution for generic tables in batch.
+            // For now, batch checks always run as the request actor.
+            self.are_allowed_generic_table_actions_vec(
+                metadata,
+                None,
+                warehouse,
+                parent_namespaces,
+                &generic_tables,
+            )
+            .await?
+            .into_inner()
+        };
+
         if table_results.len() != tables.len() {
             return Err(AuthorizationCountMismatch::new(
                 tables.len(),
@@ -1062,10 +1095,19 @@ pub trait AuthZTableOps: Authorizer {
                 AuthorizationCountMismatch::new(views.len(), view_results.len(), "view").into(),
             );
         }
+        if generic_table_results.len() != generic_tables.len() {
+            return Err(AuthorizationCountMismatch::new(
+                generic_tables.len(),
+                generic_table_results.len(),
+                "generic_table",
+            )
+            .into());
+        }
 
         // Reorder results to match the original order of actions
         let mut table_idx = 0;
         let mut view_idx = 0;
+        let mut gt_idx = 0;
         let ordered_results: Vec<bool> = actions
             .iter()
             .map(|(_ns, action)| match action {
@@ -1079,10 +1121,11 @@ pub trait AuthZTableOps: Authorizer {
                     view_idx += 1;
                     result
                 }
-                // Generic tables are checked separately at call sites via
-                // are_allowed_generic_table_actions_vec. Return true here so
-                // batch operations that mix entity types don't block on them.
-                ActionOnTableOrView::GenericTable => true,
+                ActionOnTableOrView::GenericTable(_) => {
+                    let result = generic_table_results[gt_idx];
+                    gt_idx += 1;
+                    result
+                }
             })
             .collect();
 
@@ -1101,8 +1144,9 @@ pub trait AuthZTableOps: Authorizer {
     }
 
     async fn require_tabular_actions<
-        AT: TableAction + Into<Self::TableAction> + Send + Sync,
-        AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync,
+        AT: TableAction + Into<Self::TableAction> + Send + Sync + Clone,
+        AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync + Clone,
+        AG: Into<Self::GenericTableAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -1110,7 +1154,16 @@ pub trait AuthZTableOps: Authorizer {
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         tabulars: &[(
             &NamespaceWithParent,
-            ActionOnTableOrView<'_, '_, impl AuthZTableInfo, impl AuthZViewInfo, AT, AV>,
+            ActionOnTableOrView<
+                '_,
+                '_,
+                impl AuthZTableInfo,
+                impl AuthZViewInfo,
+                AT,
+                AV,
+                impl AuthZGenericTableInfo,
+                AG,
+            >,
         )],
     ) -> Result<(), RequireTabularActionsError> {
         let decisions = self
@@ -1137,7 +1190,14 @@ pub trait AuthZTableOps: Authorizer {
                         )
                         .into());
                     }
-                    ActionOnTableOrView::GenericTable => {}
+                    ActionOnTableOrView::GenericTable((info, action)) => {
+                        return Err(AuthZGenericTableActionForbidden::new(
+                            info.warehouse_id(),
+                            info.generic_table_id(),
+                            &action.clone().into(),
+                        )
+                        .into());
+                    }
                 }
             }
         }
@@ -1266,13 +1326,19 @@ impl<I: AuthZViewInfo, A> std::fmt::Debug for ActionOnView<'_, '_, I, A> {
 }
 
 #[derive(Debug)]
-pub enum ActionOnTableOrView<'a, 'u, IT: AuthZTableInfo, IV: AuthZViewInfo, AT, AV> {
+pub enum ActionOnTableOrView<
+    'a,
+    'u,
+    IT: AuthZTableInfo,
+    IV: AuthZViewInfo,
+    AT,
+    AV,
+    IG: AuthZGenericTableInfo,
+    AG,
+> {
     Table(ActionOnTable<'a, 'u, IT, AT>),
     View(ActionOnView<'a, 'u, IV, AV>),
-    /// Generic tables are handled separately in batch authz via
-    /// `are_allowed_generic_table_actions_vec`. This variant carries no data;
-    /// the batch function extracts generic table info at the call site.
-    GenericTable,
+    GenericTable((&'a IG, AG)),
 }
 
 #[cfg(test)]
@@ -1285,8 +1351,8 @@ mod tests {
         api::ApiContext,
         implementations::postgres::PostgresBackend,
         service::{
-            CatalogGenericTableOps, CatalogTabularOps, CatalogWarehouseOps, TabularIdentBorrowed,
-            Transaction,
+            CatalogGenericTableOps, CatalogTabularOps, CatalogWarehouseOps, GenericTableInfo,
+            GenericTabularInfo, TabularIdentBorrowed, Transaction, ViewInfo,
             authz::{
                 AuthZGenericTableOps, CatalogGenericTableAction, CatalogTableAction,
                 CatalogViewAction, tests::HidingAuthorizer,
@@ -1298,6 +1364,18 @@ mod tests {
             memory_io_profile,
         },
     };
+
+    /// Fully-specified tabular action type for tests where not all enum variants are present.
+    type TestTabularAction<'a> = ActionOnTableOrView<
+        'a,
+        'a,
+        TableInfo,
+        ViewInfo,
+        CatalogTableAction,
+        CatalogViewAction,
+        GenericTabularInfo,
+        CatalogGenericTableAction,
+    >;
 
     #[sqlx::test]
     async fn test_are_allowed_tabular_actions_vec_all_allowed(pool: PgPool) {
@@ -1371,7 +1449,7 @@ mod tests {
         .unwrap();
 
         // Test with both table and view actions
-        let actions = vec![
+        let actions: Vec<(&NamespaceWithParent, TestTabularAction<'_>)> = vec![
             (
                 &ns_hierarchy.namespace,
                 ActionOnTableOrView::Table(ActionOnTable {
@@ -1489,7 +1567,7 @@ mod tests {
             .map(|ns| (ns.namespace_id(), ns.clone()))
             .collect();
 
-        let actions = vec![
+        let actions: Vec<(&NamespaceWithParent, TestTabularAction<'_>)> = vec![
             (
                 &ns_hierarchy.namespace,
                 ActionOnTableOrView::Table(ActionOnTable {
@@ -1617,7 +1695,7 @@ mod tests {
             .collect();
 
         // Mix tables and views in different order
-        let actions = vec![
+        let actions: Vec<(&NamespaceWithParent, TestTabularAction<'_>)> = vec![
             (
                 &ns_hierarchy.namespace,
                 ActionOnTableOrView::Table(ActionOnTable {
@@ -1905,6 +1983,117 @@ mod tests {
             .into_inner();
 
         // GetMetadata allowed, Drop blocked
+        assert_eq!(result, vec![true, false]);
+    }
+
+    /// Verify that a hidden generic table is denied in the batch tabular authz path
+    /// (are_allowed_tabular_actions_vec), not auto-allowed.
+    #[sqlx::test]
+    async fn test_tabular_batch_with_hidden_generic_table(pool: PgPool) {
+        let authz = HidingAuthorizer::new();
+        let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+            .pool(pool)
+            .authorizer(authz.clone())
+            .storage_profile(memory_io_profile())
+            .build()
+            .setup()
+            .await;
+
+        let prefix = warehouse_resp.warehouse_id.to_string();
+        let ns = create_ns(ctx.clone(), prefix.clone(), "test_ns".to_string()).await;
+        let _table = create_table(ctx.clone(), &prefix, "test_ns", "t1", false)
+            .await
+            .unwrap();
+        let _gt = create_generic_table(ctx.clone(), &prefix, "test_ns", "gt1")
+            .await
+            .unwrap();
+
+        // Load table via tabular path
+        let table_ident =
+            TableIdent::new(NamespaceIdent::new("test_ns".to_string()), "t1".to_string());
+        let tabulars = vec![TabularIdentBorrowed::Table(&table_ident)];
+        let infos = PostgresBackend::get_tabular_infos_by_ident(
+            warehouse_resp.warehouse_id,
+            &tabulars,
+            TabularListFlags::active(),
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        let table_info = infos[0].clone().into_table_info().unwrap();
+
+        let gt_ident = TableIdent::new(
+            NamespaceIdent::new("test_ns".to_string()),
+            "gt1".to_string(),
+        );
+        let gt_infos = PostgresBackend::get_tabular_infos_by_ident(
+            warehouse_resp.warehouse_id,
+            &[TabularIdentBorrowed::GenericTable(&gt_ident)],
+            TabularListFlags::active(),
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        let gt_info = gt_infos[0].clone().into_generic_table_info().unwrap();
+
+        // Hide the generic table
+        authz.hide(&format!(
+            "generic_table:{}/{}",
+            warehouse_resp.warehouse_id, gt_info.tabular_id
+        ));
+
+        let warehouse = PostgresBackend::get_active_warehouse_by_id(
+            warehouse_resp.warehouse_id,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let ns_hierarchy = PostgresBackend::get_namespace(
+            warehouse_resp.warehouse_id,
+            &ns.namespace,
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let parent_namespaces = ns_hierarchy
+            .parents
+            .iter()
+            .map(|n| (n.namespace_id(), n.clone()))
+            .collect();
+
+        let actions: Vec<(&NamespaceWithParent, TestTabularAction<'_>)> = vec![
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::Table(ActionOnTable {
+                    info: &table_info,
+                    action: CatalogTableAction::GetMetadata,
+                    user: None,
+                    is_delegated_execution: false,
+                }),
+            ),
+            (
+                &ns_hierarchy.namespace,
+                ActionOnTableOrView::GenericTable((
+                    &gt_info,
+                    CatalogGenericTableAction::IncludeInList,
+                )),
+            ),
+        ];
+
+        let result = authz
+            .are_allowed_tabular_actions_vec(
+                &crate::tests::random_request_metadata(),
+                &warehouse,
+                &parent_namespaces,
+                &actions,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+        // table: allowed, generic table: hidden → denied
         assert_eq!(result, vec![true, false]);
     }
 }

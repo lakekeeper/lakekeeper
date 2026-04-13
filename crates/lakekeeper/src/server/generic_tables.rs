@@ -30,9 +30,6 @@ use crate::{
 };
 
 /// Fetches and authorizes a generic table operation in one call.
-///
-/// Combines: parallel warehouse + namespace fetch, generic table load,
-/// TOCTOU-safe namespace validation, and authorization.
 async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authorizer + Clone>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
@@ -43,7 +40,6 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
     catalog_state: C::State,
 ) -> std::result::Result<(Arc<ResolvedWarehouse>, NamespaceHierarchy, GenericTableInfo), AuthZError>
 {
-    // Fetch warehouse and namespace in parallel
     let (warehouse_result, namespace_result) = tokio::join!(
         C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
         C::get_namespace(warehouse_id, namespace.clone(), catalog_state.clone()),
@@ -57,7 +53,6 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
 
     let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.to_string());
 
-    // Fetch generic table
     let mut t = C::Transaction::begin_read(catalog_state.clone())
         .await
         .map_err(iceberg_err_to_authz)?;
@@ -74,7 +69,6 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
     };
     t.commit().await.map_err(iceberg_err_to_authz)?;
 
-    // TOCTOU-safe namespace validation
     let (warehouse, namespace_hierarchy) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
         &warehouse,
         namespace_hierarchy,
@@ -85,7 +79,6 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
     )
     .await?;
 
-    // Authorization check
     let info = authorizer
         .require_generic_table_action(
             request_metadata,
@@ -355,7 +348,6 @@ pub(crate) mod test {
             namespace: namespace.clone(),
         };
 
-        // Empty initially
         let list = CatalogServer::list_generic_tables(
             params.clone(),
             ListGenericTablesQuery::default(),
@@ -366,7 +358,6 @@ pub(crate) mod test {
         .unwrap();
         assert!(list.identifiers.is_empty());
 
-        // Create two
         CatalogServer::create_generic_table(
             params.clone(),
             create_request("gt-a"),
@@ -429,7 +420,6 @@ pub(crate) mod test {
         .await
         .unwrap();
 
-        // Verify gone from list
         let list = CatalogServer::list_generic_tables(
             ns_params,
             ListGenericTablesQuery::default(),
@@ -440,7 +430,6 @@ pub(crate) mod test {
         .unwrap();
         assert!(list.identifiers.is_empty());
 
-        // Verify load fails
         let err = CatalogServer::load_generic_table(
             GenericTableParameters {
                 prefix: Some(prefix.into()),
