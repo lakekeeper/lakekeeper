@@ -80,6 +80,33 @@ fn get_config() -> DynAppConfig {
         .reserved_namespaces
         .extend(DEFAULT_RESERVED_NAMESPACES.into_iter().map(str::to_string));
 
+    for (name, engine) in &config.trusted_engines {
+        assert!(
+            !engine.owner_property().trim().is_empty(),
+            "Invalid trusted engine '{name}': owner_property must not be empty"
+        );
+        for (idp_id, identity) in engine.identities() {
+            assert!(
+                !idp_id.trim().is_empty(),
+                "Invalid trusted engine '{name}': identity IdP ID must not be empty"
+            );
+            assert!(
+                !identity.audiences.is_empty() || !identity.subjects.is_empty(),
+                "Invalid trusted engine '{name}', identity '{idp_id}': \
+                 at least one audience or subject must be configured"
+            );
+            assert!(
+                identity.audiences.iter().all(|a| !a.trim().is_empty()),
+                "Invalid trusted engine '{name}', identity '{idp_id}': \
+                 audiences must not contain empty strings"
+            );
+            assert!(
+                identity.subjects.iter().all(|s| !s.trim().is_empty()),
+                "Invalid trusted engine '{name}', identity '{idp_id}': \
+                 subjects must not contain empty strings"
+            );
+        }
+    }
     config.protected_properties = config
         .trusted_engines
         .values()
@@ -268,7 +295,6 @@ impl MatchedEngines {
     pub fn owns_property(&self, property: &str) -> bool {
         self.engines.iter().any(|e| e.owner_property() == property)
     }
-
 }
 
 #[allow(clippy::struct_excessive_bools)]
