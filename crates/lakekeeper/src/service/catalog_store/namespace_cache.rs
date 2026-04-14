@@ -127,11 +127,33 @@ pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
         }
 
         tracing::debug!("Inserting namespace id {namespace_id} into cache");
-        let cache_key = namespace_ident_to_cache_key(&namespace.namespace.namespace_ident);
-        tokio::join!(
-            NAMESPACE_CACHE.insert(namespace_id, namespace.clone()),
-            IDENT_TO_ID_CACHE.insert((warehouse_id, cache_key), namespace_id),
-        );
+        // The NAMESPACE_CACHE (id → data) always stores canonical case only. This
+        // guarantees id-based lookups return deterministic case, independent of
+        // which earlier caller (with whatever case variant) populated the cache.
+        let canonical_entry = NamespaceWithParent {
+            namespace: namespace.namespace.clone(),
+            parent: namespace.parent,
+            requested_ident: None,
+        };
+        // The IDENT_TO_ID_CACHE (ident → id) is keyed by the caller's case, so the
+        // same caller's next lookup hits. Different case → cache miss → DB lookup
+        // (case-insensitive via ICU collation) → new cache entry for that case.
+        // The canonical-ident entry is also inserted so that looking up a namespace
+        // by its canonical case (e.g. after creation) hits the cache.
+        let user_key = namespace_ident_to_cache_key(namespace.namespace_ident());
+        let canonical_key = namespace_ident_to_cache_key(&namespace.namespace.namespace_ident);
+        if user_key == canonical_key {
+            tokio::join!(
+                NAMESPACE_CACHE.insert(namespace_id, canonical_entry),
+                IDENT_TO_ID_CACHE.insert((warehouse_id, user_key), namespace_id),
+            );
+        } else {
+            tokio::join!(
+                NAMESPACE_CACHE.insert(namespace_id, canonical_entry),
+                IDENT_TO_ID_CACHE.insert((warehouse_id, user_key), namespace_id),
+                IDENT_TO_ID_CACHE.insert((warehouse_id, canonical_key), namespace_id),
+            );
+        }
 
         update_cache_size_metric();
     }
@@ -260,10 +282,11 @@ fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceI
     let child = child_ident.as_ref();
     let parent = found_parent_ident.as_ref();
 
-    // Get the expected parent by removing the last element from child
+    // Both idents come from NAMESPACE_CACHE which only stores canonical case
+    // (requested_ident is stripped at insertion), so child_canonical[:-1] and
+    // parent_canonical are byte-identical by construction for any valid
+    // hierarchy. A mismatch here indicates stale cache state (e.g. rename).
     let expected_parent = &child[..child.len().saturating_sub(1)];
-
-    // Compare the expected parent with the found parent
     expected_parent == parent
 }
 
@@ -368,6 +391,7 @@ mod tests {
         NamespaceWithParent {
             namespace,
             parent: parent.map(|(id, version)| (id, version.into())),
+            requested_ident: None,
         }
     }
 

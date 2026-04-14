@@ -64,7 +64,12 @@ impl NamespaceRow {
 #[derive(Debug)]
 struct NamespaceWithParentVersionRow {
     namespace_id: NamespaceId,
+    /// Canonical (stored) namespace name.
     namespace_name: Vec<String>,
+    /// User-requested namespace name. Equals `namespace_name` when the row was not
+    /// matched to a user input (e.g. for id-based lookups, or internal parents that
+    /// the user did not explicitly reference).
+    requested_name: Vec<String>,
     warehouse_id: WarehouseId,
     protected: bool,
     properties: Json<Option<HashMap<String, String>>>,
@@ -88,6 +93,21 @@ impl NamespaceWithParentVersionRow {
             None
         };
 
+        // Only set requested_ident if it actually differs from canonical.
+        // This keeps the invariant "requested_ident = None ⇒ canonical case" clean.
+        let requested_ident = if self.requested_name == self.namespace_name {
+            None
+        } else {
+            Some(
+                NamespaceIdent::from_vec(self.requested_name.clone()).map_err(|_| {
+                    InvalidNamespaceIdentifier::new(
+                        warehouse_id,
+                        format!("{:?}", self.requested_name),
+                    )
+                })?,
+            )
+        };
+
         let namespace = NamespaceRow {
             namespace_id: self.namespace_id,
             namespace_name: self.namespace_name,
@@ -103,6 +123,7 @@ impl NamespaceWithParentVersionRow {
         Ok(NamespaceWithParent {
             namespace: Arc::new(namespace),
             parent,
+            requested_ident,
         })
     }
 }
@@ -147,6 +168,8 @@ pub(crate) async fn get_namespaces_by_id<
         SELECT
                 n.namespace_id,
                 n.namespace_name as "namespace_name: Vec<String>",
+                -- Id-based lookup: no user-requested name, return canonical.
+                n.namespace_name as "requested_name!: Vec<String>",
                 n.warehouse_id,
                 n.protected,
                 n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
@@ -226,7 +249,13 @@ pub(crate) async fn get_namespaces_by_name<
         )
         SELECT
                 n.namespace_id,
-                COALESCE(rpp.parent_name, n.namespace_name) as "namespace_name!: Vec<String>",
+                -- Canonical (stored) name: what's written to cache for case-deterministic id lookups.
+                n.namespace_name as "namespace_name: Vec<String>",
+                -- User-requested name: the caller's case. Matches canonical when the row
+                -- is an internal parent not referenced by any user input (COALESCE fallback).
+                -- The `=` join uses the case-insensitive ICU collation on namespace_name,
+                -- so `['foo']` from the user matches stored `['Foo']`.
+                COALESCE(rpp.parent_name, n.namespace_name) as "requested_name!: Vec<String>",
                 n.warehouse_id,
                 n.protected,
                 n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
@@ -271,6 +300,8 @@ impl From<ListNamespaceRow> for NamespaceWithParentVersionRow {
     fn from(row: ListNamespaceRow) -> Self {
         NamespaceWithParentVersionRow {
             namespace_id: row.namespace_id,
+            // Listing has no user-requested case; both fields use the stored (canonical) name.
+            requested_name: row.namespace_name.clone(),
             namespace_name: row.namespace_name,
             warehouse_id: row.warehouse_id,
             protected: row.protected,
@@ -556,6 +587,8 @@ pub(crate) async fn create_namespace(
         SELECT
             i.namespace_id as "namespace_id!",
             i.namespace_name as "namespace_name!",
+            -- Creation uses the case the caller provided; no distinct "requested" case.
+            i.namespace_name as "requested_name!",
             i.warehouse_id as "warehouse_id!",
             i.protected as "protected!",
             i.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
@@ -870,6 +903,8 @@ pub(crate) async fn set_namespace_protected(
         SELECT
             u.namespace_id as "namespace_id!",
             u.namespace_name as "namespace_name!",
+            -- No user-requested case in protection update path; return canonical.
+            u.namespace_name as "requested_name!",
             u.warehouse_id as "warehouse_id!",
             u.protected as "protected!",
             u.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
@@ -943,6 +978,8 @@ pub(crate) async fn update_namespace_properties(
         SELECT
             u.namespace_id as "namespace_id!",
             u.namespace_name as "namespace_name!",
+            -- No user-requested case in property update path; return canonical.
+            u.namespace_name as "requested_name!",
             u.warehouse_id as "warehouse_id!",
             u.protected as "protected!",
             u.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
@@ -2325,5 +2362,269 @@ pub(crate) mod tests {
             found.is_some(),
             "Namespace should be found case-insensitively"
         );
+    }
+
+    /// Regression test: an ident-based lookup with a different case than stored
+    /// must not contaminate the id-cache. A subsequent id-based lookup must
+    /// return the canonical (stored) case, not whatever case the first caller
+    /// happened to use.
+    ///
+    /// Without a proper fix, by-name lookups populate the cache with the
+    /// requester's case, and subsequent by-id lookups return that case — making
+    /// id-based lookups non-deterministic (depending on whoever populated the
+    /// cache first).
+    #[sqlx::test]
+    async fn test_id_lookup_returns_canonical_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let canonical_ident = NamespaceIdent::from_vec(vec!["Mixed_Case".to_string()]).unwrap();
+        let ns = initialize_namespace(state.clone(), warehouse_id, &canonical_ident, None).await;
+        let namespace_id = ns.namespace_id();
+
+        // Caller A does an ident-based lookup with a different case.
+        // This populates the cache.
+        let upper_ident = NamespaceIdent::from_vec(vec!["MIXED_CASE".to_string()]).unwrap();
+        let via_upper_ident = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &upper_ident,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("namespace should be found");
+        // Response should carry the caller's requested case.
+        assert_eq!(via_upper_ident.namespace_ident(), &upper_ident);
+
+        // Caller B does an id-based lookup. The id has no case context, so the
+        // canonical (stored) case must be returned — NOT whatever case caller A
+        // used to populate the cache.
+        let via_id = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            namespace_id,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("namespace should be found by id");
+        assert_eq!(
+            via_id.namespace_ident(),
+            &canonical_ident,
+            "id-based lookup must return canonical case, not the case from a prior ident-based caller"
+        );
+    }
+
+    /// Cache hits must carry the current caller's case, not whichever case
+    /// populated the cache first. Two different-case lookups should each get
+    /// their own case back.
+    #[sqlx::test]
+    async fn test_cache_hit_returns_callers_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let canonical = NamespaceIdent::from_vec(vec!["CacheHit".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &canonical, None).await;
+
+        // Caller A populates the cache with uppercase.
+        let upper = NamespaceIdent::from_vec(vec!["CACHEHIT".to_string()]).unwrap();
+        let a = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &upper,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+        assert_eq!(a.namespace_ident(), &upper);
+
+        // Caller B looks up with lowercase. The cache entry exists (canonical-case id
+        // cache entry + uppercase ident cache entry). Lowercase ident cache misses →
+        // DB hit → populates lowercase ident cache. Response carries lowercase.
+        let lower = NamespaceIdent::from_vec(vec!["cachehit".to_string()]).unwrap();
+        let b = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &lower,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+        assert_eq!(b.namespace_ident(), &lower);
+
+        // Caller C looks up with lowercase again. This time the ident cache hits.
+        // The response still carries lowercase, not whatever case caller A used.
+        let c = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &lower,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+        assert_eq!(c.namespace_ident(), &lower);
+    }
+
+    /// Multi-level lookup must return the caller's case for the leaf AND all
+    /// ancestor levels of the hierarchy.
+    #[sqlx::test]
+    async fn test_hierarchy_lookup_applies_case_to_all_levels(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns_root = NamespaceIdent::from_vec(vec!["Foo".to_string()]).unwrap();
+        let ns_mid = NamespaceIdent::from_vec(vec!["Foo".to_string(), "Bar".to_string()]).unwrap();
+        let ns_leaf = NamespaceIdent::from_vec(vec![
+            "Foo".to_string(),
+            "Bar".to_string(),
+            "Baz".to_string(),
+        ])
+        .unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &ns_root, None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ns_mid, None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ns_leaf, None).await;
+
+        // Lookup with all-uppercase case.
+        let upper = NamespaceIdent::from_vec(vec![
+            "FOO".to_string(),
+            "BAR".to_string(),
+            "BAZ".to_string(),
+        ])
+        .unwrap();
+        let hier = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &upper,
+            CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+
+        // Leaf carries caller's case.
+        assert_eq!(hier.namespace_ident(), &upper);
+        // Parents carry corresponding prefix in caller's case.
+        assert_eq!(hier.parents.len(), 2);
+        assert_eq!(
+            hier.parents[0].namespace_ident(),
+            &NamespaceIdent::from_vec(vec!["FOO".to_string(), "BAR".to_string()]).unwrap()
+        );
+        assert_eq!(
+            hier.parents[1].namespace_ident(),
+            &NamespaceIdent::from_vec(vec!["FOO".to_string()]).unwrap()
+        );
+
+        // Canonical ident (underneath the requested_ident overlay) is still the
+        // stored case — internal code can access it if needed.
+        assert_eq!(
+            hier.namespace.canonical_ident(),
+            &ns_leaf,
+            "canonical_ident should remain the stored case"
+        );
+    }
+
+    /// Batch ident lookup must apply caller's case to every returned namespace,
+    /// regardless of whether an individual entry came from cache or DB.
+    #[sqlx::test]
+    async fn test_batch_ident_lookup_applies_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns_a = NamespaceIdent::from_vec(vec!["Alpha".to_string()]).unwrap();
+        let ns_b = NamespaceIdent::from_vec(vec!["Beta".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &ns_a, None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ns_b, None).await;
+
+        // Pre-populate cache for ns_a via a single lookup.
+        let _ = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &ns_a,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Now batch-lookup with a DIFFERENT case — ns_a will cache-hit (and needs
+        // the substitution callback), ns_b will cache-miss and go to DB.
+        let upper_a = NamespaceIdent::from_vec(vec!["ALPHA".to_string()]).unwrap();
+        let upper_b = NamespaceIdent::from_vec(vec!["BETA".to_string()]).unwrap();
+        let results = PostgresBackend::get_namespaces_by_ident(
+            warehouse_id,
+            &[&upper_a, &upper_b],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Both entries should carry the uppercase case the caller requested.
+        let uppercase_idents: std::collections::HashSet<_> = results
+            .values()
+            .map(|ns| ns.namespace_ident().clone())
+            .collect();
+        assert!(
+            uppercase_idents.contains(&upper_a),
+            "ALPHA should be in results (cache-hit path), got: {uppercase_idents:?}"
+        );
+        assert!(
+            uppercase_idents.contains(&upper_b),
+            "BETA should be in results (DB path), got: {uppercase_idents:?}"
+        );
+    }
+
+    /// After populating the cache with a specific case, subsequent lookups with
+    /// the *same* case hit without a DB call. Different-case lookups miss the
+    /// ident-cache, go to DB, and populate a separate ident-cache entry.
+    #[sqlx::test]
+    async fn test_canonical_lookup_hits_cache_after_creation(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let canonical = NamespaceIdent::from_vec(vec!["DualKey".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &canonical, None).await;
+
+        // First lookup populates the cache with the canonical case
+        // (both as ident cache key AND the id cache data).
+        let first = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &canonical,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+        assert_eq!(first.namespace_ident(), &canonical);
+
+        // Second lookup with SAME case: cache hit path, same result.
+        let second = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &canonical,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+        assert_eq!(second.namespace_ident(), &canonical);
+
+        // Third lookup with different case: response still correct (caller's case),
+        // but this path went through DB first time → cache now has both entries.
+        let other = NamespaceIdent::from_vec(vec!["dualkey".to_string()]).unwrap();
+        let third = PostgresBackend::get_namespace_cache_aware(
+            warehouse_id,
+            &other,
+            CachePolicy::Use,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .expect("found");
+        assert_eq!(third.namespace_ident(), &other);
     }
 }

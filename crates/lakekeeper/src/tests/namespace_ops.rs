@@ -962,6 +962,7 @@ async fn test_namespace_cache_parent_version_staleness(pool: PgPool) {
     let stale_parent = crate::service::NamespaceWithParent {
         namespace: Arc::new(stale_parent_ns),
         parent: None,
+        requested_ident: None,
     };
 
     NAMESPACE_CACHE.insert(parent_id, stale_parent).await;
