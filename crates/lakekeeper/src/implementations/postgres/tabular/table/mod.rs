@@ -1974,7 +1974,9 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(infos.len(), 1);
-        let info = infos.get(&table.table_ident).expect("old ident should match");
+        let info = infos
+            .get(&table.table_ident)
+            .expect("old ident should match");
         assert_eq!(info.tabular_id(), table.table_id.into());
 
         // New name should also find it
