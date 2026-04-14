@@ -94,7 +94,7 @@ pub struct TabularInfo<T: std::fmt::Debug + PartialEq + Copy> {
     /// If you need a stable, case-deterministic identifier across requests (e.g.
     /// for audit logs), refetch by `tabular_id` or use the id itself as the key.
     pub tabular_ident: TableIdent, // Not used to determine type
-    pub tabular_id: T,             // Contains type info
+    pub tabular_id: T, // Contains type info
     pub location: Location,
     pub metadata_location: Option<Location>,
     pub protected: bool,
