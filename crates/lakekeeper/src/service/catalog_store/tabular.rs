@@ -77,6 +77,19 @@ pub struct TabularInfo<T: std::fmt::Debug + PartialEq + Copy> {
     pub namespace_id: NamespaceId,
     pub namespace_version: NamespaceVersion,
     pub warehouse_version: WarehouseVersion,
+    /// Case handling note: the case carried by `tabular_ident` depends on how
+    /// this entry was fetched.
+    ///
+    /// - **By ident** (e.g. `get_tabular_infos_by_idents`): `tabular_ident` carries
+    ///   the *caller's* case — namespace and table name both reflect the case the
+    ///   caller sent, even when it differs from the stored (canonical) case due to
+    ///   case-insensitive matching via the DB collation.
+    /// - **By id** (e.g. `get_tabular_infos_by_ids`): `tabular_ident` carries the
+    ///   *canonical* (stored, creation-time) case, because there is no caller case
+    ///   to honor.
+    ///
+    /// If you need a stable, case-deterministic identifier across requests (e.g.
+    /// for audit logs), refetch by `tabular_id` or use the id itself as the key.
     pub tabular_ident: TableIdent, // Not used to determine type
     pub tabular_id: T,             // Contains type info
     pub location: Location,
