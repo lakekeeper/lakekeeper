@@ -461,7 +461,7 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
         let location = Location::from_str(&gcs_path).map_err(|e| {
             IOError::new(
                 ErrorKind::Unexpected,
-                format!("Failed to parse GCS object path returned from list: {e}",),
+                format!("Failed to parse GCS object path returned from list: {e}"),
                 gcs_path,
             )
         })?;

@@ -16,10 +16,10 @@ use crate::{
         State, TableId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
-            Authorizer, AuthzBackendErrorOrBadRequest, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
-            ListProjectsResponse, NamespaceParent, UserOrRole,
+            ActionOnTable, ActionOnView, Authorizer, AuthzBackendErrorOrBadRequest,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
+            CatalogTableAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -169,30 +169,30 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![true; actions.len()])
     }
 
-    async fn are_allowed_table_actions_impl(
+    async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         _metadata: &RequestMetadata,
-        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZTableInfo,
-            Self::TableAction,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; actions.len()])
     }
 
-    async fn are_allowed_view_actions_impl(
+    async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         _metadata: &RequestMetadata,
-        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; views_with_actions.len()])
+        Ok(vec![true; actions.len()])
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {

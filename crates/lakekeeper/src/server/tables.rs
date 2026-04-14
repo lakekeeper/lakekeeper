@@ -21,9 +21,13 @@ use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
+pub(crate) mod authorize_load;
 pub(crate) mod create_table;
 mod load_table;
 mod rename_table;
+
+pub(crate) use authorize_load::*;
+
 use super::{
     CatalogServer,
     commit_tables::apply_commit,
@@ -42,8 +46,11 @@ use crate::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
-                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
-                tables::{DataAccessMode, LoadTableFilters, LoadTableRequest},
+                ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
+                TableParameters,
+                tables::{
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
+                },
             },
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
@@ -55,18 +62,19 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
+        AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
         CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
         NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
-        TableInfo, TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction,
-        WarehouseStatus,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
+        Transaction, WarehouseStatus,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
-            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
             RequireNamespaceActionError, RequireTableActionError,
-            refresh_warehouse_and_namespace_if_needed,
         },
+        build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
@@ -549,10 +557,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     async fn load_table_credentials(
         parameters: TableParameters,
+        request: LoadTableCredentialsRequest,
         data_access: DataAccess,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadCredentialsResponse> {
+        let LoadTableCredentialsRequest { referenced_by } = request;
+
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -572,6 +583,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularListFlags::active_and_staged(),
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
+            referenced_by.as_deref(),
         )
         .await
         {
@@ -963,6 +975,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     list_flags: TabularListFlags,
     authorizer: A,
     state: C::State,
+    referenced_by: Option<&[ReferencingView]>,
 ) -> Result<
     (
         Arc<ResolvedWarehouse>,
@@ -971,56 +984,174 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     ),
     AuthZError,
 > {
-    let (warehouse, namespace, table_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.clone()),
-        C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
-        C::get_table_info(warehouse_id, table.clone(), list_flags, state.clone())
+    let engines = request_metadata.engines();
+    let referenced_by = effective_referenced_by(referenced_by, engines);
+
+    // 1. Collect all relevant namespace idents
+    let user_provided_namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+        &TabularIdentBorrowed::Table(&table),
+        referenced_by,
     );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
-    let namespace =
-        authorizer.require_namespace_presence(warehouse_id, table.namespace.clone(), namespace)?;
 
-    // Refresh warehouse and namespace if required
+    // 2. Collect all relevant tabular idents
+    let user_provided_tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+        TabularIdentBorrowed::Table(&table),
+        referenced_by,
+    );
 
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
-        &warehouse,
-        namespace,
-        &table_info,
-        AuthZCannotSeeTable::new_not_found(warehouse_id, table.clone()),
-        &authorizer,
+    // 3. Load objects concurrently
+    let AuthorizeLoadTabularObjects {
+        warehouse,
+        namespaces,
+        tabulars,
+    } = load_objects_to_authorize_load_tabular::<C>(
+        warehouse_id,
+        user_provided_namespaces.clone().into_iter().collect(),
+        user_provided_tabulars.clone().into_iter().collect(),
+        list_flags,
         state.clone(),
     )
-    .await?;
+    .await;
 
-    let [can_get_metadata, can_read, can_write] = authorizer
-        .are_allowed_table_actions_arr(
-            request_metadata,
-            None,
-            &warehouse,
-            &namespace,
-            &table_info,
-            &[
-                CatalogTableAction::GetMetadata,
-                CatalogTableAction::ReadData,
-                CatalogTableAction::WriteData,
-            ],
-        )
+    // 4. Check objects presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let tabulars =
+        check_required_tabulars(warehouse_id, user_provided_tabulars, tabulars, &authorizer)?;
+    let namespaces =
+        check_required_namespaces(warehouse_id, &user_provided_namespaces, namespaces)?;
+
+    // 5. Build NamespaceHierarchy
+    let namespaces_with_hierarchy = namespaces
+        .iter()
+        .map(|(namespace_id, namespace)| {
+            (
+                *namespace_id,
+                build_namespace_hierarchy(namespace, &namespaces),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    // 6. Sort tabulars by comparing initial referenced_by list plus appended table/view
+    let sorted_tabulars =
+        sort_tabulars_for_authorize_load_tabular(&tabulars, referenced_by, &table);
+
+    // 7. Connect tabular with namespaces by using namespace_id
+    let sorted_tabulars = add_namespace_to_tabulars_for_authorize_load_tabular(
+        warehouse_id,
+        sorted_tabulars,
+        &namespaces_with_hierarchy,
+    )?;
+
+    // 8. Resolve owners and assign the current user for each tabular in the chain.
+    //    DEFINER views switch current_user to the view owner for subsequent tabulars.
+    let token_idp_id = request_metadata
+        .authentication()
+        .and_then(|a| a.subject().idp_id())
+        .map(String::as_str);
+    let sorted_tabulars_with_full_info = resolve_users_for_authorize_load_tabular(
+        &sorted_tabulars,
+        request_metadata.actor(),
+        engines,
+        token_idp_id,
+    )?;
+
+    // 9. Build actions and check all authorizations in batch.
+    let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+        &sorted_tabulars_with_full_info,
+    );
+    let authz_results = authorizer
+        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
         .await?
         .into_inner();
 
-    if !can_get_metadata {
-        return Err(AuthZCannotSeeTable::new_forbidden(warehouse_id, table).into());
+    // 10. Interpret authorization results.
+    let (table_info, storage_permissions) =
+        interpret_authz_results_for_load_table(&actions, &authz_results, warehouse_id, &table)?;
+
+    Ok((warehouse, table_info, storage_permissions))
+}
+
+/// Interpret the flat `Vec<bool>` authorization results by matching each result
+/// to its corresponding action. This avoids relying on positional indices.
+///
+/// Returns `(TableInfo, Option<StoragePermissions>)` for the target table.
+fn interpret_authz_results_for_load_table(
+    actions: &[TabularAuthzAction<'_>],
+    authz_results: &[bool],
+    warehouse_id: WarehouseId,
+    table: &TableIdent,
+) -> Result<(TableInfo, Option<StoragePermissions>), AuthZError> {
+    if actions.len() != authz_results.len() {
+        return Err(
+            BackendUnavailableOrCountMismatch::from(AuthorizationCountMismatch::new(
+                actions.len(),
+                authz_results.len(),
+                "load_table",
+            ))
+            .into(),
+        );
     }
 
-    let storage_permissions = if can_write {
+    let mut table_info: Option<TableInfo> = None;
+    let mut table_is_delegated = false;
+    let mut can_get_metadata = None;
+    let mut can_read = None;
+    let mut can_write = None;
+
+    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+        match action {
+            ActionOnTableOrView::Table(table_action) => {
+                if let Some(existing) = &table_info {
+                    if existing.tabular_id != table_action.info.tabular_id {
+                        return Err(BackendUnavailableOrCountMismatch::from(
+                            AuthorizationCountMismatch::new(1, 2, "tables_in_chain"),
+                        )
+                        .into());
+                    }
+                } else {
+                    table_info = Some(table_action.info.clone());
+                    table_is_delegated = table_action.is_delegated_execution;
+                }
+                match &table_action.action {
+                    CatalogTableAction::GetMetadata => can_get_metadata = Some(allowed),
+                    CatalogTableAction::ReadData => can_read = Some(allowed),
+                    CatalogTableAction::WriteData => can_write = Some(allowed),
+                    _ => {}
+                }
+            }
+            ActionOnTableOrView::View(view_action) => {
+                if !allowed {
+                    return Err(AuthZCannotSeeView::new_forbidden(
+                        warehouse_id,
+                        view_action.info.tabular_ident.clone(),
+                    )
+                    .with_delegated_execution(view_action.is_delegated_execution)
+                    .into());
+                }
+            }
+        }
+    }
+
+    let table_info = table_info
+        .ok_or_else(|| AuthZCannotSeeTable::new_not_found(warehouse_id, table.clone()))?;
+
+    if !can_get_metadata.unwrap_or(false) {
+        return Err(
+            AuthZCannotSeeTable::new_forbidden(warehouse_id, table.clone())
+                .with_delegated_execution(table_is_delegated)
+                .into(),
+        );
+    }
+
+    let storage_permissions = if can_write.unwrap_or(false) {
         Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read {
+    } else if can_read.unwrap_or(false) {
         Some(StoragePermissions::Read)
     } else {
         None
     };
-    Ok((warehouse, table_info, storage_permissions))
+
+    Ok((table_info, storage_permissions))
 }
 
 /// Validate commit table requests
@@ -2079,7 +2210,8 @@ pub(crate) mod test {
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            SecretStore, State, TableId, TabularListFlags, UserId,
+            Actor, NamespaceHierarchy, SecretStore, State, TableId, TabularListFlags, UserId,
+            ViewInfo, ViewOrTableInfo,
             authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
         },
         tests::{create_table_request as create_request, random_request_metadata},
@@ -4896,5 +5028,152 @@ pub(crate) mod test {
             .unwrap()
             .expect("table and metadata should still exist");
         }
+    }
+
+    // ---- interpret_authz_results tests ----
+
+    fn resolved(
+        tabular: ViewOrTableInfo,
+        actor: &Actor,
+        namespace: NamespaceHierarchy,
+    ) -> ResolvedTabular {
+        ResolvedTabular {
+            tabular,
+            user: actor.to_user_or_role(),
+            is_delegated_execution: false,
+            namespace,
+        }
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_all_allowed() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, true, true];
+
+        let (info, perms) = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        )
+        .unwrap();
+
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(perms, Some(StoragePermissions::ReadWriteDelete));
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_read_only() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, true, false];
+
+        let (_, perms) = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        )
+        .unwrap();
+
+        assert_eq!(perms, Some(StoragePermissions::Read));
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_no_read_no_write() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, false, false];
+
+        let (_, perms) = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        )
+        .unwrap();
+
+        assert_eq!(perms, None);
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_not_visible() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![false, false, false];
+
+        let result = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_interpret_authz_results_view_denied_in_chain() {
+        let warehouse_id = WarehouseId::new_random();
+        let view = ViewInfo::new_random(warehouse_id);
+        let view_ns = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
+        let table = TableInfo::new_random(warehouse_id);
+        let table_ns = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![
+            resolved(view.into(), &actor, view_ns),
+            resolved(table.clone().into(), &actor, table_ns),
+        ];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![false, true, true, true];
+
+        let result = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_interpret_authz_results_count_mismatch() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, true]; // Only 2 results for 3 actions
+
+        let result = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        );
+        assert!(result.is_err());
     }
 }

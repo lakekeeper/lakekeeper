@@ -89,7 +89,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, AuthZCannotSeeNamespace>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(CatalogViewAction::Undrop, CatalogTableAction::Undrop),
+                t.as_action_request(CatalogViewAction::Undrop, CatalogTableAction::Undrop, None),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;

@@ -42,7 +42,7 @@ impl AuthorizationFailureSource for AuthZUserActionForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AuthZUserActionForbidden { action } = self;
         ErrorModel::forbidden(
-            format!("Action `{action}` forbidden",),
+            format!("Action `{action}` forbidden"),
             "UserActionForbidden",
             None,
         )

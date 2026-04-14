@@ -278,12 +278,12 @@ pub(crate) async fn get_tabular_infos_by_idents<'e, 'c: 'e, E>(
     tabulars: &[TabularIdentBorrowed<'_>],
     list_flags: crate::service::TabularListFlags,
     catalog_state: E,
-) -> Result<Vec<ViewOrTableInfo>, GetTabularInfoError>
+) -> Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
     if tabulars.is_empty() {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
     let (ns_names, t_names, t_typs) = tabulars.iter().fold(
         (
@@ -392,8 +392,8 @@ where
     let result = rows
         .into_iter()
         .map(|row| {
-            let view_or_table_info = row.try_into_table_or_view(warehouse_id)?;
-            Ok(view_or_table_info)
+            let info = row.try_into_table_or_view(warehouse_id)?;
+            Ok((info.tabular_ident().clone(), info))
         })
         .collect::<Result<_, GetTabularInfoError>>()?;
     Ok(result)

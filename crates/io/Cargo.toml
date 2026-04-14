@@ -19,7 +19,6 @@ storage-s3 = [
     "dep:aws-credential-types",
     "dep:aws-smithy-async",
     "dep:aws-smithy-http-client",
-    "dep:aws-sdk-sts",
 ]
 storage-adls = [
     "dep:azure_storage_blobs",
@@ -46,7 +45,6 @@ aws-config = { workspace = true, features = [
 ], optional = true }
 aws-credential-types = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
-aws-sdk-sts = { workspace = true, optional = true }
 aws-smithy-async = { workspace = true, optional = true }
 aws-smithy-http-client = { workspace = true, optional = true }
 aws-smithy-runtime-api = { workspace = true }
@@ -62,13 +60,11 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
-jsonwebtoken = { workspace = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 reqwest-middleware = { version = "0.4", optional = true }
 reqwest-retry = { version = "0.8", optional = true }
-serde = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
@@ -89,3 +85,9 @@ serde_json = { workspace = true }
 tempfile = "3.0"
 tokio = { workspace = true }
 uuid = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = [
+    "strum", # used via strum_macros derives which require strum at runtime
+    "google-cloud-auth", # needed to activate jwt-aws-lc-rs feature for gcloud-auth transitive dep
+]

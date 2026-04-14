@@ -424,6 +424,48 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 |----------------------------------------------------|---------|---------------|
 | <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr> | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
 
+### Trusted Engines
+
+Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). When configured, Lakekeeper:
+
+1. **Protects the owner property** — only requests from a matched engine can set or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`).
+2. **Evaluates `referenced-by` chains** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+
+For a detailed explanation of DEFINER vs INVOKER views, see the [View Security](./view-security.md) guide.
+
+Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Each entry has a logical name (the map key), a type, the owner property name, and one or more identities that define which tokens are trusted.
+
+#### Configuration
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | Engine type. Currently only `trino` is supported. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | The view property that identifies the owner for delegated execution. |
+
+Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <nobr>`LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`</nobr><br><nobr>`IDENTITIES__<IDP_ID>__AUDIENCES`</nobr> | `[trino_dev, trino_prod]` | List of JWT audiences. A token matches if any of its audiences appears in this list. |
+| <nobr>`LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`</nobr><br><nobr>`IDENTITIES__<IDP_ID>__SUBJECTS`</nobr> | `[trino-sa]` | List of JWT subjects. A token matches if its subject appears in this list. Useful for service accounts. |
+
+**Example:** Trust a Trino engine whose tokens come from the `oidc` provider with audience `trino`:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino]
+```
+
+**Example with multiple IdPs:** Trust Trino from both an OIDC provider and a Kubernetes service account:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino_dev, trino_prod]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
+```
+
 ### Role Provider
 
 Authorizers such as `Cedar` support pluggable role providers that resolve a user's group memberships from an external directory (e.g. LDAP / Active Directory). Multiple providers can be configured in parallel, each with a unique identifier. `OpenFGA` does not use role providers — roles are stored directly in OpenFGA.

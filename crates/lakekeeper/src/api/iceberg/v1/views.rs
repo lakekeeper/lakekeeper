@@ -15,7 +15,7 @@ use crate::{
         ApiContext, CommitViewRequest, CreateViewRequest, ListTablesResponse, LoadViewResult,
         RenameTableRequest, Result,
         iceberg::{
-            types::{DropParams, Prefix},
+            types::{DropParams, Prefix, ReferencingView},
             v1::{
                 ReferencedByQuery,
                 namespace::{NamespaceIdentUrl, NamespaceParameters},
@@ -62,6 +62,12 @@ impl<'de> serde::Deserialize<'de> for LoadViewQuery {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct LoadViewRequest {
+    pub data_access: DataAccessMode,
+    pub referenced_by: Option<Vec<ReferencingView>>,
+}
+
 #[async_trait]
 pub trait ViewService<S: crate::api::ThreadSafe>
 where
@@ -87,8 +93,8 @@ where
     /// Load a view from the catalog
     async fn load_view(
         parameters: ViewParameters,
+        request: LoadViewRequest,
         state: ApiContext<S>,
-        data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult>;
 
@@ -180,7 +186,10 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                  RawQuery(load_view_query): RawQuery,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
-                    let _load_view_query = load_view_query
+                    // Deserialization cannot fail: StrDeserializer always provides a
+                    // string, and LoadViewQuery::visit_str always returns Ok (it
+                    // delegates to parse_referenced_by_param which returns Option).
+                    let load_view_query = load_view_query
                         .as_deref()
                         .and_then(|q| {
                             use serde::de::{IntoDeserializer, value::StrDeserializer};
@@ -203,8 +212,15 @@ pub fn router<I: ViewService<S>, S: crate::api::ThreadSafe>() -> Router<ApiConte
                                 name: normalize_tabular_name(&view),
                             },
                         },
+                        LoadViewRequest {
+                            data_access: crate::api::iceberg::v1::tables::parse_data_access(
+                                &headers,
+                            ),
+                            referenced_by: load_view_query
+                                .referenced_by
+                                .map(ReferencedByQuery::into_inner),
+                        },
                         api_context,
-                        crate::api::iceberg::v1::tables::parse_data_access(&headers),
                         metadata,
                     )
                 },

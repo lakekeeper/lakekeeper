@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId, XXHashSet,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
-    config::TrustedEngine,
+    config::MatchedEngines,
     service::{
         ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
@@ -73,7 +73,7 @@ pub struct RequestMetadata {
     matched_path: Option<Arc<str>>,
     request_method: Method,
     user_agent: Option<UserAgent>,
-    engine: Option<TrustedEngine>,
+    engines: MatchedEngines,
     idempotency_key: Option<IdempotencyKey>,
 }
 
@@ -144,16 +144,16 @@ impl RequestMetadata {
         self
     }
 
-    /// Set the identified trusted engine.
-    pub fn set_engine(&mut self, engine: TrustedEngine) -> &mut Self {
-        self.engine = Some(engine);
+    /// Set the matched trusted engines for this request.
+    pub fn set_engines(&mut self, engines: MatchedEngines) -> &mut Self {
+        self.engines = engines;
         self
     }
 
-    /// Identified trusted engine.
+    /// Trusted engines matched for this request.
     #[must_use]
-    pub fn engine(&self) -> Option<&TrustedEngine> {
-        self.engine.as_ref()
+    pub fn engines(&self) -> &MatchedEngines {
+        &self.engines
     }
 
     /// Idempotency key from the `Idempotency-Key` request header, if present.
@@ -209,7 +209,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
-            engine: None,
+            engines: MatchedEngines::default(),
             token_roles: None,
             idempotency_key: None,
         }
@@ -234,7 +234,7 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
-            engine: None,
+            engines: MatchedEngines::default(),
             token_roles: None,
             idempotency_key: None,
         }
@@ -272,7 +272,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
-            engine: None,
+            engines: MatchedEngines::default(),
             token_roles: None,
             idempotency_key: None,
         }
@@ -308,7 +308,7 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
-            engine: None,
+            engines: MatchedEngines::default(),
             token_roles: None,
             idempotency_key: None,
         }
@@ -333,7 +333,7 @@ impl RequestMetadata {
             matched_path,
             request_method,
             user_agent: None,
-            engine: None,
+            engines: MatchedEngines::default(),
             token_roles: None,
             idempotency_key: None,
         }
@@ -515,7 +515,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         matched_path,
         request_method,
         user_agent,
-        engine: None,
+        engines: MatchedEngines::default(),
         idempotency_key,
     });
     next.run(request).await

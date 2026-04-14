@@ -541,7 +541,7 @@ mod test {
     fn test_can_resolve_all_tuples() {
         let paths = Endpoint::iter().map(Endpoint::path).collect_vec();
         let methods = Endpoint::iter().map(Endpoint::method).collect_vec();
-        for (method, path) in methods.iter().zip(paths.into_iter()) {
+        for (method, path) in methods.iter().zip(paths) {
             let endpoint = Endpoint::from_method_and_matched_path(method, path);
             assert_eq!(
                 endpoint.unwrap().as_http_route(),

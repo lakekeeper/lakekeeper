@@ -1275,6 +1275,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     t.as_action_request(
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
+                                        None,
                                     ),
                                 ))
                             })
@@ -1283,7 +1284,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         authorizer
                             .are_allowed_tabular_actions_vec(
                                 &request_metadata,
-                                None,
                                 &warehouse,
                                 &namespaces,
                                 &actions,
@@ -1300,8 +1300,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         Vec<bool>,
                     ) = authz_decisions
                         .into_iter()
-                        .zip(items.into_iter().zip(ids.into_iter()))
-                        .zip(tokens.into_iter())
+                        .zip(items.into_iter().zip(ids))
+                        .zip(tokens)
                         .map(|((allowed, namespace), token)| {
                             (namespace.0, namespace.1, token, allowed)
                         })

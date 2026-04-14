@@ -167,10 +167,7 @@ mod test {
     #[test]
     fn test_std_duration_visitor_can_parse_iso_8601_duration() {
         let duration = StdDurationVisitor.visit_str::<Error>("P3DT4H").unwrap();
-        assert_eq!(
-            duration,
-            std::time::Duration::from_secs(3 * 86400 + 4 * 3600)
-        );
+        assert_eq!(duration, std::time::Duration::from_hours(76));
     }
 
     #[test]

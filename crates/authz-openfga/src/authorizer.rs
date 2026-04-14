@@ -14,9 +14,9 @@ use lakekeeper::{
         ErrorModel, NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore,
         ServerId, State, TableId, UserId, ViewId,
         authz::{
-            Authorizer, AuthzBackendErrorOrBadRequest, CannotInspectPermissions,
-            CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
-            NamespaceParent, UserOrRole,
+            ActionOnTable, ActionOnView, Authorizer, AuthzBackendErrorOrBadRequest,
+            CannotInspectPermissions, CatalogProjectAction, CatalogUserAction,
+            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -501,95 +501,95 @@ impl Authorizer for OpenFGAAuthorizer {
             .await
     }
 
-    async fn are_allowed_table_actions_impl(
+    async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        tables_with_actions: &[(
+        actions: &[(
             &NamespaceWithParent,
-            &impl AuthZTableInfo,
-            Self::TableAction,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user = for_user.map_or_else(
-            || metadata.actor().to_openfga(),
-            |u| u.api_user_or_role().to_openfga(),
-        );
-
-        let items: Vec<_> = tables_with_actions
+        // Build check requests with per-action user handling
+        let items: Vec<_> = actions
             .iter()
-            .map(|(_ns, table, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: (table.warehouse_id(), table.table_id()).to_openfga(),
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.table_id()).to_openfga(),
+                }
             })
             .collect();
 
-        let guard_tuples = if for_user.is_some() {
-            // Collect unique table objects for permission checks
-            let unique_tables: HashSet<_> = tables_with_actions
-                .iter()
-                .map(|(_ns, table, _)| (table.warehouse_id(), table.table_id()).to_openfga())
-                .collect();
+        // Collect guard tuples for actions with explicit for_user, but skip for delegated execution
+        // Delegated execution (e.g., DEFINER views) uses the specified user's permissions directly
+        // without requiring permission inspection rights.
+        let mut guard_tuples = Vec::new();
+        let unique_tables_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some() && !action.is_delegated_execution)
+            .map(|(_, action)| (action.info.warehouse_id(), action.info.table_id()).to_openfga())
+            .collect();
 
-            unique_tables
-                .into_iter()
-                .map(|table_obj| CheckRequestTupleKey {
-                    user: metadata.actor().to_openfga(),
-                    relation: TableRelation::CanReadAssignments.to_string(),
-                    object: table_obj,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        guard_tuples.extend(unique_tables_needing_guards.into_iter().map(|table_obj| {
+            CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: TableRelation::CanReadAssignments.to_string(),
+                object: table_obj,
+            }
+        }));
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
             .await
     }
 
-    async fn are_allowed_view_actions_impl(
+    async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user = for_user.map_or_else(
-            || metadata.actor().to_openfga(),
-            |u| u.api_user_or_role().to_openfga(),
-        );
-
-        let items: Vec<_> = views_with_actions
+        // Build check requests with per-action user handling
+        let items: Vec<_> = actions
             .iter()
-            .map(|(_ns, view, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: (view.warehouse_id(), view.view_id()).to_openfga(),
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.view_id()).to_openfga(),
+                }
             })
             .collect();
 
-        let guard_tuples = if for_user.is_some() {
-            // Collect unique view objects for permission checks
-            let unique_views: HashSet<_> = views_with_actions
-                .iter()
-                .map(|(_ns, view, _)| (view.warehouse_id(), view.view_id()).to_openfga())
-                .collect();
+        // Collect guard tuples for actions with explicit for_user, but skip for delegated execution
+        // Delegated execution (e.g., DEFINER views) uses the specified user's permissions directly
+        // without requiring permission inspection rights.
+        let mut guard_tuples = Vec::new();
+        let unique_views_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some() && !action.is_delegated_execution)
+            .map(|(_, action)| (action.info.warehouse_id(), action.info.view_id()).to_openfga())
+            .collect();
 
-            unique_views
-                .into_iter()
-                .map(|view_obj| CheckRequestTupleKey {
-                    user: metadata.actor().to_openfga(),
-                    relation: ViewRelation::CanReadAssignments.to_string(),
-                    object: view_obj,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        guard_tuples.extend(unique_views_needing_guards.into_iter().map(|view_obj| {
+            CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: ViewRelation::CanReadAssignments.to_string(),
+                object: view_obj,
+            }
+        }));
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
             .await
