@@ -1974,7 +1974,8 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].tabular_id(), table.table_id.into());
+        let info = infos.get(&table.table_ident).expect("old ident should match");
+        assert_eq!(info.tabular_id(), table.table_id.into());
 
         // New name should also find it
         let infos = get_tabular_infos_by_idents(
@@ -1986,7 +1987,8 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0].tabular_id(), table.table_id.into());
+        let info = infos.get(&new_table_ident).expect("new ident should match");
+        assert_eq!(info.tabular_id(), table.table_id.into());
 
         // The stored name should be the new case
         let listed = list_tabulars(
