@@ -252,7 +252,7 @@ impl UnexpectedCorrelationId {
 #[derive(Debug, thiserror::Error)]
 #[error("One of the checks in a batch returned {} error with code {}: {message}", 
     error_type.as_deref().unwrap_or("unknown"), 
-    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+    code.map_or_else(|| "unknown".to_string(), |c| c.to_string())
 )]
 pub struct BatchCheckError {
     message: String,

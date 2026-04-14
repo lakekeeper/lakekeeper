@@ -555,8 +555,8 @@ impl Default for IdempotencyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            lifetime: Duration::from_secs(30 * 60),
-            grace_period: Duration::from_secs(5 * 60),
+            lifetime: Duration::from_mins(30),
+            grace_period: Duration::from_mins(5),
             cleanup_timeout: Duration::from_secs(30),
         }
     }
@@ -1763,12 +1763,12 @@ mod test {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
             assert!(config.idempotency.enabled);
-            assert_eq!(config.idempotency.lifetime, Duration::from_secs(30 * 60));
-            assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
+            assert_eq!(config.idempotency.lifetime, Duration::from_mins(30));
+            assert_eq!(config.idempotency.grace_period, Duration::from_mins(5));
             assert_eq!(config.idempotency.lifetime_iso8601(), "PT30M");
             assert_eq!(
                 config.idempotency.total_retention(),
-                Duration::from_secs(35 * 60)
+                Duration::from_mins(35)
             );
             Ok(())
         });
@@ -1782,12 +1782,12 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__GRACE_PERIOD", "PT10M");
             let config = get_config();
             assert!(!config.idempotency.enabled);
-            assert_eq!(config.idempotency.lifetime, Duration::from_secs(3600));
-            assert_eq!(config.idempotency.grace_period, Duration::from_secs(600));
+            assert_eq!(config.idempotency.lifetime, Duration::from_hours(1));
+            assert_eq!(config.idempotency.grace_period, Duration::from_mins(10));
             assert_eq!(config.idempotency.lifetime_iso8601(), "PT1H");
             assert_eq!(
                 config.idempotency.total_retention(),
-                Duration::from_secs(4200)
+                Duration::from_mins(70)
             );
             Ok(())
         });
@@ -1800,8 +1800,8 @@ mod test {
             let config = get_config();
             // lifetime overridden, grace_period keeps default
             assert!(config.idempotency.enabled);
-            assert_eq!(config.idempotency.lifetime, Duration::from_secs(15 * 60));
-            assert_eq!(config.idempotency.grace_period, Duration::from_secs(5 * 60));
+            assert_eq!(config.idempotency.lifetime, Duration::from_mins(15));
+            assert_eq!(config.idempotency.grace_period, Duration::from_mins(5));
             Ok(())
         });
     }

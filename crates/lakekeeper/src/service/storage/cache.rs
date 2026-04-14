@@ -118,7 +118,7 @@ impl moka::Expiry<STCCacheKey, STCCacheValue> for STCCacheExpiration {
         };
 
         // Cache until half the validity duration, capped at 1 hour.
-        Some((valid_for_duration / 2).min(Duration::from_secs(3600)))
+        Some((valid_for_duration / 2).min(Duration::from_hours(1)))
     }
 }
 

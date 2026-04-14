@@ -1342,8 +1342,8 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     .await?;
 
     let tabular_expiration_entities = resolved_tasks
-        .iter()
-        .filter_map(|(_, resolved_task)| {
+        .values()
+        .filter_map(|resolved_task| {
             if resolved_task.queue_name == *TABULAR_EXPIRATION_QUEUE_NAME {
                 let resolved_task = &resolved_task.entity;
                 match resolved_task {

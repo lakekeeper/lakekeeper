@@ -128,7 +128,7 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
     let authn_oidc = if let Some(uri) = CONFIG.openid_provider_uri.clone() {
         let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
             uri.as_ref(),
-            Some(std::time::Duration::from_secs(3600)),
+            Some(std::time::Duration::from_hours(1)),
         )
         .await?
         .set_idp_id(OIDC_IDP_ID);

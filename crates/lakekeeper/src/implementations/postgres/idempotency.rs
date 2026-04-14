@@ -18,8 +18,7 @@ static CLEANUP_STARTED_AT: AtomicU64 = AtomicU64::new(0);
 fn current_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Try to claim the cleanup slot. Returns the claimed timestamp if we won.

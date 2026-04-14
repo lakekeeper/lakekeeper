@@ -56,7 +56,7 @@ impl AuthorizationFailureSource for AuthZProjectActionForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AuthZProjectActionForbidden { project_id, action } = self;
         ErrorModel::forbidden(
-            format!("Project action `{action}` forbidden on project `{project_id}`",),
+            format!("Project action `{action}` forbidden on project `{project_id}`"),
             "ProjectActionForbidden",
             None,
         )

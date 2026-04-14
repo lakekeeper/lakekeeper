@@ -1140,7 +1140,7 @@ pub(crate) mod tests {
             .context_radius(15)
             .missing_newline_hint(false)
             .to_string();
-        assert_eq!(load_result.table_metadata, table_metadata, "{diff}",);
+        assert_eq!(load_result.table_metadata, table_metadata, "{diff}");
         assert_eq!(load_result.metadata_location, metadata_location);
     }
 

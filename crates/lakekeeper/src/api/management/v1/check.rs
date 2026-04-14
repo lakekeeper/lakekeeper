@@ -1618,7 +1618,7 @@ async fn collect_authz_results(
             )
             .into());
         }
-        for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec.into_iter()) {
+        for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec) {
             results[i].allowed = is_allowed;
         }
     }

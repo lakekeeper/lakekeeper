@@ -257,7 +257,7 @@ mod test {
     fn test_user_id_pre_0_9_can_be_parsed() {
         // Previously allowed characters up to 0.8: "-", "_", alphanumeric
         let user_id = "oidc~abc-def_ghi";
-        let openfga_id = format!("user:{user_id}",);
+        let openfga_id = format!("user:{user_id}");
         let parsed = UserId::parse_from_openfga(openfga_id.as_str()).unwrap();
         assert_eq!(parsed.to_openfga(), openfga_id);
         assert_eq!(parsed.openfga_type(), FgaType::User);

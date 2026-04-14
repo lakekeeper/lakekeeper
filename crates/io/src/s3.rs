@@ -37,7 +37,7 @@ static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
         .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
             aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
         ))
-        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_idle_timeout(Duration::from_mins(1))
         .build_https()
 });
 
