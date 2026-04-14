@@ -1654,9 +1654,11 @@ def test_view_case_insensitivity(spark, namespace):
 
     spark.sql(f"DROP VIEW {namespace.spark_name}.MY_VIEW")
 
-    # Verify the view is gone
-    with pytest.raises(Exception):
-        spark.sql(f"SELECT * FROM {namespace.spark_name}.my_view").toPandas()
+    # Verify the view is gone — check directly via SHOW VIEWS instead of
+    # relying on a broad exception from SELECT (which could false-pass on
+    # unrelated Spark errors and varies by Spark version).
+    views = spark.sql(f"SHOW VIEWS IN {namespace.spark_name}").toPandas()
+    assert views.shape[0] == 0
 
 
 def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
@@ -1679,14 +1681,26 @@ def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
     ).toPandas()
     assert pdf["id"].tolist() == [42]
 
-    # Cleanup — wait for soft-delete expiration (2s) before dropping namespace
+    # Cleanup: the warehouse uses soft-deletion, so DROP TABLE only marks the
+    # table as deleted. Retry DROP NAMESPACE until the soft-deleted entry has
+    # expired from the namespace's child set.
     spark.sql(
         f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test"
     )
-    time.sleep(3)
-    spark.sql(
-        f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
-    )
+    deadline = time.time() + 15
+    last_err = None
+    while time.time() < deadline:
+        try:
+            spark.sql(
+                f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
+            )
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            time.sleep(0.5)
+    if last_err is not None:
+        raise last_err
 
 
 def test_encryption_key_id_set_same_value(spark, namespace):
