@@ -3838,6 +3838,7 @@ dependencies = [
  "derive_more",
  "fastrand 2.3.0",
  "futures",
+ "gcloud-auth",
  "gcloud-storage",
  "md5",
  "moka",
