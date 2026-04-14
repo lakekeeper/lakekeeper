@@ -997,16 +997,14 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_table_actions_impl(
+    async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZTableInfo,
-            Self::TableAction,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
@@ -1018,13 +1016,15 @@ where
     ///
     /// The default implementation is provided for backwards compatibility and does not support
     /// batch requests.
-    async fn are_allowed_view_actions_impl(
+    async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     /// Hook that is called when a user is deleted.
@@ -1483,6 +1483,10 @@ pub(crate) mod tests {
         pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
+        /// Per-user object hiding. Key: `format!("{user:?}")`, Value: set of object strings.
+        /// Global `hidden` is checked first; per-user entries hide additional objects
+        /// but cannot override global hides. See [`Self::check_available_for_user`].
+        hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
     }
 
@@ -1491,6 +1495,7 @@ pub(crate) mod tests {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
+                hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
             }
         }
@@ -1499,8 +1504,35 @@ pub(crate) mod tests {
             !self.hidden.read().unwrap().contains(object)
         }
 
+        fn check_available_for_user(&self, object: &str, user: Option<&UserOrRole>) -> bool {
+            // Check global hidden set first
+            if !self.check_available(object) {
+                return false;
+            }
+            // Then check per-user hidden set
+            if let Some(user) = user {
+                let user_key = format!("{user:?}");
+                let per_user = self.hidden_for_user.read().unwrap();
+                if let Some(user_hidden) = per_user.get(&user_key) {
+                    return !user_hidden.contains(object);
+                }
+            }
+            true
+        }
+
         pub(crate) fn hide(&self, object: &str) {
             self.hidden.write().unwrap().insert(object.to_string());
+        }
+
+        /// Hide an object for a specific user only. Other users can still see it.
+        pub(crate) fn hide_for_user(&self, user: &UserOrRole, object: &str) {
+            let user_key = format!("{user:?}");
+            self.hidden_for_user
+                .write()
+                .unwrap()
+                .entry(user_key)
+                .or_default()
+                .insert(object.to_string());
         }
 
         fn action_is_blocked(&self, action: &str) -> bool {
@@ -1697,49 +1729,57 @@ pub(crate) mod tests {
             Ok(results)
         }
 
-        async fn are_allowed_table_actions_impl(
+        async fn are_allowed_table_actions_impl<
+            A: Into<Self::TableAction> + Send + Clone + Sync,
+        >(
             &self,
             _metadata: &RequestMetadata,
-            _for_user: Option<&UserOrRole>,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(
                 &NamespaceWithParent,
-                &impl AuthZTableInfo,
-                Self::TableAction,
+                ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
             )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
             let results: Vec<bool> = actions
                 .iter()
-                .map(|(_parent_namespace, table, action)| {
-                    if self.action_is_blocked(format!("table:{action:?}").as_str()) {
+                .map(|(_parent_namespace, action)| {
+                    if self.action_is_blocked(
+                        format!("table:{:?}", action.action.clone().into()).as_str(),
+                    ) {
                         return false;
                     }
-                    let table_id = table.table_id();
-                    let warehouse_id = table.warehouse_id();
-                    self.check_available(format!("table:{warehouse_id}/{table_id}").as_str())
+                    let table_id = action.info.table_id();
+                    let warehouse_id = action.info.warehouse_id();
+                    let object = format!("table:{warehouse_id}/{table_id}");
+                    self.check_available_for_user(&object, action.user)
                 })
                 .collect();
             Ok(results)
         }
 
-        async fn are_allowed_view_actions_impl(
+        async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
             &self,
             _metadata: &RequestMetadata,
-            _for_user: Option<&UserOrRole>,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-            views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+            actions: &[(
+                &NamespaceWithParent,
+                ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+            )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
-            let results: Vec<bool> = views_with_actions
+            let results: Vec<bool> = actions
                 .iter()
-                .map(|(_parent_namespace, view, action)| {
-                    if self.action_is_blocked(format!("view:{action:?}").as_str()) {
+                .map(|(_parent_namespace, action)| {
+                    if self.action_is_blocked(
+                        format!("view:{:?}", action.action.clone().into()).as_str(),
+                    ) {
                         return false;
                     }
-                    let view_id = view.view_id();
-                    let warehouse_id = view.warehouse_id();
-                    self.check_available(format!("view:{warehouse_id}/{view_id}").as_str())
+                    let view_id = action.info.view_id();
+                    let warehouse_id = action.info.warehouse_id();
+                    let object = format!("view:{warehouse_id}/{view_id}");
+                    self.check_available_for_user(&object, action.user)
                 })
                 .collect();
             Ok(results)

@@ -163,7 +163,7 @@ where
     let mut trx = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| {
-            e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue.",))
+            e.append_detail(format!("Failed to start transaction for `{QN_STR}` Queue."))
         })?;
 
     let (warehouse_id, entity_id) = match &task.task_metadata.entity {

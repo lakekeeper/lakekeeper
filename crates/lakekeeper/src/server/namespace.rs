@@ -163,8 +163,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         Vec<bool>,
                     ) = masks
                         .into_iter()
-                        .zip(responses.into_iter())
-                        .zip(tokens.into_iter())
+                        .zip(responses)
+                        .zip(tokens)
                         .map(|((allowed, namespace), token)| {
                             let namespace_id = namespace.namespace_id();
                             (namespace, namespace_id, token, allowed)
@@ -866,7 +866,7 @@ where
 pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()> {
     if namespace.len() > MAX_NAMESPACE_DEPTH as usize {
         return Err(ErrorModel::bad_request(
-            format!("Namespace exceeds maximum depth of {MAX_NAMESPACE_DEPTH}",),
+            format!("Namespace exceeds maximum depth of {MAX_NAMESPACE_DEPTH}"),
             "NamespaceDepthExceeded".to_string(),
             None,
         )

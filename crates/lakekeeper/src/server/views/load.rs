@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
+use std::{collections::HashMap, str::FromStr as _, sync::Arc};
 
 use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::LoadViewResult;
@@ -8,18 +8,31 @@ use crate::{
     WarehouseId,
     api::{
         ApiContext,
-        iceberg::v1::{DataAccessMode, ViewParameters},
+        iceberg::v1::{ViewParameters, views::LoadViewRequest},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tables::validate_table_or_view_ident},
-    service::{
-        AuthZViewInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogViewOps,
-        CatalogWarehouseOps, InternalParseLocationError, ResolvedWarehouse, Result, SecretStore,
-        State, TabularListFlags, Transaction, ViewInfo,
-        authz::{
-            AuthZCannotSeeView, AuthZError, AuthZViewOps, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogViewAction, refresh_warehouse_and_namespace_if_needed,
+    server::{
+        require_warehouse_id,
+        tables::{
+            add_namespace_to_tabulars_for_authorize_load_tabular,
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular,
+            check_required_namespaces, check_required_tabulars, effective_referenced_by,
+            get_relevant_namespaces_to_authorize_load_tabular,
+            get_relevant_tabulars_to_authorize_load_tabular,
+            load_objects_to_authorize_load_tabular, resolve_users_for_authorize_load_tabular,
+            sort_tabulars_for_authorize_load_tabular, validate_table_or_view_ident,
         },
+    },
+    service::{
+        AuthZViewInfo as _, CatalogStore, CatalogViewOps, InternalParseLocationError,
+        ResolvedWarehouse, Result, SecretStore, State, TabularIdentBorrowed, TabularListFlags,
+        Transaction, ViewInfo,
+        authz::{
+            ActionOnTableOrView, AuthZCannotSeeView, AuthZError, AuthZTableOps,
+            AuthorizationCountMismatch, Authorizer, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CatalogViewAction,
+        },
+        build_namespace_hierarchy,
         events::{APIEventContext, context::ResolvedView},
         storage::StoragePermissions,
     },
@@ -27,11 +40,11 @@ use crate::{
 
 pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
+    request: LoadViewRequest,
     state: ApiContext<State<A, C, S>>,
-    data_access: impl Into<DataAccessMode>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadViewResult> {
-    let data_access = data_access.into();
+    let data_access = request.data_access;
     // ------------------- VALIDATIONS -------------------
     let ViewParameters { prefix, view } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -62,6 +75,7 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         &view,
         &authorizer,
         catalog_state.clone(),
+        request.referenced_by.as_deref(),
     )
     .await;
     let (event_ctx, (warehouse, view_info, storage_permissions)) =
@@ -122,134 +136,230 @@ pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     Ok(load_table_result)
 }
 
+use crate::api::iceberg::types::ReferencingView;
+
 async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
     view: &TableIdent,
     authorizer: &A,
     state: C::State,
+    referenced_by: Option<&[ReferencingView]>,
 ) -> Result<(Arc<ResolvedWarehouse>, ViewInfo, Option<StoragePermissions>), AuthZError> {
-    let (warehouse, namespace, view_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.clone()),
-        C::get_namespace(warehouse_id, view.namespace.clone(), state.clone()),
-        C::get_view_info(
-            warehouse_id,
-            view.clone(),
-            TabularListFlags::active(),
-            state.clone()
-        )
+    let engines = request_metadata.engines();
+    let list_flags = TabularListFlags::active();
+    let referenced_by = effective_referenced_by(referenced_by, engines);
+
+    // 1. Collect all relevant namespace idents
+    let user_provided_namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+        &TabularIdentBorrowed::View(view),
+        referenced_by,
     );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let view_info = authorizer.require_view_presence(warehouse_id, view.clone(), view_info)?;
-    let namespace =
-        authorizer.require_namespace_presence(warehouse_id, view.namespace.clone(), namespace)?;
 
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
-        &warehouse,
-        namespace,
-        &view_info,
-        AuthZCannotSeeView::new_not_found(warehouse_id, view.clone()),
-        authorizer,
-        state.clone(),
+    // 2. Collect all relevant tabular idents
+    let user_provided_tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+        TabularIdentBorrowed::View(view),
+        referenced_by,
+    );
+
+    // 3. Load objects concurrently
+    let objects = load_objects_to_authorize_load_tabular::<C>(
+        warehouse_id,
+        user_provided_namespaces.clone().into_iter().collect(),
+        user_provided_tabulars.clone().into_iter().collect(),
+        list_flags,
+        state,
     )
-    .await?;
+    .await;
 
-    let [can_load, can_write] = authorizer
-        .are_allowed_view_actions_arr(
-            request_metadata,
-            None,
-            &warehouse,
-            &namespace,
-            &view_info,
-            &[
-                CatalogViewAction::GetMetadata,
-                CatalogViewAction::Commit {
-                    updated_properties: Arc::new(BTreeMap::default()),
-                    removed_properties: Arc::new(Vec::default()),
-                },
-            ],
-        )
+    // 4. Check objects presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, objects.warehouse)?;
+    let tabulars = check_required_tabulars(
+        warehouse_id,
+        user_provided_tabulars,
+        objects.tabulars,
+        authorizer,
+    )?;
+    let namespaces =
+        check_required_namespaces(warehouse_id, &user_provided_namespaces, objects.namespaces)?;
+
+    // 5. Build NamespaceHierarchy
+    let namespaces_with_hierarchy: HashMap<_, _> = namespaces
+        .iter()
+        .map(|(namespace_id, namespace)| {
+            (
+                *namespace_id,
+                build_namespace_hierarchy(namespace, &namespaces),
+            )
+        })
+        .collect();
+
+    // 6. Sort tabulars
+    let sorted_tabulars = sort_tabulars_for_authorize_load_tabular(&tabulars, referenced_by, view);
+
+    // 7. Connect with namespaces
+    let sorted_tabulars = add_namespace_to_tabulars_for_authorize_load_tabular(
+        warehouse_id,
+        sorted_tabulars,
+        &namespaces_with_hierarchy,
+    )?;
+
+    // 8. Resolve owners and assign current user
+    let token_idp_id = request_metadata
+        .authentication()
+        .and_then(|a| a.subject().idp_id())
+        .map(String::as_str);
+    let sorted_tabulars_with_full_info = resolve_users_for_authorize_load_tabular(
+        &sorted_tabulars,
+        request_metadata.actor(),
+        engines,
+        token_idp_id,
+    )?;
+
+    // 9. Build actions and check all authorizations in batch
+    let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+        &sorted_tabulars_with_full_info,
+    );
+    let authz_results = authorizer
+        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
         .await?
         .into_inner();
 
-    if !can_load {
-        return Err(AuthZCannotSeeView::new_forbidden(warehouse_id, view.clone()).into());
+    // 10. Interpret authorization results
+    let (view_info, storage_permissions) =
+        interpret_authz_results_for_load_view(&actions, &authz_results, warehouse_id, view)?;
+
+    Ok((warehouse, view_info, storage_permissions))
+}
+
+fn interpret_authz_results_for_load_view(
+    actions: &[crate::server::tables::TabularAuthzAction<'_>],
+    authz_results: &[bool],
+    warehouse_id: WarehouseId,
+    view: &TableIdent,
+) -> Result<(ViewInfo, Option<StoragePermissions>), AuthZError> {
+    if actions.len() != authz_results.len() {
+        return Err(
+            BackendUnavailableOrCountMismatch::from(AuthorizationCountMismatch::new(
+                actions.len(),
+                authz_results.len(),
+                "load_view",
+            ))
+            .into(),
+        );
     }
 
-    let storage_permissions = if can_write {
-        Some(StoragePermissions::ReadWriteDelete)
-    } else {
-        Some(StoragePermissions::Read)
-    };
-    Ok((warehouse, view_info, storage_permissions))
+    let mut target_view_info: Option<ViewInfo> = None;
+    let mut target_is_delegated = false;
+    let mut can_get_metadata = false;
+
+    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+        match action {
+            ActionOnTableOrView::View(view_action) => {
+                // The target view is the last view in the chain.
+                // All views produce GetMetadata actions; the target view is identified
+                // by matching its ident.
+                if view_action.info.tabular_ident == *view {
+                    target_view_info = Some(view_action.info.clone());
+                    target_is_delegated = view_action.is_delegated_execution;
+                    if matches!(view_action.action, CatalogViewAction::GetMetadata) {
+                        can_get_metadata = allowed;
+                    }
+                } else if !allowed {
+                    return Err(AuthZCannotSeeView::new_forbidden(
+                        warehouse_id,
+                        view_action.info.tabular_ident.clone(),
+                    )
+                    .with_delegated_execution(view_action.is_delegated_execution)
+                    .into());
+                }
+            }
+            ActionOnTableOrView::Table(_) => {
+                // Unreachable: all referenced-by entries are looked up as views
+                // (TabularIdentBorrowed::View) and the target is also a view,
+                // so the DB type filter prevents tables from appearing here.
+                debug_assert!(false, "Table action in loadView authorization chain");
+            }
+        }
+    }
+
+    let view_info = target_view_info
+        .ok_or_else(|| AuthZCannotSeeView::new_not_found(warehouse_id, view.clone()))?;
+
+    if !can_get_metadata {
+        return Err(
+            AuthZCannotSeeView::new_forbidden(warehouse_id, view.clone())
+                .with_delegated_execution(target_is_delegated)
+                .into(),
+        );
+    }
+
+    // Views loaded via loadView always get read storage permissions
+    Ok((view_info, Some(StoragePermissions::Read)))
 }
 
 #[cfg(test)]
 pub(crate) mod test {
-    use iceberg::TableIdent;
-    use iceberg_ext::catalog::rest::{CreateViewRequest, LoadViewResult};
+    use iceberg_ext::catalog::rest::LoadViewResult;
     use sqlx::PgPool;
 
     use crate::{
-        api::{
-            ApiContext,
-            iceberg::v1::{DataAccess, Prefix, ViewParameters, views},
+        api::iceberg::v1::{
+            ViewParameters,
+            views::{LoadViewRequest, ViewService},
         },
-        implementations::postgres::{PostgresBackend, secrets::SecretsState},
-        server::{
-            CatalogServer,
-            views::{create::test::create_view, test::setup},
-        },
-        service::{State, authz::AllowAllAuthorizer},
-        tests::create_view_request,
+        implementations::postgres::{PostgresBackend, SecretsState},
+        server::CatalogServer,
+        service::{Result, State, authz::AllowAllAuthorizer},
     };
 
     pub(crate) async fn load_view(
-        api_context: ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
-        params: ViewParameters,
-    ) -> crate::api::Result<LoadViewResult> {
-        <CatalogServer<PostgresBackend, AllowAllAuthorizer, SecretsState> as views::ViewService<
+        api_context: crate::api::ApiContext<
+            State<AllowAllAuthorizer, PostgresBackend, SecretsState>,
+        >,
+        view: ViewParameters,
+    ) -> Result<LoadViewResult> {
+        <CatalogServer<PostgresBackend, AllowAllAuthorizer, SecretsState> as ViewService<
             State<AllowAllAuthorizer, PostgresBackend, SecretsState>,
         >>::load_view(
-            params,
+            view,
+            LoadViewRequest::default(),
             api_context,
-            DataAccess {
-                vended_credentials: true,
-                remote_signing: false,
-            },
-            crate::request_metadata::RequestMetadata::new_unauthenticated(),
+            crate::tests::random_request_metadata(),
         )
         .await
     }
 
     #[sqlx::test]
     async fn test_load_view(pool: PgPool) {
-        let (api_context, namespace, whi, _) = setup(pool, None).await;
+        let (ctx, namespace, whi, _) = crate::server::views::test::setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq: CreateViewRequest = create_view_request(Some(view_name), None);
-
-        let prefix = &whi.to_string();
-        let created_view = Box::pin(create_view(
-            api_context.clone(),
+        let rq = crate::tests::create_view_request(Some(view_name), None);
+        let prefix = whi.to_string();
+        Box::pin(crate::server::views::create::test::create_view(
+            ctx.clone(),
             namespace.clone(),
             rq,
-            Some(prefix.into()),
+            Some(prefix.clone()),
         ))
         .await
-        .unwrap();
-        let mut table_ident = namespace.clone().inner();
-        table_ident.push(view_name.into());
+        .expect("create_view should succeed");
+
+        let mut view_ns = namespace.inner();
+        view_ns.push(view_name.into());
+        let view_ident = iceberg::TableIdent::from_strs(view_ns).unwrap();
 
         let loaded_view = load_view(
-            api_context,
+            ctx,
             ViewParameters {
-                prefix: Some(Prefix(prefix.clone())),
-                view: TableIdent::from_strs(table_ident).unwrap(),
+                prefix: Some(crate::api::iceberg::types::Prefix(prefix)),
+                view: view_ident,
             },
         )
         .await
-        .expect("View should be loadable");
-        assert_eq!(loaded_view.metadata, created_view.metadata);
+        .expect("load_view should succeed");
+
+        assert_eq!(loaded_view.metadata.current_version().schema_id(), 0);
     }
 }

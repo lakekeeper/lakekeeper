@@ -401,7 +401,7 @@ where
         tabulars: &[TabularIdentBorrowed<'_>],
         list_flags: TabularListFlags,
         catalog_state: Self::State,
-    ) -> std::result::Result<Vec<ViewOrTableInfo>, GetTabularInfoError>;
+    ) -> std::result::Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError>;
 
     async fn get_tabular_infos_by_id_impl(
         warehouse_id: WarehouseId,

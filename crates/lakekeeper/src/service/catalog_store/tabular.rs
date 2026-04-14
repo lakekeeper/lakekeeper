@@ -14,9 +14,12 @@ use crate::{
     service::{
         CatalogBackendError, CatalogStore, InvalidNamespaceIdentifier, InvalidPaginationToken,
         NamespaceId, NamespaceVersion, Result, TableId, TabularId, TabularIdentBorrowed,
-        TabularIdentOwned, Transaction, ViewId, WarehouseVersion, authz::ActionOnTableOrView,
-        define_simple_error, define_transparent_error, events::impl_authorization_failure_source,
-        impl_error_stack_methods, impl_from_with_detail, tasks::TaskId,
+        TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
+        authz::{ActionOnTable, ActionOnTableOrView, ActionOnView, UserOrRole},
+        define_simple_error, define_transparent_error,
+        events::impl_authorization_failure_source,
+        impl_error_stack_methods, impl_from_with_detail,
+        tasks::TaskId,
     },
 };
 
@@ -246,14 +249,25 @@ impl ViewOrTableInfo {
         }
     }
 
-    pub fn as_action_request<AV, AT>(
+    pub fn as_action_request<'u, AV, AT>(
         &self,
         view_action: AV,
         table_action: AT,
-    ) -> ActionOnTableOrView<'_, TableInfo, ViewInfo, AT, AV> {
+        user: Option<&'u UserOrRole>,
+    ) -> ActionOnTableOrView<'_, 'u, TableInfo, ViewInfo, AT, AV> {
         match self {
-            Self::View(view) => ActionOnTableOrView::View((view, view_action)),
-            Self::Table(table) => ActionOnTableOrView::Table((table, table_action)),
+            Self::View(view) => ActionOnTableOrView::View(ActionOnView {
+                info: view,
+                action: view_action,
+                user,
+                is_delegated_execution: false,
+            }),
+            Self::Table(table) => ActionOnTableOrView::Table(ActionOnTable {
+                info: table,
+                action: table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 
@@ -451,6 +465,46 @@ impl AuthZViewInfo for ViewDeletionInfo {
     }
 }
 
+pub trait AuthZTabularInfo: BasicTabularInfo + Send + Sync {
+    fn tabular_id(&self) -> TabularId;
+    fn namespace_id(&self) -> NamespaceId;
+    fn namespace_ident(&self) -> &NamespaceIdent {
+        self.tabular_ident().namespace()
+    }
+    fn is_protected(&self) -> bool;
+    fn properties(&self) -> &HashMap<String, String>;
+}
+
+impl AuthZTabularInfo for ViewOrTableInfo {
+    fn tabular_id(&self) -> TabularId {
+        match self {
+            Self::Table(info) => TabularId::Table(info.tabular_id),
+            Self::View(info) => TabularId::View(info.tabular_id),
+        }
+    }
+
+    fn namespace_id(&self) -> NamespaceId {
+        match self {
+            Self::Table(info) => info.namespace_id,
+            Self::View(info) => info.namespace_id,
+        }
+    }
+
+    fn is_protected(&self) -> bool {
+        match self {
+            Self::Table(info) => info.protected,
+            Self::View(info) => info.protected,
+        }
+    }
+
+    fn properties(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Table(info) => &info.properties,
+            Self::View(info) => &info.properties,
+        }
+    }
+}
+
 pub trait BasicTabularInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
     fn warehouse_version(&self) -> WarehouseVersion;
@@ -645,14 +699,25 @@ impl ViewOrTableDeletionInfo {
         }
     }
 
-    pub fn as_action_request<AV, AT>(
+    pub fn as_action_request<'u, AV, AT>(
         &self,
         view_action: AV,
         table_action: AT,
-    ) -> ActionOnTableOrView<'_, TableDeletionInfo, ViewDeletionInfo, AT, AV> {
+        user: Option<&'u UserOrRole>,
+    ) -> ActionOnTableOrView<'_, 'u, TableDeletionInfo, ViewDeletionInfo, AT, AV> {
         match self {
-            Self::View(view) => ActionOnTableOrView::View((view, view_action)),
-            Self::Table(table) => ActionOnTableOrView::Table((table, table_action)),
+            Self::View(view) => ActionOnTableOrView::View(ActionOnView {
+                info: view,
+                action: view_action,
+                user,
+                is_delegated_execution: false,
+            }),
+            Self::Table(table) => ActionOnTableOrView::Table(ActionOnTable {
+                info: table,
+                action: table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 }
@@ -1278,7 +1343,7 @@ where
         tabulars: &[TabularIdentBorrowed<'_>],
         list_flags: TabularListFlags,
         catalog_state: Self::State,
-    ) -> Result<Vec<ViewOrTableInfo>, GetTabularInfoError> {
+    ) -> Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError> {
         Self::get_tabular_infos_by_ident_impl(warehouse_id, tabulars, list_flags, catalog_state)
             .await
     }
@@ -1297,7 +1362,7 @@ where
         let tables =
             Self::get_tabular_infos_by_ident(warehouse_id, &tabulars, list_flags, catalog_state)
                 .await?
-                .into_iter()
+                .into_values()
                 .map(|info| {
                     let tabular_id = info.tabular_id();
                     info.into_table_info().ok_or_else(|| {
@@ -1347,6 +1412,8 @@ where
                 let borrowed = tabular_ident.as_borrowed();
                 Self::get_tabular_infos_by_ident(warehouse_id, &[borrowed], filter, catalog_state)
                     .await?
+                    .into_values()
+                    .collect()
             }
             TableIdentOrId::Id(id) => {
                 Self::get_tabular_infos_by_id(warehouse_id, &[id.into()], filter, catalog_state)
@@ -1386,6 +1453,8 @@ where
                 let borrowed = tabular_ident.as_borrowed();
                 Self::get_tabular_infos_by_ident(warehouse_id, &[borrowed], filter, catalog_state)
                     .await?
+                    .into_values()
+                    .collect()
             }
             ViewIdentOrId::Id(id) => {
                 Self::get_tabular_infos_by_id(warehouse_id, &[id.into()], filter, catalog_state)

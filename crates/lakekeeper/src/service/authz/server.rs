@@ -44,7 +44,7 @@ impl AuthorizationFailureSource for AuthZServerActionForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AuthZServerActionForbidden { server_id, action } = self;
         ErrorModel::forbidden(
-            format!("Server action `{action}` forbidden on server `{server_id}`",),
+            format!("Server action `{action}` forbidden on server `{server_id}`"),
             "ServerActionForbidden",
             None,
         )
@@ -70,7 +70,7 @@ impl AuthorizationFailureSource for AssumeRoleForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AssumeRoleForbidden { role } = self;
         ErrorModel::forbidden(
-            format!("Assume {role} forbidden",),
+            format!("Assume {role} forbidden"),
             "AssumeRoleForbidden",
             None,
         )

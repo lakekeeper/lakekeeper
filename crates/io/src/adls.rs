@@ -49,7 +49,7 @@ static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<DefaultAz
     LazyLock::new(|| {
         moka::future::Cache::builder()
             .max_capacity(1000)
-            .time_to_live(Duration::from_secs(30 * 60))
+            .time_to_live(Duration::from_mins(30))
             .build()
     });
 

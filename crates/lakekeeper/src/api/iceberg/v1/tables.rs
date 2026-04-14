@@ -234,6 +234,12 @@ impl<'de> serde::Deserialize<'de> for LoadTableCredentialsQuery {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default, typed_builder::TypedBuilder)]
+pub struct LoadTableCredentialsRequest {
+    #[builder(default)]
+    pub referenced_by: Option<Vec<ReferencingView>>,
+}
+
 #[async_trait]
 pub trait TablesService<S: crate::api::ThreadSafe>
 where
@@ -275,6 +281,7 @@ where
     /// Load a table from the catalog
     async fn load_table_credentials(
         parameters: TableParameters,
+        request: LoadTableCredentialsRequest,
         data_access: DataAccess,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
@@ -508,7 +515,10 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                  RawQuery(load_table_credentials_query): RawQuery,
                  headers: HeaderMap,
                  Extension(metadata): Extension<RequestMetadata>| {
-                    let _load_table_credentials_query = load_table_credentials_query
+                    // Deserialization cannot fail: StrDeserializer always provides a
+                    // string, and LoadTableCredentialsQuery::visit_str always returns
+                    // Ok (it delegates to parse_referenced_by_param which returns Option).
+                    let load_table_credentials_query = load_table_credentials_query
                         .as_deref()
                         .and_then(|q| {
                             use serde::de::{IntoDeserializer, value::StrDeserializer};
@@ -533,6 +543,11 @@ pub fn router<I: TablesService<S>, S: crate::api::ThreadSafe>() -> Router<ApiCon
                                 namespace: namespace.into(),
                                 name: normalize_tabular_name(&table),
                             },
+                        },
+                        LoadTableCredentialsRequest {
+                            referenced_by: load_table_credentials_query
+                                .referenced_by
+                                .map(ReferencedByQuery::into_inner),
                         },
                         match parse_data_access(&headers) {
                             DataAccessMode::ClientManaged => DataAccess::not_specified(),
@@ -846,6 +861,7 @@ mod test {
 
             async fn load_table_credentials(
                 _parameters: super::TableParameters,
+                _request: super::LoadTableCredentialsRequest,
                 _data_access: super::DataAccess,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,
@@ -1029,6 +1045,7 @@ mod test {
 
             async fn load_table_credentials(
                 _parameters: super::TableParameters,
+                _request: super::LoadTableCredentialsRequest,
                 _data_access: super::DataAccess,
                 _state: ApiContext<ThisState>,
                 _request_metadata: RequestMetadata,

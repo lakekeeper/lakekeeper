@@ -109,7 +109,7 @@ impl AuthorizationFailureSource for AuthZRoleActionForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AuthZRoleActionForbidden { role_id, action } = self;
         ErrorModel::forbidden(
-            format!("Role action `{action}` forbidden on role `{role_id}`",),
+            format!("Role action `{action}` forbidden on role `{role_id}`"),
             "RoleActionForbidden",
             None,
         )

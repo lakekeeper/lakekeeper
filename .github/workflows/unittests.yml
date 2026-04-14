@@ -11,7 +11,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.88
+  RUST_TOOLCHAIN: 1.94.1
   RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
@@ -32,15 +32,75 @@ jobs:
       - clippy
       - check-generated-openapi-matches
       - test
+      - msrv-check
+      - unused-deps
     steps:
       - run: exit 0
+
+  msrv-check:
+    name: MSRV check
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: --cfg tracing_unstable --cfg tokio_unstable # drop -D warnings; MSRV builds may emit new warnings
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          python3 -c "
+          import tomllib, pathlib, sys
+          cargo = tomllib.loads(pathlib.Path('Cargo.toml').read_text())
+          v = cargo.get('workspace', {}).get('package', {}).get('rust-version') \
+              or cargo.get('package', {}).get('rust-version')
+          if not v:
+              print('::error::rust-version not found in Cargo.toml')
+              sys.exit(1)
+          print(f'version={v}')
+          " >> "$GITHUB_OUTPUT"
+      - name: Setup Rust ${{ steps.msrv.outputs.version }}
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+        env:
+          RUST_CACHE_KEY_OS: rust-msrv-${{ steps.msrv.outputs.version }}-cache-ubuntu-24.04
+      - name: cargo check
+        run: cargo check --workspace
+        env:
+          SQLX_OFFLINE: "true"
+
+  unused-deps:
+    name: Unused dependencies
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@921a4027af787cda265c4f334a0f7f89b21d72e9 # v2
+        with:
+          tool: cargo-machete
+      - name: Check unused dependencies
+        run: cargo machete
+
   sqlx-check:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Cargo sqlx-check
         run: |
-          export DEBIAN_FRONTEND=noninteractive 
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
           cargo sqlx prepare --check --workspace -- --all-features
@@ -50,6 +110,8 @@ jobs:
     steps:
       - run: sudo snap install --edge --classic just
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
@@ -72,6 +134,8 @@ jobs:
           sudo snap install --edge --classic just
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
@@ -92,6 +156,8 @@ jobs:
       - run: |
           sudo snap install --edge --classic just
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
         with:
@@ -142,10 +208,13 @@ jobs:
         ports:
           - 5432:5432
     env:
+      RUSTFLAGS: --cfg tracing_unstable -D warnings -C debuginfo=0
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Start Minio Docker Container
         run: |
@@ -187,6 +256,8 @@ jobs:
 
       - name: Setup Rust toolchain and cache
         uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 

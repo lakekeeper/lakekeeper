@@ -154,14 +154,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 Ok(None) => {
                     fallback_to_location = true;
                 }
-                Ok(Some(metadata_by_id)) => {
-                    if validate_uri(&parsed_url, &metadata_by_id.location).is_err() {
-                        tracing::warn!(
-                            "Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
-                            metadata_by_id.location
-                        );
-                        fallback_to_location = true;
-                    }
+                Ok(Some(metadata_by_id))
+                    if validate_uri(&parsed_url, &metadata_by_id.location).is_err() =>
+                {
+                    tracing::warn!(
+                        "Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
+                        metadata_by_id.location
+                    );
+                    fallback_to_location = true;
                 }
                 _ => {}
             }

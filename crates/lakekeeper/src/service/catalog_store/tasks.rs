@@ -29,7 +29,7 @@ use crate::{
 };
 
 struct TasksCacheExpiry;
-const TASKS_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const TASKS_CACHE_TTL: Duration = Duration::from_hours(1);
 impl<K, V> moka::Expiry<K, V> for TasksCacheExpiry {
     fn expire_after_create(&self, _key: &K, _value: &V, _created_at: Instant) -> Option<Duration> {
         Some(TASKS_CACHE_TTL)

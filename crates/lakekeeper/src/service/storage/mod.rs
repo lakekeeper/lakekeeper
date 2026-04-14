@@ -1542,7 +1542,7 @@ mod tests {
             Schema::builder().build().expect("Failed to build schema"),
             PartitionSpec::unpartition_spec(),
             SortOrder::unsorted_order(),
-            format!("test-table-{}", uuid::Uuid::now_v7(),),
+            format!("test-table-{}", uuid::Uuid::now_v7()),
             iceberg::spec::FormatVersion::V2,
             HashMap::new(),
         )

@@ -54,6 +54,12 @@ impl ReferencingView {
     }
 }
 
+impl AsRef<TableIdent> for ReferencingView {
+    fn as_ref(&self) -> &TableIdent {
+        &self.0
+    }
+}
+
 impl Deref for ReferencingView {
     type Target = TableIdent;
 
