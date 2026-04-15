@@ -933,7 +933,12 @@ pub trait AuthZTableOps: Authorizer {
                 continue;
             }
 
-            // Normalize user: if it's the actor itself, treat as None (acting as self)
+            // Normalize user: if it's the actor itself, treat as None (acting as self).
+            // Call-sites like `authorize_load_tabular` legitimately pass the actor's own
+            // identity in `user`; collapsing it here means `Authorizer` impls never see
+            // `user == Some(actor)` and don't need to reinvent the rule themselves
+            // (otherwise they'd erroneously trigger the introspection fan-out against
+            // the actor's own resource).
             let normalized_user = if metadata.actor().to_user_or_role().as_ref() == action.user {
                 None
             } else {
@@ -945,7 +950,9 @@ pub trait AuthZTableOps: Authorizer {
                 auto_approved.push(Some(true));
             } else {
                 auto_approved.push(None);
-                actions_to_check.push((*ns, action.clone()));
+                let mut normalized_action = action.clone();
+                normalized_action.user = normalized_user;
+                actions_to_check.push((*ns, normalized_action));
             }
         }
 

@@ -514,7 +514,9 @@ pub trait AuthZViewOps: Authorizer {
                 continue;
             }
 
-            // Normalize user: if it's the actor itself, treat as None (acting as self)
+            // Normalize user: if it's the actor itself, treat as None (acting as self).
+            // See the equivalent block in `are_allowed_table_actions_vec` for why this
+            // is applied to the forwarded action, not just the admin shortcut.
             let normalized_user = if metadata.actor().to_user_or_role().as_ref() == action.user {
                 None
             } else {
@@ -526,7 +528,9 @@ pub trait AuthZViewOps: Authorizer {
                 auto_approved.push(Some(true));
             } else {
                 auto_approved.push(None);
-                actions_to_check.push((*ns, action.clone()));
+                let mut normalized_action = action.clone();
+                normalized_action.user = normalized_user;
+                actions_to_check.push((*ns, normalized_action));
             }
         }
 
