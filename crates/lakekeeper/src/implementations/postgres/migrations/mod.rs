@@ -257,7 +257,13 @@ mod tests {
         // role intentionally has no CREATE-on-database privilege, so the
         // `CREATE EXTENSION IF NOT EXISTS` calls in the migrations must hit the
         // no-op path.
-        for ext in ["uuid-ossp", "pgcrypto", "pg_trgm", "btree_gin", "btree_gist"] {
+        for ext in [
+            "uuid-ossp",
+            "pgcrypto",
+            "pg_trgm",
+            "btree_gin",
+            "btree_gist",
+        ] {
             sqlx::query(&format!(r#"CREATE EXTENSION IF NOT EXISTS "{ext}""#))
                 .execute(&admin_pool)
                 .await
