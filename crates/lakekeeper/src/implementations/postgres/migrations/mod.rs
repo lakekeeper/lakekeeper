@@ -231,3 +231,127 @@ fn validate_applied_migrations(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use sqlx::{
+        PgPool,
+        postgres::{PgConnectOptions, PgPoolOptions},
+    };
+    use uuid::Uuid;
+
+    use super::migrate;
+
+    /// Regression test for #1519 / #1707: migrations must succeed when run by a
+    /// low-privilege role into a non-`public` schema, with the schema selected
+    /// via the role's default `search_path`.
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_into_custom_schema_as_low_privilege_user(admin_pool: PgPool) {
+        // Unique names so parallel tests don't collide on cluster-global roles.
+        let suffix = Uuid::new_v4().simple().to_string();
+        let schema = format!("lk_app_{suffix}");
+        let role = format!("lk_app_user_{suffix}");
+        let password = "lk_app_password";
+
+        // Pre-install required extensions in `public` as admin. The application
+        // role intentionally has no CREATE-on-database privilege, so the
+        // `CREATE EXTENSION IF NOT EXISTS` calls in the migrations must hit the
+        // no-op path.
+        for ext in ["uuid-ossp", "pgcrypto", "pg_trgm", "btree_gin", "btree_gist"] {
+            sqlx::query(&format!(r#"CREATE EXTENSION IF NOT EXISTS "{ext}""#))
+                .execute(&admin_pool)
+                .await
+                .unwrap();
+        }
+
+        sqlx::query(&format!(
+            r#"CREATE ROLE "{role}" LOGIN PASSWORD '{password}'"#
+        ))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!(
+            r#"CREATE SCHEMA "{schema}" AUTHORIZATION "{role}""#
+        ))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+
+        let db = admin_pool
+            .connect_options()
+            .get_database()
+            .unwrap()
+            .to_string();
+        sqlx::query(&format!(r#"GRANT CONNECT ON DATABASE "{db}" TO "{role}""#))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!(r#"GRANT USAGE ON SCHEMA public TO "{role}""#))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!(r#"REVOKE CREATE ON SCHEMA public FROM "{role}""#))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+
+        // The mechanism we document for #1707: server-side default search_path on
+        // the role itself, so every new connection lands in the custom schema.
+        // `public` is included so functions/operators from extensions installed
+        // there (e.g. uuid_generate_v1mc from uuid-ossp) resolve.
+        sqlx::query(&format!(
+            r#"ALTER ROLE "{role}" SET search_path = "{schema}", public"#
+        ))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+
+        let admin_opts = admin_pool.connect_options();
+        let app_opts = PgConnectOptions::new()
+            .host(admin_opts.get_host())
+            .port(admin_opts.get_port())
+            .database(&db)
+            .username(&role)
+            .password(password);
+        let app_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(app_opts)
+            .await
+            .unwrap();
+
+        migrate(&app_pool)
+            .await
+            .expect("migrations should succeed for low-privilege user in custom schema");
+
+        let in_schema: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'warehouse')",
+        )
+        .bind(&schema)
+        .fetch_one(&admin_pool)
+        .await
+        .unwrap();
+        assert!(in_schema, "`warehouse` should be created in {schema}");
+
+        let in_public: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = 'public' AND table_name = 'warehouse')",
+        )
+        .fetch_one(&admin_pool)
+        .await
+        .unwrap();
+        assert!(!in_public, "`warehouse` must not leak into public");
+
+        // Drain the app pool before dropping the role it authenticated as.
+        app_pool.close().await;
+        let _ = sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin_pool)
+            .await;
+        let _ = sqlx::query(&format!(r#"DROP OWNED BY "{role}""#))
+            .execute(&admin_pool)
+            .await;
+        let _ = sqlx::query(&format!(r#"DROP ROLE "{role}""#))
+            .execute(&admin_pool)
+            .await;
+    }
+}

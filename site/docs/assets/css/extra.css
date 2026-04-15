@@ -26,6 +26,24 @@
   user-select: all;
 }
 
+/* Material's default h4/h5 are very thin and easily missed inside dense pages
+   like configuration.md. Bump weight and size so nested subsections are
+   visually distinct from body text without competing with h2/h3. */
+.md-typeset h4 {
+  font-size: 1.05em;
+  font-weight: 600;
+  margin-top: 1.6em;
+  color: var(--md-default-fg-color);
+}
+.md-typeset h5 {
+  font-size: 0.95em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+  margin-top: 1.4em;
+  color: var(--md-default-fg-color);
+}
+
 /* Short Lakekeeper Plus Badge with auto-generated content */
 .lkp::after {
   content: "★ lakekeeper ＋";

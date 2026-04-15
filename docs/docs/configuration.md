@@ -73,6 +73,31 @@ Lakekeeper supports configuring separate database URLs for read and write operat
 | `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME`               | `1800`                                                | Maximum lifetime of connections in seconds |
 | `LAKEKEEPER__PG_ACQUIRE_TIMEOUT`                       | `10`                                                  | Timeout to acquire a new postgres connection in seconds. Default: `5` |
 
+#### Required Postgres extensions
+
+Lakekeeper migrations require the following extensions: `uuid-ossp`, `pgcrypto`, `pg_trgm`, `btree_gin`, `btree_gist`. They are part of the standard `postgresql-contrib` package and are pre-installed on most managed Postgres offerings (AWS RDS, Cloud SQL, Azure Database, etc.).
+
+If the role Lakekeeper connects as has `CREATE` privilege on the database, the migrations will create the extensions automatically. Otherwise — for example, when running Lakekeeper as a low-privilege role (see below) — an administrator must pre-create them once per database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+CREATE EXTENSION IF NOT EXISTS "btree_gin";
+CREATE EXTENSION IF NOT EXISTS "btree_gist";
+```
+
+#### Using a non-`public` Postgres schema
+
+By default Lakekeeper creates its tables in whichever schema Postgres resolves via `search_path` — typically `public`. To install it into a dedicated schema (e.g. for tenant isolation or policies that disallow DDL in `public`), set the default `search_path` on the role Lakekeeper connects as, server-side:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS lakekeeper AUTHORIZATION lakekeeper;
+ALTER ROLE lakekeeper SET search_path = lakekeeper, public;
+```
+
+Postgres applies this before any query runs on a new session, so both migrations and runtime queries land in `lakekeeper`. Keep `public` in `search_path` so functions installed by extensions there (e.g. `uuid_generate_v1mc` from `uuid-ossp`) still resolve. If you use separate roles for `LAKEKEEPER__PG_DATABASE_URL_READ` and `LAKEKEEPER__PG_DATABASE_URL_WRITE`, run `ALTER ROLE` for both. Setting `search_path` via the URL `options` parameter is fragile — encoding pitfalls and connection poolers (e.g. PgBouncer in transaction pooling mode) often drop it — so the role-level default is the recommended approach.
+
 ### Vault KV Version 2
 
 Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatible storage is used as a backend. Currently, we only support the `userpass` authentication method. Configuration may be passed as single values like `LAKEKEEPER__KV2__URL=http://vault.local` or as a compound value:
