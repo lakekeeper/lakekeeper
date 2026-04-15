@@ -70,7 +70,7 @@ allow_view_metadata if {
 }
 
 allow_view_read if {
-	input.action.operation == "SelectFromColumns"
+	input.action.operation in ["SelectFromColumns", "CreateViewWithSelectFromColumns"]
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	table := input.action.resource.table.tableName
