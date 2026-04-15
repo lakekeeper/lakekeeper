@@ -774,6 +774,30 @@ def test_table_extra_properties(trino, warehouse: conftest.Warehouse):
     assert r == [["extra.property.one", "foo"]]
 
 
+def test_select_from_view_on_view(trino, warehouse: conftest.Warehouse):
+    # View-on-view: the outer view's DEFINER-run-as-owner check on the inner
+    # view reaches Trino as CreateViewWithSelectFromColumns on the inner
+    # view's name. The OPA bridge must permit that via the view path;
+    # table-lookup at Lakekeeper returns not-found for a view and would
+    # otherwise deny.
+    ns = "test_select_from_view_on_view"
+    cur = trino.cursor()
+    cur.execute(f"CREATE SCHEMA {ns}")
+    cur.execute(
+        f"CREATE TABLE {ns}.my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(f"INSERT INTO {ns}.my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')")
+    cur.execute(
+        f"CREATE OR REPLACE VIEW {ns}.inner_view AS SELECT strings FROM {ns}.my_table"
+    )
+    cur.execute(
+        f"CREATE OR REPLACE VIEW {ns}.outer_view AS SELECT strings FROM {ns}.inner_view"
+    )
+
+    r = cur.execute(f"SELECT * FROM {ns}.outer_view ORDER BY strings").fetchall()
+    assert r == [["a"], ["b"]]
+
+
 def test_create_view_security_invoker(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA test_create_view_security_invoker_trino")

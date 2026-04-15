@@ -15,6 +15,8 @@ services:
     environment:
       - VAULT_DEV_ROOT_TOKEN_ID=myroot
       - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+      # GHA runners drop CAP_SETFCAP; skip the entrypoint setcap call.
+      - SKIP_SETCAP=true
     cap_add:
       - IPC_LOCK
     healthcheck:
