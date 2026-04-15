@@ -33,8 +33,19 @@ async-stream = "0.3.6"
 async-trait = "0.1.89"
 aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.2" }
-aws-sdk-s3 = { version = "1.121" }
-aws-sdk-sts = "1.82.0"
+# `rustls` feature is excluded because it pulls in the legacy hyper-rustls 0.24 /
+# rustls 0.21 / rustls-webpki 0.101 stack (RUSTSEC-2026-0098). `default-https-client`
+# (also a default feature) provides the modern rustls 0.23 / hyper-rustls 0.27 path.
+aws-sdk-s3 = { version = "1.121", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
+aws-sdk-sts = { version = "1.82.0", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
 aws-sigv4 = { version = "1.2" }
 aws-smithy-async = { version = "1.2.5" }
 aws-smithy-http = "0.62.3"
