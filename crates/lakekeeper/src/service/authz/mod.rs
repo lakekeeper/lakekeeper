@@ -1733,7 +1733,7 @@ pub(crate) mod tests {
             A: Into<Self::TableAction> + Send + Clone + Sync,
         >(
             &self,
-            _metadata: &RequestMetadata,
+            metadata: &RequestMetadata,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(
@@ -1741,6 +1741,9 @@ pub(crate) mod tests {
                 ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
             )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
+            // `action.user == None` means "acting as self" (subject = actor),
+            // so per-user hiding for the actor must still apply.
+            let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
                 .iter()
                 .map(|(_parent_namespace, action)| {
@@ -1752,7 +1755,8 @@ pub(crate) mod tests {
                     let table_id = action.info.table_id();
                     let warehouse_id = action.info.warehouse_id();
                     let object = format!("table:{warehouse_id}/{table_id}");
-                    self.check_available_for_user(&object, action.user)
+                    let subject = action.user.or(actor_identity.as_ref());
+                    self.check_available_for_user(&object, subject)
                 })
                 .collect();
             Ok(results)
@@ -1760,7 +1764,7 @@ pub(crate) mod tests {
 
         async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
             &self,
-            _metadata: &RequestMetadata,
+            metadata: &RequestMetadata,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(
@@ -1768,6 +1772,8 @@ pub(crate) mod tests {
                 ActionOnView<'_, '_, impl AuthZViewInfo, A>,
             )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
+            // See the table impl above for why we fall back to the actor.
+            let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
                 .iter()
                 .map(|(_parent_namespace, action)| {
@@ -1779,7 +1785,8 @@ pub(crate) mod tests {
                     let view_id = action.info.view_id();
                     let warehouse_id = action.info.warehouse_id();
                     let object = format!("view:{warehouse_id}/{view_id}");
-                    self.check_available_for_user(&object, action.user)
+                    let subject = action.user.or(actor_identity.as_ref());
+                    self.check_available_for_user(&object, subject)
                 })
                 .collect();
             Ok(results)
