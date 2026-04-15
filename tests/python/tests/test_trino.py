@@ -794,7 +794,7 @@ def test_select_from_view_on_view(trino, warehouse: conftest.Warehouse):
         f"CREATE OR REPLACE VIEW {ns}.outer_view AS SELECT strings FROM {ns}.inner_view"
     )
 
-    r = cur.execute(f"SELECT * FROM {ns}.outer_view").fetchall()
+    r = cur.execute(f"SELECT * FROM {ns}.outer_view ORDER BY strings").fetchall()
     assert r == [["a"], ["b"]]
 
 
