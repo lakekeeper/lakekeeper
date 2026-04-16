@@ -116,7 +116,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
     let mut t = C::Transaction::begin_read(catalog_state.clone()).await?;
     let CatalogLoadTableResult {
         table_id: _,
-        namespace_id: _,
+        namespace_id,
         table_metadata,
         metadata_location,
         warehouse_version,
@@ -129,6 +129,22 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         &mut t,
     )
     .await?;
+
+    // Fetch namespace properties for label extraction (catalog-scoped, not Iceberg metadata).
+    // Namespace properties with "label." prefix are inherited by all tables in that namespace.
+    let namespace_labels = match C::get_namespace(warehouse_id, namespace_id, t.transaction()).await
+    {
+        Ok(Some(hierarchy)) => hierarchy.properties().and_then(|props| {
+            let label_map: std::collections::HashMap<String, String> = props
+                .iter()
+                .filter(|(k, _)| k.starts_with("label."))
+                .map(|(k, v)| (k.strip_prefix("label.").unwrap().to_string(), v.clone()))
+                .collect();
+            if label_map.is_empty() { None } else { Some(label_map) }
+        }),
+        _ => None,
+    };
+
     t.commit().await?;
 
     // Refetch warehouse if version is stale
@@ -180,6 +196,12 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         })
     });
 
+    // Labels from namespace properties (catalog-scoped, not Iceberg table state).
+    // Namespace properties with "label." prefix are inherited by all tables in that namespace.
+    let labels = namespace_labels.map(|lm| iceberg_ext::catalog::rest::table::Labels {
+        table: Some(lm),
+    });
+
     let metadata_ref = Arc::new(table_metadata);
     let metadata_location_ref = metadata_location.map(Arc::new);
 
@@ -190,6 +212,7 @@ pub(super) async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: Secret
         metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
+        labels,
     };
 
     Ok(LoadTableResultOrNotModified::LoadTableResult(
