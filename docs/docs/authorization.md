@@ -17,6 +17,8 @@ Check the [Authorization Configuration](./configuration.md#authorization) for se
 
 ## Instance Admins
 
+*Available since Lakekeeper 0.12.1.*
+
 "Instance admins" are principals granted privileged access via deployment
 configuration rather than through the selected Authorizer. They exist so that
 deployment-time operators — typically a Kubernetes Operator reconciling
