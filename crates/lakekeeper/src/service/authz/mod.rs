@@ -1999,4 +1999,183 @@ pub(crate) mod tests {
         },
         &crate::service::ViewInfo::new_random(Uuid::nil().into())
     );
+
+    /// Instance admins must bypass the configured authorizer entirely for
+    /// control-plane actions, even when that authorizer would deny them.
+    #[tokio::test]
+    async fn test_instance_admin_bypasses_control_plane_actions() {
+        let authz = HidingAuthorizer::new();
+        // Block a control-plane role action. Without bypass, this returns false.
+        authz.block_action(format!("role:{:?}", CatalogRoleAction::Delete).as_str());
+
+        let user = crate::service::UserId::try_from("oidc~admin").unwrap();
+        let md = RequestMetadata::test_instance_admin(user);
+        let role = Role::new_random();
+
+        let allowed = authz
+            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete)
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "instance admin should bypass blocked control-plane role action",
+        );
+    }
+
+    /// Normal authenticated users must NOT bypass the authorizer.
+    #[tokio::test]
+    async fn test_regular_user_does_not_bypass() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(format!("role:{:?}", CatalogRoleAction::Delete).as_str());
+
+        let user = crate::service::UserId::try_from("oidc~regular").unwrap();
+        let md = RequestMetadata::test_user(user);
+        let role = Role::new_random();
+
+        let allowed = authz
+            .is_allowed_role_action(&md, None, &role, CatalogRoleAction::Delete)
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !allowed,
+            "regular user must not bypass blocked control-plane role action",
+        );
+    }
+
+    /// Instance admins must NOT bypass data-plane table actions — those checks
+    /// still route through the configured authorizer.
+    #[tokio::test]
+    async fn test_instance_admin_does_not_bypass_data_plane_table_actions() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(format!("table:{:?}", CatalogTableAction::WriteData).as_str());
+        authz.block_action(format!("table:{:?}", CatalogTableAction::ReadData).as_str());
+
+        let user = crate::service::UserId::try_from("oidc~admin").unwrap();
+        let md = RequestMetadata::test_instance_admin(user);
+
+        let warehouse = ResolvedWarehouse::new_with_id(Uuid::nil().into());
+        let hierarchy = NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+                requested_ident: None,
+            },
+            parents: vec![],
+        };
+        let table_info = crate::service::TableInfo::new_random(Uuid::nil().into());
+
+        // WriteData is blocked → instance admin gets denied (data-plane is NOT bypassed).
+        let allowed = authz
+            .is_allowed_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &table_info,
+                CatalogTableAction::WriteData,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !allowed,
+            "instance admin must not bypass blocked WriteData (data-plane)",
+        );
+
+        // ReadData same.
+        let allowed = authz
+            .is_allowed_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &table_info,
+                CatalogTableAction::ReadData,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !allowed,
+            "instance admin must not bypass blocked ReadData (data-plane)",
+        );
+
+        // Drop (control-plane) — also block it, and verify instance admin STILL
+        // bypasses it. This confirms that the bypass applies selectively within
+        // a single batch.
+        authz.block_action(format!("table:{:?}", CatalogTableAction::Drop).as_str());
+        let allowed = authz
+            .is_allowed_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &table_info,
+                CatalogTableAction::Drop,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "instance admin must bypass blocked Drop (control-plane)",
+        );
+    }
+
+    /// Lakekeeper-internal actors must bypass even data-plane table actions,
+    /// matching the pre-existing `has_admin_privileges()` contract.
+    #[tokio::test]
+    async fn test_lakekeeper_internal_bypasses_all_table_actions() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(format!("table:{:?}", CatalogTableAction::WriteData).as_str());
+
+        let md = RequestMetadata::new_lakekeeper_internal(Uuid::now_v7());
+        let warehouse = ResolvedWarehouse::new_with_id(Uuid::nil().into());
+        let hierarchy = NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+                requested_ident: None,
+            },
+            parents: vec![],
+        };
+        let table_info = crate::service::TableInfo::new_random(Uuid::nil().into());
+
+        let allowed = authz
+            .is_allowed_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &table_info,
+                CatalogTableAction::WriteData,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "LakekeeperInternal must bypass WriteData (data-plane) too",
+        );
+    }
 }

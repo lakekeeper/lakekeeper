@@ -107,7 +107,7 @@ pub trait AuthZProjectOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
     ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
-        if metadata.has_admin_privileges() {
+        if metadata.bypasses_control_plane_authz(None) {
             Ok(ListProjectsResponse::All)
         } else {
             self.list_projects_impl(metadata).await
@@ -125,7 +125,7 @@ pub trait AuthZProjectOps: Authorizer {
         }
 
         Ok(MustUse::from(
-            if metadata.has_admin_privileges() && for_user.is_none() {
+            if metadata.bypasses_control_plane_authz(for_user) {
                 vec![true; projects_with_actions.len()]
             } else {
                 let converted: Vec<(&ArcProjectId, Self::ProjectAction)> = projects_with_actions

@@ -152,6 +152,7 @@ impl EventListener for AuditEventListener {
                 &*event.entities,
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    privilege_source = event.request_metadata.privilege_source().as_str(),
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
@@ -165,6 +166,7 @@ impl EventListener for AuditEventListener {
                 &*event.entities,
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    privilege_source = event.request_metadata.privilege_source().as_str(),
                     failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
                     error = tracing::field::valuable(&event.error.as_value()),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
@@ -188,6 +190,7 @@ impl EventListener for AuditEventListener {
                 &*event.entities,
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    privilege_source = event.request_metadata.privilege_source().as_str(),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",
                 },
@@ -199,6 +202,7 @@ impl EventListener for AuditEventListener {
                 &*event.entities,
                 {
                     actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    privilege_source = event.request_metadata.privilege_source().as_str(),
                     context = tracing::field::valuable(&event.extra_context.as_value()),
                     authorizations = tracing::field::valuable(&authorizations.as_value()),
                     decision = "allowed",

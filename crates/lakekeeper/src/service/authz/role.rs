@@ -204,7 +204,7 @@ pub trait AuthZRoleOps: Authorizer {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(vec![true; roles_with_actions.len()])
         } else {
             let converted = roles_with_actions

@@ -175,6 +175,8 @@ pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authentica
     }
     let config = config; // Make config immutable for our sanity
 
+    log_instance_admins();
+
     // Strings are name of the service, used for logging
     let mut service_futures = JoinSet::<Result<(), anyhow::Error>>::new();
     let mut service_ids = HashMap::new();
@@ -579,6 +581,23 @@ fn validate_server_info(server_info: &ServerInfo) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Log the configured instance admins at startup. Count at INFO; individual
+/// IDs at DEBUG (they are deployment-config PII — `IdP` subjects).
+fn log_instance_admins() {
+    let n = CONFIG.instance_admins.len();
+    if n == 0 {
+        return;
+    }
+    tracing::info!(
+        "Configured {n} instance admin(s) via LAKEKEEPER__INSTANCE_ADMINS. \
+         These principals bypass authorization for all control-plane actions \
+         (but not for CatalogTableAction::ReadData / WriteData)."
+    );
+    for admin in &CONFIG.instance_admins {
+        tracing::debug!("Instance admin: {admin}");
+    }
 }
 
 fn validate_authenticator_idp_ids(

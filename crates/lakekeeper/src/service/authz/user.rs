@@ -114,7 +114,7 @@ pub trait AuthZUserOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(vec![true; users_with_actions.len()])
         } else {
             let converted = users_with_actions

@@ -521,8 +521,10 @@ pub trait AuthZViewOps: Authorizer {
                 action.user
             };
 
-            // Auto-approve if admin and acting as self
-            if metadata.has_admin_privileges() && normalized_user.is_none() {
+            // Auto-approve if the caller can bypass control-plane authz.
+            // Views have no data-plane actions, so no carve-out is needed
+            // for instance admins.
+            if metadata.bypasses_control_plane_authz(normalized_user) {
                 auto_approved.push(Some(true));
             } else {
                 auto_approved.push(None);

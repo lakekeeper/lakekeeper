@@ -239,9 +239,10 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
 
-| Variable                                 | Example    | Description          |
-|------------------------------------------|------------|----------------------|
-| <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall` | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
+| Variable                                 | Example                                                              | Description          |
+|------------------------------------------|----------------------------------------------------------------------|----------------------|
+| <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall`                                                           | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
+| <nobr>`LAKEKEEPER__INSTANCE_ADMINS`</nobr> | `["kubernetes~system:serviceaccount:lakekeeper:operator","oidc~alice"]` | TOML inline array of user IDs (`<idp_id>~<subject>`) that are granted instance-admin privileges via deployment config. Even a single admin must be wrapped in brackets. See [Instance Admins](./authorization.md#instance-admins) for scope and rationale. Default: `[]`. |
 
 ##### OpenFGA
 | Variable                                                 | Example                                                                    | Description |

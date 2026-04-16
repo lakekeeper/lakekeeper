@@ -265,6 +265,10 @@ pub(crate) async fn auth_middleware_fn<
 
         request_metadata.set_authentication(actor.clone(), authentication.clone());
 
+        if is_configured_instance_admin(&actor, &CONFIG.instance_admins) {
+            request_metadata.set_instance_admin(true);
+        }
+
         // Identify trusted engines based on token identity (IdP, audiences, subject).
         // Each engine defines `identities` specifying who may act as that engine.
         // Multiple engines may match — this is intentional (e.g. an admin token
@@ -339,6 +343,17 @@ pub(crate) async fn auth_middleware_fn<
     }
 
     next.run(request).await
+}
+
+/// An actor qualifies as an instance admin only when it is a bare `Actor::Principal`
+/// whose `UserId` is in the configured set. Role-assumed actors deliberately do not
+/// inherit the bypass — role assumption is an explicit opt-in to a narrower scope.
+#[cfg(feature = "router")]
+fn is_configured_instance_admin(actor: &Actor, admins: &std::collections::HashSet<UserId>) -> bool {
+    match actor {
+        Actor::Principal(uid) => admins.contains(uid),
+        Actor::Anonymous | Actor::Role { .. } => false,
+    }
 }
 
 #[cfg(feature = "router")]
@@ -723,6 +738,44 @@ mod tests {
                 "foo~bar@lakekeeper.io".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn test_is_configured_instance_admin() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+
+        use crate::service::Role;
+
+        let alice = UserId::try_from("oidc~alice").unwrap();
+        let bob = UserId::try_from("oidc~bob").unwrap();
+        let admins: HashSet<UserId> = [alice.clone()].into_iter().collect();
+
+        assert!(is_configured_instance_admin(
+            &Actor::Principal(alice.clone()),
+            &admins,
+        ));
+        assert!(!is_configured_instance_admin(
+            &Actor::Principal(bob.clone()),
+            &admins,
+        ));
+        assert!(!is_configured_instance_admin(&Actor::Anonymous, &admins));
+
+        // Role-assumed: even when the principal is an admin, the actor does NOT
+        // qualify. Role assumption is an explicit opt-in to a narrower scope.
+        let role = Arc::new(Role::new_random_with_id(RoleId::new(Uuid::now_v7())));
+        assert!(!is_configured_instance_admin(
+            &Actor::Role {
+                principal: alice,
+                assumed_role: role,
+            },
+            &admins,
+        ));
+
+        assert!(!is_configured_instance_admin(
+            &Actor::Principal(bob),
+            &HashSet::new(),
+        ));
     }
 
     #[test]

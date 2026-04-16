@@ -260,9 +260,19 @@ pub trait TableAction
 where
     Self: std::hash::Hash + CatalogAction + Clone + PartialEq + Eq + From<CatalogTableAction>,
 {
+    /// Whether this action reads or writes table row data (as opposed to metadata
+    /// or catalog operations). Used by the [`InstanceAdminAuthorizer`] wrapper to
+    /// exclude data-plane actions from the instance-admin bypass.
+    ///
+    /// [`InstanceAdminAuthorizer`]: crate::service::authz::instance_admin::InstanceAdminAuthorizer
+    fn is_data_plane(&self) -> bool;
 }
 
-impl TableAction for CatalogTableAction {}
+impl TableAction for CatalogTableAction {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::ReadData | Self::WriteData)
+    }
+}
 
 // ------------------ Cannot See Error ------------------
 #[derive(Debug, PartialEq, Eq)]
@@ -874,7 +884,7 @@ pub trait AuthZTableOps: Authorizer {
 
     async fn are_allowed_table_actions_arr<
         const N: usize,
-        A: Into<Self::TableAction> + Send + Clone + Sync,
+        A: TableAction + Into<Self::TableAction> + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -900,7 +910,7 @@ pub trait AuthZTableOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
-    async fn are_allowed_table_actions_vec<A: Into<Self::TableAction> + Send + Clone + Sync>(
+    async fn are_allowed_table_actions_vec<A: TableAction + Into<Self::TableAction> + Send + Sync>(
         &self,
         metadata: &RequestMetadata,
         warehouse: &ResolvedWarehouse,
@@ -940,8 +950,12 @@ pub trait AuthZTableOps: Authorizer {
                 action.user
             };
 
-            // Auto-approve if admin and acting as self
-            if metadata.has_admin_privileges() && normalized_user.is_none() {
+            // `LakekeeperInternal` bypasses all actions including data-plane.
+            // Instance admins bypass only non-data-plane actions — `ReadData` /
+            // `WriteData` must still route through the configured authorizer.
+            let bypass = metadata.bypasses_control_plane_authz(normalized_user)
+                && (metadata.is_lakekeeper_internal() || !action.action.is_data_plane());
+            if bypass {
                 auto_approved.push(Some(true));
             } else {
                 auto_approved.push(None);
@@ -984,7 +998,7 @@ pub trait AuthZTableOps: Authorizer {
     }
 
     async fn are_allowed_tabular_actions_vec<
-        AT: Into<Self::TableAction> + Send + Clone + Sync,
+        AT: TableAction + Into<Self::TableAction> + Send + Sync,
         AV: Into<Self::ViewAction> + Send + Clone + Sync,
     >(
         &self,
@@ -1069,7 +1083,7 @@ pub trait AuthZTableOps: Authorizer {
     }
 
     async fn require_tabular_actions<
-        AT: Into<Self::TableAction> + Send + Clone + Sync,
+        AT: TableAction + Into<Self::TableAction> + Send + Sync,
         AV: Into<Self::ViewAction> + Send + Clone + Sync,
     >(
         &self,

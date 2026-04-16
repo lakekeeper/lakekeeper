@@ -21,7 +21,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{WarehouseId, service::ArcProjectId};
+use crate::{WarehouseId, service::ArcProjectId, service::UserId};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -439,6 +439,27 @@ pub struct DynAppConfig {
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
     pub authz_backend: AuthZBackend,
+
+    /// Principals granted instance-admin privileges via deployment config.
+    ///
+    /// Instance admins bypass authorization for all control-plane actions
+    /// (bootstrap, project/warehouse/role/namespace/table/view management) but
+    /// NOT for data-plane actions (`CatalogTableAction::ReadData` /
+    /// `WriteData`). The privilege cannot be revoked from within Lakekeeper at
+    /// runtime; change the deployment config to add or remove admins.
+    ///
+    /// Accepts a TOML inline array of user IDs (each of form
+    /// `<idp_id>~<subject>`) — for simple string arrays this is syntactically
+    /// identical to JSON:
+    ///
+    /// ```text
+    /// LAKEKEEPER__INSTANCE_ADMINS=["kubernetes~system:serviceaccount:lk:op","oidc~alice"]
+    /// ```
+    ///
+    /// A bare string (e.g. `oidc~alice`) is rejected — even a single admin
+    /// must be wrapped in brackets: `["oidc~alice"]`.
+    #[serde(default)]
+    pub instance_admins: HashSet<UserId>,
     // ------------- TRUSTED ENGINES -------------
     #[serde(default)]
     pub trusted_engines: HashMap<String, TrustedEngine>,
@@ -990,6 +1011,7 @@ impl Default for DynAppConfig {
             kafka_topic: None,
             log_cloudevents: None,
             authz_backend: AuthZBackend::default(),
+            instance_admins: HashSet::new(),
             trusted_engines: HashMap::new(),
             protected_properties: HashSet::new(),
             openid_provider_uri: None,
@@ -1206,6 +1228,102 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allow-all");
             let config = get_config();
             assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_default_empty() {
+        assert!(DynAppConfig::default().instance_admins.is_empty());
+    }
+
+    #[test]
+    fn test_instance_admins_parses_json_array() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__INSTANCE_ADMINS",
+                r#"["oidc~alice","kubernetes~system:serviceaccount:lk:op"]"#,
+            );
+            let config = get_config();
+            assert_eq!(config.instance_admins.len(), 2);
+            assert!(
+                config
+                    .instance_admins
+                    .contains(&UserId::try_from("oidc~alice").unwrap())
+            );
+            assert!(config.instance_admins.contains(
+                &UserId::try_from("kubernetes~system:serviceaccount:lk:op").unwrap(),
+            ));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_single_element() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", r#"["oidc~solo"]"#);
+            let config = get_config();
+            assert_eq!(config.instance_admins.len(), 1);
+            assert!(
+                config
+                    .instance_admins
+                    .contains(&UserId::try_from("oidc~solo").unwrap())
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_accepts_whitespace_in_array() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__INSTANCE_ADMINS",
+                r#"[ "oidc~alice" ,  "oidc~bob" ]"#,
+            );
+            let config = get_config();
+            assert_eq!(config.instance_admins.len(), 2);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_rejects_bare_string() {
+        // `FOO=oidc~alice` must NOT parse as a single-element admin list:
+        // figment reads it as a scalar string, not a sequence. Operators
+        // must use the inline-array form (`["..."]`) even for one admin.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", "oidc~alice");
+            let defaults =
+                figment::providers::Serialized::defaults(DynAppConfig::default());
+            let env = figment::providers::Env::prefixed("LAKEKEEPER_TEST__").split("__");
+            let result = figment::Figment::from(defaults)
+                .merge(env)
+                .extract::<DynAppConfig>();
+            assert!(
+                result.is_err(),
+                "bare string must not be accepted as a single-element list, got {result:?}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_rejects_missing_idp_prefix() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__INSTANCE_ADMINS",
+                r#"["no-idp-prefix"]"#,
+            );
+            let defaults =
+                figment::providers::Serialized::defaults(DynAppConfig::default());
+            let env = figment::providers::Env::prefixed("LAKEKEEPER_TEST__").split("__");
+            let result = figment::Figment::from(defaults)
+                .merge(env)
+                .extract::<DynAppConfig>();
+            assert!(
+                result.is_err(),
+                "expected parsing to fail for user id without idp prefix, got {result:?}",
+            );
             Ok(())
         });
     }

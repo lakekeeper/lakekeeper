@@ -522,7 +522,7 @@ pub trait AuthzNamespaceOps: Authorizer {
         })
             .collect();
 
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(warehouse_matches)
         } else {
             let converted = actions

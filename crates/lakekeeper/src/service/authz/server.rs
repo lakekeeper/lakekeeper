@@ -172,7 +172,7 @@ pub trait AuthZServerOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(vec![true; actions.len()])
         } else {
             let converted = actions.iter().map(|a| a.clone().into()).collect::<Vec<_>>();
@@ -265,7 +265,7 @@ pub trait AuthZServerOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
     ) -> Result<MustUse<bool>, AuthzBackendErrorOrBadRequest> {
-        if metadata.has_admin_privileges() {
+        if metadata.bypasses_control_plane_authz(None) {
             Ok(true)
         } else {
             self.can_search_users_impl(metadata).await

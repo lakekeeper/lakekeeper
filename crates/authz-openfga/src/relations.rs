@@ -1339,7 +1339,11 @@ pub enum TableRelation {
     CanSetProtection,
 }
 
-impl TableAction for TableRelation {}
+impl TableAction for TableRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanReadData | Self::CanWriteData)
+    }
+}
 impl CatalogAction for TableRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()

@@ -303,7 +303,7 @@ pub trait AuthzWarehouseOps: Authorizer {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(vec![true; warehouses_with_actions.len()])
         } else {
             let converted: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =
