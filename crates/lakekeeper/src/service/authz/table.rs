@@ -910,7 +910,9 @@ pub trait AuthZTableOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
-    async fn are_allowed_table_actions_vec<A: TableAction + Into<Self::TableAction> + Send + Sync>(
+    async fn are_allowed_table_actions_vec<
+        A: TableAction + Into<Self::TableAction> + Send + Sync,
+    >(
         &self,
         metadata: &RequestMetadata,
         warehouse: &ResolvedWarehouse,

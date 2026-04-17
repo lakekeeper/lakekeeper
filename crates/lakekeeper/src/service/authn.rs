@@ -742,8 +742,7 @@ mod tests {
 
     #[test]
     fn test_is_configured_instance_admin() {
-        use std::collections::HashSet;
-        use std::sync::Arc;
+        use std::{collections::HashSet, sync::Arc};
 
         use crate::service::Role;
 

@@ -21,7 +21,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{WarehouseId, service::ArcProjectId, service::UserId};
+use crate::{
+    WarehouseId,
+    service::{ArcProjectId, UserId},
+};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
@@ -1293,8 +1296,7 @@ mod test {
         // must use the inline-array form (`["..."]`) even for one admin.
         figment::Jail::expect_with(|jail| {
             jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", "oidc~alice");
-            let defaults =
-                figment::providers::Serialized::defaults(DynAppConfig::default());
+            let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
             let env = figment::providers::Env::prefixed("LAKEKEEPER_TEST__").split("__");
             let result = figment::Figment::from(defaults)
                 .merge(env)
@@ -1310,12 +1312,8 @@ mod test {
     #[test]
     fn test_instance_admins_rejects_missing_idp_prefix() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env(
-                "LAKEKEEPER_TEST__INSTANCE_ADMINS",
-                r#"["no-idp-prefix"]"#,
-            );
-            let defaults =
-                figment::providers::Serialized::defaults(DynAppConfig::default());
+            jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", r#"["no-idp-prefix"]"#);
+            let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
             let env = figment::providers::Env::prefixed("LAKEKEEPER_TEST__").split("__");
             let result = figment::Figment::from(defaults)
                 .merge(env)
