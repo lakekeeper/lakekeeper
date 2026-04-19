@@ -42,8 +42,7 @@ fn smithy_trust_store() -> aws_smithy_http_client::tls::TrustStore {
         aws_smithy_http_client::tls::TrustStore::default(),
         |ts, der| {
             let b64 = base64::encode(der.as_ref());
-            let pem =
-                format!("-----BEGIN CERTIFICATE-----\n{b64}\n-----END CERTIFICATE-----\n");
+            let pem = format!("-----BEGIN CERTIFICATE-----\n{b64}\n-----END CERTIFICATE-----\n");
             ts.with_pem_certificate(pem)
         },
     )
