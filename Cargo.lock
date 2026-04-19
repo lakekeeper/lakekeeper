@@ -3813,6 +3813,7 @@ dependencies = [
  "url",
  "uuid",
  "veil",
+ "webpki-root-certs",
 ]
 
 [[package]]

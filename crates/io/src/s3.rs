@@ -32,11 +32,33 @@ mod s3_storage;
 pub use s3_location::{InvalidBucketName, S3Location, validate_bucket_name};
 pub use s3_storage::S3Storage;
 
+// Seed the smithy trust store with webpki roots on top of the OS-native roots.
+// `rustls-native-certs` returns an empty list on minimal images that lack a CA
+// bundle (e.g. UBI-micro), so without this fallback every public TLS handshake
+// fails with `InvalidCertificate(UnknownIssuer)`. Native roots stay enabled to
+// honor `SSL_CERT_FILE` / `SSL_CERT_DIR` and host-installed CAs.
+fn smithy_trust_store() -> aws_smithy_http_client::tls::TrustStore {
+    webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().fold(
+        aws_smithy_http_client::tls::TrustStore::default(),
+        |ts, der| {
+            let b64 = base64::encode(der.as_ref());
+            let pem =
+                format!("-----BEGIN CERTIFICATE-----\n{b64}\n-----END CERTIFICATE-----\n");
+            ts.with_pem_certificate(pem)
+        },
+    )
+}
+
 static SMITHY_HTTP_CLIENT: LazyLock<SharedHttpClient> = LazyLock::new(|| {
+    let tls_context = aws_smithy_http_client::tls::TlsContext::builder()
+        .with_trust_store(smithy_trust_store())
+        .build()
+        .expect("valid TLS context");
     aws_smithy_http_client::Builder::new()
         .tls_provider(aws_smithy_http_client::tls::Provider::Rustls(
             aws_smithy_http_client::tls::rustls_provider::CryptoMode::AwsLc,
         ))
+        .tls_context(tls_context)
         .pool_idle_timeout(Duration::from_mins(1))
         .build_https()
 });

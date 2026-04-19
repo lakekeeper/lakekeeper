@@ -138,6 +138,7 @@ reqwest = { version = "0.12.23", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
 ] }
 semver = "1.0.27"
 serde = { version = "^1.0", features = ["rc"] }
@@ -207,6 +208,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 valuable = "0.1.1"
 veil = "0.2.0"
+webpki-root-certs = "1.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
 [profile.dev.build-override]

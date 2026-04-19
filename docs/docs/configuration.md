@@ -420,7 +420,19 @@ Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeepe
 
 ### SSL Dependencies
 
-You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. Minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
+Lakekeeper validates outbound TLS connections against two root stores combined:
+
+- **Mozilla root CAs** bundled into the binary via `webpki-roots` / `webpki-root-certs`. Public endpoints (AWS, GCS, Azure, OIDC providers) work out of the box, including on minimal images with no system CA bundle (scratch, `distroless`, `ubi-micro`).
+- **System / custom CAs** loaded via `rustls-native-certs`, which respects `SSL_CERT_FILE` and `SSL_CERT_DIR`. Point these at a PEM bundle or directory to trust self-signed certificates (e.g. for MinIO, internal IdPs). When unset, the standard host paths are consulted (`/etc/ssl/certs/...`, `/etc/pki/tls/certs/...`, etc.).
+
+The certificate presented by an endpoint cannot itself be a CA — it must be an end-entity certificate, otherwise TLS handshakes fail with `CaUsedAsEndEntity`.
+
+Two code paths do *not* use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
+
+- **Vault** integration (via `vaultrs` → `rustls-platform-verifier`). You can also pass a PEM bundle explicitly through the Vault client configuration.
+- **Kafka** integration (via `librdkafka` / OpenSSL).
+
+The official `distroless` and `ubi` images ship a CA bundle, so these work without extra configuration. If you roll your own minimal image and use Vault or Kafka, install `ca-certificates` or copy a bundle to `/etc/ssl/certs/ca-certificates.crt`.
 
 ### Request Limits
 

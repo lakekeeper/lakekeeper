@@ -19,6 +19,7 @@ storage-s3 = [
     "dep:aws-credential-types",
     "dep:aws-smithy-async",
     "dep:aws-smithy-http-client",
+    "dep:webpki-root-certs",
 ]
 storage-adls = [
     "dep:azure_storage_blobs",
@@ -75,6 +76,7 @@ typed-builder = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 veil = { workspace = true }
+webpki-root-certs = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
