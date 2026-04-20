@@ -166,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
             use lakekeeper::{
                 AuthZBackend, api::management::v1::api_doc, service::authz::AllowAllAuthorizer,
             };
+            use lakekeeper_authz_opa::OpaAuthorizer;
             use lakekeeper_authz_openfga::OpenFGAAuthorizer;
 
             let queue_configs_ref = &lakekeeper::service::tasks::BUILT_IN_API_CONFIGS;
@@ -179,6 +180,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AuthZBackend::External(e) if e == "openfga" => {
                     api_doc::<OpenFGAAuthorizer>(&queue_configs, &project_queue_configs)
+                }
+                AuthZBackend::External(e) if e == "opa" => {
+                    api_doc::<OpaAuthorizer>(&queue_configs, &project_queue_configs)
                 }
                 AuthZBackend::External(e) => anyhow::bail!("Unsupported authz backend `{e}`"),
             };

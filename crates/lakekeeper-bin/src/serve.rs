@@ -43,6 +43,13 @@ pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Re
             )
             .await
         }
+        AuthorizerEnum::Opa(authz) => {
+            tracing::info!("Using OPA authorizer");
+            serve_with_authn::<PostgresBackend, _, _>(
+                bind_addr, secrets, catalog, *authz, stats, events,
+            )
+            .await
+        }
     }
 }
 

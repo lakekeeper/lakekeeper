@@ -3772,6 +3772,7 @@ dependencies = [
  "figment",
  "http 1.4.0",
  "lakekeeper",
+ "lakekeeper-authz-opa",
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
  "limes",

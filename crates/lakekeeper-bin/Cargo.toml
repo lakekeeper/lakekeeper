@@ -19,7 +19,11 @@ path = "src/main.rs"
 default = []
 all = ["ui"]
 ui = ["dep:lakekeeper-console"]
-open-api = ["lakekeeper-authz-openfga/open-api", "lakekeeper/open-api"]
+open-api = [
+    "lakekeeper-authz-openfga/open-api",
+    "lakekeeper-authz-opa/open-api",
+    "lakekeeper/open-api",
+]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -34,6 +38,7 @@ lakekeeper = { path = "../lakekeeper", features = [
     "vendored-protoc",
     "kafka",
 ] }
+lakekeeper-authz-opa = { path = "../authz-opa" }
 lakekeeper-authz-openfga = { path = "../authz-openfga" }
 lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.13.2", optional = true }
 limes = { workspace = true }

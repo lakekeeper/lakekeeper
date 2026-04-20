@@ -1,4 +1,5 @@
 use lakekeeper::service::{ServerId, authz::AllowAllAuthorizer};
+use lakekeeper_authz_opa::{CONFIG as OPA_CONFIG, OpaAuthorizer};
 use lakekeeper_authz_openfga::{
     CONFIG as OPENFGA_CONFIG, OpenFGAAuthorizer, migrate as openfga_migrate,
 };
@@ -7,11 +8,16 @@ use lakekeeper_authz_openfga::{
 pub(crate) enum AuthorizerEnum {
     AllowAll(AllowAllAuthorizer),
     OpenFGA(Box<OpenFGAAuthorizer>),
+    Opa(Box<OpaAuthorizer>),
 }
 
 impl AuthorizerEnum {
     pub(crate) async fn init_from_env(server_id: ServerId) -> anyhow::Result<Self> {
-        if OPENFGA_CONFIG.is_openfga_enabled() {
+        if OPA_CONFIG.is_opa_enabled() {
+            Ok(AuthorizerEnum::Opa(Box::new(
+                lakekeeper_authz_opa::new_authorizer_from_default_config(server_id).await?,
+            )))
+        } else if OPENFGA_CONFIG.is_openfga_enabled() {
             Ok(AuthorizerEnum::OpenFGA(Box::new(
                 lakekeeper_authz_openfga::new_authorizer_from_default_config(server_id).await?,
             )))
@@ -28,5 +34,6 @@ pub(crate) async fn migrate(server_id: ServerId) -> anyhow::Result<()> {
         let store_name_override = None;
         openfga_migrate(&client, store_name_override, server_id).await?;
     }
+    // OPA has no tuple store — nothing to migrate.
     Ok(())
 }
