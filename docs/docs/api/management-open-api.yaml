@@ -6943,8 +6943,8 @@ components:
                 let cred: StorageCredential = serde_json::from_str(r#"{
                     "type": "s3",
                     "credential-type": "access-key",
-                    "aws-access-key-id": "minio-root-user",
-                    "aws-secret-access-key": "minio-root-password"
+                    "access-key-id": "minio-root-user",
+                    "secret-access-key": "minio-root-password"
                   }"#).unwrap();
                 ```
             - type: object
@@ -6966,8 +6966,8 @@ components:
             let cred: StorageCredential = serde_json::from_str(r#"{
                 "type": "s3",
                 "credential-type": "access-key",
-                "aws-access-key-id": "minio-root-user",
-                "aws-secret-access-key": "minio-root-password"
+                "access-key-id": "minio-root-user",
+                "secret-access-key": "minio-root-password"
               }"#).unwrap();
             ```
         - allOf:
@@ -7713,7 +7713,9 @@ components:
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
             to avoid data loss. For S3 this means that you may not change the
-            bucket or key prefix. The region may only be changed if an endpoint is set.
+            bucket or key prefix. The region may only be changed if an `endpoint`
+            is set on the new profile (so the endpoint, not the region, determines
+            where S3 requests are routed).
     User:
       type: object
       description: User of the catalog

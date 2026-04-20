@@ -182,7 +182,9 @@ pub struct UpdateWarehouseStorageRequest {
     /// Storage profile to use for the warehouse.
     /// The new profile must point to the same location as the existing profile
     /// to avoid data loss. For S3 this means that you may not change the
-    /// bucket or key prefix. The region may only be changed if an endpoint is set.
+    /// bucket or key prefix. The region may only be changed if an `endpoint`
+    /// is set on the new profile (so the endpoint, not the region, determines
+    /// where S3 requests are routed).
     pub storage_profile: StorageProfile,
     /// Optional storage credential to use for the warehouse.
     /// The existing credential is not re-used. If no credential is

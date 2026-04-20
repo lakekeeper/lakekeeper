@@ -948,8 +948,8 @@ pub enum StorageCredential {
     /// let cred: StorageCredential = serde_json::from_str(r#"{
     ///     "type": "s3",
     ///     "credential-type": "access-key",
-    ///     "aws-access-key-id": "minio-root-user",
-    ///     "aws-secret-access-key": "minio-root-password"
+    ///     "access-key-id": "minio-root-user",
+    ///     "secret-access-key": "minio-root-password"
     ///   }"#).unwrap();
     /// ```
     #[serde(rename = "s3")]
