@@ -11,7 +11,8 @@ type lakekeeper_view
     # ------------------ Assignable Privileges ------------------
     define pass_grants: [user, role#assignee]
     define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
-    define describe: [user, role#assignee] or ownership or modify or describe from parent
+    define describe: [user, role#assignee] or ownership or select or describe from parent
+    define select: [user, role#assignee] or ownership or modify or select from parent
     define modify: [user, role#assignee] or ownership or modify from parent
 
     # ------------------ Actions ------------------
@@ -19,10 +20,10 @@ type lakekeeper_view
     define can_undrop: modify
     define can_commit: modify
     define can_get_metadata: describe
-    define can_select: describe
+    define can_select: select
     define can_rename: modify
     define can_include_in_list: can_get_metadata
-    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_modify or can_change_ownership
+    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_change_ownership
     define can_set_protection: modify
     # Task permissions
     define can_get_tasks: describe
@@ -32,5 +33,6 @@ type lakekeeper_view
     define can_grant_pass_grants: manage_grants
     define can_grant_manage_grants: manage_grants
     define can_grant_describe: manage_grants or (describe and pass_grants)
+    define can_grant_select: manage_grants or (select and pass_grants)
     define can_grant_modify: manage_grants or (modify and pass_grants)
     define can_change_ownership: manage_grants

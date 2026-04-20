@@ -271,6 +271,7 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_grant_describe: false
+          can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
   - name: Project Admin has full access in project and below
@@ -363,6 +364,7 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
   - name: Security Admin can manage grants and navigate but not see data
@@ -450,12 +452,13 @@ tests:
           can_drop: false
           can_commit: false
           can_get_metadata: true
-          can_select: true
+          can_select: false
           can_rename: false
           can_include_in_list: true
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
   - name: Warehouse Admin can manage data and objects but not grants
@@ -549,6 +552,7 @@ tests:
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_grant_describe: false
+          can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
   - name: Warehouse Owner can do everything in its Warehouse
@@ -628,6 +632,7 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
           can_set_protection: true
@@ -720,6 +725,7 @@ tests:
           can_grant_pass_grants: true
           can_grant_manage_grants: true
           can_grant_describe: true
+          can_grant_select: true
           can_grant_modify: true
           can_change_ownership: true
   - name: Select Table 3 bubbles list up

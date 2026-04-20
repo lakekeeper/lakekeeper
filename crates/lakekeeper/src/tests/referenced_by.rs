@@ -680,7 +680,7 @@ async fn test_invoker_view_checks_calling_user_not_owner(pool: PgPool) {
 /// defeating the data-plane carve-out that the instance-admin design
 /// explicitly promises. Regression guard for that path.
 #[sqlx::test]
-async fn test_instance_admin_cannot_traverse_definer_chain_without_describe(pool: PgPool) {
+async fn test_instance_admin_cannot_traverse_definer_chain_without_view_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -693,7 +693,8 @@ async fn test_instance_admin_cannot_traverse_definer_chain_without_describe(pool
     setup_ns_and_table(&ctx, &wh).await;
     create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
 
-    // The instance admin has no `describe` on the entry view.
+    // The admin has no authz grants on the entry view, so `Select` on it
+    // will be denied by the configured authorizer.
     let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
     authz.hide_for_user(&user("admin"), &view_key);
 
@@ -712,15 +713,108 @@ async fn test_instance_admin_cannot_traverse_definer_chain_without_describe(pool
 
     assert!(
         result.is_err(),
-        "instance admin without describe on DEFINER entry view must not traverse into owner's context",
+        "instance admin with `Select` denied on DEFINER entry view must not traverse into owner's context",
     );
 }
 
-/// Counterpart to the regression test above: when the instance admin *does*
-/// have `describe` on the entry view (no hide applied), the DEFINER chain
+/// Same escalation, but exercised through the `loadView` chain consumer
+/// ([`views/load.rs`]) rather than `loadTable`. Ensures the `!allowed`
+/// branch on intermediate views enforces `Select` denial in both
+/// consumers — a future refactor that accidentally skipped it on the view
+/// path would regress the fix.
+#[sqlx::test]
+async fn test_instance_admin_cannot_load_view_through_definer_chain_without_view_access(
+    pool: PgPool,
+) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+    create_invoker_view(&ctx, &wh, "target_view").await;
+
+    // Admin has no authz grants on the intermediate DEFINER view — `Select`
+    // is denied.
+    let intermediate_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.hide_for_user(&user("admin"), &intermediate_key);
+
+    let result = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "target_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: Some(referenced_by(&[table_ident("ns", "definer_view")])),
+        },
+        ctx.clone(),
+        request_as_instance_admin("admin"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "instance admin with `Select` denied on DEFINER intermediate must not load through it",
+    );
+}
+
+/// Positive side of the carve-out: `GetMetadata` on a view is control-plane
+/// and the instance-admin bypass must keep applying. An admin without any
+/// authz grants on V must still be able to `loadView(V)` and receive the SQL
+/// definition — that's the "admins manage the catalog" contract. A silent
+/// regression that demoted `GetMetadata` to data-plane, or that consulted
+/// `Select` on the `loadView` target, would break this.
+#[sqlx::test]
+async fn test_instance_admin_can_load_view_without_grants(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    let p = wh.warehouse_id.to_string();
+    crate::tests::create_ns(ctx.clone(), p, "ns".into()).await;
+    create_invoker_view(&ctx, &wh, "opaque_view").await;
+
+    // Admin holds no grants on the view — hide it so the authorizer denies
+    // every action for this user.
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "opaque_view")).await;
+    authz.hide_for_user(&user("admin"), &view_key);
+
+    let result = Server::load_view(
+        ViewParameters {
+            prefix: Some(prefix(&wh)),
+            view: table_ident("ns", "opaque_view"),
+        },
+        LoadViewRequest {
+            data_access: DataAccessMode::ClientManaged,
+            referenced_by: None,
+        },
+        ctx.clone(),
+        request_as_instance_admin("admin"),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "instance admin must still be able to loadView without grants (GetMetadata is control-plane): {result:?}"
+    );
+}
+
+/// Counterpart to the regression test above: when the instance admin *has*
+/// authz access to the entry view (no hide applied), the DEFINER chain
 /// still works — bypass of `GetMetadata` alone is not what gates traversal.
 #[sqlx::test]
-async fn test_instance_admin_can_traverse_definer_chain_with_describe(pool: PgPool) {
+async fn test_instance_admin_can_traverse_definer_chain_with_view_access(pool: PgPool) {
     let authz = HidingAuthorizer::new();
     let (ctx, wh) = SetupTestCatalog::builder()
         .pool(pool)
@@ -747,7 +841,7 @@ async fn test_instance_admin_can_traverse_definer_chain_with_describe(pool: PgPo
 
     assert!(
         result.is_ok(),
-        "instance admin with describe on entry view should traverse DEFINER chain: {result:?}"
+        "instance admin with `Select` allowed on entry view should traverse DEFINER chain: {result:?}"
     );
 }
 

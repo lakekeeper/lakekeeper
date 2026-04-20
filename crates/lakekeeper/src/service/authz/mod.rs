@@ -2149,7 +2149,7 @@ pub(crate) mod tests {
     /// Instance admins must NOT bypass `Select` on views — it's the data-plane
     /// analogue for views and must route through the configured authorizer.
     /// This closes the DEFINER referenced-by escalation: an instance admin
-    /// can't enter a chain they wouldn't normally have `describe` access to.
+    /// can't enter a chain they wouldn't normally have `Select` access on.
     #[tokio::test]
     async fn test_instance_admin_does_not_bypass_data_plane_view_actions() {
         let authz = HidingAuthorizer::new();

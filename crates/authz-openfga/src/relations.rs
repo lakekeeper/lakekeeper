@@ -1578,6 +1578,7 @@ pub enum ViewRelation {
     PassGrants,
     ManageGrants,
     Describe,
+    Select,
     Modify,
     // -- Actions --
     CanDrop,
@@ -1590,6 +1591,7 @@ pub enum ViewRelation {
     CanGrantPassGrants,
     CanGrantManageGrants,
     CanGrantDescribe,
+    CanGrantSelect,
     CanGrantModify,
     CanChangeOwnership,
     CanUndrop,
@@ -1631,6 +1633,7 @@ pub(super) enum APIViewRelation {
     PassGrants,
     ManageGrants,
     Describe,
+    Select,
     Modify,
 }
 
@@ -1646,6 +1649,8 @@ pub(super) enum ViewAssignment {
     ManageGrants(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentDescribe"))]
     Describe(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentSelect"))]
+    Select(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentModify"))]
     Modify(UserOrRole),
 }
@@ -1657,6 +1662,7 @@ impl GrantableRelation for APIViewRelation {
             APIViewRelation::PassGrants => ViewRelation::CanGrantPassGrants,
             APIViewRelation::ManageGrants => ViewRelation::CanGrantManageGrants,
             APIViewRelation::Describe => ViewRelation::CanGrantDescribe,
+            APIViewRelation::Select => ViewRelation::CanGrantSelect,
             APIViewRelation::Modify => ViewRelation::CanGrantModify,
         }
     }
@@ -1679,6 +1685,9 @@ impl Assignment for ViewAssignment {
             APIViewRelation::Describe => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Describe)
             }
+            APIViewRelation::Select => {
+                UserOrRole::parse_from_openfga(user).map(ViewAssignment::Select)
+            }
             APIViewRelation::Modify => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Modify)
             }
@@ -1691,6 +1700,7 @@ impl Assignment for ViewAssignment {
             | ViewAssignment::PassGrants(user)
             | ViewAssignment::ManageGrants(user)
             | ViewAssignment::Describe(user)
+            | ViewAssignment::Select(user)
             | ViewAssignment::Modify(user) => user.to_openfga(),
         }
     }
@@ -1701,6 +1711,7 @@ impl Assignment for ViewAssignment {
             ViewAssignment::PassGrants { .. } => APIViewRelation::PassGrants,
             ViewAssignment::ManageGrants { .. } => APIViewRelation::ManageGrants,
             ViewAssignment::Describe { .. } => APIViewRelation::Describe,
+            ViewAssignment::Select { .. } => APIViewRelation::Select,
             ViewAssignment::Modify { .. } => APIViewRelation::Modify,
         }
     }
@@ -1720,6 +1731,7 @@ pub(super) enum APIViewAction {
     GrantPassGrants,
     GrantManageGrants,
     GrantDescribe,
+    GrantSelect,
     GrantModify,
     ChangeOwnership,
     GetTasks,
@@ -1735,6 +1747,7 @@ pub(super) enum OpenFGAViewAction {
     GrantPassGrants,
     GrantManageGrants,
     GrantDescribe,
+    GrantSelect,
     GrantModify,
     ChangeOwnership,
 }
@@ -1748,6 +1761,7 @@ impl ReducedRelation for APIViewRelation {
             APIViewRelation::PassGrants => ViewRelation::PassGrants,
             APIViewRelation::ManageGrants => ViewRelation::ManageGrants,
             APIViewRelation::Describe => ViewRelation::Describe,
+            APIViewRelation::Select => ViewRelation::Select,
             APIViewRelation::Modify => ViewRelation::Modify,
         }
     }
@@ -1767,6 +1781,7 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
             APIViewAction::GrantManageGrants => ViewRelation::CanGrantManageGrants,
             APIViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
+            APIViewAction::GrantSelect => ViewRelation::CanGrantSelect,
             APIViewAction::GrantModify => ViewRelation::CanGrantModify,
             APIViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
             APIViewAction::GetTasks => ViewRelation::CanGetTasks,
@@ -1804,6 +1819,7 @@ impl ReducedRelation for OpenFGAViewAction {
             OpenFGAViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
             OpenFGAViewAction::GrantManageGrants => ViewRelation::CanGrantManageGrants,
             OpenFGAViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
+            OpenFGAViewAction::GrantSelect => ViewRelation::CanGrantSelect,
             OpenFGAViewAction::GrantModify => ViewRelation::CanGrantModify,
             OpenFGAViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
         }

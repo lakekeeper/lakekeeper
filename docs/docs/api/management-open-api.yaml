@@ -5399,6 +5399,14 @@ components:
             action:
               type: string
               enum:
+                - select
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
                 - commit
             removed_properties:
               type: array
@@ -6054,6 +6062,7 @@ components:
         - grant_pass_grants
         - grant_manage_grants
         - grant_describe
+        - grant_select
         - grant_modify
         - change_ownership
     OpenFGAWarehouseAction:
@@ -7784,11 +7793,13 @@ components:
         - drop
         - commit
         - get_metadata
+        - select
         - rename
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
         - grant_describe
+        - grant_select
         - grant_modify
         - change_ownership
         - get_tasks
@@ -7849,6 +7860,17 @@ components:
                 type:
                   type: string
                   enum:
+                    - select
+          title: ViewAssignmentSelect
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
                     - modify
           title: ViewAssignmentModify
     ViewRelation:
@@ -7858,6 +7880,7 @@ components:
         - pass_grants
         - manage_grants
         - describe
+        - select
         - modify
     WarehouseAction:
       type: string
