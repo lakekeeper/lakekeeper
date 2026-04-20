@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/authz-openfga",
+    "crates/authz-opa",
     "crates/iceberg-ext",
     "crates/io",
     "crates/lakekeeper",

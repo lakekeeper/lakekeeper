@@ -3715,6 +3715,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakekeeper-authz-opa"
+version = "0.12.0"
+dependencies = [
+ "anyhow",
+ "figment",
+ "futures",
+ "http 1.4.0",
+ "lakekeeper",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-test",
+ "url",
+ "utoipa",
+ "uuid",
+ "veil",
+]
+
+[[package]]
 name = "lakekeeper-authz-openfga"
 version = "0.12.0"
 dependencies = [

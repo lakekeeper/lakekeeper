@@ -1,0 +1,38 @@
+[package]
+name = "lakekeeper-authz-opa"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+rust-version = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+
+description = "Open Policy Agent (OPA) Authorizer for Lakekeeper"
+keywords = ["iceberg", "rest", "lakekeeper", "opa"]
+
+[lib]
+
+[features]
+open-api = ["dep:utoipa", "lakekeeper/open-api"]
+
+[dependencies]
+anyhow = { workspace = true }
+figment = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+lakekeeper = { path = "../lakekeeper", default-features = false }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+utoipa = { workspace = true, optional = true }
+uuid = { workspace = true }
+veil = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+lakekeeper = { path = "../lakekeeper", features = ["test-utils"] }
+tokio = { workspace = true }
+tracing-test = { workspace = true }
