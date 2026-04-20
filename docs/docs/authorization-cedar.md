@@ -514,7 +514,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"WarehouseDescribeActions",
                 Lakekeeper::Action::"NamespaceDescribeActions",
                 Lakekeeper::Action::"TableSelectActions",
-                Lakekeeper::Action::"ViewDescribeActions"
+                Lakekeeper::Action::"ViewSelectActions"
             ],
         resource
     ) when {
@@ -533,7 +533,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"WarehouseDescribeActions",
                 Lakekeeper::Action::"NamespaceDescribeActions",
                 Lakekeeper::Action::"TableSelectActions",
-                Lakekeeper::Action::"ViewDescribeActions"
+                Lakekeeper::Action::"ViewSelectActions"
             ],
         resource
     ) when {
@@ -552,7 +552,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"WarehouseDescribeActions",
                 Lakekeeper::Action::"NamespaceDescribeActions",
                 Lakekeeper::Action::"TableSelectActions",
-                Lakekeeper::Action::"ViewDescribeActions"
+                Lakekeeper::Action::"ViewSelectActions"
             ],
         resource in Lakekeeper::Project::"my-project"
     ) when {
