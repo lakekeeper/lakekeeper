@@ -1583,6 +1583,7 @@ pub enum ViewRelation {
     CanDrop,
     CanCommit,
     CanGetMetadata,
+    CanSelect,
     CanRename,
     CanIncludeInList,
     CanReadAssignments,
@@ -1597,7 +1598,11 @@ pub enum ViewRelation {
     CanSetProtection,
 }
 
-impl ViewAction for ViewRelation {}
+impl ViewAction for ViewRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanSelect)
+    }
+}
 impl CatalogAction for ViewRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
@@ -1709,6 +1714,7 @@ pub(super) enum APIViewAction {
     Drop,
     Commit,
     GetMetadata,
+    Select,
     Rename,
     ReadAssignments,
     GrantPassGrants,
@@ -1755,6 +1761,7 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::Drop => ViewRelation::CanDrop,
             APIViewAction::Commit => ViewRelation::CanCommit,
             APIViewAction::GetMetadata => ViewRelation::CanGetMetadata,
+            APIViewAction::Select => ViewRelation::CanSelect,
             APIViewAction::Rename => ViewRelation::CanRename,
             APIViewAction::ReadAssignments => ViewRelation::CanReadAssignments,
             APIViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
@@ -1777,6 +1784,7 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::Drop => ViewRelation::CanDrop,
             CatalogViewAction::Commit { .. } => ViewRelation::CanCommit,
             CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
+            CatalogViewAction::Select => ViewRelation::CanSelect,
             CatalogViewAction::Rename => ViewRelation::CanRename,
             CatalogViewAction::IncludeInList => ViewRelation::CanIncludeInList,
             CatalogViewAction::Undrop => ViewRelation::CanUndrop,

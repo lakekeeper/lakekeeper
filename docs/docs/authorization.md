@@ -36,10 +36,14 @@ Instance admins bypass authorization for **control-plane** operations:
 - User management.
 
 Instance admins do **not** bypass authorization for:
-- **Data-plane operations** — `CatalogTableAction::ReadData` and
-  `CatalogTableAction::WriteData` still route through the configured
-  Authorizer. If the instance admin does not hold the relevant grants,
-  reads and writes of table row data are denied.
+- **Data-plane operations** — `CatalogTableAction::ReadData`,
+  `CatalogTableAction::WriteData`, and `CatalogViewAction::Select` still
+  route through the configured Authorizer. If the instance admin does not
+  hold the relevant grants, reads and writes of table row data (and
+  execution of views via the referenced-by chain) are denied. `Select` on
+  views resolves to the same grant as `GetMetadata` (`describe`), so
+  ordinary grantees see no behavioural change — the distinction exists so
+  that the bypass carve-out can exclude it.
 - **Role assumption** (`x-assume-role` header) — an instance admin must act
   with their own identity. Assuming a role opts into that role's narrower
   scope.

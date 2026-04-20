@@ -253,12 +253,14 @@ fn interpret_authz_results_for_load_view(
     let mut target_is_delegated = false;
     let mut can_get_metadata = false;
 
+    // Each view in the chain emits both `GetMetadata` and `Select` — see
+    // `build_actions_from_sorted_tabulars_for_authorize_load_tabular`. On the
+    // target view we only consult `GetMetadata` (loadView reads the
+    // definition; it doesn't execute). On intermediate views we enforce any
+    // denial, which includes `Select`.
     for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
         match action {
             ActionOnTableOrView::View(view_action) => {
-                // The target view is the last view in the chain.
-                // All views produce GetMetadata actions; the target view is identified
-                // by matching its ident.
                 if view_action.info.tabular_ident == *view {
                     target_view_info = Some(view_action.info.clone());
                     target_is_delegated = view_action.is_delegated_execution;

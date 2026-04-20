@@ -129,6 +129,17 @@ Non-engine requests that attempt to modify a protected property receive a `403 F
 
 When a user accesses a table through a DEFINER view, the table load happens with the **owner's** permissions. This is flagged as "delegated execution" in authorization checks and audit logs. Authorization backends can use this flag to apply different policies — for example, skipping permission-inspection rights that would normally be required.
 
+### Metadata vs. execution: `get_metadata` and `select`
+
+Views expose two authorization checkpoints:
+
+- `get_metadata` (control-plane) — listing the view, reading its definition, returning it from `loadView`.
+- `select` (data-plane) — executing the view to produce rows, including traversing a DEFINER chain into the underlying table.
+
+Both resolve to the same `describe` grant in the default OpenFGA model, so a user who holds `describe` on a view can both inspect it and execute it — no extra grant is needed. The split is a *policy* distinction, not a grant distinction: it lets policies that differentiate the data and control planes react appropriately. For example, the instance-admin bypass applies to `get_metadata` but not to `select`, matching the same carve-out that already excludes `read_data` / `write_data` on tables. Operator-style identities can list and manage views they don't hold `describe` on, but cannot execute them through a referenced-by chain unless `describe` is granted.
+
+Every view in a referenced-by chain is checked for *both* actions. The target of `loadView` is checked only for `get_metadata`.
+
 ### Owner Property Integrity
 
 The owner property on a view is critical for security. Lakekeeper ensures that:

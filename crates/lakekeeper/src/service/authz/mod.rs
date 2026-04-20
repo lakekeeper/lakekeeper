@@ -769,6 +769,7 @@ impl CatalogAction for CatalogTableAction {
 pub enum CatalogViewAction {
     Drop,
     GetMetadata,
+    Select,
     Commit {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
@@ -783,10 +784,11 @@ pub enum CatalogViewAction {
     ControlTasks,
     SetProtection,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 9]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop,
         CatalogViewAction::GetMetadata,
+        CatalogViewAction::Select,
         CatalogViewAction::Commit {
             updated_properties: Arc::new(BTreeMap::new()),
             removed_properties: Arc::new(Vec::new()),
@@ -801,7 +803,7 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 9]> = LazyLock::new(||
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 9] {
+    pub fn variants() -> &'static [CatalogViewAction; 10] {
         &VIEW_ACTION_VARIANTS
     }
 }
@@ -1259,6 +1261,10 @@ pub(crate) mod tests {
             (
                 CatalogViewAction::GetMetadata,
                 serde_json::json!({"action": "get_metadata"}),
+            ),
+            (
+                CatalogViewAction::Select,
+                serde_json::json!({"action": "select"}),
             ),
             (
                 CatalogViewAction::IncludeInList,
@@ -2137,6 +2143,123 @@ pub(crate) mod tests {
         assert!(
             allowed,
             "instance admin must bypass blocked Drop (control-plane)",
+        );
+    }
+
+    /// Instance admins must NOT bypass `Select` on views — it's the data-plane
+    /// analogue for views and must route through the configured authorizer.
+    /// This closes the DEFINER referenced-by escalation: an instance admin
+    /// can't enter a chain they wouldn't normally have `describe` access to.
+    #[tokio::test]
+    async fn test_instance_admin_does_not_bypass_data_plane_view_actions() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(format!("view:{:?}", CatalogViewAction::Select).as_str());
+
+        let user = crate::service::UserId::try_from("oidc~admin").unwrap();
+        let md = RequestMetadata::test_instance_admin(user);
+
+        let warehouse = ResolvedWarehouse::new_with_id(Uuid::nil().into());
+        let hierarchy = NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+                requested_ident: None,
+            },
+            parents: vec![],
+        };
+        let view_info = crate::service::ViewInfo::new_random(Uuid::nil().into());
+
+        // Select is blocked → instance admin gets denied (data-plane is NOT bypassed).
+        let allowed = authz
+            .is_allowed_view_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &view_info,
+                CatalogViewAction::Select,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !allowed,
+            "instance admin must not bypass blocked view Select (data-plane)",
+        );
+
+        // GetMetadata (control-plane) — also block it, and verify instance admin
+        // STILL bypasses it.
+        authz.block_action(format!("view:{:?}", CatalogViewAction::GetMetadata).as_str());
+        let allowed = authz
+            .is_allowed_view_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &view_info,
+                CatalogViewAction::GetMetadata,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "instance admin must bypass blocked view GetMetadata (control-plane)",
+        );
+    }
+
+    /// Lakekeeper-internal actors must bypass even data-plane view actions,
+    /// matching the table behaviour.
+    #[tokio::test]
+    async fn test_lakekeeper_internal_bypasses_all_view_actions() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(format!("view:{:?}", CatalogViewAction::Select).as_str());
+
+        let md = RequestMetadata::new_lakekeeper_internal(Uuid::now_v7());
+        let warehouse = ResolvedWarehouse::new_with_id(Uuid::nil().into());
+        let hierarchy = NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+                requested_ident: None,
+            },
+            parents: vec![],
+        };
+        let view_info = crate::service::ViewInfo::new_random(Uuid::nil().into());
+
+        let allowed = authz
+            .is_allowed_view_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &view_info,
+                CatalogViewAction::Select,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "LakekeeperInternal must bypass Select (data-plane) on views too",
         );
     }
 

@@ -55,6 +55,12 @@ fn request_as_user(name: &str) -> RequestMetadata {
     m
 }
 
+fn request_as_instance_admin(name: &str) -> RequestMetadata {
+    let mut m = RequestMetadata::test_instance_admin(UserId::new_unchecked(ENGINE_IDP, name));
+    m.set_engines(matched_engines());
+    m
+}
+
 fn user(name: &str) -> UserOrRole {
     UserOrRole::User(UserId::new_unchecked(ENGINE_IDP, name))
 }
@@ -665,6 +671,83 @@ async fn test_invoker_view_checks_calling_user_not_owner(pool: PgPool) {
     assert!(
         result.is_err(),
         "INVOKER view should check user_a's permissions"
+    );
+}
+
+/// Instance admins bypass control-plane authz (including view `GetMetadata`)
+/// but MUST NOT bypass `Select`. Without the `Select` check, an instance admin
+/// could traverse any existing DEFINER view into the owner's data context —
+/// defeating the data-plane carve-out that the instance-admin design
+/// explicitly promises. Regression guard for that path.
+#[sqlx::test]
+async fn test_instance_admin_cannot_traverse_definer_chain_without_describe(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+    let whi = wh.warehouse_id;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+
+    // The instance admin has no `describe` on the entry view.
+    let view_key = view_object_key(&ctx, whi, &table_ident("ns", "definer_view")).await;
+    authz.hide_for_user(&user("admin"), &view_key);
+
+    let result = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident("ns", "definer_view")])))
+            .build(),
+        ctx.clone(),
+        request_as_instance_admin("admin"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "instance admin without describe on DEFINER entry view must not traverse into owner's context",
+    );
+}
+
+/// Counterpart to the regression test above: when the instance admin *does*
+/// have `describe` on the entry view (no hide applied), the DEFINER chain
+/// still works — bypass of `GetMetadata` alone is not what gates traversal.
+#[sqlx::test]
+async fn test_instance_admin_can_traverse_definer_chain_with_describe(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, wh) = SetupTestCatalog::builder()
+        .pool(pool)
+        .authorizer(authz.clone())
+        .build()
+        .setup()
+        .await;
+
+    setup_ns_and_table(&ctx, &wh).await;
+    create_definer_view(&ctx, &wh, "definer_view", "owner_b").await;
+
+    let result = Server::load_table(
+        TableParameters {
+            prefix: Some(prefix(&wh)),
+            table: table_ident("ns", "my_table"),
+        },
+        LoadTableRequest::builder()
+            .referenced_by(Some(referenced_by(&[table_ident("ns", "definer_view")])))
+            .build(),
+        ctx.clone(),
+        request_as_instance_admin("admin"),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "instance admin with describe on entry view should traverse DEFINER chain: {result:?}"
     );
 }
 

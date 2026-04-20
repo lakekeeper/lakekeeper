@@ -1008,7 +1008,7 @@ pub trait AuthZTableOps: Authorizer {
 
     async fn are_allowed_tabular_actions_vec<
         AT: TableAction + Into<Self::TableAction> + Send + Sync,
-        AV: Into<Self::ViewAction> + Send + Clone + Sync,
+        AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -1093,7 +1093,7 @@ pub trait AuthZTableOps: Authorizer {
 
     async fn require_tabular_actions<
         AT: TableAction + Into<Self::TableAction> + Send + Sync,
-        AV: Into<Self::ViewAction> + Send + Clone + Sync,
+        AV: super::view::ViewAction + Into<Self::ViewAction> + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,

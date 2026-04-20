@@ -34,9 +34,22 @@ pub trait ViewAction
 where
     Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogViewAction>,
 {
+    /// Whether this action executes the view (producing rows) as opposed to
+    /// inspecting its metadata or performing a catalog operation on it.
+    /// Mirrors [`super::table::TableAction::is_data_plane`] for tables and
+    /// lets policies that treat the data and control planes differently
+    /// react accordingly (for example, the [`InstanceAdminAuthorizer`]
+    /// bypass carve-out).
+    ///
+    /// [`InstanceAdminAuthorizer`]: crate::service::authz::instance_admin::InstanceAdminAuthorizer
+    fn is_data_plane(&self) -> bool;
 }
 
-impl ViewAction for CatalogViewAction {}
+impl ViewAction for CatalogViewAction {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::Select)
+    }
+}
 
 // ------------------ Cannot See Error ------------------
 #[derive(Debug, PartialEq, Eq)]
@@ -455,7 +468,7 @@ pub trait AuthZViewOps: Authorizer {
 
     async fn are_allowed_view_actions_arr<
         const N: usize,
-        A: Into<Self::ViewAction> + Send + Clone + Sync,
+        A: ViewAction + Into<Self::ViewAction> + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -481,7 +494,7 @@ pub trait AuthZViewOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
-    async fn are_allowed_view_actions_vec<A: Into<Self::ViewAction> + Send + Clone + Sync>(
+    async fn are_allowed_view_actions_vec<A: ViewAction + Into<Self::ViewAction> + Send + Sync>(
         &self,
         metadata: &RequestMetadata,
         warehouse: &ResolvedWarehouse,
@@ -523,10 +536,12 @@ pub trait AuthZViewOps: Authorizer {
                 action.user
             };
 
-            // Auto-approve if the caller can bypass control-plane authz.
-            // Views have no data-plane actions, so no carve-out is needed
-            // for instance admins.
-            if metadata.bypasses_control_plane_authz(normalized_user) {
+            // `LakekeeperInternal` bypasses all actions including data-plane.
+            // Instance admins bypass only non-data-plane actions — `Select`
+            // must still route through the configured authorizer.
+            let bypass = metadata.bypasses_control_plane_authz(normalized_user)
+                && (metadata.is_lakekeeper_internal() || !action.action.is_data_plane());
+            if bypass {
                 auto_approved.push(Some(true));
             } else {
                 auto_approved.push(None);

@@ -74,5 +74,5 @@ allow_view_read if {
 	catalog := input.action.resource.table.catalogName
 	schema := input.action.resource.table.schemaName
 	table := input.action.resource.table.tableName
-	require_view_access_simple(catalog, schema, table, "get_metadata")
+	require_view_access_simple(catalog, schema, table, "select")
 }

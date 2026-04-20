@@ -318,6 +318,19 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
     Ok(result)
 }
 
+/// Emits every authz action that *might* matter for an entry in the resolved
+/// chain. Consumers pick which results they care about based on the entry's
+/// role in their operation (target vs. intermediate).
+///
+/// - **Table** (only ever the last entry) → `GetMetadata` + `ReadData` +
+///   `WriteData`. `loadTable` uses all three: `GetMetadata` to gate presence,
+///   `ReadData` / `WriteData` to decide which storage-credential scope to
+///   return.
+/// - **View** → `GetMetadata` + `Select`. `GetMetadata` is the metadata check
+///   (used by `loadView` on the target view). `Select` is the data-plane
+///   check (used by any consumer that enforces denial on intermediate views
+///   — it's what gates DEFINER chain traversal past the control-plane
+///   bypass).
 pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
     tabulars: &[ResolvedTabular],
 ) -> Vec<TabularAuthzAction<'_>> {
@@ -347,15 +360,22 @@ pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
                     )
                 })
                 .collect::<Vec<_>>(),
-                ViewOrTableInfo::View(info) => vec![(
-                    &namespace.namespace,
-                    ActionOnTableOrView::View(ActionOnView {
-                        info,
-                        action: CatalogViewAction::GetMetadata,
-                        user,
-                        is_delegated_execution,
-                    }),
-                )],
+                ViewOrTableInfo::View(info) => {
+                    vec![CatalogViewAction::GetMetadata, CatalogViewAction::Select]
+                        .into_iter()
+                        .map(|action| {
+                            (
+                                &namespace.namespace,
+                                ActionOnTableOrView::View(ActionOnView {
+                                    info,
+                                    action,
+                                    user,
+                                    is_delegated_execution,
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }
             }
         })
         .collect()
@@ -881,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_actions_single_view_produces_one_action() {
+    fn test_build_actions_single_view_produces_get_metadata_and_select() {
         let warehouse_id = WarehouseId::new_random();
         let view = ViewInfo::new_random(warehouse_id);
         let namespace = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
@@ -896,8 +916,21 @@ mod tests {
 
         let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
 
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0].1, ActionOnTableOrView::View(_)));
+        assert_eq!(actions.len(), 2);
+        assert!(
+            actions
+                .iter()
+                .all(|(_, a)| matches!(a, ActionOnTableOrView::View(_)))
+        );
+        let emitted: Vec<_> = actions
+            .iter()
+            .filter_map(|(_, a)| match a {
+                ActionOnTableOrView::View(v) => Some(v.action.clone()),
+                ActionOnTableOrView::Table(_) => None,
+            })
+            .collect();
+        assert!(emitted.contains(&CatalogViewAction::GetMetadata));
+        assert!(emitted.contains(&CatalogViewAction::Select));
     }
 
     #[test]
@@ -919,10 +952,12 @@ mod tests {
 
         let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
 
-        assert_eq!(actions.len(), 1);
-        match &actions[0].1 {
-            ActionOnTableOrView::View(v) => assert!(v.is_delegated_execution),
-            ActionOnTableOrView::Table(_) => panic!("expected view action"),
+        assert_eq!(actions.len(), 2);
+        for (_, a) in &actions {
+            match a {
+                ActionOnTableOrView::View(v) => assert!(v.is_delegated_execution),
+                ActionOnTableOrView::Table(_) => panic!("expected view action"),
+            }
         }
     }
 
@@ -943,10 +978,12 @@ mod tests {
 
         let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
 
-        assert_eq!(actions.len(), 1);
-        match &actions[0].1 {
-            ActionOnTableOrView::View(v) => assert!(!v.is_delegated_execution),
-            ActionOnTableOrView::Table(_) => panic!("expected view action"),
+        assert_eq!(actions.len(), 2);
+        for (_, a) in &actions {
+            match a {
+                ActionOnTableOrView::View(v) => assert!(!v.is_delegated_execution),
+                ActionOnTableOrView::Table(_) => panic!("expected view action"),
+            }
         }
     }
 }
