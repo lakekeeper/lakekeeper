@@ -440,9 +440,15 @@ namespace Lakekeeper {
 
   // ---------- View Actions ----------
   action "ViewActions";
-  action "ViewDescribeActions" in ["ViewActions", "ViewModifyActions"];
+  action "ViewDescribeActions" in ["ViewActions", "ViewSelectActions", "ViewModifyActions"];
+  action "ViewSelectActions" in ["ViewActions", "ViewModifyActions"];
   action "ViewModifyActions" in ["ViewActions"];
   action GetViewMetadata, IncludeViewInList, GetViewTasks in ["ViewDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action SelectView in ["ViewSelectActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
