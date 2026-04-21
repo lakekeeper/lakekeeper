@@ -496,12 +496,21 @@ fn check_protected_properties<'a>(
     }
 
     for key in property_keys {
-        if protected_properties.contains(key) && !matched_engines.owns_property(key) {
+        // Case-insensitive match: a key that differs only in casing from a
+        // protected property is still rejected unless the caller is the owning
+        // engine *and* uses the exact configured casing. Engines read these
+        // properties with fixed casing, so a case variant would silently have
+        // no effect on the security model while misleading readers.
+        let matches_protected = protected_properties
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(key));
+
+        if matches_protected && !matched_engines.owns_property(key) {
             return Err(ErrorModel::builder()
                 .code(StatusCode::FORBIDDEN.as_u16())
                 .r#type("ProtectedPropertyModification")
                 .message(format!(
-                    "Property '{key}' controls the view security model and may only be modified by the corresponding trusted engine"
+                    "Property '{key}' controls the view security model and may only be modified by the corresponding trusted engine using the exact configured property key"
                 ))
                 .build()
                 .into());
@@ -613,6 +622,60 @@ mod test_check_protected_properties {
             ["safe.prop", "trino.run-as-owner", "another.safe"].into_iter(),
             &protected(),
             &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_case_variant_of_protected_property_from_non_engine() {
+        let result = check_protected_properties(
+            ["Trino.Run-As-Owner"].into_iter(),
+            &protected(),
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_case_variant_of_protected_property_from_correct_engine() {
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["TRINO.RUN-AS-OWNER"].into_iter(),
+            &protected(),
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_exact_casing_configured_by_admin() {
+        let protected: HashSet<String> = ["Trino.Run-As-Owner".to_string()].into_iter().collect();
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "Trino.Run-As-Owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["Trino.Run-As-Owner"].into_iter(),
+            &protected,
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_lowercase_when_admin_configured_mixed_case() {
+        let protected: HashSet<String> = ["Trino.Run-As-Owner".to_string()].into_iter().collect();
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "Trino.Run-As-Owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &protected,
+            &MatchedEngines::single(trino),
         );
         assert!(result.is_err());
     }

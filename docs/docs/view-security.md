@@ -123,6 +123,8 @@ Once a trusted engine is configured, the owner property (e.g. `trino.run-as-owne
 
 Non-engine requests that attempt to modify a protected property receive a `403 Forbidden` error with type `ProtectedPropertyModification`.
 
+Protection is **case-insensitive on the match, case-sensitive on the accepted value**: a property key that differs from the configured owner property only in casing (e.g. `Trino.Run-As-Owner` when the admin configured `trino.run-as-owner`) is also rejected. Most engines read the owner property with fixed casing, so a case variant would silently have no effect on the security model while appearing to set it — only the exact key configured by the admin is accepted.
+
 ## Security Considerations
 
 ### Delegated Execution
