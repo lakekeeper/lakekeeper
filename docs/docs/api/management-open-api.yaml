@@ -6927,6 +6927,7 @@ components:
             Deprecated alias of `lakekeeper-version`. Always equal to it; kept
             for clients that read the plain `version` field. New clients should
             read `lakekeeper-version` and/or `lakekeeper-enterprise-version`.
+          deprecated: true
     ServerRelation:
       type: string
       enum:

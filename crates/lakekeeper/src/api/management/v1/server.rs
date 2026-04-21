@@ -138,6 +138,7 @@ pub struct ServerInfo {
     /// Deprecated alias of `lakekeeper-version`. Always equal to it; kept
     /// for clients that read the plain `version` field. New clients should
     /// read `lakekeeper-version` and/or `lakekeeper-enterprise-version`.
+    #[cfg_attr(feature = "open-api", schema(deprecated = true))]
     pub version: String,
     /// SemVer of the upstream `lakekeeper` crate the server was built
     /// against.
