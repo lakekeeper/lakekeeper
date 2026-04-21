@@ -9,7 +9,9 @@ use crate::{
     CONFIG, CancellationToken,
     api::{
         ApiContext,
-        management::v1::server::{APACHE_LICENSE_STATUS, LicenseStatus},
+        management::v1::server::{
+            APACHE_LICENSE_STATUS, BuildInfo, DEFAULT_BUILD_INFO, LicenseStatus,
+        },
         router::{RouterArgs, new_full_router, serve as service_serve},
         shutdown_signal,
     },
@@ -155,6 +157,10 @@ pub struct ServeConfiguration<
     /// License Status
     #[builder(default)]
     pub license_status: Option<&'static LicenseStatus>,
+    /// Build-time information (commit SHAs, enterprise version, bundled console).
+    /// Defaults to empty values; downstream binaries should inject their own.
+    #[builder(default)]
+    pub build_info: Option<&'static BuildInfo>,
 }
 
 /// Starts the service with the provided configuration.
@@ -328,9 +334,11 @@ async fn serve_inner<
         event_dispatcher: additional_event_dispatcher,
         register_additional_background_services_fn: additional_background_services,
         license_status,
+        build_info,
     } = config;
 
     let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);
+    let build_info = build_info.unwrap_or(&DEFAULT_BUILD_INFO);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -444,6 +452,7 @@ async fn serve_inner<
             registered_task_queues,
             events: dispatcher,
             license_status,
+            build_info,
         },
     };
 
