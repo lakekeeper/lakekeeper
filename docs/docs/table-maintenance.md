@@ -50,3 +50,43 @@ For production workloads, we recommend running expire snapshots workers in dedic
 ### Task Scheduling
 
 Expire snapshots tasks are intelligently scheduled immediately after table commits when needed, eliminating the overhead of cron-based polling. This ensures timely cleanup while maintaining optimal performance.
+
+## Remove Orphan Files <span class="lkp"></span> {#remove-orphan-files}
+
+Lakekeeper can detect and remove orphaned files — files that exist in a table's storage location but are no longer referenced by any snapshot, manifest, statistics file, or metadata log entry. Orphaned files commonly arise from failed write operations (optimistic concurrency conflicts) or incomplete maintenance tasks.
+
+### How It Works
+
+1. **Scan referenced files**: All files referenced by the current table metadata are collected (manifest lists, manifests, data files, statistics files, partition statistics files, and metadata log entries).
+2. **List storage**: The table's storage location is listed recursively.
+3. **Identify orphans**: Files present in storage but not in the referenced set are orphan candidates.
+4. **Age filter**: Only files older than the configured threshold are deleted. Recently created files are preserved to avoid deleting data from in-progress writes.
+5. **Delete**: Orphans are deleted in micro-batches for efficiency (leveraging cloud-native batch delete APIs where available).
+
+### Configuration
+
+Configuration can be set via the Management REST API:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `default-older-than-period` | ISO 8601 duration | `P3D` (3 days) | Minimum age of a file before it is eligible for deletion. Must be at least 1 day (`P1D`). |
+
+### Safety Mechanisms
+
+- **`gc.enabled` check**: Tables with `gc.enabled=false` are excluded. Attempting to remove orphan files on such a table returns an error immediately.
+- **Age threshold**: Files younger than `default-older-than-period` are never deleted, protecting in-progress writes from concurrent operations.
+- **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped_unknown_age_count` in the result).
+
+### Recommended Usage
+
+Run remove orphan files **after** expire snapshots. Expiring snapshots first ensures that files from removed snapshots are no longer referenced, so they can be correctly identified as orphans.
+
+### Production Deployment
+
+For production workloads, we recommend running remove orphan files workers in dedicated pods, similar to expire snapshots:
+
+1. **API pods**: Set `LAKEKEEPER__TASK_REMOVE_ORPHANED_FILES_WORKERS=0` to disable workers
+2. **Worker pods**: Configure the desired number of workers to handle remove orphan files tasks
+
+!!! warning
+    Remove orphan files performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. Schedule accordingly.
