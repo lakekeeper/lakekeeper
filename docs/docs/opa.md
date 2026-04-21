@@ -56,6 +56,23 @@ Admin users get full access to Trino system schemas and tables across all catalo
 
 Admin users can also be configured directly in the `trino_admin_users` list in `configuration.rego`.
 
+### Trusted Engines and View Security
+If you use Lakekeeper's [DEFINER view security model](./view-security.md), Lakekeeper protects the engine's owner property (e.g. `trino.run-as-owner`) so that only trusted engines may set or remove it. Both the **Trino catalog client** and the **OPA bridge client** must be matched as trusted engines — otherwise `CREATE VIEW ... SECURITY DEFINER` and related operations will be rejected with `403 ProtectedPropertyModification`.
+
+We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
+
+Register both clients as identities of the same trusted engine. Tokens don't usually carry a distinguishing audience in this case, so list each client's service-account subject under `SUBJECTS`:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>","<opa-service-account-subject>"]
+```
+
+Alternatively, if your IdP mints a distinguishing audience for each client, use `AUDIENCES` instead.
+
+See [View Security](./view-security.md) for the full configuration reference.
+
 ### Trino Configuration
 When OPA is running and configured, set the following configurations for trino in `access-control.properties`:
 ```yaml

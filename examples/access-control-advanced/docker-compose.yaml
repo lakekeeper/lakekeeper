@@ -42,7 +42,7 @@ services:
       lakekeeper:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8181/health"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8181/health" ]
       interval: 5s
       timeout: 10s
       retries: 3
@@ -58,7 +58,10 @@ services:
       test:
         [
           "CMD-SHELL",
-          'exec 3<>/dev/tcp/127.0.0.1/8080;echo -e "GET /realms/master/.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1:8080\r\nConnection: close\r\n\r\n" >&3;grep "jwks_uri"  <&3',
+          "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e \"GET
+            /realms/master/.well-known/openid-configuration HTTP/1.1\\r\\nhost:
+            127.0.0.1:8080\\r\\nConnection: close\\r\\n\\r\\n\" >&3;grep
+            \"jwks_uri\"  <&3",
         ]
       interval: 2s
       timeout: 10s
@@ -95,10 +98,15 @@ services:
       - LAKEKEEPER__UI__OPENID_CLIENT_ID=lakekeeper
       - LAKEKEEPER__UI__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg
       - LAKEKEEPER__DEBUG__LOG_REQUEST_BODIES=true
+      # Optional: Restrict who can set / modify security sensitive "trino.run-as-owner" property
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+      # Allow "trino" keycloak service principal (also used for OPA for simplicity) to modify the property also without using trino.
+      - LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["94eb1d88-7854-43a0-b517-a75f92c533a5"]
       - RUST_LOG=info,lakekeeper=debug
-    command: ["serve"]
+    command: [ "serve" ]
     healthcheck:
-      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      test: [ "CMD", "/home/nonroot/lakekeeper", "healthcheck" ]
       interval: 1s
       timeout: 10s
       retries: 3
@@ -120,7 +128,7 @@ services:
     environment:
       - OIDC_ISSUER=http://localhost:30080/realms/iceberg
     healthcheck:
-      test: ["CMD", "curl", "-I", "http://localhost:8080/v1/status"]
+      test: [ "CMD", "curl", "-I", "http://localhost:8080/v1/status" ]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -156,7 +164,7 @@ services:
       - LAKEKEEPER__OPENFGA__ENDPOINT=http://openfga:8081
       - RUST_LOG=info
     restart: "no"
-    entrypoint: ["/home/nonroot/lakekeeper", "migrate"]
+    entrypoint: [ "/home/nonroot/lakekeeper", "migrate" ]
     depends_on:
       db:
         condition: service_healthy
@@ -176,7 +184,7 @@ services:
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -190,7 +198,7 @@ services:
     environment:
       - POSTGRES_PASSWORD=postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres" ]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -203,9 +211,9 @@ services:
     environment:
       - MINIO_ROOT_USER=minio-root-user
       - MINIO_ROOT_PASSWORD=minio-root-password
-    command: ["server", "--console-address", ":9001", "/data"]
+    command: [ "server", "--console-address", ":9001", "/data" ]
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: [ "CMD", "mc", "ready", "local" ]
       interval: 2s
       timeout: 10s
       retries: 2
@@ -220,12 +228,9 @@ services:
         condition: service_healthy
     restart: on-failure
     entrypoint: >
-      /bin/sh -c "
-      sleep 5;
-      /usr/bin/mc alias set dockerminio http://minio:9000 minio-root-user minio-root-password;
-      /usr/bin/mc mb dockerminio/examples;
-      exit 0;
-      "
+      /bin/sh -c " sleep 5; /usr/bin/mc alias set dockerminio http://minio:9000
+      minio-root-user minio-root-password; /usr/bin/mc mb dockerminio/examples;
+      exit 0; "
     networks:
       iceberg_net:
 
@@ -262,7 +267,7 @@ services:
     networks:
       iceberg_net:
     healthcheck:
-      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
+      test: [ "CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081" ]
       interval: 5s
       timeout: 30s
       retries: 3

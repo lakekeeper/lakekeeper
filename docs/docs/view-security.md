@@ -86,6 +86,18 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino]
 ```
 
+A request is matched to a trusted engine when **either** its token audience appears in `AUDIENCES` **or** its subject appears in `SUBJECTS`. Use `SUBJECTS` when the IdP does not mint tokens with a distinguishing audience — for example, to trust a specific service-account's subject UUID directly:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__SUBJECTS=["<trino-service-account-subject>"]
+```
+
+!!! note "When using the OPA bridge"
+
+    The [OPA bridge](./opa.md) authenticates to Lakekeeper with its own client credentials to evaluate permission checks. We recommend it runs under a **dedicated** Keycloak client with narrower privileges than the Trino catalog client — not a shared one.
+
+    Both the Trino catalog client and the OPA bridge client must be matched as trusted engines. Add each client's service-account subject under `SUBJECTS` (or each client's audience under `AUDIENCES` if your IdP mints distinguishing audiences). Otherwise DEFINER-related operations initiated by the bridge will be rejected with `ProtectedPropertyModification`.
+
 ### Creating DEFINER Views
 
 Once trusted engines are configured, only matched engines can set the owner property on views. In Trino, DEFINER views are created with:
