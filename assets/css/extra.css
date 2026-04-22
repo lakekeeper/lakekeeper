@@ -1,0 +1,63 @@
+:root {
+  --lakekeeper-primary-dark-color: #091F34;
+  --lakekeeper-primary-light-color: #32485C;
+  --lakekeeper-secondary-dark-color: #091F34;
+  --lakekeeper-secondary-blue-color: #32485C;
+  --lakekeeper-secondary-gray-color: #5D7389;
+  --lakekeeper-secondary-light-gray-color: #8DA5BA;
+  --lakekeeper-secondary-light-blue-color: #BCD4EB;
+
+  --lakekeeper-alert-color: #D81644;
+  --lakekeeper-warning-color: #FDB022;
+  --lakekeeper-success-color: #4DBB72;
+  --lakekeeper-font-dark-color: #101828;
+  --lakekeeper-font-light-color: #FFFFFF;
+
+}
+
+[data-md-color-primary=indigo] {
+  --md-primary-fg-color--light: var(--lakekeeper-primary-light-color);
+  --md-primary-fg-color--dark: var(--lakekeeper-primary-dark-color);
+}
+
+/* Click to select entire code token (metric names, env-var names) */
+.selectable {
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+/* Material's default h4/h5 are very thin and easily missed inside dense pages
+   like configuration.md. Bump weight and size so nested subsections are
+   visually distinct from body text without competing with h2/h3. */
+.md-typeset h4 {
+  font-size: 1.05em;
+  font-weight: 600;
+  margin-top: 1.6em;
+  color: var(--md-default-fg-color);
+}
+.md-typeset h5 {
+  font-size: 0.95em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+  margin-top: 1.4em;
+  color: var(--md-default-fg-color);
+}
+
+/* Short Lakekeeper Plus Badge with auto-generated content */
+.lkp::after {
+  content: "★ lakekeeper ＋";
+  color: var(--lakekeeper-warning-color) !important;
+  background: rgba(253, 176, 34, 0.1);
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 0.45em;
+  font-weight: 500;
+  border: 0.5px solid var(--lakekeeper-warning-color);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}

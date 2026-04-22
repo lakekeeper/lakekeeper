@@ -1,0 +1,466 @@
+namespace Lakekeeper {
+  // ============================================================================
+  // OVERVIEW
+  // ============================================================================
+  //
+  // This schema defines the Cedar entities, attributes, and actions used by
+  // Lakekeeper's authorization engine.  Cedar policies are evaluated against
+  // this schema to decide whether a principal may perform an action on a
+  // resource.
+  //
+  // Resource hierarchy
+  // ------------------
+  //   Server > Project > Warehouse > Namespace > Table
+  //                                             > View
+  //                    > Role
+  //
+  // ENTITY REFERENCE SYNTAX
+  // -----------------------
+  // In Cedar policy rules entities are written as:
+  //
+  //   <Namespace>::<EntityType>::"<entity-id>"
+  //
+  // or, when already inside the `Lakekeeper` namespace:
+  //
+  //   <EntityType>::"<entity-id>"
+  //
+  // For example:
+  //   Lakekeeper::Project::"my-project"
+  //   Lakekeeper::User::"oidc~alice@example.com"
+  //
+  // ID FORMATS BY ENTITY TYPE
+  // -------------------------
+  // Each entity type uses a specific string format as its Cedar entity ID:
+  //
+  //   Server     UUID
+  //              "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
+  //
+  //   Project    String (alphanumeric, hyphens, underscores)
+  //              "my-project"
+  //
+  //   Warehouse  UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9"
+  //
+  //   Namespace  UUID
+  //              "01943e3d-43c5-7a4e-b6dd-a55c7796d9da"
+  //
+  //   Table      "<warehouse-UUID>/<table-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a66d8807eaeb"
+  //
+  //   View       "<warehouse-UUID>/<view-UUID>"
+  //              "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
+  //
+  //   User       "<provider_id>~<subject-in-provider>"
+  //              "oidc~alice@example.com"
+  //              "kubernetes~system:serviceaccount:default:my-sa"
+  //
+  //   Role       "<project-id>/<provider_id>~<source_id>"
+  //              "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //              "my-project/oidc~data-engineers"
+  //
+  // ============================================================================
+  // ENTITY TYPE DEFINITIONS
+  // ============================================================================
+
+  // ---------- Principals ----------
+
+  // A user principal, typically derived from an authentication token.
+  // ID: "<provider_id>~<subject-in-provider>"  e.g. "oidc~alice@example.com"
+  //
+  // PROVIDER ROLES — TWO REPRESENTATIONS
+  // -------------------------------------
+  // Provider-resolved roles (from LDAP, token claims, etc.) are surfaced on
+  // the User entity in two complementary forms:
+  //
+  //   `roles`        — Cedar Role entity UIDs, e.g. Role::"my-project/ldap~admins"
+  //                    The user entity is also a Cedar *parent* of every listed
+  //                    role, enabling `principal in Role::"..."` hierarchy checks.
+  //                    These UIDs embed the project ID, so they are project-scoped.
+  //                    Use this form when the policy already knows the exact
+  //                    project-scoped role UID it wants to match.
+  //
+  //   `project_roles` — flat records {provider_id, source_id} without a project
+  //                    field. Includes server-wide provider roles as well as any
+  //                    project-specific provider roles that apply to the current
+  //                    request. The recommended attribute for provider-backed
+  //                    policies; prefer it over `roles` when the policy does not
+  //                    need to reference an exact project-scoped role UID.
+  //                    Use `principal.project_roles.contains({provider_id: "ldap",
+  //                    source_id: "admins"})` to match.
+  //
+  // Both attributes are populated from the same provider role resolution and are
+  // empty when no project context is available (server-level actions such as
+  // CreateProject that span multiple projects).
+  entity User in [Role, Server] {
+    // Email of the user, extracted from the authentication token.
+    // Not available for all token types.
+    email?: String,
+    // Provider-resolved role memberships as Cedar Role entity UIDs.
+    // The user entity is a Cedar parent of every role in this set, so
+    // `principal in Role::"<project>/<provider>~<source>"` works for hierarchy checks.
+    // Roles are project-scoped to the request's project context; prefer
+    // `project_roles` for policies that need to work across project contexts.
+    roles: Set<Role>,
+    // Provider-resolved role memberships as flat {provider_id, source_id} records.
+    // Includes server-wide provider roles and any project-specific provider roles
+    // that apply to the current request. Unlike `roles`, these records carry no
+    // project ID, making them the preferred attribute for provider-backed policies.
+    // Empty when no project context exists.
+    // Use `.contains({provider_id: "ldap", source_id: "admins"})` to match.
+    project_roles: Set<{provider_id: String, source_id: String}>,
+    // source_id of every provider-resolved role, as a plain Set<String>.
+    // Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`.
+    // Meaningful only when all configured role providers use globally unique
+    // source IDs (no two providers share the same source_id for different roles).
+    // Prefer `project_roles` when provider uniqueness cannot be guaranteed.
+    // Use `principal.global_role_ids.contains("admins")` to match.
+    // Always present (empty set when the feature is disabled or no project context exists).
+    global_role_ids: Set<String>,
+    // Authentication provider of the user (e.g. "oidc", "kubernetes", etc.)
+    provider_id: String,
+    // The ID of this user in its authentication provider
+    source_id: String,
+    // Derived identity attributes, populated from configured regex derivations.
+    // Configured via `LAKEKEEPER__CEDAR__USER_DERIVATIONS`.
+    // Each derivation matches a regex with named capture groups against a source
+    // field (source_id, provider_id). Named groups become string tags on this
+    // entity.
+    //
+    // Optional — only present when user derivations are configured.
+    //
+    // Access in policies (guard with has() since the field is optional):
+    //   principal has derived_attributes &&
+    //   principal.derived_attributes.hasTag("username") &&
+    //   principal.derived_attributes.getTag("username")
+    derived_attributes?: UserDerivedAttributes,
+  };
+
+  // Derived identity attributes for a User, populated from configurable regex
+  // derivations (see `LAKEKEEPER__CEDAR__USER_DERIVATIONS`).
+  // Tags are keyed by regex named capture group names with String values.
+  // ID: same as the owning User entity ID (1:1 relationship).
+  entity UserDerivedAttributes = {} tags String;
+
+  // Roles in Lakekeeper are scoped to projects.
+  // ID: "<project-id>/<provider_id>~<source_id>"
+  //     e.g. "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"
+  //          "my-project/oidc~data-engineers"
+  entity Role in [Role, Project] = {
+    project: Project,
+    // Provider of this role (e.g. "oidc", "lakekeeper", etc.)
+    provider_id: String,
+    // The ID of this role in its provider
+    source_id: String, 
+  };
+
+  // ---------- Resource Hierarchy ----------
+  // Server > Project > Warehouse > Namespace > Table / View
+
+  // Server is the top-level administrative entity.
+  // ID: UUID  e.g. "6e64ed7d-ace0-4a0c-9242-25da8eb237f6"
+  entity Server {};
+
+  // Project is a container for warehouses.
+  // ID: String (alphanumeric, hyphens, underscores)  e.g. "my-project"
+  entity Project in [Server];
+
+  // Warehouse is a container for namespaces.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9"
+  entity Warehouse in [Project] {
+    name: String,
+    project: Project,
+    is_active: Bool,
+    protected: Bool,
+  };
+
+  // Namespace can be nested within other namespaces or directly within a warehouse.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a55c7796d9da"
+  entity Namespace in [Namespace, Warehouse] {
+    project: Project,
+    warehouse: Warehouse,
+    // Full name of the namespace including all UTF-8 characters.
+    // Segments are separated by '.'.
+    // Lakekeeper enforces that no segment contains '.'.
+    name: String,
+    protected: Bool,
+    // Current properties of this namespace, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the UpdateNamespaceProperties action.
+    properties: ResourceProperties,
+  };
+
+  // Table entity for Iceberg tables.
+  // ID: "<warehouse-UUID>/<table-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a66d8807eaeb"
+  entity Table in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace.
+    namespace: Namespace,
+    // Name of the table within its namespace.
+    name: String,
+    protected: Bool,
+    // Current properties of this table, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the CommitTable action.
+    properties: ResourceProperties,
+  };
+
+  // View entity for Iceberg views.
+  // ID: "<warehouse-UUID>/<view-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a77e9918fbfc"
+  entity View in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace.
+    namespace: Namespace,
+    // Name of the view within its namespace.
+    name: String,
+    protected: Bool,
+    // Current properties of this view, reflecting the state before any
+    // pending update. For properties being set during an update, see the
+    // context of the CommitView action.
+    properties: ResourceProperties,
+  };
+
+  // ---------- Resource Properties ----------
+
+  // ResourceProperties is modeled as a Cedar entity with `tags` to represent
+  // the key-value properties of Namespaces, Tables and Views in a dynamic yet
+  // type-safe way. Tags allow key names that are only known at runtime (e.g.,
+  // user-defined property keys like "owner" or "classification") while still
+  // enforcing a typed value schema (ResourcePropertyValue) for each entry.
+  entity ResourceProperties = {} tags ResourcePropertyValue;
+
+  // Value type for each entry in ResourceProperties.
+  type ResourcePropertyValue = {
+      // The original value of the property as a string, as stored in the
+      // Table / View / Namespace properties.
+      raw: String,
+      // Roles parsed from the property value.
+      // Provide roles using Cedar entity syntax:
+      // "[Lakekeeper::Role::\"<role-id>\"]"
+      // Roles and Users can be mixed in a heterogeneous set.
+      roles: Set<Role>,
+      // Users parsed from the property value.
+      // Provide users using Cedar entity syntax:
+      // "[Lakekeeper::User::\"<user-id>\"]"
+      // Roles and Users can be mixed in a heterogeneous set.
+      users: Set<User>,
+  };
+
+  // ============================================================================
+  // ACTION DEFINITIONS
+  // ============================================================================
+
+  // ---------- Server Actions ----------
+  action "ServerActions";
+  action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources, ListServerCedarPolicySources, UpdateUsers, DeleteUsers, ListUsers, ProvisionUsers, IntrospectServerAuthorization in ["ServerActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server]
+    };
+  action CreateProject in ["ServerActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Server],
+      context: {
+        // Name of the project being created. Absent when listing allowed actions or when not specified via the check API.
+        project_name?: String,
+        // Externally provided project ID. Absent when listing allowed actions or when not specified via the check API.
+        project_id?: String,
+      }
+    };
+
+  // ---------- Project Actions ----------
+  action "ProjectActions";
+  action "ProjectDescribeActions" in ["ProjectActions", "ProjectModifyActions"];
+  action "ProjectModifyActions" in ["ProjectActions"];
+  action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles, SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig, GetProjectTasks in ["ProjectDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  action IntrospectProjectAuthorization, DeleteProject, RenameProject, ModifyProjectTaskQueueConfig, ControlProjectTasks in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project]
+    };
+  action CreateWarehouse in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the warehouse being created. Absent when listing allowed actions or when not specified via the check API.
+        warehouse_name?: String,
+      }
+    };
+  action CreateRole in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the role being created. Absent when listing allowed actions or when not specified via the check API.
+        role_name?: String,
+      }
+    };
+
+  // ---------- Role Actions ----------
+  action "RoleActions";
+  action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata, IntrospectRoleAuthorization in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+
+  // ---------- Warehouse Actions ----------
+  action "WarehouseActions";
+  action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseModifyActions"];
+  action "WarehouseModifyActions" in ["WarehouseActions"];
+  action UseWarehouse, ListNamespacesInWarehouse, GetWarehouseMetadata, GetConfig,
+         IncludeWarehouseInList, ListDeletedTabulars, GetTaskQueueConfig, GetAllTasks,
+         ListEverythingInWarehouse, GetWarehouseEndpointStatistics in ["WarehouseDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  action IntrospectWarehouseAuthorization, DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
+         DeactivateWarehouse, ActivateWarehouse,
+         RenameWarehouse, ModifySoftDeletion,
+         ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection in ["WarehouseModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse]
+    };
+  action CreateNamespaceInWarehouse in ["WarehouseModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Warehouse],
+      context: {
+        // Name of the namespace being created. Absent when listing allowed actions or when not specified via the check API.
+        namespace_name?: String,
+        // Initial property values for the namespace being created.
+        initial_namespace_properties: ResourceProperties,
+      }
+    };
+
+  // ---------- Namespace Actions ----------
+  action "NamespaceActions";
+  action "NamespaceDescribeActions" in ["NamespaceActions", "NamespaceModifyActions"];
+  action "NamespaceModifyActions" in ["NamespaceActions"];
+
+  action ListEverythingInNamespace, GetNamespaceMetadata, IncludeNamespaceInList, ListTables, ListViews, ListNamespacesInNamespace in ["NamespaceDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+  action IntrospectNamespaceAuthorization, DeleteNamespace, SetNamespaceProtection in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace]
+    };
+  action CreateTable in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the table being created. Absent when listing allowed actions or when not specified via the check API.
+        table_name?: String,
+        // Externally provided table ID (e.g. via register). Absent when listing allowed actions or when not specified via the check API.
+        table_id?: String,
+        // Initial property values for the table being created.
+        initial_table_properties: ResourceProperties,
+      }
+    };
+  action CreateView in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the view being created. Absent when listing allowed actions or when not specified via the check API.
+        view_name?: String,
+        // Initial property values for the view being created.
+        initial_view_properties: ResourceProperties,
+      }
+    };
+  action CreateNamespaceInNamespace in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the namespace being created. Absent when listing allowed actions or when not specified via the check API.
+        namespace_name?: String,
+        // Initial property values for the namespace being created.
+        initial_namespace_properties: ResourceProperties,
+      }
+    };
+  action UpdateNamespaceProperties in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Property values to be added or updated on this namespace.
+        namespace_properties_updates: ResourceProperties,
+        // Property keys to be removed from this namespace.
+        namespace_properties_removal: Set<String>,
+      }
+    };
+
+  // ---------- Table Actions ----------
+  action "TableActions";
+  action "TableDescribeActions" in ["TableActions", "TableSelectActions", "TableModifyActions"];
+  action "TableSelectActions" in ["TableActions", "TableModifyActions"];
+  action "TableModifyActions" in ["TableActions"];
+  action GetTableMetadata, IncludeTableInList, GetTableTasks in ["TableDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action ReadTableData in ["TableSelectActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action IntrospectTableAuthorization, DropTable, WriteTableData, RenameTable, UndropTable, ControlTableTasks, SetTableProtection in ["TableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table]
+    };
+  action CommitTable in ["TableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Property values to be added or updated on this table.
+        table_properties_updates: ResourceProperties,
+        // Property keys to be removed from this table.
+        table_properties_removal: Set<String>,
+      }
+    };
+
+  // ---------- View Actions ----------
+  action "ViewActions";
+  action "ViewDescribeActions" in ["ViewActions", "ViewModifyActions"];
+  action "ViewModifyActions" in ["ViewActions"];
+  action GetViewMetadata, IncludeViewInList, GetViewTasks in ["ViewDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action IntrospectViewAuthorization, DropView, RenameView, UndropView, ControlViewTasks, SetViewProtection in ["ViewModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View]
+    };
+  action CommitView in ["ViewModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Property values to be added or updated on this view.
+        view_properties_updates: ResourceProperties,
+        // Property keys to be removed from this view.
+        view_properties_removal: Set<String>,
+      }
+    };
+}
