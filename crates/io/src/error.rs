@@ -166,6 +166,15 @@ impl From<DeleteError> for DeleteBatchError {
     }
 }
 
+impl From<DeleteBatchError> for DeleteError {
+    fn from(err: DeleteBatchError) -> Self {
+        match err {
+            DeleteBatchError::InvalidLocation(e) => DeleteError::InvalidLocation(e),
+            DeleteBatchError::IOError(e) => DeleteError::IOError(e),
+        }
+    }
+}
+
 // #[derive(Debug, Clone, PartialEq, Eq)]
 // pub struct BatchDeleteError {
 //     /// The path that was failed for deletion, if available

@@ -442,7 +442,7 @@ impl StorageProfile {
             (Err(e), Ok(()) | Err(_)) | (Ok(()), Err(e)) => Some(e),
         };
         tracing::debug!("Cleanup started");
-        if let Err(e) = io.remove_all(&test_location).await {
+        if let Err(e) = io.remove_all(test_location.as_str()).await {
             tracing::warn!("Cleanup failed after validation: {e}");
         } else {
             tracing::debug!("Cleanup finished");

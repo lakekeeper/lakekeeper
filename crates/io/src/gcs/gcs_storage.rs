@@ -59,9 +59,9 @@ impl GcsStorage {
     }
 }
 
+#[async_trait::async_trait]
 impl LakekeeperStorage for GcsStorage {
-    async fn delete(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path = path.as_ref();
+    async fn delete(&self, path: &str) -> Result<(), DeleteError> {
         let location = GcsLocation::try_from_str(path)?;
 
         let delete_request = DeleteObjectRequest {
@@ -82,16 +82,12 @@ impl LakekeeperStorage for GcsStorage {
     }
 
     // ToDo: Switch to BlobBatch delete once supported by rust SDK.
-    async fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError> {
         // Create futures for parallel deletion
         let delete_futures: Vec<_> = paths
             .into_iter()
             .map(|path| {
-                let path = path.as_ref();
-                let location = GcsLocation::try_from_str(path)?;
+                let location = GcsLocation::try_from_str(&path)?;
                 let client = self.client.clone();
 
                 let future = async move {
@@ -150,8 +146,7 @@ impl LakekeeperStorage for GcsStorage {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
-        let path = path.as_ref();
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let location = GcsLocation::try_from_str(path)?;
 
         let upload_request = UploadObjectRequest {
@@ -274,8 +269,7 @@ impl LakekeeperStorage for GcsStorage {
         }
     }
 
-    async fn read_single(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
-        let path = path.as_ref();
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         let location = GcsLocation::try_from_str(path)?;
 
         let request = google_cloud_storage::http::objects::get::GetObjectRequest {
@@ -299,8 +293,7 @@ impl LakekeeperStorage for GcsStorage {
         Ok(bytes::Bytes::from(data))
     }
 
-    async fn read(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
-        let path = path.as_ref();
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let location = GcsLocation::try_from_str(path)?;
 
         let mut request = google_cloud_storage::http::objects::get::GetObjectRequest {
@@ -389,11 +382,10 @@ impl LakekeeperStorage for GcsStorage {
 
     async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
-        let path = path.as_ref();
         let location = GcsLocation::try_from_str(path)?;
 
         // Ensure the path ends with '/' for proper prefix matching

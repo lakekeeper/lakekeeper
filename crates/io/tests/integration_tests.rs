@@ -497,7 +497,7 @@ async fn test_batch_delete_impl(
     }
 
     // Batch delete all files
-    storage.delete_batch(&written_paths).await?;
+    storage.delete_batch(written_paths.clone()).await?;
 
     // Verify all files are deleted
     for path in &written_paths {
@@ -586,7 +586,7 @@ async fn test_batch_delete_many_items_some_nonexistant_impl(
         .collect();
 
     // Batch delete all files (including non-existent ones)
-    let delete_result = storage.delete_batch(&all_paths).await;
+    let delete_result = storage.delete_batch(all_paths.clone()).await;
 
     // The operation should succeed even with non-existent files
     assert!(

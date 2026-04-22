@@ -54,9 +54,9 @@ impl S3Storage {
     }
 }
 
+#[async_trait::async_trait]
 impl LakekeeperStorage for S3Storage {
-    async fn delete(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path = path.as_ref();
+    async fn delete(&self, path: &str) -> Result<(), DeleteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
 
         self.client
@@ -70,10 +70,7 @@ impl LakekeeperStorage for S3Storage {
         Ok(())
     }
 
-    async fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError> {
         let s3_locations: HashMap<String, HashMap<String, String>> = group_paths_by_bucket(paths)?;
         let key_to_path_mapping = build_key_to_path_mapping(&s3_locations);
         let delete_futures = create_delete_futures(&self.client, s3_locations)?;
@@ -84,8 +81,7 @@ impl LakekeeperStorage for S3Storage {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
-        let path = path.as_ref();
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
 
         if bytes.len() < MAX_BYTES_PER_REQUEST {
@@ -247,8 +243,7 @@ impl LakekeeperStorage for S3Storage {
         }
     }
 
-    async fn read(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
-        let path = path.as_ref();
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
 
         // First, get object metadata to determine size
@@ -323,8 +318,7 @@ impl LakekeeperStorage for S3Storage {
         Ok(combined_data)
     }
 
-    async fn read_single(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
-        let path = path.as_ref();
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
 
         let response = self
@@ -350,11 +344,11 @@ impl LakekeeperStorage for S3Storage {
 
     async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
-        let path = format!("{}/", path.as_ref().trim_end_matches('/'));
+        let path = format!("{}/", path.trim_end_matches('/'));
         let s3_location = S3Location::try_from_str(&path, true)?;
         let base_location = s3_location.location().clone();
         let s3_bucket = s3_location.bucket_name().to_string(); // Store the bucket name
