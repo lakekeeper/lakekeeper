@@ -25,7 +25,10 @@ use tasks::RegisteredTaskQueues;
 use self::authz::Authorizer;
 pub use crate::api::{ErrorModel, IcebergErrorResponse};
 use crate::{
-    api::{ThreadSafe as ServiceState, management::v1::server::LicenseStatus},
+    api::{
+        ThreadSafe as ServiceState,
+        management::v1::server::{BuildInfo, LicenseStatus},
+    },
     service::{contract_verification::ContractVerifiers, events::EventDispatcher},
 };
 
@@ -44,6 +47,7 @@ pub struct State<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> {
     pub events: EventDispatcher,
     pub registered_task_queues: RegisteredTaskQueues,
     pub license_status: &'static LicenseStatus,
+    pub build_info: &'static BuildInfo,
 }
 
 impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore> ServiceState for State<A, C, S> {}

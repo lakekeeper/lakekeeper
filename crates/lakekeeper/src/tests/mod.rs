@@ -6,7 +6,7 @@ use crate::{
         RequestMetadata,
         management::v1::{
             ApiServer,
-            server::{APACHE_LICENSE_STATUS, BootstrapRequest, Service as _},
+            server::{APACHE_LICENSE_STATUS, BootstrapRequest, DEFAULT_BUILD_INFO, Service as _},
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
         },
     },
@@ -243,6 +243,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             ]),
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
+            build_info: &DEFAULT_BUILD_INFO,
         },
     }
 }

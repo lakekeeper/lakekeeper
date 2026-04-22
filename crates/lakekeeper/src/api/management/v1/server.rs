@@ -60,6 +60,49 @@ pub static APACHE_LICENSE_STATUS: std::sync::LazyLock<LicenseStatus> =
         license_id: None,
     });
 
+/// Default `BuildInfo` used when a binary does not inject one.
+///
+/// Callers that want to surface commit SHAs, an enterprise edition version, or
+/// console information via the `/management/v1/info` endpoint must provide a
+/// custom `BuildInfo` via `ServeConfiguration::build_info`.
+pub static DEFAULT_BUILD_INFO: std::sync::LazyLock<BuildInfo> =
+    std::sync::LazyLock::new(BuildInfo::default);
+
+/// Information about the UI (console) shipped with this binary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ConsoleInfo {
+    /// Edition / crate name of the bundled console.
+    /// e.g. `lakekeeper-console` for the OSS console or
+    /// `lakekeeper-console-plus` for the enterprise console.
+    pub edition: String,
+    /// SemVer of the console crate.
+    pub version: String,
+    /// Git commit SHA of the console source, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+}
+
+/// Build-time information injected by the binary.
+///
+/// All fields are optional: the OSS `lakekeeper` binary leaves them empty, while
+/// downstream distributions (e.g. `lakekeeper-plus`) populate them from their
+/// build scripts to expose upstream + enterprise versions, commit SHAs, and
+/// console details via the server-info endpoint.
+#[derive(Debug, Clone, Default)]
+pub struct BuildInfo {
+    /// Git commit SHA of the upstream `lakekeeper` dependency, if known.
+    pub lakekeeper_commit_sha: Option<String>,
+    /// SemVer of the enterprise binary (e.g. `lakekeeper-plus`), if this is an
+    /// enterprise build.
+    pub lakekeeper_enterprise_version: Option<String>,
+    /// Git commit SHA of the enterprise binary, if known.
+    pub lakekeeper_enterprise_commit_sha: Option<String>,
+    /// Bundled console, if any.
+    pub console: Option<ConsoleInfo>,
+}
+
 /// Status of license validation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -92,8 +135,28 @@ pub struct LicenseStatus {
 #[serde(rename_all = "kebab-case")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ServerInfo {
-    /// Version of the server.
+    /// Deprecated alias of `lakekeeper-version`. Always equal to it; kept
+    /// for clients that read the plain `version` field. New clients should
+    /// read `lakekeeper-version` and/or `lakekeeper-enterprise-version`.
+    #[cfg_attr(feature = "open-api", schema(deprecated = true))]
     pub version: String,
+    /// SemVer of the upstream `lakekeeper` crate the server was built
+    /// against.
+    pub lakekeeper_version: String,
+    /// Git commit SHA of the upstream `lakekeeper` crate, if the binary
+    /// reported it at build time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakekeeper_commit_sha: Option<String>,
+    /// SemVer of the enterprise binary (e.g. `lakekeeper-plus`) when this
+    /// server is an enterprise build. `None` on OSS builds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakekeeper_enterprise_version: Option<String>,
+    /// Git commit SHA of the enterprise binary, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lakekeeper_enterprise_commit_sha: Option<String>,
+    /// Information about the bundled console (UI), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub console: Option<ConsoleInfo>,
     /// Whether the catalog has been bootstrapped.
     pub bootstrapped: bool,
     /// ID of the server.
@@ -256,11 +319,17 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
 
         // ------------------- Business Logic -------------------
-        let version = env!("CARGO_PKG_VERSION").to_string();
+        let lakekeeper_version = env!("CARGO_PKG_VERSION").to_string();
         let server_data = C::get_server_info(state.v1_state.catalog).await?;
+        let build_info = state.v1_state.build_info;
 
         Ok(ServerInfo {
-            version,
+            version: lakekeeper_version.clone(),
+            lakekeeper_version,
+            lakekeeper_commit_sha: build_info.lakekeeper_commit_sha.clone(),
+            lakekeeper_enterprise_version: build_info.lakekeeper_enterprise_version.clone(),
+            lakekeeper_enterprise_commit_sha: build_info.lakekeeper_enterprise_commit_sha.clone(),
+            console: build_info.console.clone(),
             bootstrapped: !server_data.is_open_for_bootstrap(),
             server_id: *server_data.server_id(),
             default_project_id: DEFAULT_PROJECT_ID.clone(),
