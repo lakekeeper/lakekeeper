@@ -63,8 +63,12 @@ _namespace_broad[catalog_name] := allowed_names if {
 	not catalog_name in _warehouse_broad
 	trino_catalog := catalog_config_by_name[catalog_name]
 	warehouse_id := lakekeeper.warehouse_id_for_name(trino_catalog.lakekeeper_id, trino_catalog.lakekeeper_warehouse)
-	schema_names := _distinct_schemas_for(catalog_name)
-	count(schema_names) > 0
+	schema_set := _distinct_schemas_for(catalog_name)
+	count(schema_set) > 0
+
+	# Sort the set into a deterministic list so `checks[i]` aligns with
+	# `schema_names[i]` when mapping results back to allowed names.
+	schema_names := sort(schema_set)
 	checks := [lakekeeper.build_namespace_check(warehouse_id, namespace_for_schema(name), lakekeeper_user_id, "list_everything") |
 		some name in schema_names
 	]
@@ -81,25 +85,25 @@ _namespace_broad[catalog_name] := allowed_names if {
 }
 
 # Helper: distinct schema names appearing in the batch for one catalog.
-# Returns an array (order matters for alignment with the `checks` array
-# built from it in `_namespace_broad`).
+# Set comprehension dedups — a single FilterTables batch can contain thousands
+# of rows sharing the same schema, and we want one namespace check per schema.
 _distinct_schemas_for(catalog_name) := names if {
 	input.action.operation in ["FilterTables", "FilterColumns", "SelectFromColumns"]
-	names := [n |
+	names := {n |
 		some r in input.action.filterResources
 		r.table.catalogName == catalog_name
 		not r.table.schemaName in lakekeeper_system_schemas
 		n := r.table.schemaName
-	]
+	}
 } else := names if {
 	input.action.operation == "FilterSchemas"
-	names := [n |
+	names := {n |
 		some r in input.action.filterResources
 		r.schema.catalogName == catalog_name
 		not r.schema.schemaName in lakekeeper_system_schemas
 		n := r.schema.schemaName
-	]
-} else := []
+	}
+} else := set()
 
 # Helper: does the fast path cover this table resource? Used to exclude
 # such resources from the per-table slow path. Applies only to the describe-
