@@ -3719,6 +3719,7 @@ name = "lakekeeper-authz-opa"
 version = "0.12.0"
 dependencies = [
  "anyhow",
+ "axum",
  "figment",
  "futures",
  "http 1.4.0",

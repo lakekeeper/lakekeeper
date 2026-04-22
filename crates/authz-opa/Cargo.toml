@@ -32,7 +32,8 @@ uuid = { workspace = true }
 veil = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 lakekeeper = { path = "../lakekeeper", features = ["test-utils"] }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tracing-test = { workspace = true }
