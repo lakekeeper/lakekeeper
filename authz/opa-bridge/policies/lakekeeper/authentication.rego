@@ -34,3 +34,28 @@ authenticated_http_send(lakekeeper_id, method, path, body) := response if {
 		"body": body,
 	})
 }
+
+# Send an authenticated HTTP request with OPA force_cache enabled.
+#
+# `request_id` is forwarded to Lakekeeper as `X-Request-ID` — Lakekeeper's
+# tracing middleware preserves the client-provided value, so Trino's queryId
+# flows into Lakekeeper's audit/trace logs. It also varies OPA's http.send
+# cache key (which includes headers), giving per-query consistency: each
+# Trino query re-probes once, then all its fan-out waves hit the cache.
+authenticated_http_send_cached(lakekeeper_id, method, path, body, request_id, cache_secs) := response if {
+	this := config_by_id[lakekeeper_id]
+	url := concat("/", [this.url, trim_left(path, "/")])
+	response := http.send({
+		"method": method,
+		"url": url,
+		"headers": {
+			"Authorization": sprintf("Bearer %v", [access_token[lakekeeper_id]]),
+			"Content-Type": "application/json",
+			"X-Request-ID": request_id,
+		},
+		"body": body,
+		"force_cache": true,
+		"force_cache_duration_seconds": cache_secs,
+		"caching_mode": "deserialized",
+	})
+}

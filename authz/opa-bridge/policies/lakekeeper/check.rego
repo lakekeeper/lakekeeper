@@ -188,6 +188,26 @@ batch_check_results(lakekeeper_id, checks) := all_results if {
 	]
 }
 
+# Like `batch_check_results` but uses OPA force_cache, keyed via the
+# `X-Request-ID` header set to `request_id`. Prefer this for probes that
+# repeat many times within one query's fan-out (e.g. warehouse/namespace
+# list_everything checks) — pass queryId so each new query re-probes once,
+# then all its waves hit the cache, and Lakekeeper's audit logs carry the
+# originating Trino queryId.
+batch_check_results_cached(lakekeeper_id, checks, request_id, cache_secs) := all_results if {
+	count(checks) > 0
+	_raw_max := object.get(config_by_id[lakekeeper_id], "max_batch_check_size", 1000)
+	max_size := max([_raw_max, 1])
+	num_batches := ceil(count(checks) / max_size)
+	all_results := [result |
+		some batch_idx in numbers.range(0, num_batches - 1)
+		start := batch_idx * max_size
+		batch := array.slice(checks, start, start + max_size)
+		chunk_results := _batch_check_http_cached(lakekeeper_id, batch, request_id, cache_secs)
+		some result in chunk_results
+	]
+}
+
 # Send a single batch-check HTTP request.
 _batch_check_http(lakekeeper_id, checks) := value.results if {
 	value := authenticated_http_send(
@@ -198,6 +218,29 @@ _batch_check_http(lakekeeper_id, checks) := value.results if {
 			"checks": checks,
 		},
 	).body
+}
+
+# Cached variant of `_batch_check_http`.
+_batch_check_http_cached(lakekeeper_id, checks, request_id, cache_secs) := value.results if {
+	value := authenticated_http_send_cached(
+		lakekeeper_id,
+		"POST", "/management/v1/action/batch-check",
+		{
+			"error-on-not-found": false,
+			"checks": checks,
+		},
+		request_id,
+		cache_secs,
+	).body
+}
+
+# Build a single check object for a warehouse action
+build_warehouse_check(warehouse_id, user, action) := {
+	"operation": {"warehouse": {
+		"action": {"action": action},
+		"warehouse-id": warehouse_id,
+	}},
+	"identity": {"user": user},
 }
 
 # Build a single check object for a table action

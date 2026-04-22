@@ -139,6 +139,12 @@ batch contains i if {
 	count(input.action.filterResources) == 1
 	raw_resource := input.action.filterResources[0]
 	count(raw_resource.table.columns) > 0
+
+	# Skip when check_batch.rego already handles this case (managed catalog,
+	# non-system schema, non-metadata table). That rule short-circuits via
+	# warehouse/namespace broad access or a single per-table batch-check —
+	# running per-column `allow` here would duplicate Lakekeeper calls.
+	not _single_filter_columns_handled_by_batch
 	new_resources := [
 	object.union(raw_resource, {"table": object.union(raw_resource.table, {"column": column_name})}) |
 		some column_name in raw_resource.table.columns
@@ -147,4 +153,14 @@ batch contains i if {
 
 	# regal ignore:with-outside-test-context
 	allow with input.action.resource as resource
+}
+
+# True when single-resource FilterColumns is fully handled by check_batch.rego,
+# i.e. catalog is managed, schema is not a Lakekeeper system schema, and the
+# table is not an iceberg metadata-table ($history, $snapshots, ...).
+_single_filter_columns_handled_by_batch if {
+	raw_resource := input.action.filterResources[0]
+	raw_resource.table.catalogName in _managed_catalog_names
+	not raw_resource.table.schemaName in lakekeeper_system_schemas
+	not is_metadata_table(raw_resource.table.tableName)
 }
