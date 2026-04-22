@@ -3934,6 +3934,27 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
+    ConsoleInfo:
+      type: object
+      description: Information about the UI (console) shipped with this binary.
+      required:
+        - edition
+        - version
+      properties:
+        commit-sha:
+          type:
+            - string
+            - 'null'
+          description: Git commit SHA of the console source, if known.
+        edition:
+          type: string
+          description: |-
+            Edition / crate name of the bundled console.
+            e.g. `lakekeeper-console` for the OSS console or
+            `lakekeeper-console-plus` for the enterprise console.
+        version:
+          type: string
+          description: SemVer of the console crate.
     ControlTaskAction:
       oneOf:
         - type: object
@@ -6827,6 +6848,7 @@ components:
       type: object
       required:
         - version
+        - lakekeeper-version
         - bootstrapped
         - server-id
         - authz-backend
@@ -6848,6 +6870,11 @@ components:
         bootstrapped:
           type: boolean
           description: Whether the catalog has been bootstrapped.
+        console:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ConsoleInfo'
+              description: Information about the bundled console (UI), if any.
         default-project-id:
           type:
             - string
@@ -6856,6 +6883,30 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        lakekeeper-commit-sha:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Git commit SHA of the upstream `lakekeeper` crate, if the binary
+            reported it at build time.
+        lakekeeper-enterprise-commit-sha:
+          type:
+            - string
+            - 'null'
+          description: Git commit SHA of the enterprise binary, if known.
+        lakekeeper-enterprise-version:
+          type:
+            - string
+            - 'null'
+          description: |-
+            SemVer of the enterprise binary (e.g. `lakekeeper-plus`) when this
+            server is an enterprise build. `None` on OSS builds.
+        lakekeeper-version:
+          type: string
+          description: |-
+            SemVer of the upstream `lakekeeper` crate the server was built
+            against.
         license-status:
           $ref: '#/components/schemas/LicenseStatus'
           description: License status information
@@ -6872,7 +6923,11 @@ components:
             Returns null if the catalog has not been bootstrapped.
         version:
           type: string
-          description: Version of the server.
+          description: |-
+            Deprecated alias of `lakekeeper-version`. Always equal to it; kept
+            for clients that read the plain `version` field. New clients should
+            read `lakekeeper-version` and/or `lakekeeper-enterprise-version`.
+          deprecated: true
     ServerRelation:
       type: string
       enum:
