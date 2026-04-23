@@ -22,7 +22,7 @@ _batch_lakekeeper_actions := {
 # Cache TTL for broad-access (list_everything) checks. Short enough to respect
 # permission revocations quickly; the cache is also keyed per queryId so the
 # practical staleness window is bounded by the duration of one query.
-_BROAD_ACCESS_CACHE_SECS := 30
+_broad_access_cache_secs := 30
 
 # Request ID forwarded to Lakekeeper as X-Request-ID on broad-access probes.
 # Uses the Trino queryId so each new query re-probes once (all waves share
@@ -48,7 +48,7 @@ _warehouse_broad contains catalog_name if {
 		trino_catalog.lakekeeper_id,
 		[check],
 		_broad_access_request_id,
-		_BROAD_ACCESS_CACHE_SECS,
+		_broad_access_cache_secs,
 	)
 	results[0].allowed == true
 }
@@ -69,18 +69,21 @@ _namespace_broad[catalog_name] := allowed_names if {
 	# Sort the set into a deterministic list so `checks[i]` aligns with
 	# `schema_names[i]` when mapping results back to allowed names.
 	schema_names := sort(schema_set)
-	checks := [lakekeeper.build_namespace_check(warehouse_id, namespace_for_schema(name), lakekeeper_user_id, "list_everything") |
+	checks := [
+	lakekeeper.build_namespace_check(
+		warehouse_id, namespace_for_schema(name), lakekeeper_user_id, "list_everything",
+	) |
 		some name in schema_names
 	]
 	results := lakekeeper.batch_check_results_cached(
 		trino_catalog.lakekeeper_id,
 		checks,
 		_broad_access_request_id,
-		_BROAD_ACCESS_CACHE_SECS,
+		_broad_access_cache_secs,
 	)
-	allowed_names := {schema_names[i] |
-		some i, result in results
-		result.allowed == true
+	allowed_names := {name |
+		some i, name in schema_names
+		results[i].allowed == true
 	}
 }
 
@@ -89,19 +92,17 @@ _namespace_broad[catalog_name] := allowed_names if {
 # of rows sharing the same schema, and we want one namespace check per schema.
 _distinct_schemas_for(catalog_name) := names if {
 	input.action.operation in ["FilterTables", "FilterColumns", "SelectFromColumns"]
-	names := {n |
+	names := {r.table.schemaName |
 		some r in input.action.filterResources
 		r.table.catalogName == catalog_name
 		not r.table.schemaName in lakekeeper_system_schemas
-		n := r.table.schemaName
 	}
 } else := names if {
 	input.action.operation == "FilterSchemas"
-	names := {n |
+	names := {r.schema.schemaName |
 		some r in input.action.filterResources
 		r.schema.catalogName == catalog_name
 		not r.schema.schemaName in lakekeeper_system_schemas
-		n := r.schema.schemaName
 	}
 } else := set()
 
