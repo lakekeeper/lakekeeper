@@ -147,7 +147,7 @@ serde_json = { version = "^1.0", features = ["raw_value"] }
 serde_norway = "0.9.42"
 serde_urlencoded = "0.7.1"
 serde_with = "^3.4"
-similar = "2.6.0"
+similar = "3.0.0"
 sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
