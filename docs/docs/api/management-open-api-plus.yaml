@@ -3336,6 +3336,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/remove_orphaned_files/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_remove_orphaned_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRemoveOrphanedFilesQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_remove_orphaned_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetRemoveOrphanedFilesQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
     get:
       tags:
@@ -5219,6 +5280,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
+    GetRemoveOrphanedFilesQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/RemoveOrphanedFilesQueueConfig'
     GetRoleAccessResponse:
       type: object
       required:
@@ -6900,6 +6973,17 @@ components:
           properties:
             queue-name:
               type: string
+    RemoveOrphanedFilesQueueConfig:
+      type: object
+      properties:
+        default-older-than-ms:
+          type: integer
+          format: int64
+          description: |-
+            Only remove files older than this duration (in milliseconds).
+            Defaults to 259200000 (3 days). Must be at least 86400000 (1 day).
+          default: 259200000
+          minimum: 86400000
     RenameProjectRequest:
       type: object
       required:
@@ -7562,6 +7646,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
+    SetRemoveOrphanedFilesQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/RemoveOrphanedFilesQueueConfig'
     SetTabularExpirationQueueConfig:
       type: object
       required:
@@ -7600,8 +7696,8 @@ components:
                 let cred: StorageCredential = serde_json::from_str(r#"{
                     "type": "s3",
                     "credential-type": "access-key",
-                    "aws-access-key-id": "minio-root-user",
-                    "aws-secret-access-key": "minio-root-password"
+                    "access-key-id": "minio-root-user",
+                    "secret-access-key": "minio-root-password"
                   }"#).unwrap();
                 ```
             - type: object
@@ -7623,8 +7719,8 @@ components:
             let cred: StorageCredential = serde_json::from_str(r#"{
                 "type": "s3",
                 "credential-type": "access-key",
-                "aws-access-key-id": "minio-root-user",
-                "aws-secret-access-key": "minio-root-password"
+                "access-key-id": "minio-root-user",
+                "secret-access-key": "minio-root-password"
               }"#).unwrap();
             ```
         - allOf:
@@ -8370,7 +8466,9 @@ components:
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
             to avoid data loss. For S3 this means that you may not change the
-            bucket or key prefix. The region may only be changed if an endpoint is set.
+            bucket or key prefix. The region may only be changed if an `endpoint`
+            is set on the new profile (so the endpoint, not the region, determines
+            where S3 requests are routed).
     User:
       type: object
       description: User of the catalog
