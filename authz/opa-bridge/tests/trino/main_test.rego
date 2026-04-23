@@ -156,3 +156,68 @@ test_batch_unmanaged_no_lakekeeper_calls if {
 	0 in result
 	1 in result
 }
+
+# Large batch on a single unmanaged catalog: verifies the per-catalog optimization
+# (allow_unmanaged evaluated once per unique catalog, not once per resource) still
+# returns every allowed index. Regression test for _allowed_unmanaged_batch_catalogs
+# membership check — if the collapse dropped indices, result would be a strict subset.
+test_batch_unmanaged_many_rows_same_catalog if {
+	rows := [{"table": {"catalogName": "external_db", "schemaName": "public", "tableName": sprintf("t%d", [i])}} |
+		some i in numbers.range(0, 199)
+	]
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": rows,
+		},
+	}
+		with data.configuration.trino_allow_unmanaged_catalogs as true
+
+	# All 200 indices must be present.
+	count(result) == 200
+	count({i | some i in numbers.range(0, 199); i in result}) == 200
+}
+
+# Multiple distinct unmanaged catalogs in one batch: each catalog must be
+# evaluated independently. Regression test for _batch_unmanaged_catalogs
+# dedup — if dedup collapsed catalogs incorrectly, some would be missed.
+test_batch_unmanaged_mixed_catalogs if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [
+				{"table": {"catalogName": "external_a", "schemaName": "public", "tableName": "t1"}},
+				{"table": {"catalogName": "external_b", "schemaName": "public", "tableName": "t2"}},
+				{"table": {"catalogName": "external_a", "schemaName": "public", "tableName": "t3"}},
+				{"table": {"catalogName": "external_c", "schemaName": "public", "tableName": "t4"}},
+			],
+		},
+	}
+		with data.configuration.trino_allow_unmanaged_catalogs as true
+
+	result == {0, 1, 2, 3}
+}
+
+# Without blanket-allow, unmanaged catalogs fall back to per-resource
+# allow_default_access. Verifies the fallback rule still admits resources
+# that default_access would pass (system catalog / jdbc.types).
+test_batch_unmanaged_fallback_via_default_access if {
+	result := trino.batch with input as {
+		"context": mock_context,
+		"action": {
+			"operation": "FilterTables",
+			"filterResources": [
+				{"table": {"catalogName": "external_db", "schemaName": "public", "tableName": "users"}},
+				{"table": {"catalogName": "system", "schemaName": "jdbc", "tableName": "types"}},
+			],
+		},
+	}
+
+	# external_db is unmanaged and the flag is off → denied.
+	not 0 in result
+
+	# system.jdbc.types is admitted by allow_default_access.
+	1 in result
+}

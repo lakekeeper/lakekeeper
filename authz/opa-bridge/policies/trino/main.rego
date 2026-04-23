@@ -82,19 +82,47 @@ _batch_resource_catalog(raw_resource) := raw_resource.catalog.name
 _batch_resource_schema(raw_resource) := raw_resource.table.schemaName
 _batch_resource_schema(raw_resource) := raw_resource.schema.schemaName
 
-# Fast path for unmanaged catalogs: only default_access + allow_unmanaged
-_allow_unmanaged if allow_default_access
+# Unique unmanaged catalog names in this batch request.
+_batch_unmanaged_catalogs contains name if {
+	some raw_resource in input.action.filterResources
+	name := _batch_resource_catalog(raw_resource)
+	not name in _managed_catalog_names
+}
 
-_allow_unmanaged if allow_unmanaged
+# Catalogs blanket-allowed via allow_unmanaged, evaluated once per unique
+# catalog (not per resource). allow_unmanaged's decision is catalog-level
+# (depends on configuration.trino_allow_unmanaged_catalogs + catalog name),
+# so one evaluation per catalog suffices — avoids re-running the rule for
+# every filterResource in a large batch.
+_allowed_unmanaged_batch_catalogs contains catalog_name if {
+	some catalog_name in _batch_unmanaged_catalogs
+	representative := [r |
+		some r in input.action.filterResources
+		_batch_resource_catalog(r) == catalog_name
+	][0]
 
-# Unmanaged catalogs in batch operations: fast path (no Lakekeeper evaluation)
+	# regal ignore:with-outside-test-context
+	allow_unmanaged with input.action.resource as representative
+}
+
+# Unmanaged catalogs allowed by allow_unmanaged: one membership check per resource.
+batch contains i if {
+	input.action.operation in _batch_operations
+	some i, raw_resource in input.action.filterResources
+	_batch_resource_catalog(raw_resource) in _allowed_unmanaged_batch_catalogs
+}
+
+# Unmanaged catalogs not blanket-allowed: fall back to per-resource
+# allow_default_access (depends on operation/schema specifics like
+# ExecuteQuery or information_schema, so can't be collapsed per-catalog).
 batch contains i if {
 	input.action.operation in _batch_operations
 	some i, raw_resource in input.action.filterResources
 	not _batch_resource_catalog(raw_resource) in _managed_catalog_names
+	not _batch_resource_catalog(raw_resource) in _allowed_unmanaged_batch_catalogs
 
 	# regal ignore:with-outside-test-context
-	_allow_unmanaged with input.action.resource as raw_resource
+	allow_default_access with input.action.resource as raw_resource
 }
 
 # System schema resources in managed catalogs still need per-resource evaluation
@@ -139,6 +167,12 @@ batch contains i if {
 	count(input.action.filterResources) == 1
 	raw_resource := input.action.filterResources[0]
 	count(raw_resource.table.columns) > 0
+
+	# Skip when check_batch.rego already handles this case (managed catalog,
+	# non-system schema, non-metadata table). That rule short-circuits via
+	# warehouse/namespace broad access or a single per-table batch-check —
+	# running per-column `allow` here would duplicate Lakekeeper calls.
+	not _single_filter_columns_handled_by_batch
 	new_resources := [
 	object.union(raw_resource, {"table": object.union(raw_resource.table, {"column": column_name})}) |
 		some column_name in raw_resource.table.columns
@@ -147,4 +181,14 @@ batch contains i if {
 
 	# regal ignore:with-outside-test-context
 	allow with input.action.resource as resource
+}
+
+# True when single-resource FilterColumns is fully handled by check_batch.rego,
+# i.e. catalog is managed, schema is not a Lakekeeper system schema, and the
+# table is not an iceberg metadata-table ($history, $snapshots, ...).
+_single_filter_columns_handled_by_batch if {
+	raw_resource := input.action.filterResources[0]
+	raw_resource.table.catalogName in _managed_catalog_names
+	not raw_resource.table.schemaName in lakekeeper_system_schemas
+	not is_metadata_table(raw_resource.table.tableName)
 }
