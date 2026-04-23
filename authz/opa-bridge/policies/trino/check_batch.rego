@@ -70,9 +70,7 @@ _namespace_broad[catalog_name] := allowed_names if {
 	# `schema_names[i]` when mapping results back to allowed names.
 	schema_names := sort(schema_set)
 	checks := [
-	lakekeeper.build_namespace_check(
-		warehouse_id, namespace_for_schema(name), lakekeeper_user_id, "list_everything",
-	) |
+	lakekeeper.build_namespace_check(warehouse_id, namespace_for_schema(name), lakekeeper_user_id, "list_everything") |
 		some name in schema_names
 	]
 	results := lakekeeper.batch_check_results_cached(
