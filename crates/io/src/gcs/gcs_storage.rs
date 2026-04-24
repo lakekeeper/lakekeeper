@@ -82,12 +82,12 @@ impl LakekeeperStorage for GcsStorage {
     }
 
     // ToDo: Switch to BlobBatch delete once supported by rust SDK.
-    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         // Create futures for parallel deletion
         let delete_futures: Vec<_> = paths
-            .into_iter()
+            .iter()
             .map(|path| {
-                let location = GcsLocation::try_from_str(&path)?;
+                let location = GcsLocation::try_from_str(path)?;
                 let client = self.client.clone();
 
                 let future = async move {

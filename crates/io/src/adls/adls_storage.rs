@@ -123,7 +123,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
@@ -422,7 +422,7 @@ impl LakekeeperStorage for AdlsStorage {
 
     /// Native ADLS Gen2 recursive delete via `DELETE` + `recursive=true`.
     ///
-    /// The trailing slash is stripped before parsing: the ADLS DataLake API
+    /// The trailing slash is stripped before parsing: the ADLS API
     /// accepts either form for a path, and `recursive=true` is what signals
     /// directory semantics. For file paths the `recursive` flag is ignored
     /// server-side, so the same call safely handles both files and directories.
@@ -430,7 +430,7 @@ impl LakekeeperStorage for AdlsStorage {
     /// `NotFound` responses are treated as success, matching the idempotent
     /// semantics of `delete` and `delete_batch` on this backend — removing an
     /// already-absent prefix is a no-op, not an error.
-    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+    async fn remove_all(&self, path: &str, _: Option<usize>) -> Result<(), DeleteError> {
         let path = path.trim_end_matches('/');
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 

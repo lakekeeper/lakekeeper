@@ -497,7 +497,7 @@ async fn test_batch_delete_impl(
     }
 
     // Batch delete all files
-    storage.delete_batch(written_paths.clone()).await?;
+    storage.delete_batch(&written_paths).await?;
 
     // Verify all files are deleted
     for path in &written_paths {
@@ -586,7 +586,7 @@ async fn test_batch_delete_many_items_some_nonexistant_impl(
         .collect();
 
     // Batch delete all files (including non-existent ones)
-    let delete_result = storage.delete_batch(all_paths.clone()).await;
+    let delete_result = storage.delete_batch(&all_paths).await;
 
     // The operation should succeed even with non-existent files
     assert!(
@@ -878,7 +878,7 @@ async fn test_remove_all_impl(storage: &StorageBackend, config: &TestConfig) -> 
     }
 
     // Remove all files in the directory
-    storage.remove_all(&base_dir).await?;
+    storage.remove_all(&base_dir, None).await?;
 
     // Wait a bit for eventual consistency (important for S3)
     sleep(Duration::from_millis(100)).await;
@@ -929,7 +929,7 @@ async fn test_remove_all_treats_input_as_dir_impl(
 
     // Remove all files in the directory
     let remove_dir = format!("{}/subdir", base_dir.trim_end_matches('/'));
-    storage.remove_all(&remove_dir).await?;
+    storage.remove_all(&remove_dir, None).await?;
 
     // Wait a bit for eventual consistency (important for S3)
     sleep(Duration::from_millis(100)).await;
@@ -1122,7 +1122,7 @@ async fn test_error_handling_impl(
         config.test_path("does/not/exist1.txt"),
         config.test_path("does/not/exist2.txt"),
     ];
-    storage.delete_batch(non_existent_paths).await?;
+    storage.delete_batch(&non_existent_paths).await?;
 
     Ok(())
 }
@@ -1233,7 +1233,7 @@ async fn test_remove_all_deletes_directory_impl(
     );
 
     // Remove all files and the directory itself
-    storage.remove_all(&target_dir).await?;
+    storage.remove_all(&target_dir, None).await?;
 
     // Wait a bit for eventual consistency (important for S3)
     sleep(Duration::from_millis(100)).await;
@@ -1329,7 +1329,7 @@ async fn test_list_prefix_boundaries_impl(
 
     for list_dir in &[format!("{base_dir}dir"), format!("{base_dir}dir/")] {
         // List contents of the specific directory
-        let mut list_stream = storage.list(&list_dir, None).await?;
+        let mut list_stream = storage.list(list_dir, None).await?;
         let mut listed_file_infos = Vec::new();
 
         while let Some(result) = list_stream.next().await {

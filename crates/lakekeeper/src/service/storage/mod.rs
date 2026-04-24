@@ -442,7 +442,7 @@ impl StorageProfile {
             (Err(e), Ok(()) | Err(_)) | (Ok(()), Err(e)) => Some(e),
         };
         tracing::debug!("Cleanup started");
-        if let Err(e) = io.remove_all(test_location.as_str()).await {
+        if let Err(e) = io.remove_all(test_location.as_str(), None).await {
             tracing::warn!("Cleanup failed after validation: {e}");
         } else {
             tracing::debug!("Cleanup finished");
@@ -1727,7 +1727,7 @@ mod tests {
             .file_io(Some(cred))
             .await
             .unwrap()
-            .remove_all(base_location.as_str())
+            .remove_all(base_location.as_str(), None)
             .await
             .unwrap();
     }

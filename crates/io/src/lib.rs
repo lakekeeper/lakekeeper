@@ -199,7 +199,7 @@ where
     /// * A future that resolves to a result containing either:
     ///   - `Ok(())` if all deletions were successful.
     ///   - `Err(DeleteBatchError)` if any deletion failed.
-    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError>;
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError>;
 
     /// Write the provided data to the specified path.
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
@@ -243,11 +243,24 @@ where
     /// further page-delete futures. In-flight batches in the same concurrent
     /// group may complete or be dropped. Callers must treat `remove_all` as
     /// best-effort and may re-run it to finish cleanup.
-    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
-        let list_stream = self.list(path, None).await?;
+    async fn remove_all(
+        &self,
+        path: &str,
+        remove_all_concurrency: Option<usize>,
+    ) -> Result<(), DeleteError> {
+        let remove_all_concurrency = remove_all_concurrency.unwrap_or(REMOVE_ALL_CONCURRENCY);
+        let list_stream = self.list(path, None).await.map_err(|e| {
+            DeleteError::InvalidLocation(
+                e.with_context("Remove all operation failed when listing files"),
+            )
+        })?;
         list_stream
-            .map_err(DeleteError::from)
-            .try_for_each_concurrent(REMOVE_ALL_CONCURRENCY, |page| async move {
+            .map_err(|e| {
+                DeleteError::IOError(
+                    e.with_context("Remove all operation failed when listing files"),
+                )
+            })
+            .try_for_each_concurrent(remove_all_concurrency, |page| async move {
                 if page.is_empty() {
                     return Ok(());
                 }
@@ -255,7 +268,17 @@ where
                     .into_iter()
                     .map(|file_info| file_info.location().to_string())
                     .collect();
-                self.delete_batch(locations).await.map_err(Into::into)
+                self.delete_batch(&locations).await.map_err(|e| match e {
+                    DeleteBatchError::InvalidLocation(invalid_location_error) => {
+                        DeleteError::InvalidLocation(
+                            invalid_location_error
+                                .with_context("Remove all operation failed when deleting files"),
+                        )
+                    }
+                    DeleteBatchError::IOError(ioerror) => DeleteError::IOError(
+                        ioerror.with_context("Remove all operation failed when deleting files"),
+                    ),
+                })
             })
             .await
     }
@@ -280,7 +303,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.delete_batch(paths).await,
@@ -349,16 +372,30 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+    async fn remove_all(
+        &self,
+        path: &str,
+        remove_all_concurrency: Option<usize>,
+    ) -> Result<(), DeleteError> {
         match self {
             #[cfg(feature = "storage-s3")]
-            StorageBackend::S3(s3_storage) => s3_storage.remove_all(path).await,
+            StorageBackend::S3(s3_storage) => {
+                s3_storage.remove_all(path, remove_all_concurrency).await
+            }
             #[cfg(feature = "storage-in-memory")]
-            StorageBackend::Memory(memory_storage) => memory_storage.remove_all(path).await,
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage
+                    .remove_all(path, remove_all_concurrency)
+                    .await
+            }
             #[cfg(feature = "storage-adls")]
-            StorageBackend::Adls(adls_storage) => adls_storage.remove_all(path).await,
+            StorageBackend::Adls(adls_storage) => {
+                adls_storage.remove_all(path, remove_all_concurrency).await
+            }
             #[cfg(feature = "storage-gcs")]
-            StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
+            StorageBackend::Gcs(gcs_storage) => {
+                gcs_storage.remove_all(path, remove_all_concurrency).await
+            }
         }
     }
 }
@@ -400,7 +437,7 @@ macro_rules! impl_lakekeeper_storage_delegating {
 
                 async fn delete_batch(
                     &self,
-                    paths: Vec<String>,
+                    paths: &[String],
                 ) -> Result<(), DeleteBatchError> {
                     (**self).delete_batch(paths).await
                 }
@@ -428,8 +465,8 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).list(path, page_size).await
                 }
 
-                async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
-                    (**self).remove_all(path).await
+                async fn remove_all(&self, path: &str, remove_all_concurrency: Option<usize>) -> Result<(), DeleteError> {
+                    (**self).remove_all(path, remove_all_concurrency).await
                 }
             }
         )+

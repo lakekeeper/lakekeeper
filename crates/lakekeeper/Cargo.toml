@@ -11,6 +11,10 @@ description = """
 Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
+[package.metadata.cargo-machete]
+# Imported as `cloudevents`
+ignored = ["cloudevents-sdk"]
+
 [features]
 all = [
     "sqlx-postgres",
@@ -131,6 +135,3 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
-
-[package.metadata.cargo-machete]
-ignored = ["cloudevents-sdk"] # imported as `cloudevents`

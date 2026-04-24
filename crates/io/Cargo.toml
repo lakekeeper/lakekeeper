@@ -11,6 +11,14 @@ description = """
 Lakekeeper IO
 """
 
+[package.metadata.cargo-machete]
+ignored = [
+    # used via strum_macros derives which require strum at runtime
+    "strum",
+    # needed to activate jwt-aws-lc-rs feature for gcloud-auth transitive dep
+    "google-cloud-auth",
+]
+
 [features]
 all = ["storage-s3", "storage-adls", "storage-gcs", "storage-in-memory"]
 storage-s3 = [
@@ -88,9 +96,3 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
-
-[package.metadata.cargo-machete]
-ignored = [
-    "strum", # used via strum_macros derives which require strum at runtime
-    "google-cloud-auth", # needed to activate jwt-aws-lc-rs feature for gcloud-auth transitive dep
-]

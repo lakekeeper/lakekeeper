@@ -70,7 +70,7 @@ impl LakekeeperStorage for S3Storage {
         Ok(())
     }
 
-    async fn delete_batch(&self, paths: Vec<String>) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         let s3_locations: HashMap<String, HashMap<String, String>> = group_paths_by_bucket(paths)?;
         let key_to_path_mapping = build_key_to_path_mapping(&s3_locations);
         let delete_futures = create_delete_futures(&self.client, s3_locations)?;
