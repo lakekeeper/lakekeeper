@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.12.0](https://github.com/lakekeeper/lakekeeper/compare/v0.12.0...v0.12.0) (2026-04-26)
+
+
+### Features
+
+* **audit:** include inner check tuples and decisions in introspect_permission audit logs ([#1697](https://github.com/lakekeeper/lakekeeper/issues/1697)) ([154be89](https://github.com/lakekeeper/lakekeeper/commit/154be89e85cc8dbee67182ab686ff6fcd757790b))
+* **authz:** add data-plane Select action for views ([#1721](https://github.com/lakekeeper/lakekeeper/issues/1721)) ([58aaaca](https://github.com/lakekeeper/lakekeeper/commit/58aaacad3b67a71fe07b1c0cd8f19d8a606e2c91))
+* **authz:** add RequireServerActionError variant to AuthZError ([#1719](https://github.com/lakekeeper/lakekeeper/issues/1719)) ([55eb67e](https://github.com/lakekeeper/lakekeeper/commit/55eb67ef3c0dbc043d81bc2a0c6b5dc5be71b909))
+* **authz:** expose resolve_principal for downstream API-to-authz UserOrRole conversion ([#1703](https://github.com/lakekeeper/lakekeeper/issues/1703)) ([511fdf2](https://github.com/lakekeeper/lakekeeper/commit/511fdf2b47cba311162e5f0a84d609921d13fe3a))
+* Extend Server Info with console information and commit SHAs ([#1725](https://github.com/lakekeeper/lakekeeper/issues/1725)) ([d47fd55](https://github.com/lakekeeper/lakekeeper/commit/d47fd55dc1cbe25e878a018aa92e1592b12102d7))
+* Instance Admins ([#1716](https://github.com/lakekeeper/lakekeeper/issues/1716)) ([22d7602](https://github.com/lakekeeper/lakekeeper/commit/22d7602f7940babf1386f6abecaffd7aadd63ee6))
+* **opa-bridge:** allow CreateViewWithSelectFromColumns on views so view-on-view queries pass the run-as-owner check ([#1712](https://github.com/lakekeeper/lakekeeper/issues/1712)) ([63d4020](https://github.com/lakekeeper/lakekeeper/commit/63d4020b783006f153f4d27d21655ae908093af5))
+* **opa-bridge:** Support "ADD_FILES" trino operation ([199e7a2](https://github.com/lakekeeper/lakekeeper/commit/199e7a2d3bdcbc7bdfa61e1d07ec866d643a0882))
+* **perf:** add warehouse/namespace broad-access fast path to Trino OPA batch ([#1727](https://github.com/lakekeeper/lakekeeper/issues/1727)) ([5483b69](https://github.com/lakekeeper/lakekeeper/commit/5483b69b1158789cddbebb9dfb876e75458796fd))
+* protect immutable table properties (encryption.key-id) during commits ([#1700](https://github.com/lakekeeper/lakekeeper/issues/1700)) ([d2e7787](https://github.com/lakekeeper/lakekeeper/commit/d2e778760e5bfd6ba3e0d69e49adb01a2f47d987))
+* reject case variants of protected view properties ([#1724](https://github.com/lakekeeper/lakekeeper/issues/1724)) ([9edf577](https://github.com/lakekeeper/lakekeeper/commit/9edf5777f8a1970d3e62da8774794f1a3e888d34))
+* Validation for referenced-by parameter for trusted engines merged ([#1647](https://github.com/lakekeeper/lakekeeper/issues/1647)) ([ac0d70e](https://github.com/lakekeeper/lakekeeper/commit/ac0d70e1488e170a79f7dc9f150bacbec6ef9171))
+
+
+### Bug Fixes
+
+* Add webpki_root_certs to S3 Client, ubi native certs ([#1720](https://github.com/lakekeeper/lakekeeper/issues/1720)) ([8fec273](https://github.com/lakekeeper/lakekeeper/commit/8fec27375cdddbc725ffa13e73f549239ba05594))
+* allow renaming tables to a different case of their own name ([7c26309](https://github.com/lakekeeper/lakekeeper/commit/7c263091f255b75ed5d66024b5bc6b29ef553508))
+* **authz:** collapse user == actor to None in authz batch wrapper ([#1715](https://github.com/lakekeeper/lakekeeper/issues/1715)) ([bd6507d](https://github.com/lakekeeper/lakekeeper/commit/bd6507dfd20d4441f84228251ee54aec6227922f))
+* **opa-bridge:** add ReadSystemInformation rule and trim admin user entries ([e251740](https://github.com/lakekeeper/lakekeeper/commit/e25174065b41846968c24b30ca3d448a57f23bed))
+* pin gcloud-storage/gcloud-auth to ~1.2 to prevent reqwest-middleware version conflict ([#1701](https://github.com/lakekeeper/lakekeeper/issues/1701)) ([a3cfa87](https://github.com/lakekeeper/lakekeeper/commit/a3cfa87bf2f411b235a11e40c6494660e450585f))
+* return caller's case from namespace lookups, canonical from id lookups ([7c26309](https://github.com/lakekeeper/lakekeeper/commit/7c263091f255b75ed5d66024b5bc6b29ef553508))
+* **ui:** Fix base url trailing slash - 0.13.15 ([#1729](https://github.com/lakekeeper/lakekeeper/issues/1729)) ([a5cc2c6](https://github.com/lakekeeper/lakekeeper/commit/a5cc2c6f16372fef9f856509af1bc28bdf0e39fd))
+* **ui:** Fix UI Authentication due to Vite 8 changes ([#1723](https://github.com/lakekeeper/lakekeeper/issues/1723)) ([e2e8502](https://github.com/lakekeeper/lakekeeper/commit/e2e8502ad000dc3b042751fca5d7cad7d189bff2))
+* **ui:** pass warehouse-name to TablePreview to fix stale name after rename ([d2c7cef](https://github.com/lakekeeper/lakekeeper/commit/d2c7cef5fe95acd0d179b88a2740c82a8db6201c))
+
+
+### Documentation
+
+* document case sensitivity design and fix case-only rename conflict ([7c26309](https://github.com/lakekeeper/lakekeeper/commit/7c263091f255b75ed5d66024b5bc6b29ef553508))
+* Fluss example ([#1688](https://github.com/lakekeeper/lakekeeper/issues/1688)) ([6f5a52a](https://github.com/lakekeeper/lakekeeper/commit/6f5a52aa2f4edf15af027e97db9e41bb2678d8ce))
+* support deploying into a custom Postgres schema ([#1714](https://github.com/lakekeeper/lakekeeper/issues/1714)) ([fcab053](https://github.com/lakekeeper/lakekeeper/commit/fcab053eef0edb1799b5b25ea8721c84c33bb457))
+
+
+### Miscellaneous Chores
+
+* Add AGENTS.md ([46870c5](https://github.com/lakekeeper/lakekeeper/commit/46870c5569ef3cac6c1588875238110430290f50))
+* **ci:** pin actions to SHA, add cargo-machete, nightly toolchain, MSRV 1.92 ([#1705](https://github.com/lakekeeper/lakekeeper/issues/1705)) ([87a11d5](https://github.com/lakekeeper/lakekeeper/commit/87a11d5045c32ddd291b22af88794e7b9290784a))
+* **deps:** bump rustls-webpki 0.103 to 0.103.12 for RUSTSEC-2026-0098 ([#1713](https://github.com/lakekeeper/lakekeeper/issues/1713)) ([d1f797d](https://github.com/lakekeeper/lakekeeper/commit/d1f797db28c396eb42fe9f412e2d71a545428f74))
+* **docs:** 0.12 docs ([63bbcff](https://github.com/lakekeeper/lakekeeper/commit/63bbcffa7d2596a5308dcae8f1fa92d1a9654550))
+* **docs:** Improve `get_metadata` vs `select` docs ([7b84288](https://github.com/lakekeeper/lakekeeper/commit/7b8428896404cbd7a2ac83d667b601f7ac4e500b))
+* **docs:** Improve Instance Admin docs ([8674abb](https://github.com/lakekeeper/lakekeeper/commit/8674abbb3634e1501af561804aa7ce35d0e6f78d))
+* **docs:** Update numbers ([973d7a9](https://github.com/lakekeeper/lakekeeper/commit/973d7a97ab46383f995342d78440e145a4196a05))
+* return standartized NoSuchWarehouseException for warehouse-not-found errors ([#1702](https://github.com/lakekeeper/lakekeeper/issues/1702)) ([3ac0fa8](https://github.com/lakekeeper/lakekeeper/commit/3ac0fa80c18586ba62abae50991fa5f24bb4df5f))
+
 ## [0.12.0](https://github.com/lakekeeper/lakekeeper/compare/v0.11.2...v0.12.0) (2026-04-01)
 
 
