@@ -13,7 +13,7 @@ use crate::{
     service::{
         CatalogStore, Result, SecretStore, State,
         authz::{AuthZGenericTableOps, Authorizer, CatalogGenericTableAction},
-        events::{APIEventContext, AuthorizationFailureSource, context::ResolvedNamespace},
+        events::{APIEventContext, AuthorizationFailureSource, context::ResolvedGenericTable},
         storage::StoragePermissions,
     },
 };
@@ -55,11 +55,6 @@ pub(super) async fn load_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         )
         .await,
     )?;
-
-    let _event_ctx = event_ctx.resolve(ResolvedNamespace {
-        warehouse: warehouse.clone(),
-        namespace: ns_hierarchy.namespace.clone(),
-    });
 
     // ------------------- Check ReadData + WriteData for storage permissions -------------------
     let [can_read, can_write] = authorizer
@@ -116,17 +111,27 @@ pub(super) async fn load_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         (None, None)
     };
 
-    Ok(LoadGenericTableResponse {
+    let info = Arc::new(info);
+    let response = LoadGenericTableResponse {
         table: GenericTableData {
-            name: info.name,
-            format: info.format,
+            name: info.name.clone(),
+            format: info.format.clone(),
             base_location: info.location.to_string(),
-            doc: info.doc,
-            properties: info.properties,
-            schema: info.schema,
-            statistics: info.statistics,
+            doc: info.doc.clone(),
+            properties: info.properties.clone(),
+            schema: info.schema.clone(),
+            statistics: info.statistics.clone(),
         },
         config,
         storage_credentials,
-    })
+    };
+
+    let event_ctx = event_ctx.resolve(ResolvedGenericTable {
+        warehouse,
+        generic_table: info,
+        storage_permissions,
+    });
+    event_ctx.emit_generic_table_loaded_async(data_access);
+
+    Ok(response)
 }

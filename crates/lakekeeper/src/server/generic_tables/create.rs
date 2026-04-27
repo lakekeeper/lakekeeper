@@ -173,6 +173,8 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     let action = CatalogNamespaceAction::CreateGenericTable {
         name: Some(request.name.clone()),
         generic_table_id: Some(generic_table_id),
+        format: Some(request.format.to_string()),
+        base_location: request.base_location.clone(),
         properties: Arc::new(
             request
                 .properties
@@ -202,7 +204,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
             .await,
     )?;
 
-    let _event_ctx = event_ctx.resolve(ResolvedNamespace {
+    let event_ctx = event_ctx.resolve(ResolvedNamespace {
         warehouse: warehouse.clone(),
         namespace: ns_hierarchy.namespace.clone(),
     });
@@ -270,17 +272,22 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
 
     t.commit().await?;
 
-    Ok(LoadGenericTableResponse {
+    let info = Arc::new(info);
+    let response = LoadGenericTableResponse {
         table: GenericTableData {
-            name: info.name,
-            format: info.format,
+            name: info.name.clone(),
+            format: info.format.clone(),
             base_location: info.location.to_string(),
-            doc: info.doc,
-            properties: info.properties,
-            schema: info.schema,
-            statistics: info.statistics,
+            doc: info.doc.clone(),
+            properties: info.properties.clone(),
+            schema: info.schema.clone(),
+            statistics: info.statistics.clone(),
         },
         config: None,
         storage_credentials: None,
-    })
+    };
+
+    event_ctx.emit_generic_table_created_async(info, Arc::new(request.clone()));
+
+    Ok(response)
 }

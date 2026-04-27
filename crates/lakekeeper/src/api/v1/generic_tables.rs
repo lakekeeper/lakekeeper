@@ -15,7 +15,7 @@ use crate::{
     api::{
         ApiContext, Result,
         iceberg::{
-            types::{Prefix, ReferencedByQuery, ReferencingView},
+            types::{DropParams, Prefix, ReferencedByQuery, ReferencingView},
             v1::{
                 DataAccess, DataAccessMode,
                 namespace::{NamespaceIdentUrl, NamespaceParameters},
@@ -213,6 +213,7 @@ where
 
     async fn drop_generic_table(
         parameters: GenericTableParameters,
+        drop_params: DropParams,
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
@@ -279,6 +280,7 @@ pub fn router<I: GenericTableService<S>, S: crate::api::ThreadSafe>() -> Router<
             )
             .delete(
                 |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 Query(drop_params): Query<DropParams>,
                  State(api_context): State<ApiContext<S>>,
                  Extension(metadata): Extension<RequestMetadata>| async move {
                     I::drop_generic_table(
@@ -287,6 +289,7 @@ pub fn router<I: GenericTableService<S>, S: crate::api::ThreadSafe>() -> Router<
                             namespace: namespace.into(),
                             table_name: table,
                         },
+                        drop_params,
                         api_context,
                         metadata,
                     )

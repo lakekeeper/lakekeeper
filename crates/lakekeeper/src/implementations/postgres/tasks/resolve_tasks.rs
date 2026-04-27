@@ -148,6 +148,14 @@ where
                             view_id,
                         }
                         .into(),
+                        WarehouseTaskEntityId::GenericTable { generic_table_id } => {
+                            crate::service::GenericTableNamed {
+                                warehouse_id,
+                                generic_table_ident: ident,
+                                generic_table_id,
+                            }
+                            .into()
+                        }
                     }
                 }
             };
@@ -354,6 +362,7 @@ mod tests {
                 assert_eq!(table.table_id, entity1.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
         }
@@ -366,6 +375,7 @@ mod tests {
                 assert_eq!(table.table_id, entity2.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -460,6 +470,7 @@ mod tests {
                 assert_eq!(table.table_id, entity1.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -471,6 +482,7 @@ mod tests {
                 assert_eq!(table.table_id, entity2.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -651,6 +663,7 @@ mod tests {
                 assert_eq!(table.table_id, entity1.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -728,6 +741,7 @@ mod tests {
                 assert_eq!(table.table_id, entity1.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -737,6 +751,7 @@ mod tests {
                 assert_eq!(table.table_id, entity2.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -799,6 +814,7 @@ mod tests {
                 assert_eq!(table.table_id, entity.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -871,6 +887,7 @@ mod tests {
                 assert_eq!(table.table_id, entity.as_uuid().into());
             }
             ResolvedTaskEntity::View(_)
+            | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }

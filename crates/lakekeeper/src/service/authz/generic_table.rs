@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 
@@ -6,15 +6,17 @@ use crate::{
     WarehouseId,
     api::RequestMetadata,
     service::{
-        AuthZGenericTableInfo, CatalogBackendError, GenericTableIdentOrId, GetTabularInfoError,
-        InternalParseLocationError, InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ResolvedWarehouse, SerializationError, TabularNotFound,
-        UnexpectedTabularInResponse,
+        AuthZGenericTableInfo, CachePolicy, CatalogBackendError, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, GenericTableId, GenericTableIdentOrId,
+        GenericTabularInfo, GetTabularInfoError, IcebergErrorResponse, InternalParseLocationError,
+        InvalidNamespaceIdentifier, NamespaceHierarchy, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, SerializationError, TabularId, TabularListFlags, TabularNotFound,
+        UnexpectedTabularInResponse, ViewOrTableInfo,
         authz::{
-            ActionOnGenericTable, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
-            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogGenericTableAction,
-            IsAllowedActionError, MustUse, UserOrRole,
+            ActionOnGenericTable, AuthZError, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
+            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogGenericTableAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -458,3 +460,65 @@ pub trait AuthZGenericTableOps: Authorizer {
 }
 
 impl<T> AuthZGenericTableOps for T where T: Authorizer {}
+
+pub(crate) async fn fetch_warehouse_namespace_generic_table_by_id<C, A>(
+    authorizer: &A,
+    warehouse_id: WarehouseId,
+    generic_table_id: GenericTableId,
+    table_flags: TabularListFlags,
+    catalog_state: C::State,
+) -> Result<
+    (
+        Arc<ResolvedWarehouse>,
+        NamespaceHierarchy,
+        GenericTabularInfo,
+    ),
+    AuthZError,
+>
+where
+    C: CatalogStore,
+    A: AuthzWarehouseOps + AuthzNamespaceOps,
+{
+    let lookup_ids = [TabularId::GenericTable(generic_table_id)];
+    let (warehouse_result, info_result) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+        C::get_tabular_infos_by_id(
+            warehouse_id,
+            &lookup_ids,
+            table_flags,
+            catalog_state.clone(),
+        ),
+    );
+
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse_result)?;
+
+    let infos = info_result.map_err(|e| {
+        AuthZError::RequireGenericTableActionError(
+            RequireGenericTableActionError::CatalogBackendError(
+                CatalogBackendError::new_unexpected(ErrorModel::from(IcebergErrorResponse::from(
+                    e,
+                ))),
+            ),
+        )
+    })?;
+    let info = infos
+        .into_iter()
+        .find_map(|i| match i {
+            ViewOrTableInfo::GenericTable(g) => Some(g),
+            _ => None,
+        })
+        .ok_or_else(|| AuthZCannotSeeGenericTable::new_not_found(warehouse_id, generic_table_id))?;
+
+    let namespace_id = info.namespace_id;
+    let namespace_result = C::get_namespace_cache_aware(
+        warehouse_id,
+        namespace_id,
+        CachePolicy::RequireMinimumVersion(*info.namespace_version),
+        catalog_state,
+    )
+    .await;
+    let namespace =
+        authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace_result)?;
+
+    Ok((warehouse, namespace, info))
+}

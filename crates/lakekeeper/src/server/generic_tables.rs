@@ -11,7 +11,10 @@ use async_trait::async_trait;
 use crate::{
     api::{
         ApiContext,
-        iceberg::v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
+        iceberg::{
+            types::DropParams,
+            v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
+        },
         v1::generic_tables::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService,
             ListGenericTablesQuery, ListGenericTablesResponse, LoadGenericTableCredentialsRequest,
@@ -155,10 +158,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
 
     async fn drop_generic_table(
         parameters: GenericTableParameters,
+        drop_params: DropParams,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        drop::drop_generic_table::<C, A, S>(parameters, state, request_metadata).await
+        drop::drop_generic_table::<C, A, S>(parameters, drop_params, state, request_metadata).await
     }
 }
 
@@ -173,7 +177,10 @@ pub(crate) mod test {
     use crate::{
         api::{
             ApiContext,
-            iceberg::v1::{DataAccessMode, namespace::NamespaceParameters},
+            iceberg::{
+                types::DropParams,
+                v1::{DataAccessMode, namespace::NamespaceParameters},
+            },
             v1::generic_tables::{
                 CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
                 ListGenericTablesQuery,
@@ -185,8 +192,9 @@ pub(crate) mod test {
         },
         server::CatalogServer,
         service::{
-            GenericTableFormat, State,
+            CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _,
             authz::AllowAllAuthorizer,
+            idempotency::IdempotencyKey,
             storage::{MemoryProfile, StorageProfile},
         },
         tests::random_request_metadata,
@@ -434,6 +442,10 @@ pub(crate) mod test {
                 namespace: namespace.clone(),
                 table_name: "drop-gt".to_string(),
             },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
             ctx.clone(),
             random_request_metadata(),
         )
@@ -475,6 +487,10 @@ pub(crate) mod test {
                 namespace,
                 table_name: "ghost".to_string(),
             },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
             ctx,
             random_request_metadata(),
         )
@@ -482,5 +498,206 @@ pub(crate) mod test {
         .expect_err("should not exist");
 
         assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn test_create_generic_table_idempotent_replay(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let prefix = whi.to_string();
+        let params = NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        };
+
+        let key = IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap();
+        let mut metadata = random_request_metadata();
+        metadata.with_idempotency_key(key);
+
+        let r1 = CatalogServer::create_generic_table(
+            params.clone(),
+            create_request("idem-gt"),
+            ctx.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+
+        let r2 = CatalogServer::create_generic_table(
+            params,
+            create_request("idem-gt"),
+            ctx.clone(),
+            metadata,
+        )
+        .await
+        .expect("replay with same idempotency key should succeed");
+
+        assert_eq!(r1.table.name, r2.table.name);
+        assert_eq!(r1.table.base_location, r2.table.base_location);
+
+        let list = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: Some(prefix.into()),
+                namespace,
+            },
+            ListGenericTablesQuery::default(),
+            ctx,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list.identifiers.len(),
+            1,
+            "replay must not create a duplicate"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_protected_generic_table(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let prefix = whi.to_string();
+
+        CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            create_request("protected-gt"),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            ListGenericTablesQuery::default(),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        let gt_id_value = listed
+            .identifiers
+            .iter()
+            .find(|i| i.name == "protected-gt")
+            .and_then(|i| i.id)
+            .expect("generic table id");
+
+        let mut t = <PostgresBackend as crate::service::CatalogStore>::Transaction::begin_write(
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::set_tabular_protected(
+            whi,
+            TabularId::GenericTable(gt_id_value),
+            true,
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let err = CatalogServer::drop_generic_table(
+            GenericTableParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+                table_name: "protected-gt".to_string(),
+            },
+            DropParams {
+                purge_requested: false,
+                force: false,
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("protected drop without force must fail");
+        assert_eq!(err.error.code, StatusCode::CONFLICT, "{err:?}");
+
+        CatalogServer::drop_generic_table(
+            GenericTableParameters {
+                prefix: Some(prefix.into()),
+                namespace,
+                table_name: "protected-gt".to_string(),
+            },
+            DropParams {
+                purge_requested: false,
+                force: true,
+            },
+            ctx,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_list_generic_tables_pagination(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let prefix = whi.to_string();
+        let params = NamespaceParameters {
+            prefix: Some(prefix.clone().into()),
+            namespace: namespace.clone(),
+        };
+
+        let total: usize = 7;
+        for i in 0..total {
+            CatalogServer::create_generic_table(
+                params.clone(),
+                create_request(&format!("page-gt-{i}")),
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut collected: Vec<String> = Vec::new();
+        let mut page_token: Option<String> = None;
+        let mut pages: u32 = 0;
+        loop {
+            let res = CatalogServer::list_generic_tables(
+                params.clone(),
+                ListGenericTablesQuery {
+                    page_size: Some(3),
+                    page_token: page_token.clone(),
+                },
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap();
+            pages += 1;
+            assert!(
+                pages <= 10,
+                "pagination did not terminate (got {pages} pages)"
+            );
+
+            for ident in &res.identifiers {
+                collected.push(ident.name.clone());
+            }
+            match res.next_page_token {
+                Some(token) if !token.is_empty() && !res.identifiers.is_empty() => {
+                    page_token = Some(token);
+                }
+                _ => break,
+            }
+        }
+
+        collected.sort();
+        let mut expected: Vec<String> = (0..total).map(|i| format!("page-gt-{i}")).collect();
+        expected.sort();
+        assert_eq!(
+            collected, expected,
+            "all rows must be returned exactly once"
+        );
+        assert!(
+            pages >= 2,
+            "page_size=3 over {total} rows should span >=2 pages"
+        );
     }
 }

@@ -476,6 +476,12 @@ pub struct ViewNamed {
     pub view_ident: TableIdent,
     pub view_id: ViewId,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericTableNamed {
+    pub warehouse_id: WarehouseId,
+    pub generic_table_ident: TableIdent,
+    pub generic_table_id: GenericTableId,
+}
 pub trait AuthZTableInfo: Send + Sync {
     fn warehouse_id(&self) -> WarehouseId;
     fn table_ident(&self) -> &TableIdent;

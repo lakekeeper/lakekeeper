@@ -2042,12 +2042,13 @@ pub(crate) mod tests {
                         make(GenericTableRelation::CanReadData),
                         make(GenericTableRelation::CanWriteData),
                         make(GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanUndrop),
                         make(GenericTableRelation::CanIncludeInList),
                     ],
                 )
                 .await
                 .unwrap();
-            assert_eq!(results, vec![false, false, false, false, false]);
+            assert_eq!(results, vec![false, false, false, false, false, false]);
 
             // Create the generic table in authorizer (sets ownership + parent)
             authorizer
@@ -2066,12 +2067,13 @@ pub(crate) mod tests {
                         make(GenericTableRelation::CanReadData),
                         make(GenericTableRelation::CanWriteData),
                         make(GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanUndrop),
                         make(GenericTableRelation::CanIncludeInList),
                     ],
                 )
                 .await
                 .unwrap();
-            assert_eq!(results, vec![true, true, true, true, true]);
+            assert_eq!(results, vec![true, true, true, true, true, true]);
 
             // Delete the generic table from authorizer
             authorizer

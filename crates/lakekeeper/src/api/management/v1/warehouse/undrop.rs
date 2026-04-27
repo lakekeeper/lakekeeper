@@ -102,7 +102,7 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
                 t.as_action_request(
                     CatalogViewAction::Undrop,
                     CatalogTableAction::Undrop,
-                    CatalogGenericTableAction::GetMetadata,
+                    CatalogGenericTableAction::Undrop,
                     None,
                 ),
             ))

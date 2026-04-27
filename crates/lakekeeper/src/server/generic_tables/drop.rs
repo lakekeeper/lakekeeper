@@ -4,21 +4,35 @@ use http::StatusCode;
 
 use crate::{
     api::{
-        ApiContext, ErrorModel, endpoints::EndpointFlat, v1::generic_tables::GenericTableParameters,
+        ApiContext, ErrorModel,
+        endpoints::EndpointFlat,
+        iceberg::types::DropParams,
+        management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
+        v1::generic_tables::GenericTableParameters,
     },
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
     service::{
-        CatalogGenericTableOps, CatalogIdempotencyOps, CatalogStore, Result, SecretStore, State,
-        Transaction,
+        CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
+        State, TabularId, Transaction,
         authz::{Authorizer, CatalogGenericTableAction},
-        events::{APIEventContext, context::ResolvedNamespace},
+        events::{APIEventContext, context::ResolvedGenericTable},
         idempotency::IdempotencyInfo,
+        tasks::{
+            ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
+            tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
+            tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
+        },
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: GenericTableParameters,
+    DropParams {
+        purge_requested,
+        force,
+    }: DropParams,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<()> {
@@ -41,15 +55,16 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
     }
 
     // ------------------- AUTHZ -------------------
+    let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.clone());
     let event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
         state.v1_state.events.clone(),
         warehouse_id,
-        iceberg::TableIdent::new(namespace.clone(), table_name.clone()),
+        table_ident.clone(),
         CatalogGenericTableAction::Drop,
     );
 
-    let (event_ctx, (warehouse, ns_hierarchy, _info)) = event_ctx.emit_authz(
+    let (event_ctx, (warehouse, _ns_hierarchy, info)) = event_ctx.emit_authz(
         super::load_and_authorize_generic_table_operation::<C, A>(
             authorizer,
             &request_metadata,
@@ -61,18 +76,94 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         )
         .await,
     )?;
+    let generic_table_id = info.generic_table_id;
 
-    let _event_ctx = event_ctx.resolve(ResolvedNamespace {
+    let event_ctx = event_ctx.resolve(ResolvedGenericTable {
         warehouse: warehouse.clone(),
-        namespace: ns_hierarchy.namespace.clone(),
+        generic_table: Arc::new(info),
+        storage_permissions: None,
     });
-
-    let namespace_id = ns_hierarchy.namespace.namespace_id();
 
     // ------------------- DROP -------------------
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-    let generic_table_id =
-        C::drop_generic_table(warehouse_id, namespace_id, &table_name, t.transaction()).await?;
+
+    let delete_profile = if force {
+        TabularDeleteProfile::Hard {}
+    } else {
+        warehouse.tabular_delete_profile
+    };
+    let project_id = &warehouse.project_id;
+
+    match delete_profile {
+        TabularDeleteProfile::Hard {} => {
+            let location = C::drop_tabular(
+                warehouse_id,
+                TabularId::GenericTable(generic_table_id),
+                force,
+                t.transaction(),
+            )
+            .await?;
+
+            if purge_requested {
+                TabularPurgeTask::schedule_task::<C>(
+                    ScheduleTaskMetadata {
+                        project_id: project_id.clone(),
+                        parent_task_id: None,
+                        scheduled_for: None,
+                        entity: TaskEntity::EntityInWarehouse {
+                            entity_name: table_ident.clone().into_name_parts(),
+                            warehouse_id,
+                            entity_id: WarehouseTaskEntityId::GenericTable { generic_table_id },
+                        },
+                    },
+                    TabularPurgePayload {
+                        tabular_location: location.to_string(),
+                    },
+                    t.transaction(),
+                )
+                .await?;
+
+                tracing::debug!(
+                    "Queued purge task for dropped generic table '{generic_table_id}'."
+                );
+            }
+        }
+        TabularDeleteProfile::Soft { expiration_seconds } => {
+            let _ = TabularExpirationTask::schedule_task::<C>(
+                ScheduleTaskMetadata {
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    scheduled_for: Some(chrono::Utc::now() + expiration_seconds),
+                    entity: TaskEntity::EntityInWarehouse {
+                        entity_name: table_ident.clone().into_name_parts(),
+                        entity_id: WarehouseTaskEntityId::GenericTable { generic_table_id },
+                        warehouse_id,
+                    },
+                },
+                TabularExpirationPayload {
+                    deletion_kind: if purge_requested {
+                        DeleteKind::Purge
+                    } else {
+                        DeleteKind::Default
+                    },
+                },
+                t.transaction(),
+            )
+            .await?;
+
+            C::mark_tabular_as_deleted(
+                warehouse_id,
+                TabularId::GenericTable(generic_table_id),
+                force,
+                t.transaction(),
+            )
+            .await?;
+
+            tracing::debug!(
+                "Queued expiration task for dropped generic table '{generic_table_id}'."
+            );
+        }
+    }
 
     // Insert idempotency key in the same transaction.
     if let Some(ref key) = idempotency_key
@@ -98,18 +189,25 @@ pub(super) async fn drop_generic_table<C: CatalogStore, A: Authorizer + Clone, S
 
     t.commit().await?;
 
-    // Post-commit: clean up authz state (best-effort)
-    authorizer
-        .delete_generic_table(warehouse_id, generic_table_id)
-        .await
-        .inspect_err(|e| {
-            tracing::error!(
-                ?e,
-                "Failed to delete generic table from authorizer: {}",
-                e.error
-            );
-        })
-        .ok();
+    // Post-commit: best-effort authz cleanup for hard deletes
+    if matches!(delete_profile, TabularDeleteProfile::Hard {}) {
+        authorizer
+            .delete_generic_table(warehouse_id, generic_table_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    "Failed to delete generic table from authorizer: {}",
+                    e.error
+                );
+            })
+            .ok();
+    }
+
+    event_ctx.emit_generic_table_dropped_async(DropParams {
+        purge_requested,
+        force,
+    });
 
     Ok(())
 }

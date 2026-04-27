@@ -13,8 +13,9 @@ use super::{
 use crate::{
     WarehouseId,
     service::{
-        CatalogBackendError, GenericTableId, NamespaceId, NamespaceVersion, TabularId,
-        WarehouseVersion,
+        CatalogBackendError, ConcurrentUpdateError, GenericTableId, InternalParseLocationError,
+        InvalidNamespaceIdentifier, LocationAlreadyTaken, NamespaceId, NamespaceVersion,
+        ProtectedTabularDeletionWithoutForce, TabularId, WarehouseVersion,
     },
 };
 
@@ -50,11 +51,19 @@ impl From<&str> for GenericTableFormat {
     }
 }
 
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[error("generic table format must not be blank")]
+pub struct ParseGenericTableFormatError;
+
 impl std::str::FromStr for GenericTableFormat {
-    type Err = std::convert::Infallible;
+    type Err = ParseGenericTableFormatError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(GenericTableFormat::Unknown(s.to_string()))
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Err(ParseGenericTableFormatError);
+        }
+        Ok(GenericTableFormat::Unknown(trimmed.to_string()))
     }
 }
 
@@ -67,7 +76,7 @@ impl Serialize for GenericTableFormat {
 impl<'de> Deserialize<'de> for GenericTableFormat {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(GenericTableFormat::from(s))
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -226,6 +235,9 @@ define_transparent_error! {
     variants: [
         GenericTableAlreadyExists,
         CatalogBackendError,
+        InternalParseLocationError,
+        LocationAlreadyTaken,
+        InvalidNamespaceIdentifier,
     ]
 }
 
@@ -252,6 +264,10 @@ define_transparent_error! {
     variants: [
         GenericTableNotFound,
         CatalogBackendError,
+        InvalidNamespaceIdentifier,
+        InternalParseLocationError,
+        ProtectedTabularDeletionWithoutForce,
+        ConcurrentUpdateError,
     ]
 }
 

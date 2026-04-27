@@ -118,7 +118,9 @@ pub(crate) async fn create_generic_table(
                 CreateGenericTableError::from(GenericTableAlreadyExists::new())
             }
             CreateTabularError::CatalogBackendError(e) => CreateGenericTableError::from(e),
-            other => CreateGenericTableError::from(CatalogBackendError::new_unexpected(other)),
+            CreateTabularError::InternalParseLocationError(e) => CreateGenericTableError::from(e),
+            CreateTabularError::LocationAlreadyTaken(e) => CreateGenericTableError::from(e),
+            CreateTabularError::InvalidNamespaceIdentifier(e) => CreateGenericTableError::from(e),
         }
     })?;
 
@@ -370,7 +372,12 @@ pub(crate) async fn drop_generic_table(
                 DropGenericTableError::from(GenericTableNotFound::new())
             }
             DropTabularError::CatalogBackendError(e) => DropGenericTableError::from(e),
-            other => DropGenericTableError::from(CatalogBackendError::new_unexpected(other)),
+            DropTabularError::InvalidNamespaceIdentifier(e) => DropGenericTableError::from(e),
+            DropTabularError::InternalParseLocationError(e) => DropGenericTableError::from(e),
+            DropTabularError::ProtectedTabularDeletionWithoutForce(e) => {
+                DropGenericTableError::from(e)
+            }
+            DropTabularError::ConcurrentUpdateError(e) => DropGenericTableError::from(e),
         }
     })?;
 

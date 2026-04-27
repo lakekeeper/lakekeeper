@@ -604,6 +604,14 @@ pub enum CatalogNamespaceAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "open-api", schema(value_type = Option<Uuid>))]
         generic_table_id: Option<GenericTableId>,
+        /// Generic table format (e.g. "lance", "delta") — primary lever for
+        /// format-based authorization policy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
+        /// User-supplied base location override — primary lever for
+        /// path-based authorization policy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_location: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
@@ -640,6 +648,8 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyL
         CatalogNamespaceAction::CreateGenericTable {
             name: None,
             generic_table_id: None,
+            format: None,
+            base_location: None,
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::ListGenericTables,
@@ -673,6 +683,8 @@ impl CatalogAction for CatalogNamespaceAction {
             Self::CreateGenericTable {
                 name,
                 generic_table_id,
+                format,
+                base_location,
                 properties,
             } => {
                 if let Some(n) = name {
@@ -680,6 +692,12 @@ impl CatalogAction for CatalogNamespaceAction {
                 }
                 if let Some(gtid) = generic_table_id {
                     b = b.context_string("generic_table_id", gtid.to_string());
+                }
+                if let Some(f) = format {
+                    b = b.context_string("format", f.clone());
+                }
+                if let Some(bl) = base_location {
+                    b = b.context_string("base_location", bl.clone());
                 }
                 if !properties.is_empty() {
                     b = b.context_map("properties", properties.as_ref().clone());
@@ -883,8 +901,11 @@ pub enum CatalogGenericTableAction {
     WriteData,
     GetMetadata,
     IncludeInList,
+    Undrop,
+    GetTasks,
+    ControlTasks,
 }
-static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 5]> =
+static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 8]> =
     LazyLock::new(|| {
         [
             CatalogGenericTableAction::Drop,
@@ -892,11 +913,14 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 5]> =
             CatalogGenericTableAction::WriteData,
             CatalogGenericTableAction::GetMetadata,
             CatalogGenericTableAction::IncludeInList,
+            CatalogGenericTableAction::Undrop,
+            CatalogGenericTableAction::GetTasks,
+            CatalogGenericTableAction::ControlTasks,
         ]
     });
 impl CatalogGenericTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogGenericTableAction; 5] {
+    pub fn variants() -> &'static [CatalogGenericTableAction; 8] {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }
@@ -1370,6 +1394,39 @@ pub(crate) mod tests {
                 serde_json::from_value(serialized).expect("Failed to deserialize");
             assert_eq!(deserialized, action);
         }
+    }
+
+    #[test]
+    fn test_create_generic_table_action_descriptor_carries_format_and_base_location() {
+        let mut props = BTreeMap::new();
+        props.insert("k".to_string(), "v".to_string());
+        let action = CatalogNamespaceAction::CreateGenericTable {
+            name: Some("my-gt".to_string()),
+            generic_table_id: Some(crate::service::GenericTableId::from(Uuid::nil())),
+            format: Some("lance".to_string()),
+            base_location: Some("memory://warehouse/path".to_string()),
+            properties: Arc::new(props),
+        };
+        let descriptor = action.action_descriptor();
+        assert_eq!(descriptor.action_name, "create_generic_table");
+        let log = descriptor.log_string();
+        assert!(log.contains("format=lance"), "{log}");
+        assert!(
+            log.contains("base_location=memory://warehouse/path"),
+            "{log}"
+        );
+        assert!(log.contains("name=my-gt"), "{log}");
+
+        let action_minimal = CatalogNamespaceAction::CreateGenericTable {
+            name: None,
+            generic_table_id: None,
+            format: None,
+            base_location: None,
+            properties: Arc::new(BTreeMap::new()),
+        };
+        let log_minimal = action_minimal.action_descriptor().log_string();
+        assert!(!log_minimal.contains("format="), "{log_minimal}");
+        assert!(!log_minimal.contains("base_location="), "{log_minimal}");
     }
 
     #[test]

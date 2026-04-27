@@ -14,16 +14,17 @@ use crate::{
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogTaskOps, CatalogWarehouseOps, NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse,
-        Result, SecretStore, State, TableId, TabularId, TabularListFlags, TaskDetails, TaskList,
-        TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
+        CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NoWarehouseTaskError, ResolvedTask,
+        ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId, TabularListFlags,
+        TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
         authz::{
-            AuthZCannotListAllTasks, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZTableOps as _,
-            AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogGenericTableAction, CatalogProjectAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, RequireNamespaceActionError,
-            RequireTableActionError, RequireViewActionError, RequireWarehouseActionError,
+            AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps as _,
+            AuthZProjectOps, AuthZTableOps as _, AuthZViewOps as _, AuthZWarehouseActionForbidden,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
+            CatalogProjectAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            RequireGenericTableActionError, RequireNamespaceActionError, RequireTableActionError,
+            RequireViewActionError, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -41,8 +42,12 @@ use crate::{
 
 const GET_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::GetTasks;
 const GET_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::GetTasks;
+const GET_TASK_PERMISSION_GENERIC_TABLE: CatalogGenericTableAction =
+    CatalogGenericTableAction::GetTasks;
 const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::ControlTasks;
 const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
+const CONTROL_TASK_PERMISSION_GENERIC_TABLE: CatalogGenericTableAction =
+    CatalogGenericTableAction::ControlTasks;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::ControlAllTasks;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
@@ -461,6 +466,12 @@ pub enum WarehouseTaskEntityFilter {
     View {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         view_id: ViewId,
+    },
+    /// Get tasks for a specific generic table
+    #[serde(rename_all = "kebab-case")]
+    GenericTable {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        generic_table_id: GenericTableId,
     },
     /// Get Warehouse-level tasks which are not associated with a specific entity
     /// inside the warehouse
@@ -968,6 +979,7 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
@@ -1009,6 +1021,9 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .map(|entity| match entity {
             WarehouseTaskEntityFilter::Table { table_id } => Ok(TabularId::from(*table_id)),
             WarehouseTaskEntityFilter::View { view_id } => Ok(TabularId::from(*view_id)),
+            WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
+                Ok(TabularId::GenericTable(*generic_table_id))
+            }
             WarehouseTaskEntityFilter::Warehouse => Err(RequireWarehouseActionError::from(
                 AuthZCannotListAllTasks::new(warehouse_id),
             )),
@@ -1073,7 +1088,7 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
                 t.as_action_request(
                     GET_TASK_PERMISSION_VIEW,
                     GET_TASK_PERMISSION_TABLE,
-                    CatalogGenericTableAction::GetMetadata,
+                    GET_TASK_PERMISSION_GENERIC_TABLE,
                     None,
                 ),
             ))
@@ -1147,6 +1162,7 @@ async fn check_get_task_details_authorization<A: Authorizer, C: CatalogStore>(
     Ok(task_details.into())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     authorizer: &A,
@@ -1224,6 +1240,47 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                     )
                     .await?;
             }
+            WarehouseTaskEntityId::GenericTable { generic_table_id } => {
+                let infos = C::get_tabular_infos_by_id(
+                    warehouse_id,
+                    &[TabularId::GenericTable(*generic_table_id)],
+                    TabularListFlags::all(),
+                    catalog_state.clone(),
+                )
+                .await
+                .map_err(RequireGenericTableActionError::from)?;
+                let gt_info = infos
+                    .into_iter()
+                    .find_map(|info| match info {
+                        ViewOrTableInfo::GenericTable(g) => Some(g),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *generic_table_id)
+                    })?;
+
+                let namespace_id = gt_info.namespace_id;
+                let namespace = C::get_namespace_cache_aware(
+                    warehouse_id,
+                    namespace_id,
+                    CachePolicy::RequireMinimumVersion(*gt_info.namespace_version),
+                    catalog_state,
+                )
+                .await;
+                let namespace =
+                    authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+
+                authorizer
+                    .require_generic_table_action(
+                        request_metadata,
+                        warehouse,
+                        &namespace,
+                        *generic_table_id,
+                        Ok::<_, RequireGenericTableActionError>(Some(gt_info)),
+                        GET_TASK_PERMISSION_GENERIC_TABLE,
+                    )
+                    .await?;
+            }
         }
     } else {
         // Warehouse permission already checked before calling this function
@@ -1253,6 +1310,10 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
             ResolvedTaskEntity::View(tabular) => Ok((
                 TabularId::View(tabular.view_id),
                 &tabular.view_ident.namespace,
+            )),
+            ResolvedTaskEntity::GenericTable(tabular) => Ok((
+                TabularId::GenericTable(tabular.generic_table_id),
+                &tabular.generic_table_ident.namespace,
             )),
             ResolvedTaskEntity::Warehouse(warehouse_id) => Err(AuthZWarehouseActionForbidden::new(
                 *warehouse_id,
@@ -1316,7 +1377,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 t.as_action_request(
                     CONTROL_TASK_PERMISSION_VIEW,
                     CONTROL_TASK_PERMISSION_TABLE,
-                    CatalogGenericTableAction::GetMetadata,
+                    CONTROL_TASK_PERMISSION_GENERIC_TABLE,
                     None,
                 ),
             ))
@@ -1377,6 +1438,9 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
                 match resolved_task {
                     ResolvedTaskEntity::Table(t) => Some(TabularId::Table(t.table_id)),
                     ResolvedTaskEntity::View(v) => Some(TabularId::View(v.view_id)),
+                    ResolvedTaskEntity::GenericTable(g) => {
+                        Some(TabularId::GenericTable(g.generic_table_id))
+                    }
                     ResolvedTaskEntity::Warehouse { .. } | ResolvedTaskEntity::Project => None, // Project not returned due to scope
                 }
             } else {

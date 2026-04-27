@@ -34,11 +34,12 @@ use crate::{
         events::{
             APIEventContext, Authorization,
             context::{
-                ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT, ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE,
-                ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE, EntityDescriptor, FIELD_NAME_NAMESPACE,
-                FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE,
-                FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID, FIELD_NAME_WAREHOUSE_ID,
-                IntrospectPermissions,
+                ENTITY_TYPE_GENERIC_TABLE, ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT,
+                ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE, ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE,
+                EntityDescriptor, FIELD_NAME_GENERIC_TABLE, FIELD_NAME_GENERIC_TABLE_ID,
+                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
+                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID,
+                FIELD_NAME_WAREHOUSE_ID, IntrospectPermissions,
             },
         },
         namespace_cache::namespace_ident_to_cache_key,
@@ -209,6 +210,11 @@ pub(crate) enum CatalogActionCheckOperation {
         #[serde(flatten)]
         view: TabularIdentOrUuid,
     },
+    GenericTable {
+        action: CatalogGenericTableAction,
+        #[serde(flatten)]
+        generic_table: TabularIdentOrUuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -358,6 +364,28 @@ impl CatalogActionCheckOperation {
                 };
                 (entity, action.action_descriptor())
             }
+            CatalogActionCheckOperation::GenericTable {
+                action,
+                generic_table,
+            } => {
+                let entity = match generic_table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_GENERIC_TABLE_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_GENERIC_TABLE, table),
+                };
+                (entity, action.action_descriptor())
+            }
         }
     }
 }
@@ -401,7 +429,11 @@ type NamespaceChecksByIdentMap = HashMap<
     (WarehouseId, Option<UserOrRole>),
     HashMap<NamespaceIdent, Vec<(usize, CatalogNamespaceAction)>>,
 >;
-type TabularActionPair = (Option<CatalogTableAction>, Option<CatalogViewAction>);
+type TabularActionPair = (
+    Option<CatalogTableAction>,
+    Option<CatalogViewAction>,
+    Option<CatalogGenericTableAction>,
+);
 type TabularChecksByIdMap =
     HashMap<(WarehouseId, Option<UserOrRole>), HashMap<TabularId, Vec<(usize, TabularActionPair)>>>;
 type TabularChecksByIdentMap = HashMap<
@@ -525,7 +557,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (Some(action), None)));
+                            .push((i, (Some(action), None, None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -540,7 +572,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (Some(action), None)));
+                            .push((i, (Some(action), None, None)));
                     }
                 }
             }
@@ -558,7 +590,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (None, Some(action))));
+                            .push((i, (None, Some(action), None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -573,7 +605,45 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (None, Some(action))));
+                            .push((i, (None, Some(action), None)));
+                    }
+                }
+            }
+            CatalogActionCheckOperation::GenericTable {
+                action,
+                generic_table,
+            } => {
+                grouped
+                    .seen_warehouse_ids
+                    .insert(generic_table.warehouse_id());
+                match generic_table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => {
+                        let tabular_id = TabularId::GenericTable(table_id.into());
+                        grouped
+                            .tabular_checks_by_id
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_id)
+                            .or_default()
+                            .push((i, (None, None, Some(action))));
+                    }
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table: gt_name,
+                        warehouse_id,
+                    } => {
+                        let tabular_ident =
+                            TabularIdentOwned::GenericTable(TableIdent::new(namespace, gt_name));
+                        grouped
+                            .tabular_checks_by_ident
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_ident)
+                            .or_default()
+                            .push((i, (None, None, Some(action))));
                     }
                 }
             }
@@ -832,6 +902,7 @@ fn convert_tabular_action<'a, 'u>(
     tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
+    generic_table_action: Option<CatalogGenericTableAction>,
     user: Option<&'u AuthzUserOrRole>,
 ) -> Option<
     ActionOnTableOrView<
@@ -862,31 +933,14 @@ fn convert_tabular_action<'a, 'u>(
                 is_delegated_execution: false,
             })
         }),
-        ViewOrTableInfo::GenericTable(gt_info) => {
-            // Map table_action to generic table action where applicable.
-            let gt_action = table_action.and_then(|a| match a {
-                CatalogTableAction::Drop => Some(CatalogGenericTableAction::Drop),
-                CatalogTableAction::ReadData => Some(CatalogGenericTableAction::ReadData),
-                CatalogTableAction::WriteData => Some(CatalogGenericTableAction::WriteData),
-                CatalogTableAction::GetMetadata => Some(CatalogGenericTableAction::GetMetadata),
-                CatalogTableAction::IncludeInList => Some(CatalogGenericTableAction::IncludeInList),
-                // Actions not supported by generic tables
-                CatalogTableAction::Commit { .. }
-                | CatalogTableAction::Rename
-                | CatalogTableAction::Undrop
-                | CatalogTableAction::GetTasks
-                | CatalogTableAction::ControlTasks
-                | CatalogTableAction::SetProtection => None,
-            });
-            gt_action.map(|action| {
-                ActionOnTableOrView::GenericTable(ActionOnGenericTable {
-                    info: gt_info,
-                    action,
-                    user,
-                    is_delegated_execution: false,
-                })
+        ViewOrTableInfo::GenericTable(gt_info) => generic_table_action.map(|action| {
+            ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                info: gt_info,
+                action,
+                user,
+                is_delegated_execution: false,
             })
-        }
+        }),
     }
 }
 
@@ -1508,8 +1562,8 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
+                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1624,8 +1678,8 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
+                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1933,7 +1987,7 @@ mod tests {
                 CatalogWarehouseAction, tests::HidingAuthorizer,
             },
         },
-        tests::create_table_request,
+        tests::{create_generic_table, create_table_request},
     };
 
     #[sqlx::test]
@@ -3027,5 +3081,88 @@ mod tests {
             response.results[1].id,
             Some("batch-no-identity".to_string())
         );
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
+        use crate::{
+            api::v1::generic_tables::{GenericTableService as _, ListGenericTablesQuery},
+            service::authz::AllowAllAuthorizer,
+        };
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            crate::server::test::memory_io_profile(),
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+        let metadata = RequestMetadata::new_unauthenticated();
+        let prefix = test_warehouse.warehouse_id.to_string();
+        let ns_name = "gt_check_ns";
+        crate::server::test::create_ns(api_context.clone(), prefix.clone(), ns_name.to_string())
+            .await;
+
+        let gt_name = "my-gt";
+        create_generic_table(api_context.clone(), prefix.clone(), ns_name, gt_name)
+            .await
+            .unwrap();
+
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: NamespaceIdent::new(ns_name.to_string()),
+            },
+            ListGenericTablesQuery::default(),
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+        let gt_id = listed
+            .identifiers
+            .iter()
+            .find(|i| i.name == gt_name)
+            .and_then(|i| i.id)
+            .expect("generic table id");
+
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: Some("by-name".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::GenericTable {
+                        action: CatalogGenericTableAction::Drop,
+                        generic_table: TabularIdentOrUuid::Name {
+                            namespace: NamespaceIdent::new(ns_name.to_string()),
+                            table: gt_name.to_string(),
+                            warehouse_id: test_warehouse.warehouse_id,
+                        },
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("by-id".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::GenericTable {
+                        action: CatalogGenericTableAction::ReadData,
+                        generic_table: TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id: test_warehouse.warehouse_id,
+                            table_id: *gt_id,
+                        },
+                    },
+                },
+            ],
+            error_on_not_found: true,
+        };
+
+        let response = check_internal(api_context, metadata, request)
+            .await
+            .unwrap();
+        assert_eq!(response.results.len(), 2);
+        assert!(response.results.iter().all(|r| r.allowed));
+        assert_eq!(response.results[0].id, Some("by-name".to_string()));
+        assert_eq!(response.results[1].id, Some("by-id".to_string()));
     }
 }

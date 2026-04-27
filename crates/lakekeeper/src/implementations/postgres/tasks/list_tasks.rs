@@ -161,6 +161,9 @@ pub(crate) async fn list_tasks(
                 (Some(*table_id), TaskEntityTypeDB::Table)
             }
             WarehouseTaskEntityFilter::View { view_id } => (Some(*view_id), TaskEntityTypeDB::View),
+            WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
+                (Some(*generic_table_id), TaskEntityTypeDB::GenericTable)
+            }
             WarehouseTaskEntityFilter::Warehouse => (None, TaskEntityTypeDB::Warehouse),
         })
         .unzip::<_, _, Vec<_>, Vec<_>>();
@@ -775,6 +778,66 @@ mod tests {
             _ => {
                 panic!("Expected TaskEntity::Table")
             }
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_list_tasks_filter_by_generic_table_entity(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let table_entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let gt_entity = WarehouseTaskEntityId::GenericTable {
+            generic_table_id: Uuid::now_v7().into(),
+        };
+        let tq_name = generate_tq_name();
+
+        let _table_task = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            table_entity,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let gt_task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            gt_entity,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let request = ListTasksRequest {
+            entities: Some(vec![WarehouseTaskEntityFilter::GenericTable {
+                generic_table_id: gt_entity.as_uuid().into(),
+            }]),
+            ..Default::default()
+        };
+        let result = list_tasks(
+            &TaskFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            &request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].task_id(), gt_task_id);
+        match result.tasks[0].task_metadata.entity_id() {
+            Some(WarehouseTaskEntityId::GenericTable { generic_table_id }) => {
+                assert_eq!(*generic_table_id, gt_entity.as_uuid());
+            }
+            other => panic!("Expected TaskEntity::GenericTable, got {other:?}"),
         }
     }
 
