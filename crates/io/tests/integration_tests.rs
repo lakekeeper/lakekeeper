@@ -1122,7 +1122,7 @@ async fn test_error_handling_impl(
         config.test_path("does/not/exist1.txt"),
         config.test_path("does/not/exist2.txt"),
     ];
-    storage.delete_batch(non_existent_paths).await?;
+    storage.delete_batch(&non_existent_paths).await?;
 
     Ok(())
 }
@@ -1329,7 +1329,7 @@ async fn test_list_prefix_boundaries_impl(
 
     for list_dir in &[format!("{base_dir}dir"), format!("{base_dir}dir/")] {
         // List contents of the specific directory
-        let mut list_stream = storage.list(&list_dir, None).await?;
+        let mut list_stream = storage.list(list_dir, None).await?;
         let mut listed_file_infos = Vec::new();
 
         while let Some(result) = list_stream.next().await {
