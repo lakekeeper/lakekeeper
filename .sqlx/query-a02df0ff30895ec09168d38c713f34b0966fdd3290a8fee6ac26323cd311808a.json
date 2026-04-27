@@ -39,7 +39,8 @@
             "kind": {
               "Enum": [
                 "table",
-                "view"
+                "view",
+                "generic-table"
               ]
             }
           }

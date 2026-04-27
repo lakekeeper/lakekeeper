@@ -21,9 +21,9 @@ use crate::{
             AuthZCannotListAllTasks, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZTableOps as _,
             AuthZViewOps as _, AuthZWarehouseActionForbidden, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, RequireNamespaceActionError, RequireTableActionError,
-            RequireViewActionError, RequireWarehouseActionError,
+            AuthzWarehouseOps, CatalogGenericTableAction, CatalogProjectAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, RequireNamespaceActionError,
+            RequireTableActionError, RequireViewActionError, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -1042,6 +1042,15 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
             TabularId::View(v) => {
                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *v).into());
             }
+            TabularId::GenericTable(id) => {
+                return Err(
+                    crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
+                        warehouse_id,
+                        *id,
+                    )
+                    .into(),
+                );
+            }
         }
     }
 
@@ -1061,7 +1070,12 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
         .map(|t| {
             Ok::<_, AuthZError>((
                 require_namespace_for_tabular(&namespaces, t)?,
-                t.as_action_request(GET_TASK_PERMISSION_VIEW, GET_TASK_PERMISSION_TABLE, None),
+                t.as_action_request(
+                    GET_TASK_PERMISSION_VIEW,
+                    GET_TASK_PERMISSION_TABLE,
+                    CatalogGenericTableAction::GetMetadata,
+                    None,
+                ),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1281,6 +1295,15 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::View(v) => {
                     return Err(AuthZCannotSeeView::new_not_found(warehouse.warehouse_id, v).into());
                 }
+                TabularId::GenericTable(id) => {
+                    return Err(
+                        crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
+                            warehouse.warehouse_id,
+                            id,
+                        )
+                        .into(),
+                    );
+                }
             }
         }
     }
@@ -1293,6 +1316,7 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 t.as_action_request(
                     CONTROL_TASK_PERMISSION_VIEW,
                     CONTROL_TASK_PERMISSION_TABLE,
+                    CatalogGenericTableAction::GetMetadata,
                     None,
                 ),
             ))

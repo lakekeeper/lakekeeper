@@ -1,4 +1,4 @@
-use std::{future::Future, sync::LazyLock};
+use std::{collections::HashMap, future::Future, sync::LazyLock};
 
 use iceberg::{
     NamespaceIdent, TableIdent,
@@ -214,4 +214,38 @@ pub(crate) fn create_table_request(
         stage_create,
         properties: None,
     }
+}
+
+pub(crate) async fn create_generic_table<T: Authorizer>(
+    api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
+    prefix: impl Into<String>,
+    ns_name: impl Into<String>,
+    name: impl Into<String>,
+) -> crate::api::Result<crate::api::v1::generic_tables::LoadGenericTableResponse> {
+    use crate::{
+        api::{
+            iceberg::v1::namespace::NamespaceParameters,
+            v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+        },
+        service::GenericTableFormat,
+    };
+
+    CatalogServer::create_generic_table(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.into())),
+            namespace: NamespaceIdent::new(ns_name.into()),
+        },
+        CreateGenericTableRequest {
+            name: name.into(),
+            format: GenericTableFormat::Unknown("lance".to_string()),
+            base_location: None,
+            doc: None,
+            properties: HashMap::default(),
+            schema: None,
+            statistics: None,
+        },
+        api_context,
+        random_request_metadata(),
+    )
+    .await
 }

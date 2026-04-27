@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        WITH inserted AS (\n            INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)\n            SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8\n            FROM namespace n\n            WHERE n.namespace_id = $3 AND n.warehouse_id = $4\n            RETURNING \n                tabular_id,\n                namespace_id,\n                name as tabular_name,\n                tabular_namespace_name as namespace_name,\n                typ,\n                metadata_location,\n                updated_at,\n                protected,\n                fs_location,\n                fs_protocol\n        )\n        SELECT i.tabular_id,\n               w.version as warehouse_version,\n               i.namespace_name,\n               n.version as namespace_version,\n               i.namespace_id,\n               i.tabular_name,\n               i.updated_at,\n               i.metadata_location,\n               i.protected,\n               i.typ as \"typ: TabularType\",\n               i.fs_location,\n               i.fs_protocol,\n               NULL::text[] as view_properties_keys,\n               NULL::text[] as view_properties_values,\n               NULL::text[] as table_properties_keys,\n               NULL::text[] as table_properties_values\n        FROM inserted i\n        INNER JOIN warehouse w ON w.warehouse_id = $4\n        INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4\n        ",
+  "query": "\n        WITH inserted AS (\n            INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)\n            SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8\n            FROM namespace n\n            WHERE n.namespace_id = $3 AND n.warehouse_id = $4\n            RETURNING \n                tabular_id,\n                namespace_id,\n                name as tabular_name,\n                tabular_namespace_name as namespace_name,\n                typ,\n                metadata_location,\n                updated_at,\n                protected,\n                fs_location,\n                fs_protocol\n        )\n        SELECT i.tabular_id,\n               w.version as warehouse_version,\n               i.namespace_name,\n               n.version as namespace_version,\n               i.namespace_id,\n               i.tabular_name,\n               i.updated_at,\n               i.metadata_location,\n               i.protected,\n               i.typ as \"typ: TabularType\",\n               i.fs_location,\n               i.fs_protocol,\n               NULL::text[] as view_properties_keys,\n               NULL::text[] as view_properties_values,\n               NULL::text[] as table_properties_keys,\n               NULL::text[] as table_properties_values,\n               NULL::text[] as generic_table_properties_keys,\n               NULL::text[] as generic_table_properties_values\n        FROM inserted i\n        INNER JOIN warehouse w ON w.warehouse_id = $4\n        INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4\n        ",
   "describe": {
     "columns": [
       {
@@ -57,7 +57,8 @@
             "kind": {
               "Enum": [
                 "table",
-                "view"
+                "view",
+                "generic-table"
               ]
             }
           }
@@ -92,6 +93,16 @@
         "ordinal": 15,
         "name": "table_properties_values",
         "type_info": "TextArray"
+      },
+      {
+        "ordinal": 16,
+        "name": "generic_table_properties_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 17,
+        "name": "generic_table_properties_values",
+        "type_info": "TextArray"
       }
     ],
     "parameters": {
@@ -106,7 +117,8 @@
             "kind": {
               "Enum": [
                 "table",
-                "view"
+                "view",
+                "generic-table"
               ]
             }
           }
@@ -132,8 +144,10 @@
       null,
       null,
       null,
+      null,
+      null,
       null
     ]
   },
-  "hash": "e037d81f4b4079f028ff434a6e3408491813c3428c813d2974606c95cd8a8085"
+  "hash": "f462d048b828176f56f072c96d4aa3d8d41ec6246266acd267de7d2a3135e947"
 }

@@ -3,10 +3,10 @@ use lakekeeper::{
     service::{
         authn::UserId,
         authz::{
-            ActionDescriptor, CatalogAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, NamespaceAction, ProjectAction, RoleAction, ServerAction,
-            TableAction, ViewAction, WarehouseAction,
+            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, GenericTableAction, NamespaceAction,
+            ProjectAction, RoleAction, ServerAction, TableAction, ViewAction, WarehouseAction,
         },
     },
 };
@@ -1055,6 +1055,8 @@ pub enum NamespaceRelation {
     CanListTables,
     CanListViews,
     CanListNamespaces,
+    CanCreateGenericTable,
+    CanListGenericTables,
     CanListEverything,
     CanIncludeInList,
     CanReadAssignments,
@@ -1286,6 +1288,10 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::ListNamespaces => NamespaceRelation::CanListNamespaces,
             CatalogNamespaceAction::SetProtection => NamespaceRelation::CanSetProtection,
             CatalogNamespaceAction::IncludeInList => NamespaceRelation::CanIncludeInList,
+            CatalogNamespaceAction::CreateGenericTable { .. } => {
+                NamespaceRelation::CanCreateGenericTable
+            }
+            CatalogNamespaceAction::ListGenericTables => NamespaceRelation::CanListGenericTables,
         }
     }
 }
@@ -1822,6 +1828,76 @@ impl ReducedRelation for OpenFGAViewAction {
             OpenFGAViewAction::GrantSelect => ViewRelation::CanGrantSelect,
             OpenFGAViewAction::GrantModify => ViewRelation::CanGrantModify,
             OpenFGAViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
+        }
+    }
+}
+
+// =================== Generic Table Relations ===================
+
+#[derive(
+    Debug, Clone, Copy, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr, EnumIter,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum GenericTableRelation {
+    // -- Hierarchical relations --
+    Parent,
+    // -- Direct relations --
+    Ownership,
+    PassGrants,
+    ManageGrants,
+    Describe,
+    Select,
+    Modify,
+    // -- Actions --
+    CanDrop,
+    CanWriteData,
+    CanReadData,
+    CanGetMetadata,
+    CanIncludeInList,
+    // -- Read assignments / grant actions --
+    CanReadAssignments,
+    CanGrantPassGrants,
+    CanGrantManageGrants,
+    CanGrantDescribe,
+    CanGrantSelect,
+    CanGrantModify,
+    CanChangeOwnership,
+}
+
+impl GenericTableAction for GenericTableRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanReadData | Self::CanWriteData)
+    }
+}
+impl CatalogAction for GenericTableRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+impl OpenFgaRelation for GenericTableRelation {}
+
+impl From<CatalogGenericTableAction> for GenericTableRelation {
+    fn from(action: CatalogGenericTableAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl From<&CatalogGenericTableAction> for GenericTableRelation {
+    fn from(action: &CatalogGenericTableAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl ReducedRelation for CatalogGenericTableAction {
+    type OpenFgaRelation = GenericTableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            CatalogGenericTableAction::Drop => GenericTableRelation::CanDrop,
+            CatalogGenericTableAction::WriteData => GenericTableRelation::CanWriteData,
+            CatalogGenericTableAction::ReadData => GenericTableRelation::CanReadData,
+            CatalogGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
+            CatalogGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
         }
     }
 }

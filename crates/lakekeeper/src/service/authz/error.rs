@@ -13,9 +13,10 @@ use crate::{
         InternalErrorMessage, ListRolesError, NoWarehouseTaskError, ResolveTasksError,
         SearchRolesError, TaskNotFoundError, UpdateRoleError,
         authz::{
-            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
-            AuthZCannotSeeTableLocation, AuthZCannotSeeView, AuthZCannotUseWarehouseId,
-            AuthZTableActionForbidden, AuthZUserActionForbidden, AuthZWarehouseActionForbidden,
+            AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace,
+            AuthZCannotSeeTable, AuthZCannotSeeTableLocation, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZTableActionForbidden, AuthZUserActionForbidden,
+            AuthZWarehouseActionForbidden, RequireGenericTableActionError,
             RequireNamespaceActionError, RequireProjectActionError, RequireRoleActionError,
             RequireServerActionError, RequireTableActionError, RequireTabularActionsError,
             RequireViewActionError, RequireWarehouseActionError,
@@ -253,6 +254,8 @@ pub enum AuthZError {
     AuthZCannotSeeTable(AuthZCannotSeeTable),
     RequireViewActionError(RequireViewActionError),
     AuthZCannotSeeView(AuthZCannotSeeView),
+    AuthZCannotSeeGenericTable(AuthZCannotSeeGenericTable),
+    RequireGenericTableActionError(RequireGenericTableActionError),
     AuthZCannotSeeTableLocation(AuthZCannotSeeTableLocation),
     ProjectIdMissing(ProjectIdMissing),
     TaskNotFoundError(TaskNotFoundError),
@@ -338,6 +341,9 @@ impl From<RequireTabularActionsError> for AuthZError {
             RequireTabularActionsError::AuthorizerValidationFailed(e) => {
                 RequireTableActionError::AuthorizerValidationFailed(e).into()
             }
+            RequireTabularActionsError::AuthZGenericTableActionForbidden(e) => {
+                RequireGenericTableActionError::from(e).into()
+            }
         }
     }
 }
@@ -358,6 +364,8 @@ delegate_authorization_failure_source!(AuthZError => {
     AuthZCannotSeeTable,
     RequireViewActionError,
     AuthZCannotSeeView,
+    AuthZCannotSeeGenericTable,
+    RequireGenericTableActionError,
     AuthZCannotSeeTableLocation,
     ProjectIdMissing,
     TaskNotFoundError,

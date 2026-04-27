@@ -675,7 +675,7 @@ pub(crate) async fn drop_namespace(
             FROM tabular ta
             LEFT JOIN namespace_info ni ON ta.namespace_id = ni.namespace_id
             LEFT JOIN child_namespaces cn ON ta.namespace_id = cn.namespace_id
-            WHERE warehouse_id = $1 AND metadata_location IS NOT NULL AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
+            WHERE warehouse_id = $1 AND (metadata_location IS NOT NULL OR ta.typ = 'generic-table') AND (ta.namespace_id = $2 OR (ta.namespace_id = ANY (SELECT namespace_id FROM child_namespaces)))
         ),
         tasks AS (
             SELECT t.task_id, t.queue_name, t.status as task_status from task t
@@ -803,6 +803,7 @@ pub(crate) async fn drop_namespace(
                     match typ {
                         TabularType::Table => TabularId::Table(tabular_id.into()),
                         TabularType::View => TabularId::View(tabular_id.into()),
+                        TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
                     },
                     join_location(protocol.as_str(), fs_location.as_str())
                         .map_err(InternalParseLocationError::from)?,

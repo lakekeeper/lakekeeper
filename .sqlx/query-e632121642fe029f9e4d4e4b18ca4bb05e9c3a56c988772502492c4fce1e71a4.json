@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.tabular_id as generic_table_id,\n            t.warehouse_id,\n            t.namespace_id,\n            t.name,\n            gt.format,\n            t.protected,\n            t.created_at\n        FROM tabular t\n        INNER JOIN generic_table gt ON gt.warehouse_id = t.warehouse_id AND gt.generic_table_id = t.tabular_id\n        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'\n        WHERE t.warehouse_id = $1\n          AND t.namespace_id = $2\n          AND t.typ = 'generic-table'\n          AND t.deleted_at IS NULL\n          AND (\n            ($3::timestamptz IS NULL)\n            OR (t.created_at, t.tabular_id) > ($3, $4)\n          )\n        ORDER BY t.created_at ASC, t.tabular_id ASC\n        LIMIT $5\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "generic_table_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "protected",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e632121642fe029f9e4d4e4b18ca4bb05e9c3a56c988772502492c4fce1e71a4"
+}

@@ -15,18 +15,19 @@ use crate::{
     service::{
         ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
         CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GetRoleAcrossProjectsError, NamespaceId,
-        NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId, RoleIdNotFound,
-        SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId,
-        ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
+        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
+        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
+        RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
+        TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionDescriptor, ActionOnTable, ActionOnTableOrView, ActionOnView,
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, MustUse, RequireNamespaceActionError, RequireTableActionError,
+            ActionDescriptor, ActionOnGenericTable, ActionOnTable, ActionOnTableOrView,
+            ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
+            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            MustUse, RequireNamespaceActionError, RequireTableActionError,
             RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
             UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
@@ -723,6 +724,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 ViewOrTableInfo::View(info) => {
                     TabularIdentOwned::View(info.tabular_ident().clone())
                 }
+                ViewOrTableInfo::GenericTable(info) => {
+                    TabularIdentOwned::GenericTable(info.tabular_ident().clone())
+                }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
         })
@@ -829,8 +833,18 @@ fn convert_tabular_action<'a, 'u>(
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
     user: Option<&'u AuthzUserOrRole>,
-) -> Option<ActionOnTableOrView<'a, 'u, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>>
-{
+) -> Option<
+    ActionOnTableOrView<
+        'a,
+        'u,
+        TableInfo,
+        ViewInfo,
+        CatalogTableAction,
+        CatalogViewAction,
+        GenericTabularInfo,
+        CatalogGenericTableAction,
+    >,
+> {
     match tabular_info {
         ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
             ActionOnTableOrView::Table(ActionOnTable {
@@ -848,6 +862,31 @@ fn convert_tabular_action<'a, 'u>(
                 is_delegated_execution: false,
             })
         }),
+        ViewOrTableInfo::GenericTable(gt_info) => {
+            // Map table_action to generic table action where applicable.
+            let gt_action = table_action.and_then(|a| match a {
+                CatalogTableAction::Drop => Some(CatalogGenericTableAction::Drop),
+                CatalogTableAction::ReadData => Some(CatalogGenericTableAction::ReadData),
+                CatalogTableAction::WriteData => Some(CatalogGenericTableAction::WriteData),
+                CatalogTableAction::GetMetadata => Some(CatalogGenericTableAction::GetMetadata),
+                CatalogTableAction::IncludeInList => Some(CatalogGenericTableAction::IncludeInList),
+                // Actions not supported by generic tables
+                CatalogTableAction::Commit { .. }
+                | CatalogTableAction::Rename
+                | CatalogTableAction::Undrop
+                | CatalogTableAction::GetTasks
+                | CatalogTableAction::ControlTasks
+                | CatalogTableAction::SetProtection => None,
+            });
+            gt_action.map(|action| {
+                ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                    info: gt_info,
+                    action,
+                    user,
+                    is_delegated_execution: false,
+                })
+            })
+        }
     }
 }
 
@@ -1443,6 +1482,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::View(view_id) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *view_id).into());
                             }
+                            TabularId::GenericTable(gt_id) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1555,6 +1597,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             }
                             TabularIdentOwned::View(view_ident) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, view_ident.clone()).into());
+                            }
+                            TabularIdentOwned::GenericTable(gt_ident) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
                             }
                         }
                     }

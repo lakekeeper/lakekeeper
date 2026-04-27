@@ -1,0 +1,8 @@
+pylance>=0.20.0
+pyiceberg[s3]>=0.8.0
+pyarrow>=17.0.0
+requests>=2.31.0
+numpy>=1.26.0
+pandas>=2.0.0
+boto3>=1.34.0
+pytest>=8.0.0

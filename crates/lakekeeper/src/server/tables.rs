@@ -1129,6 +1129,9 @@ fn interpret_authz_results_for_load_table(
                     .into());
                 }
             }
+            ActionOnTableOrView::GenericTable(_) => {
+                // Generic tables don't appear in load_tabular flow.
+            }
         }
     }
 

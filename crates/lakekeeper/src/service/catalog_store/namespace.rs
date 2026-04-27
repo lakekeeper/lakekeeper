@@ -58,6 +58,27 @@ pub struct NamespaceWithParent {
     /// return deterministic case independent of which earlier caller populated the cache.
     pub requested_ident: Option<NamespaceIdent>,
 }
+impl NamespaceWithParent {
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn test_default(namespace_id: NamespaceId, warehouse_id: WarehouseId) -> Self {
+        Self {
+            namespace: Arc::new(Namespace {
+                namespace_ident: iceberg::NamespaceIdent::new("test".to_string()),
+                namespace_id,
+                warehouse_id,
+                protected: false,
+                properties: None,
+                created_at: chrono::Utc::now(),
+                updated_at: Some(chrono::Utc::now()),
+                version: 0.into(),
+            }),
+            parent: None,
+            requested_ident: None,
+        }
+    }
+}
+
 pub trait AuthZNamespaceInfo: Send + Sync {
     fn namespace(&self) -> &Namespace;
     fn namespace_id(&self) -> NamespaceId {
