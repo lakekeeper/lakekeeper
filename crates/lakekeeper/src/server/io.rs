@@ -75,9 +75,7 @@ pub(crate) async fn remove_all(
     io: &impl LakekeeperStorage,
     location: &Location,
 ) -> Result<(), IOErrorExt> {
-    io.remove_all(location.as_str(), None)
-        .await
-        .map_err(Into::into)
+    io.remove_all(location.as_str()).await.map_err(Into::into)
 }
 
 pub(crate) async fn list_location<'a>(

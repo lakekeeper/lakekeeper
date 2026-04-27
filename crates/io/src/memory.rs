@@ -260,7 +260,7 @@ impl LakekeeperStorage for MemoryStorage {
     /// Overrides the default streamed list+batch-delete implementation because
     /// the in-memory backend has no I/O to batch and can drain matching keys
     /// from the underlying `HashMap` in a single write-lock acquisition.
-    async fn remove_all(&self, path: &str, _: Option<usize>) -> Result<(), DeleteError> {
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
         let prefix = if path.ends_with('/') {
             normalize_memory_path(path)?
         } else {
@@ -407,10 +407,7 @@ mod tests {
         }
 
         // Remove all files in subdir
-        storage
-            .remove_all("memory://data/subdir", None)
-            .await
-            .unwrap();
+        storage.remove_all("memory://data/subdir").await.unwrap();
 
         // Verify subdir files are deleted
         for (path, _) in &test_files[0..3] {

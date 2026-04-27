@@ -878,7 +878,7 @@ async fn test_remove_all_impl(storage: &StorageBackend, config: &TestConfig) -> 
     }
 
     // Remove all files in the directory
-    storage.remove_all(&base_dir, None).await?;
+    storage.remove_all(&base_dir).await?;
 
     // Wait a bit for eventual consistency (important for S3)
     sleep(Duration::from_millis(100)).await;
@@ -929,7 +929,7 @@ async fn test_remove_all_treats_input_as_dir_impl(
 
     // Remove all files in the directory
     let remove_dir = format!("{}/subdir", base_dir.trim_end_matches('/'));
-    storage.remove_all(&remove_dir, None).await?;
+    storage.remove_all(&remove_dir).await?;
 
     // Wait a bit for eventual consistency (important for S3)
     sleep(Duration::from_millis(100)).await;
@@ -1233,7 +1233,7 @@ async fn test_remove_all_deletes_directory_impl(
     );
 
     // Remove all files and the directory itself
-    storage.remove_all(&target_dir, None).await?;
+    storage.remove_all(&target_dir).await?;
 
     // Wait a bit for eventual consistency (important for S3)
     sleep(Duration::from_millis(100)).await;

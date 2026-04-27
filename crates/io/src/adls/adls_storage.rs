@@ -430,7 +430,7 @@ impl LakekeeperStorage for AdlsStorage {
     /// `NotFound` responses are treated as success, matching the idempotent
     /// semantics of `delete` and `delete_batch` on this backend — removing an
     /// already-absent prefix is a no-op, not an error.
-    async fn remove_all(&self, path: &str, _: Option<usize>) -> Result<(), DeleteError> {
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
         let path = path.trim_end_matches('/');
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 

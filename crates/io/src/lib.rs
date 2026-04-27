@@ -227,28 +227,15 @@ where
 
     /// Remove a directory and all of its contents under the given prefix.
     ///
-    /// The default implementation streams the listing and issues up to
-    /// [`REMOVE_ALL_CONCURRENCY`] concurrent `delete_batch` calls (one per listed
-    /// page) on the same task, without spawning. This keeps memory bounded to
-    /// roughly `REMOVE_ALL_CONCURRENCY × page_size` paths in flight while
-    /// remaining compatible with `&self` dispatch and `dyn LakekeeperStorage`.
-    ///
-    /// Backends with a native recursive delete (e.g. ADLS Gen2) or direct
-    /// in-process state (e.g. the in-memory backend) should override this
-    /// method to use the faster path.
+    /// Default implementation relies on `list` and `delete_batch` providing
+    /// "appropriate" concurrency / parallelism. May be overridden for storage
+    /// backends that have an actual recursive delete feature.
     ///
     /// # Error semantics
     ///
-    /// On the first error (listing or deleting), this function stops polling
-    /// further page-delete futures. In-flight batches in the same concurrent
-    /// group may complete or be dropped. Callers must treat `remove_all` as
-    /// best-effort and may re-run it to finish cleanup.
-    async fn remove_all(
-        &self,
-        path: &str,
-        remove_all_concurrency: Option<usize>,
-    ) -> Result<(), DeleteError> {
-        let remove_all_concurrency = remove_all_concurrency.unwrap_or(REMOVE_ALL_CONCURRENCY);
+    /// On the first error (listing or deleting), this function stops processing.
+    /// Callers must treat `remove_all` as best-effort and may re-run it to finish cleanup.
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
         let list_stream = self.list(path, None).await.map_err(|e| {
             DeleteError::InvalidLocation(
                 e.with_context("Remove all operation failed when listing files"),
@@ -260,7 +247,7 @@ where
                     e.with_context("Remove all operation failed when listing files"),
                 )
             })
-            .try_for_each_concurrent(remove_all_concurrency, |page| async move {
+            .try_for_each(|page| async move {
                 if page.is_empty() {
                     return Ok(());
                 }
@@ -283,10 +270,6 @@ where
             .await
     }
 }
-
-/// Maximum number of concurrent `delete_batch` calls issued by the default
-/// [`LakekeeperStorage::remove_all`] implementation.
-pub const REMOVE_ALL_CONCURRENCY: usize = 10;
 
 #[async_trait::async_trait]
 impl LakekeeperStorage for StorageBackend {
@@ -372,30 +355,16 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn remove_all(
-        &self,
-        path: &str,
-        remove_all_concurrency: Option<usize>,
-    ) -> Result<(), DeleteError> {
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
         match self {
             #[cfg(feature = "storage-s3")]
-            StorageBackend::S3(s3_storage) => {
-                s3_storage.remove_all(path, remove_all_concurrency).await
-            }
+            StorageBackend::S3(s3_storage) => s3_storage.remove_all(path).await,
             #[cfg(feature = "storage-in-memory")]
-            StorageBackend::Memory(memory_storage) => {
-                memory_storage
-                    .remove_all(path, remove_all_concurrency)
-                    .await
-            }
+            StorageBackend::Memory(memory_storage) => memory_storage.remove_all(path).await,
             #[cfg(feature = "storage-adls")]
-            StorageBackend::Adls(adls_storage) => {
-                adls_storage.remove_all(path, remove_all_concurrency).await
-            }
+            StorageBackend::Adls(adls_storage) => adls_storage.remove_all(path).await,
             #[cfg(feature = "storage-gcs")]
-            StorageBackend::Gcs(gcs_storage) => {
-                gcs_storage.remove_all(path, remove_all_concurrency).await
-            }
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
         }
     }
 }
@@ -465,8 +434,8 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).list(path, page_size).await
                 }
 
-                async fn remove_all(&self, path: &str, remove_all_concurrency: Option<usize>) -> Result<(), DeleteError> {
-                    (**self).remove_all(path, remove_all_concurrency).await
+                async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+                    (**self).remove_all(path).await
                 }
             }
         )+
