@@ -187,7 +187,7 @@ impl LakekeeperStorage for MemoryStorage {
             None => Err(ReadError::IOError(IOError::new(
                 ErrorKind::NotFound,
                 "Object not found in memory storage",
-                path.to_string(),
+                key,
             ))),
         }
     }

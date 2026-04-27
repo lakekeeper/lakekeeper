@@ -227,9 +227,12 @@ where
 
     /// Remove a directory and all of its contents under the given prefix.
     ///
-    /// Default implementation relies on `list` and `delete_batch` providing
-    /// "appropriate" concurrency / parallelism. May be overridden for storage
-    /// backends that have an actual recursive delete feature.
+    /// Default implementation runs sequential loop on `page`s returned from `list`,
+    /// feeding the `page` into `delete_batch`. The `delete_batch` implementation is
+    /// is relied upon ro provide "internal" concurrency or parallelism appropriate
+    /// for the storage backend.
+    /// If a storage backend has an actual recursive delete function, this method
+    /// should be implemented on the concrete storage backends' implementation.
     ///
     /// # Error semantics
     ///
