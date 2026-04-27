@@ -1,4 +1,5 @@
 mod create;
+mod credentials;
 mod drop;
 mod list;
 mod load;
@@ -10,10 +11,11 @@ use async_trait::async_trait;
 use crate::{
     api::{
         ApiContext,
-        iceberg::v1::{DataAccessMode, namespace::NamespaceParameters},
+        iceberg::v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
         v1::generic_tables::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService,
-            ListGenericTablesQuery, ListGenericTablesResponse, LoadGenericTableResponse,
+            ListGenericTablesQuery, ListGenericTablesResponse, LoadGenericTableCredentialsRequest,
+            LoadGenericTableCredentialsResponse, LoadGenericTableResponse,
         },
     },
     request_metadata::RequestMetadata,
@@ -125,6 +127,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
         load::load_generic_table::<C, A, S>(parameters, state, data_access, request_metadata).await
     }
 
+    async fn load_generic_table_credentials(
+        parameters: GenericTableParameters,
+        request: LoadGenericTableCredentialsRequest,
+        data_access: DataAccess,
+        state: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<LoadGenericTableCredentialsResponse> {
+        credentials::load_generic_table_credentials::<C, A, S>(
+            parameters,
+            request,
+            data_access,
+            state,
+            request_metadata,
+        )
+        .await
+    }
+
     async fn list_generic_tables(
         parameters: NamespaceParameters,
         query: ListGenericTablesQuery,
@@ -145,6 +164,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::collections::HashMap;
+
     use http::StatusCode;
     use iceberg::NamespaceIdent;
     use sqlx::PgPool;
@@ -162,7 +183,6 @@ pub(crate) mod test {
             PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
             warehouse::test::initialize_warehouse,
         },
-        request_metadata::RequestMetadata,
         server::CatalogServer,
         service::{
             GenericTableFormat, State,
@@ -205,7 +225,7 @@ pub(crate) mod test {
             format: GenericTableFormat::Unknown("lance".to_string()),
             base_location: None,
             doc: Some("test doc".to_string()),
-            properties: Default::default(),
+            properties: HashMap::default(),
             schema: None,
             statistics: None,
         }

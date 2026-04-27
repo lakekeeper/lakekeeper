@@ -14,9 +14,10 @@ use lakekeeper::{
         AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, NamespaceId, NamespaceWithParent,
         ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
         authz::{
-            ActionOnTable, ActionOnView, Authorizer, AuthzBackendErrorOrBadRequest,
-            CannotInspectPermissions, CatalogProjectAction, CatalogUserAction,
-            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
+            AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
+            CatalogUserAction, IsAllowedActionError, ListProjectsResponse, NamespaceParent,
+            UserOrRole,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -597,48 +598,51 @@ impl Authorizer for OpenFGAAuthorizer {
             .await
     }
 
-    async fn are_allowed_generic_table_actions_impl(
+    async fn are_allowed_generic_table_actions_impl<
+        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+    >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZGenericTableInfo,
-            Self::GenericTableAction,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user = for_user.map_or_else(
-            || metadata.actor().to_openfga(),
-            |u| u.api_user_or_role().to_openfga(),
-        );
-
+        // Build check requests with per-action user handling
         let items: Vec<_> = actions
             .iter()
-            .map(|(_ns, gt, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: (gt.warehouse_id(), gt.generic_table_id()).to_openfga(),
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.generic_table_id())
+                        .to_openfga(),
+                }
             })
             .collect();
 
-        let guard_tuples = if for_user.is_some() {
-            let unique_gts: HashSet<_> = actions
-                .iter()
-                .map(|(_ns, gt, _)| (gt.warehouse_id(), gt.generic_table_id()).to_openfga())
-                .collect();
-            unique_gts
-                .into_iter()
-                .map(|object| CheckRequestTupleKey {
-                    user: metadata.actor().to_openfga(),
-                    relation: GenericTableRelation::CanReadAssignments.to_string(),
-                    object,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        // Collect guard tuples for actions with explicit for_user, but skip for delegated execution.
+        let mut guard_tuples = Vec::new();
+        let unique_gts_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some() && !action.is_delegated_execution)
+            .map(|(_, action)| {
+                (action.info.warehouse_id(), action.info.generic_table_id()).to_openfga()
+            })
+            .collect();
+
+        guard_tuples.extend(unique_gts_needing_guards.into_iter().map(|gt_obj| {
+            CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: GenericTableRelation::CanReadAssignments.to_string(),
+                object: gt_obj,
+            }
+        }));
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
             .await
@@ -2015,19 +2019,30 @@ pub(crate) mod tests {
             let gt_info =
                 GenericTabularInfo::test_default(warehouse_id, namespace_id, generic_table_id);
 
+            let make = |action| {
+                (
+                    &ns,
+                    ActionOnGenericTable {
+                        info: &gt_info,
+                        action,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                )
+            };
+
             // Before creating any tuples, all actions should be denied
             let results = authorizer
                 .are_allowed_generic_table_actions_impl(
                     &metadata,
-                    None,
                     &warehouse,
                     &parent_namespaces,
                     &[
-                        (&ns, &gt_info, GenericTableRelation::CanGetMetadata),
-                        (&ns, &gt_info, GenericTableRelation::CanReadData),
-                        (&ns, &gt_info, GenericTableRelation::CanWriteData),
-                        (&ns, &gt_info, GenericTableRelation::CanDrop),
-                        (&ns, &gt_info, GenericTableRelation::CanIncludeInList),
+                        make(GenericTableRelation::CanGetMetadata),
+                        make(GenericTableRelation::CanReadData),
+                        make(GenericTableRelation::CanWriteData),
+                        make(GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanIncludeInList),
                     ],
                 )
                 .await
@@ -2044,15 +2059,14 @@ pub(crate) mod tests {
             let results = authorizer
                 .are_allowed_generic_table_actions_impl(
                     &metadata,
-                    None,
                     &warehouse,
                     &parent_namespaces,
                     &[
-                        (&ns, &gt_info, GenericTableRelation::CanGetMetadata),
-                        (&ns, &gt_info, GenericTableRelation::CanReadData),
-                        (&ns, &gt_info, GenericTableRelation::CanWriteData),
-                        (&ns, &gt_info, GenericTableRelation::CanDrop),
-                        (&ns, &gt_info, GenericTableRelation::CanIncludeInList),
+                        make(GenericTableRelation::CanGetMetadata),
+                        make(GenericTableRelation::CanReadData),
+                        make(GenericTableRelation::CanWriteData),
+                        make(GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanIncludeInList),
                     ],
                 )
                 .await
@@ -2069,12 +2083,11 @@ pub(crate) mod tests {
             let results = authorizer
                 .are_allowed_generic_table_actions_impl(
                     &metadata,
-                    None,
                     &warehouse,
                     &parent_namespaces,
                     &[
-                        (&ns, &gt_info, GenericTableRelation::CanGetMetadata),
-                        (&ns, &gt_info, GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanGetMetadata),
+                        make(GenericTableRelation::CanDrop),
                     ],
                 )
                 .await

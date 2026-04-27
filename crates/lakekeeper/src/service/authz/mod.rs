@@ -1111,16 +1111,16 @@ where
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
     /// Checks if actions are allowed on generic tables.
-    async fn are_allowed_generic_table_actions_impl(
+    async fn are_allowed_generic_table_actions_impl<
+        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+    >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZGenericTableInfo,
-            Self::GenericTableAction,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError>;
 
@@ -1920,27 +1920,32 @@ pub(crate) mod tests {
             Ok(results)
         }
 
-        async fn are_allowed_generic_table_actions_impl(
+        async fn are_allowed_generic_table_actions_impl<
+            A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+        >(
             &self,
-            _metadata: &RequestMetadata,
-            _for_user: Option<&UserOrRole>,
+            metadata: &RequestMetadata,
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(
                 &NamespaceWithParent,
-                &impl AuthZGenericTableInfo,
-                Self::GenericTableAction,
+                ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
             )],
         ) -> Result<Vec<bool>, IsAllowedActionError> {
+            // See the table impl above for why we fall back to the actor.
+            let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
                 .iter()
-                .map(|(_parent_namespace, gt, action)| {
-                    if self.action_is_blocked(format!("generic_table:{action:?}").as_str()) {
+                .map(|(_parent_namespace, action)| {
+                    let converted: Self::GenericTableAction = action.action.clone().into();
+                    if self.action_is_blocked(format!("generic_table:{converted:?}").as_str()) {
                         return false;
                     }
-                    let gt_id = gt.generic_table_id();
-                    let warehouse_id = gt.warehouse_id();
-                    self.check_available(format!("generic_table:{warehouse_id}/{gt_id}").as_str())
+                    let gt_id = action.info.generic_table_id();
+                    let warehouse_id = action.info.warehouse_id();
+                    let object = format!("generic_table:{warehouse_id}/{gt_id}");
+                    let subject = action.user.or(actor_identity.as_ref());
+                    self.check_available_for_user(&object, subject)
                 })
                 .collect();
             Ok(results)

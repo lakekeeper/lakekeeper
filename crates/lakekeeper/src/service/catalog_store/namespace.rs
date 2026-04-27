@@ -74,6 +74,7 @@ impl NamespaceWithParent {
                 version: 0.into(),
             }),
             parent: None,
+            requested_ident: None,
         }
     }
 }

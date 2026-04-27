@@ -17,11 +17,11 @@ use crate::{
         WarehouseId,
         authn::UserId,
         authz::{
-            ActionOnTable, ActionOnView, Authorizer, AuthzBackendErrorOrBadRequest,
-            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogUserAction,
-            CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError, ListProjectsResponse,
-            NamespaceParent, UserOrRole,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
+            AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
+            ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -198,16 +198,16 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![true; actions.len()])
     }
 
-    async fn are_allowed_generic_table_actions_impl(
+    async fn are_allowed_generic_table_actions_impl<
+        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+    >(
         &self,
         _metadata: &RequestMetadata,
-        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZGenericTableInfo,
-            Self::GenericTableAction,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; actions.len()])

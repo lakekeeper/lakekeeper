@@ -20,8 +20,8 @@ use crate::{
         RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
         TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionDescriptor, ActionOnTable, ActionOnTableOrView, ActionOnView,
-            AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            ActionDescriptor, ActionOnGenericTable, ActionOnTable, ActionOnTableOrView,
+            ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
             AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -878,7 +878,14 @@ fn convert_tabular_action<'a, 'u>(
                 | CatalogTableAction::ControlTasks
                 | CatalogTableAction::SetProtection => None,
             });
-            gt_action.map(|action| ActionOnTableOrView::GenericTable((gt_info, action)))
+            gt_action.map(|action| {
+                ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                    info: gt_info,
+                    action,
+                    user,
+                    is_delegated_execution: false,
+                })
+            })
         }
     }
 }

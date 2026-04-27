@@ -1864,7 +1864,11 @@ pub enum GenericTableRelation {
     CanChangeOwnership,
 }
 
-impl GenericTableAction for GenericTableRelation {}
+impl GenericTableAction for GenericTableRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanReadData | Self::CanWriteData)
+    }
+}
 impl CatalogAction for GenericTableRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()

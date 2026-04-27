@@ -385,6 +385,7 @@ mod tests {
     use sqlx::PgPool;
     use uuid::Uuid;
 
+    use super::*;
     use crate::{
         implementations::postgres::{
             CatalogState, namespace::tests::initialize_namespace,
@@ -392,8 +393,6 @@ mod tests {
         },
         service::{GenericTableCreation, GenericTableFormat, GenericTableId, NamespaceId},
     };
-
-    use super::*;
 
     async fn setup(pool: PgPool) -> (CatalogState, PgPool, crate::WarehouseId, NamespaceId) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());

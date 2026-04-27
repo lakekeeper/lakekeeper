@@ -15,7 +15,9 @@ use crate::{
         CatalogBackendError, CatalogStore, GenericTableId, InvalidNamespaceIdentifier,
         InvalidPaginationToken, NamespaceId, NamespaceVersion, Result, TableId, TabularId,
         TabularIdentBorrowed, TabularIdentOwned, Transaction, ViewId, WarehouseVersion,
-        authz::{ActionOnTable, ActionOnTableOrView, ActionOnView, UserOrRole},
+        authz::{
+            ActionOnGenericTable, ActionOnTable, ActionOnTableOrView, ActionOnView, UserOrRole,
+        },
         define_simple_error, define_transparent_error,
         events::impl_authorization_failure_source,
         impl_error_stack_methods, impl_from_with_detail,
@@ -311,7 +313,12 @@ impl ViewOrTableInfo {
                 user,
                 is_delegated_execution: false,
             }),
-            Self::GenericTable(gt) => ActionOnTableOrView::GenericTable((gt, generic_table_action)),
+            Self::GenericTable(gt) => ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                info: gt,
+                action: generic_table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 
@@ -644,6 +651,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
         match self {
             Self::Table(info) => TabularId::Table(info.tabular_id),
             Self::View(info) => TabularId::View(info.tabular_id),
+            Self::GenericTable(info) => TabularId::GenericTable(info.tabular_id),
         }
     }
 
@@ -651,6 +659,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
         match self {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
+            Self::GenericTable(info) => info.namespace_id,
         }
     }
 
@@ -658,6 +667,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
         match self {
             Self::Table(info) => info.protected,
             Self::View(info) => info.protected,
+            Self::GenericTable(info) => info.protected,
         }
     }
 
@@ -665,6 +675,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
         match self {
             Self::Table(info) => &info.properties,
             Self::View(info) => &info.properties,
+            Self::GenericTable(info) => &info.properties,
         }
     }
 }
@@ -921,7 +932,12 @@ impl ViewOrTableDeletionInfo {
                 user,
                 is_delegated_execution: false,
             }),
-            Self::GenericTable(gt) => ActionOnTableOrView::GenericTable((gt, generic_table_action)),
+            Self::GenericTable(gt) => ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                info: gt,
+                action: generic_table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 }

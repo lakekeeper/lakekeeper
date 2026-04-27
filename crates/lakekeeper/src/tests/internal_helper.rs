@@ -1,4 +1,4 @@
-use std::{future::Future, sync::LazyLock};
+use std::{collections::HashMap, future::Future, sync::LazyLock};
 
 use iceberg::{
     NamespaceIdent, TableIdent,
@@ -222,11 +222,13 @@ pub(crate) async fn create_generic_table<T: Authorizer>(
     ns_name: impl Into<String>,
     name: impl Into<String>,
 ) -> crate::api::Result<crate::api::v1::generic_tables::LoadGenericTableResponse> {
-    use crate::api::{
-        iceberg::v1::namespace::NamespaceParameters,
-        v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+    use crate::{
+        api::{
+            iceberg::v1::namespace::NamespaceParameters,
+            v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+        },
+        service::GenericTableFormat,
     };
-    use crate::service::GenericTableFormat;
 
     CatalogServer::create_generic_table(
         NamespaceParameters {
@@ -238,7 +240,7 @@ pub(crate) async fn create_generic_table<T: Authorizer>(
             format: GenericTableFormat::Unknown("lance".to_string()),
             base_location: None,
             doc: None,
-            properties: Default::default(),
+            properties: HashMap::default(),
             schema: None,
             statistics: None,
         },

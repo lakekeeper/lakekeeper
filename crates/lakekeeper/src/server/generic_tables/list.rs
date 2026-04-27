@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     api::{
@@ -13,8 +13,8 @@ use crate::{
     service::{
         CachePolicy, CatalogGenericTableOps, CatalogStore, Result, SecretStore, State, Transaction,
         authz::{
-            AuthZGenericTableOps, Authorizer, AuthzNamespaceOps, CatalogGenericTableAction,
-            CatalogNamespaceAction,
+            ActionOnGenericTable, AuthZGenericTableOps, Authorizer, AuthzNamespaceOps,
+            CatalogGenericTableAction, CatalogNamespaceAction,
         },
         events::{
             APIEventContext, AuthorizationFailureSource,
@@ -95,21 +95,26 @@ pub(super) async fn list_generic_tables<C: CatalogStore, A: Authorizer + Clone, 
             .map(|entry| {
                 (
                     &ns.namespace,
-                    entry,
-                    CatalogGenericTableAction::IncludeInList,
+                    ActionOnGenericTable {
+                        info: entry,
+                        action: CatalogGenericTableAction::IncludeInList,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
                 )
             })
             .collect();
 
+        let parents: HashMap<_, _> = ns
+            .parents
+            .iter()
+            .map(|n| (n.namespace_id(), n.clone()))
+            .collect();
         authorizer
             .are_allowed_generic_table_actions_vec(
                 &request_metadata,
-                None,
                 &warehouse,
-                &ns.parents
-                    .iter()
-                    .map(|n| (n.namespace_id(), n.clone()))
-                    .collect(),
+                &parents,
                 &actions,
             )
             .await

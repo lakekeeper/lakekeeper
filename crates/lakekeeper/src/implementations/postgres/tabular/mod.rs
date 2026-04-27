@@ -987,7 +987,8 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
-                    AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table')
+                    AND t.metadata_location IS NOT NULL
+                    AND t.typ != 'generic-table'
                     AND (t.tabular_id = $2 OR t.namespace_id = $2)
                 ORDER BY (t.tabular_id = $2) DESC
                 LIMIT 10
@@ -1074,7 +1075,8 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
-                    AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table')
+                    AND t.metadata_location IS NOT NULL
+                    AND t.typ != 'generic-table'
                 ORDER BY distance ASC
                 LIMIT 10
             ),

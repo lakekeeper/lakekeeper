@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, RawQuery, State},
     response::IntoResponse,
     routing::{get, post},
 };
@@ -15,10 +15,11 @@ use crate::{
     api::{
         ApiContext, Result,
         iceberg::{
-            types::Prefix,
+            types::{Prefix, ReferencedByQuery, ReferencingView},
             v1::{
+                DataAccess, DataAccessMode,
                 namespace::{NamespaceIdentUrl, NamespaceParameters},
-                tables::parse_data_access,
+                tables::{parse_data_access, parse_referenced_by_param},
             },
         },
     },
@@ -97,6 +98,64 @@ pub struct ListGenericTablesQuery {
     pub page_size: Option<i64>,
 }
 
+/// Query params for `load_generic_table_credentials`. Mirrors
+/// `LoadTableCredentialsQuery` from the Iceberg REST API: the `referenced-by`
+/// param lets engines pass DEFINER chain context so the catalog can authorize
+/// the generic-table access under the referencing view's owner.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct LoadGenericTableCredentialsQuery {
+    pub referenced_by: Option<ReferencedByQuery>,
+}
+
+impl<'de> serde::Deserialize<'de> for LoadGenericTableCredentialsQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct V;
+
+        impl Visitor<'_> for V {
+            type Value = LoadGenericTableCredentialsQuery;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a string containing query parameters")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(LoadGenericTableCredentialsQuery {
+                    referenced_by: parse_referenced_by_param(s),
+                })
+            }
+        }
+
+        deserializer.deserialize_str(V)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, typed_builder::TypedBuilder)]
+pub struct LoadGenericTableCredentialsRequest {
+    #[builder(default)]
+    pub referenced_by: Option<Vec<ReferencingView>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct LoadGenericTableCredentialsResponse {
+    pub storage_credentials: Vec<StorageCredential>,
+}
+
+impl axum::response::IntoResponse for LoadGenericTableCredentialsResponse {
+    fn into_response(self) -> axum::response::Response {
+        axum::Json(self).into_response()
+    }
+}
+
 impl axum::response::IntoResponse for LoadGenericTableResponse {
     fn into_response(self) -> axum::response::Response {
         axum::Json(self).into_response()
@@ -135,6 +194,16 @@ where
         request_metadata: RequestMetadata,
     ) -> Result<LoadGenericTableResponse>;
 
+    /// Load only credentials for a generic table, with optional DEFINER chain
+    /// context via `referenced_by`. Mirrors Iceberg's `loadTableCredentials`.
+    async fn load_generic_table_credentials(
+        parameters: GenericTableParameters,
+        request: LoadGenericTableCredentialsRequest,
+        data_access: DataAccess,
+        state: ApiContext<S>,
+        request_metadata: RequestMetadata,
+    ) -> Result<LoadGenericTableCredentialsResponse>;
+
     async fn list_generic_tables(
         parameters: NamespaceParameters,
         query: ListGenericTablesQuery,
@@ -149,6 +218,7 @@ where
     ) -> Result<()>;
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn router<I: GenericTableService<S>, S: crate::api::ThreadSafe>() -> Router<ApiContext<S>> {
     Router::new()
         // /{prefix}/namespaces/{namespace}/generic-tables
@@ -222,6 +292,48 @@ pub fn router<I: GenericTableService<S>, S: crate::api::ThreadSafe>() -> Router<
                     )
                     .await
                     .map(|()| StatusCode::NO_CONTENT.into_response())
+                },
+            ),
+        )
+        // /{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials
+        .route(
+            "/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials",
+            get(
+                |Path((prefix, namespace, table)): Path<(Prefix, NamespaceIdentUrl, String)>,
+                 State(api_context): State<ApiContext<S>>,
+                 RawQuery(raw_query): RawQuery,
+                 headers: HeaderMap,
+                 Extension(metadata): Extension<RequestMetadata>| {
+                    let load_credentials_query = raw_query
+                        .as_deref()
+                        .and_then(|q| {
+                            use serde::de::{IntoDeserializer, value::StrDeserializer};
+                            let deserializer: StrDeserializer<'_, serde::de::value::Error> =
+                                q.into_deserializer();
+                            LoadGenericTableCredentialsQuery::deserialize(deserializer).ok()
+                        })
+                        .unwrap_or_default();
+
+                    let data_access = match parse_data_access(&headers) {
+                        DataAccessMode::ClientManaged => DataAccess::not_specified(),
+                        DataAccessMode::ServerDelegated(da) => da,
+                    };
+
+                    I::load_generic_table_credentials(
+                        GenericTableParameters {
+                            prefix: Some(prefix),
+                            namespace: namespace.into(),
+                            table_name: table,
+                        },
+                        LoadGenericTableCredentialsRequest {
+                            referenced_by: load_credentials_query
+                                .referenced_by
+                                .map(ReferencedByQuery::into_inner),
+                        },
+                        data_access,
+                        api_context,
+                        metadata,
+                    )
                 },
             ),
         )

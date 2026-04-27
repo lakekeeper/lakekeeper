@@ -11,9 +11,10 @@ use crate::{
         NamespaceWithParent, ResolvedWarehouse, SerializationError, TabularNotFound,
         UnexpectedTabularInResponse,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogGenericTableAction, IsAllowedActionError, MustUse, UserOrRole,
+            ActionOnGenericTable, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogAction, CatalogGenericTableAction,
+            IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -28,9 +29,17 @@ pub trait GenericTableAction
 where
     Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogGenericTableAction>,
 {
+    /// Whether this action reads or writes generic-table row data (as opposed
+    /// to metadata or catalog operations). Used to exclude data-plane actions
+    /// from the instance-admin bypass.
+    fn is_data_plane(&self) -> bool;
 }
 
-impl GenericTableAction for CatalogGenericTableAction {}
+impl GenericTableAction for CatalogGenericTableAction {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::ReadData | Self::WriteData)
+    }
+}
 
 // ------------------ Cannot See Error ------------------
 #[derive(Debug, PartialEq, Eq)]
@@ -38,6 +47,8 @@ pub struct AuthZCannotSeeGenericTable {
     warehouse_id: WarehouseId,
     generic_table: GenericTableIdentOrId,
     internal_resource_not_found: bool,
+    /// Set when the generic table was accessed via a DEFINER referenced-by chain
+    is_delegated_execution: Option<bool>,
 }
 impl AuthZCannotSeeGenericTable {
     #[must_use]
@@ -50,6 +61,7 @@ impl AuthZCannotSeeGenericTable {
             warehouse_id,
             generic_table: generic_table.into(),
             internal_resource_not_found: resource_not_found,
+            is_delegated_execution: None,
         }
     }
 
@@ -68,6 +80,12 @@ impl AuthZCannotSeeGenericTable {
     ) -> Self {
         Self::new(warehouse_id, generic_table, false)
     }
+
+    #[must_use]
+    pub fn with_delegated_execution(mut self, is_delegated: bool) -> Self {
+        self.is_delegated_execution = Some(is_delegated);
+        self
+    }
 }
 impl AuthorizationFailureSource for AuthZCannotSeeGenericTable {
     fn into_error_model(self) -> ErrorModel {
@@ -75,8 +93,14 @@ impl AuthorizationFailureSource for AuthZCannotSeeGenericTable {
             warehouse_id,
             generic_table,
             internal_resource_not_found: _,
+            is_delegated_execution,
         } = self;
-        TabularNotFound::new(warehouse_id, generic_table).into()
+        let mut err = TabularNotFound::new(warehouse_id, generic_table);
+        if is_delegated_execution == Some(true) {
+            err = err
+                .append_detail("Access denied during delegated execution via DEFINER view chain");
+        }
+        err.into()
     }
 
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
@@ -300,7 +324,7 @@ pub trait AuthZGenericTableOps: Authorizer {
 
     async fn are_allowed_generic_table_actions_arr<
         const N: usize,
-        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+        A: GenericTableAction + Into<Self::GenericTableAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -310,21 +334,30 @@ pub trait AuthZGenericTableOps: Authorizer {
         info: &impl AuthZGenericTableInfo,
         actions: &[A; N],
     ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
-        let actions = actions
+        let wrapped = actions
             .iter()
-            .map(|a| (&namespace_hierarchy.namespace, info, a.clone().into()))
+            .map(|a| {
+                (
+                    &namespace_hierarchy.namespace,
+                    ActionOnGenericTable {
+                        info,
+                        action: a.clone(),
+                        user: for_user,
+                        is_delegated_execution: false,
+                    },
+                )
+            })
             .collect::<Vec<_>>();
         let result = self
             .are_allowed_generic_table_actions_vec(
                 metadata,
-                for_user,
                 warehouse,
                 &namespace_hierarchy
                     .parents
                     .iter()
                     .map(|ns| (ns.namespace_id(), ns.clone()))
                     .collect(),
-                &actions,
+                &wrapped,
             )
             .await?
             .into_inner();
@@ -336,74 +369,89 @@ pub trait AuthZGenericTableOps: Authorizer {
     }
 
     async fn are_allowed_generic_table_actions_vec<
-        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+        A: GenericTableAction + Into<Self::GenericTableAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
-        mut for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        actions: &[(&NamespaceWithParent, &impl AuthZGenericTableInfo, A)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
+        )],
     ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
-            let namespaces: Vec<&NamespaceWithParent> =
-                actions.iter().map(|(ns, _, _)| *ns).collect();
+            let namespaces: Vec<&NamespaceWithParent> = actions.iter().map(|(ns, _)| *ns).collect();
             super::table::validate_namespace_hierarchy(&namespaces, parent_namespaces);
         }
 
-        if metadata.actor().to_user_or_role().as_ref() == for_user {
-            for_user = None;
+        let internal = metadata.is_lakekeeper_internal();
+
+        let mut auto_approved: Vec<Option<bool>> = Vec::with_capacity(actions.len());
+        let mut actions_to_check = Vec::new();
+
+        for (ns, action) in actions {
+            let same_warehouse = action.info.warehouse_id() == warehouse.warehouse_id;
+            if !same_warehouse {
+                tracing::warn!(
+                    "Generic table warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
+                    action.info.warehouse_id(),
+                    warehouse.warehouse_id
+                );
+                auto_approved.push(Some(false));
+                continue;
+            }
+
+            // Normalize user: if it's the actor itself, treat as None (acting as self).
+            let normalized_user = if metadata.actor().to_user_or_role().as_ref() == action.user {
+                None
+            } else {
+                action.user
+            };
+
+            // `LakekeeperInternal` bypasses all actions including data-plane.
+            // Instance admins bypass only non-data-plane actions.
+            let bypass = metadata.bypasses_control_plane_authz(normalized_user)
+                && (internal || !action.action.is_data_plane());
+            if bypass {
+                auto_approved.push(Some(true));
+            } else {
+                auto_approved.push(None);
+                let mut normalized_action = action.clone();
+                normalized_action.user = normalized_user;
+                actions_to_check.push((*ns, normalized_action));
+            }
         }
 
-        let warehouse_matches = actions
-            .iter()
-            .map(|(_, info, _)| {
-                let same_warehouse = info.warehouse_id() == warehouse.warehouse_id;
-                if !same_warehouse {
-                    tracing::warn!(
-                        "Generic table warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
-                        info.warehouse_id(),
-                        warehouse.warehouse_id
-                    );
-                }
-                same_warehouse
-            })
-            .collect::<Vec<_>>();
-
-        if metadata.has_admin_privileges() && for_user.is_none() {
-            Ok(warehouse_matches)
+        if actions_to_check.is_empty() {
+            Ok(auto_approved.into_iter().map(|v| v.unwrap()).collect())
         } else {
-            let converted = actions
-                .iter()
-                .map(|(ns, id, action)| (*ns, *id, action.clone().into()))
-                .collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_generic_table_actions_impl(
                     metadata,
-                    for_user,
                     warehouse,
                     parent_namespaces,
-                    &converted,
+                    &actions_to_check,
                 )
                 .await?;
 
-            if decisions.len() != actions.len() {
+            if decisions.len() != actions_to_check.len() {
                 return Err(AuthorizationCountMismatch::new(
-                    actions.len(),
+                    actions_to_check.len(),
                     decisions.len(),
                     "generic_table",
                 )
                 .into());
             }
 
-            let decisions = warehouse_matches
-                .iter()
-                .zip(decisions.iter())
-                .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
-                .collect::<Vec<_>>();
+            let mut decision_iter = decisions.into_iter();
+            let final_decisions: Vec<bool> = auto_approved
+                .into_iter()
+                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap()))
+                .collect();
 
-            Ok(decisions)
+            Ok(final_decisions)
         }
         .map(MustUse::from)
     }
