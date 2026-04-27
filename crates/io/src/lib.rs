@@ -229,7 +229,7 @@ where
     ///
     /// Default implementation runs sequential loop on `page`s returned from `list`,
     /// feeding the `page` into `delete_batch`. The `delete_batch` implementation is
-    /// is relied upon ro provide "internal" concurrency or parallelism appropriate
+    /// relied upon to provide "internal" concurrency or parallelism appropriate
     /// for the storage backend.
     /// If a storage backend has an actual recursive delete function, this method
     /// should be implemented on the concrete storage backends' implementation.
