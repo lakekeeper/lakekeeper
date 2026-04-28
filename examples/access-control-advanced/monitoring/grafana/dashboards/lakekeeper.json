@@ -1,0 +1,1775 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "lakekeeper-overview",
+  "title": "Lakekeeper Overview",
+  "tags": [
+    "lakekeeper",
+    "iceberg"
+  ],
+  "timezone": "",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "endpoint",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(axum_http_requests_total, endpoint)",
+          "refId": "Endpoints"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "label": "Endpoint",
+        "sort": 1
+      },
+      {
+        "name": "method",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(axum_http_requests_total, method)",
+          "refId": "Methods"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "label": "Method",
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "Overview",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 20,
+      "title": "Up",
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(up{job=\"lakekeeper\"})",
+          "refId": "A"
+        }
+      ],
+      "description": "Whether Prometheus is currently scraping Lakekeeper's /metrics endpoint. DOWN means the scrape failed (process gone, port unreachable, or metrics port not exposed) \u2014 not necessarily that the catalog is broken, but observability is."
+    },
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Requests / sec",
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 3,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "rps"
+        }
+      ],
+      "description": "Total HTTP request rate across all endpoints, averaged over 1 minute. Affected by the endpoint and method filters at the top."
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Error rate (5xx)",
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 7,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "100 * (sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])), 0.0001)",
+          "refId": "A",
+          "legendFormat": "5xx %"
+        }
+      ],
+      "description": "Percentage of requests in the last 5 minutes that returned a 5xx server error. Sustained values above 1% indicate a real incident."
+    },
+    {
+      "type": "stat",
+      "id": 21,
+      "title": "Apdex (T=0.25s)",
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 11,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.85
+              },
+              {
+                "color": "green",
+                "value": 0.94
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "(\n  sum(rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\",le=\"0.25\"}[5m]))\n  + sum(rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\",le=\"1\"}[5m]))\n) / 2 / clamp_min(sum(rate(axum_http_requests_duration_seconds_count{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])), 0.0001)",
+          "refId": "A",
+          "legendFormat": "apdex"
+        }
+      ],
+      "description": "Application Performance Index with a 250ms target. Score = (fast + tolerated/2) / total, where 'fast' = \u2264250ms and 'tolerated' = \u22641000ms. 1.0 means every request is fast; below 0.85 users will notice; below 0.7 users are unhappy."
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "p95 latency",
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 15,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "p95"
+        }
+      ],
+      "description": "95th-percentile request duration over the last 5 minutes. 95% of requests completed faster than this value."
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "In-flight",
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 19,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(axum_http_requests_pending{endpoint=~\"$endpoint\",method=~\"$method\"})",
+          "refId": "A",
+          "legendFormat": "in-flight"
+        }
+      ],
+      "description": "Number of HTTP requests currently being processed. Steady traffic with growing in-flight = backpressure (downstream is slow)."
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Requests",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "Request rate by status class",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "3xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"2..\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "2xx"
+        },
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"3..\"}[1m]))",
+          "refId": "B",
+          "legendFormat": "3xx"
+        },
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"4..\"}[1m]))",
+          "refId": "C",
+          "legendFormat": "4xx"
+        },
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"5..\"}[1m]))",
+          "refId": "D",
+          "legendFormat": "5xx"
+        }
+      ],
+      "description": "RPS stacked by status class \u2014 2xx success (green), 3xx redirect, 4xx client error (yellow), 5xx server error (red). Stack height is total RPS; growing red slice = problems."
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Latency percentiles (overall)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "B",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "C",
+          "legendFormat": "p99"
+        },
+        {
+          "expr": "sum(rate(axum_http_requests_duration_seconds_sum{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])) / clamp_min(sum(rate(axum_http_requests_duration_seconds_count{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])), 0.0001)",
+          "refId": "D",
+          "legendFormat": "avg"
+        }
+      ],
+      "description": "p50, p95, p99 and avg request latency. p50 \u2248 typical user; p99 \u2248 worst 1%. Diverging p50 vs p99 = tail-latency problem (most requests fine, a few very slow)."
+    },
+    {
+      "type": "timeseries",
+      "id": 22,
+      "title": "Request rate by HTTP method",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (method) (rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "description": "RPS broken down by HTTP method. Useful for separating reads (GET/HEAD) from writes (POST/PUT/DELETE)."
+    },
+    {
+      "type": "heatmap",
+      "id": 23,
+      "title": "Latency heatmap",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "calculate": false,
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "s"
+        },
+        "color": {
+          "scheme": "Spectral",
+          "steps": 64,
+          "mode": "scheme",
+          "exponent": 0.5,
+          "fill": "dark-orange"
+        },
+        "cellGap": 1,
+        "filterValues": {
+          "le": 1e-09
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        },
+        "legend": {
+          "show": true
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            }
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (le) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[$__rate_interval]))",
+          "refId": "A",
+          "format": "heatmap",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "description": "Distribution of request latencies over time. Each column = one time slice; each row = a latency bucket (e.g. 100\u2013250ms); color intensity = how many requests fell into that bucket during that slice. A single bright horizontal band = uniform latency. Two stacked bands = bimodal (e.g. cache-hit vs cache-miss). Reveals patterns p95/p99 lines hide."
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "Top 10 endpoints by RPS",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (endpoint) (rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\"}[1m])))",
+          "refId": "A",
+          "legendFormat": "{{endpoint}}"
+        }
+      ],
+      "description": "Ten busiest endpoints by request rate. Use to find what's driving overall traffic."
+    },
+    {
+      "type": "table",
+      "id": 8,
+      "title": "Endpoint latency & rate (last 5m)",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "RPS"
+              },
+              {
+                "id": "unit",
+                "value": "reqps"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "p50"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #C"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "p95"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #D"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "p99"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #E"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "avg"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "job": true,
+              "instance": true,
+              "service": true
+            },
+            "indexByName": {}
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "sum by (endpoint, method) (rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\"}[5m]))",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint, method) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "B",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint, method) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "C",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint, method) (rate(axum_http_requests_duration_seconds_bucket{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])))",
+          "refId": "D",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "sum by (endpoint, method) (rate(axum_http_requests_duration_seconds_sum{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])) / clamp_min(sum by (endpoint, method) (rate(axum_http_requests_duration_seconds_count{endpoint=~\"$endpoint\",method=~\"$method\"}[5m])), 0.0001)",
+          "refId": "E",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "description": "Per-endpoint table with RPS, p50/p95/p99 and avg latency over the last 5 minutes. Click the p95 column header to sort by slowest endpoint."
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "Errors",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 24,
+      "title": "4xx rate",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 3,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"4..\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "4xx"
+        }
+      ],
+      "description": "Rate of 4xx (client error) responses. Usually caused by bad clients, expired tokens, missing permissions \u2014 not a Lakekeeper bug. High sustained 4xx may still indicate a misconfigured caller."
+    },
+    {
+      "type": "stat",
+      "id": 25,
+      "title": "5xx rate",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 3,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"5..\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "5xx"
+        }
+      ],
+      "description": "Rate of 5xx (server error) responses. These are Lakekeeper's fault \u2014 investigate as soon as this is non-zero."
+    },
+    {
+      "type": "stat",
+      "id": 10,
+      "title": "Status code distribution (rps)",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 33
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 3
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "description": "Rate of each individual HTTP status code over 5 minutes. Useful for spotting unusual codes (e.g. sudden 429 = rate limiting kicked in)."
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Top 10 error endpoints (4xx + 5xx)",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (endpoint, status) (rate(axum_http_requests_total{endpoint=~\"$endpoint\",method=~\"$method\",status=~\"[45]..\"}[1m])))",
+          "refId": "A",
+          "legendFormat": "{{endpoint}} ({{status}})"
+        }
+      ],
+      "description": "Top ten endpoints generating 4xx + 5xx, broken out by status. Pinpoints which endpoint is producing the errors."
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Caches",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Cache hit ratio",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (cache_type) (rate(lakekeeper_cache_hits_total[5m])) / clamp_min(sum by (cache_type) (rate(lakekeeper_cache_hits_total[5m])) + sum by (cache_type) (rate(lakekeeper_cache_misses_total[5m])), 0.0001)",
+          "refId": "A",
+          "legendFormat": "{{cache_type}}"
+        }
+      ],
+      "description": "Hits / (hits + misses) per cache type over 5m. Sustained low ratio (<50%) means the cache is undersized, being invalidated too aggressively, or working set churn is high."
+    },
+    {
+      "type": "timeseries",
+      "id": 26,
+      "title": "Cache miss rate (per second)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (cache_type) (rate(lakekeeper_cache_misses_total[1m]))",
+          "refId": "A",
+          "legendFormat": "{{cache_type}}"
+        }
+      ],
+      "description": "Absolute miss rate per cache. Read this *with* the hit ratio: a 99% hit ratio still means trouble if the miss rate is 1000/s. Conversely, a 50% hit ratio at 1 miss/min is fine."
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "Cache size (entries)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "lakekeeper_cache_size",
+          "refId": "A",
+          "legendFormat": "{{cache_type}}"
+        }
+      ],
+      "description": "Current number of entries held in each cache. Plateau near a configured cap = the cache is saturated and starting to evict."
+    },
+    {
+      "type": "row",
+      "id": 105,
+      "title": "OpenFGA (authz)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 30,
+      "title": "OpenFGA RPS by gRPC method",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (grpc_method) (rate(grpc_server_handled_total{job=\"openfga\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "{{grpc_method}}"
+        }
+      ],
+      "description": "Rate of authorization calls by gRPC method (Check, BatchCheck, ListObjects, etc.). Every catalog request triggers at least one Check."
+    },
+    {
+      "type": "timeseries",
+      "id": 31,
+      "title": "OpenFGA p95 latency by gRPC method",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, grpc_method) (rate(grpc_server_handling_seconds_bucket{job=\"openfga\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "{{grpc_method}} p95"
+        }
+      ],
+      "description": "p95 latency of OpenFGA calls per gRPC method. If Lakekeeper is slow but its own internal work is fast, the bottleneck is here."
+    },
+    {
+      "type": "row",
+      "id": 106,
+      "title": "Postgres (lakekeeper db)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 40,
+      "title": "Postgres connections",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "pg_stat_activity_count{job=\"postgres-lakekeeper\"}",
+          "refId": "A",
+          "legendFormat": "{{state}}"
+        },
+        {
+          "expr": "pg_settings_max_connections{job=\"postgres-lakekeeper\"}",
+          "refId": "B",
+          "legendFormat": "max_connections"
+        }
+      ],
+      "description": "Postgres-server view of active connections by state, plus max_connections. This is the *DB's* perspective \u2014 not Lakekeeper's sqlx pool. A healthy graph here doesn't rule out LK being starved on its own pool slots."
+    },
+    {
+      "type": "timeseries",
+      "id": 41,
+      "title": "Postgres deadlocks & rollbacks",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(pg_stat_database_deadlocks{job=\"postgres-lakekeeper\",datname=\"postgres\"}[5m])",
+          "refId": "A",
+          "legendFormat": "deadlocks"
+        },
+        {
+          "expr": "rate(pg_stat_database_xact_rollback{job=\"postgres-lakekeeper\",datname=\"postgres\"}[5m])",
+          "refId": "B",
+          "legendFormat": "rollbacks"
+        }
+      ],
+      "description": "Rate of database deadlocks and rolled-back transactions. Non-zero deadlocks usually point to contention on a hot row or a transaction-isolation problem."
+    },
+    {
+      "type": "row",
+      "id": 104,
+      "title": "Tokio runtime",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 78
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "Worker busy ratio",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "tokio_busy_ratio",
+          "refId": "A",
+          "legendFormat": "busy ratio"
+        }
+      ],
+      "description": "Fraction of time tokio worker threads spent doing work (vs parked). >0.8 sustained means CPU-saturated."
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "Live tasks & queue depth",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "tokio_live_tasks_count",
+          "refId": "A",
+          "legendFormat": "live tasks"
+        },
+        {
+          "expr": "tokio_global_queue_depth",
+          "refId": "B",
+          "legendFormat": "queue depth"
+        }
+      ],
+      "description": "Number of alive tokio tasks and depth of the global scheduler queue. A growing queue depth means tasks are scheduled faster than they execute."
+    },
+    {
+      "type": "stat",
+      "id": 15,
+      "title": "Workers",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "tokio_workers_count",
+          "refId": "A",
+          "legendFormat": "workers"
+        }
+      ],
+      "description": "Number of tokio worker threads (defaults to CPU core count)."
+    }
+  ]
+}

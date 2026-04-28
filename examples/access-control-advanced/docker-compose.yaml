@@ -86,6 +86,7 @@ services:
     image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
     pull_policy: always
     environment:
+      - LAKEKEEPER__BASE_URI=http://localhost:8181
       - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
       - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
       - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
@@ -120,6 +121,7 @@ services:
         condition: service_healthy
     ports:
       - "8181:8181"
+      - "9000:9000"
     networks:
       iceberg_net:
 
@@ -246,6 +248,52 @@ services:
       openfga-db:
         condition: service_healthy
 
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres:postgres@db:5432/postgres?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=light
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      iceberg_net:
+
   openfga:
     depends_on:
       openfga-db:
@@ -264,6 +312,7 @@ services:
       - OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
       - OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
       - OPENFGA_MAX_CHECKS_PER_BATCH_CHECK=200
+      - OPENFGA_METRICS_ENABLE_RPC_HISTOGRAMS=true
     networks:
       iceberg_net:
     healthcheck:

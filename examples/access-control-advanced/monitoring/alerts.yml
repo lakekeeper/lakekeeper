@@ -1,0 +1,74 @@
+groups:
+  - name: lakekeeper.rules
+    interval: 30s
+    rules:
+      - alert: LakekeeperDown
+        expr: up{job="lakekeeper"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Lakekeeper /metrics endpoint is down"
+          description: "Prometheus has not scraped Lakekeeper for >1m."
+
+      - alert: LakekeeperHigh5xxRate
+        expr: |
+          (sum(rate(axum_http_requests_total{status=~"5.."}[5m])) or vector(0))
+            / clamp_min(sum(rate(axum_http_requests_total[5m])), 0.0001) > 0.01
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "5xx error rate >1% for 5m"
+          description: "{{ $value | humanizePercentage }} of requests are 5xx."
+
+      - alert: LakekeeperHigh4xxRate
+        expr: |
+          (sum(rate(axum_http_requests_total{status=~"4.."}[5m])) or vector(0))
+            / clamp_min(sum(rate(axum_http_requests_total[5m])), 0.0001) > 0.20
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "4xx rate >20% for 10m (likely client misuse or auth issue)"
+          description: "{{ $value | humanizePercentage }} of requests are 4xx."
+
+      - alert: LakekeeperHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(axum_http_requests_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 latency > 1s"
+          description: "p95 latency is {{ $value }}s."
+
+      - alert: LakekeeperRuntimeBusy
+        expr: tokio_busy_ratio > 0.8
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Tokio runtime busy ratio >80% for 10m"
+          description: "Worker threads are saturated; investigate slow tasks or scale up."
+
+      - alert: LakekeeperLowCacheHitRate
+        expr: |
+          (sum by (cache_type) (rate(lakekeeper_cache_hits_total[10m]))
+            / clamp_min(
+              sum by (cache_type) (rate(lakekeeper_cache_hits_total[10m]))
+              + sum by (cache_type) (rate(lakekeeper_cache_misses_total[10m])),
+              0.0001
+            )) < 0.5
+        for: 15m
+        labels: { severity: info }
+        annotations:
+          summary: "Cache hit ratio <50% for 15m on {{ $labels.cache_type }}"
+          description: "Hit ratio: {{ $value | humanizePercentage }}."
+
+  - name: openfga.rules
+    interval: 30s
+    rules:
+      - alert: OpenFGADown
+        expr: up{job="openfga"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "OpenFGA scrape target is down"
