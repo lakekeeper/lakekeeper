@@ -1,8 +1,9 @@
 # ========================
 # CONFIGURATION
 # ========================
-CLUSTER     ?= demo-cluster
-NAMESPACE   := kafka
+CLUSTER         ?= demo-cluster
+NAMESPACE       := kafka
+STRIMZI_VERSION := 0.45.2
 
 # ========================
 # TOP-LEVEL TARGETS
@@ -64,7 +65,9 @@ build-kafka-connect:
 	kind load docker-image kafka-connect-iceberg-sink-connector:0.1 --name $(CLUSTER)
 
 install-kafka:
-	kubectl create -f 'https://strimzi.io/install/latest?namespace=kafka' -n $(NAMESPACE)
+	curl -sL https://github.com/strimzi/strimzi-kafka-operator/releases/download/$(STRIMZI_VERSION)/strimzi-cluster-operator-$(STRIMZI_VERSION).yaml \
+		| sed 's/namespace: myproject/namespace: $(NAMESPACE)/g' \
+		| kubectl create -n $(NAMESPACE) -f -
 	@echo "⏳ Waiting for Strimzi Operator to be ready..."
 	kubectl rollout status deployment/strimzi-cluster-operator -n $(NAMESPACE)
 	kubectl apply -f kafka/cluster.yaml
