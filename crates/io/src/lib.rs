@@ -7,16 +7,17 @@
 #![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
 
+mod error;
+
 use std::{future::Future, sync::Arc, time::Duration};
 
-mod error;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{TryStreamExt as _, stream::BoxStream};
+use futures::{TryStreamExt as _Ext, stream::BoxStream};
 pub use location::{Location, LocationParseError};
 pub use tokio;
 pub use tryhard;
@@ -227,50 +228,39 @@ where
 
     /// Remove a directory and all of its contents under the given prefix.
     ///
-    /// Default implementation runs sequential loop on `page`s returned from `list`,
-    /// feeding the `page` into `delete_batch`. The `delete_batch` implementation is
-    /// relied upon to provide "internal" concurrency or parallelism appropriate
-    /// for the storage backend.
+    /// Default implementation collects all objcts under given prefix before deletion
+    /// to avoid `list` to miss objects if a backend is using remote pagination.
+    /// `list`ed objects are removed with `.delete_batch`.
+    ///
     /// If a storage backend has an actual recursive delete function, this method
     /// should be implemented on the concrete storage backends' implementation.
-    ///
-    /// # Error semantics
-    ///
-    /// On the first error (listing or deleting), this function stops processing.
-    /// Callers must treat `remove_all` as best-effort and may re-run it to finish cleanup.
     async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
-        let list_stream = self.list(path, None).await.map_err(|e| {
-            DeleteError::InvalidLocation(
-                e.with_context("Remove all operation failed when listing files"),
-            )
-        })?;
-        list_stream
+        let locations = self
+            .list(path, None)
+            .await
+            .map_err(|e| {
+                DeleteError::InvalidLocation(
+                    e.with_context("Remove all operation failed when listing files"),
+                )
+            })?
+            .try_fold(Vec::new(), async |mut out, file_infos| {
+                out.extend(file_infos.iter().map(|fi| fi.location().to_string()));
+                Ok(out)
+            })
+            .await
             .map_err(|e| {
                 DeleteError::IOError(
                     e.with_context("Remove all operation failed when listing files"),
                 )
-            })
-            .try_for_each(|page| async move {
-                if page.is_empty() {
-                    return Ok(());
-                }
-                let locations: Vec<String> = page
-                    .into_iter()
-                    .map(|file_info| file_info.location().to_string())
-                    .collect();
-                self.delete_batch(&locations).await.map_err(|e| match e {
-                    DeleteBatchError::InvalidLocation(invalid_location_error) => {
-                        DeleteError::InvalidLocation(
-                            invalid_location_error
-                                .with_context("Remove all operation failed when deleting files"),
-                        )
-                    }
-                    DeleteBatchError::IOError(ioerror) => DeleteError::IOError(
-                        ioerror.with_context("Remove all operation failed when deleting files"),
-                    ),
-                })
-            })
-            .await
+            })?;
+        self.delete_batch(&locations).await.map_err(|e| match e {
+            DeleteBatchError::InvalidLocation(invalid_location) => DeleteError::InvalidLocation(
+                invalid_location.with_context("Remove all operation failed when deleting files"),
+            ),
+            DeleteBatchError::IOError(ioerror) => DeleteError::IOError(
+                ioerror.with_context("Remove all operation failed when deleting files"),
+            ),
+        })
     }
 }
 
