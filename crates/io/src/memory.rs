@@ -152,10 +152,10 @@ fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
     Ok(key.to_string())
 }
 
+#[async_trait::async_trait]
 impl LakekeeperStorage for MemoryStorage {
-    async fn delete(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path_str = path.as_ref();
-        let key = normalize_memory_path(path_str)?;
+    async fn delete(&self, path: &str) -> Result<(), DeleteError> {
+        let key = normalize_memory_path(path)?;
 
         let mut data = self.data.write().await;
         data.remove(&key);
@@ -163,36 +163,23 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> Result<(), DeleteBatchError> {
-        let paths: Vec<String> = paths.into_iter().map(|p| p.as_ref().to_string()).collect();
-
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         for path_str in paths {
-            match self.delete(&path_str).await {
-                Ok(()) => {}
-                Err(e) => {
-                    return Err(DeleteBatchError::from(e));
-                }
-            }
+            self.delete(path_str).await?;
         }
-
         Ok(())
     }
 
-    async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
-        let path_str = path.as_ref();
-        let key = normalize_memory_path(path_str)?;
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+        let key = normalize_memory_path(path)?;
 
         let mut data = self.data.write().await;
         data.insert(key, (bytes, Utc::now()));
         Ok(())
     }
 
-    async fn read(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
-        let path_str = path.as_ref();
-        let key = normalize_memory_path(path_str)?;
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+        let key = normalize_memory_path(path)?;
 
         let data = self.data.read().await;
         match data.get(&key) {
@@ -200,25 +187,24 @@ impl LakekeeperStorage for MemoryStorage {
             None => Err(ReadError::IOError(IOError::new(
                 ErrorKind::NotFound,
                 "Object not found in memory storage",
-                path_str.to_string(),
+                key,
             ))),
         }
     }
 
-    async fn read_single(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         self.read(path).await
     }
 
     async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
     ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
-        let path_str = path.as_ref();
-        let prefix = if path_str.ends_with('/') {
-            normalize_memory_path(path_str)?
+        let prefix = if path.ends_with('/') {
+            normalize_memory_path(path)?
         } else {
-            format!("{}/", normalize_memory_path(path_str)?)
+            format!("{}/", normalize_memory_path(path)?)
         };
 
         let data = self.data.read().await;
@@ -269,25 +255,20 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(stream.boxed())
     }
 
-    async fn remove_all(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path_str = path.as_ref();
-        let prefix = if path_str.ends_with('/') {
-            normalize_memory_path(path_str)?
+    /// Native in-memory recursive delete via direct `HashMap` key scan.
+    ///
+    /// Overrides the default streamed list+batch-delete implementation because
+    /// the in-memory backend has no I/O to batch and can drain matching keys
+    /// from the underlying `HashMap` in a single write-lock acquisition.
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+        let prefix = if path.ends_with('/') {
+            normalize_memory_path(path)?
         } else {
-            format!("{}/", normalize_memory_path(path_str)?)
+            format!("{}/", normalize_memory_path(path)?)
         };
 
         let mut data = self.data.write().await;
-        let keys_to_remove: Vec<String> = data
-            .keys()
-            .filter(|key| key.starts_with(&prefix))
-            .cloned()
-            .collect();
-
-        for key in keys_to_remove {
-            data.remove(&key);
-        }
-
+        data.retain(|key, _| !key.starts_with(&prefix));
         Ok(())
     }
 }
@@ -340,10 +321,10 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create multiple test files
-        let test_paths = vec![
-            "memory://test/file1.txt",
-            "memory://test/file2.txt",
-            "memory://test/file3.txt",
+        let test_paths: Vec<String> = vec![
+            "memory://test/file1.txt".to_string(),
+            "memory://test/file2.txt".to_string(),
+            "memory://test/file3.txt".to_string(),
         ];
 
         let test_data = Bytes::from("Test data");
@@ -354,7 +335,7 @@ mod tests {
         }
 
         // Batch delete
-        storage.delete_batch(test_paths.clone()).await.unwrap();
+        storage.delete_batch(&test_paths).await.unwrap();
 
         // Verify files are deleted
         for path in &test_paths {

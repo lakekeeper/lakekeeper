@@ -7,19 +7,19 @@
 #![allow(clippy::module_name_repetitions, clippy::large_enum_variant)]
 #![forbid(unsafe_code)]
 
+mod error;
+
 use std::{future::Future, sync::Arc, time::Duration};
 
-mod error;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{StreamExt as _, stream::BoxStream};
+use futures::{TryStreamExt as _, stream::BoxStream};
 pub use location::{Location, LocationParseError};
 pub use tokio;
-use tokio::task::JoinSet;
 pub use tryhard;
 use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
 
@@ -178,388 +178,262 @@ impl FileInfo {
     }
 }
 
+#[async_trait::async_trait]
 pub trait LakekeeperStorage
 where
-    Self: std::fmt::Debug + Clone + Send + Sync + 'static,
+    Self: std::fmt::Debug + Send + Sync + 'static,
 {
     /// Deletes file.
     ///
     /// # Arguments
     ///
     /// * path: It should be *absolute* path starting with scheme string
-    fn delete(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send;
+    async fn delete(&self, path: &str) -> Result<(), DeleteError>;
 
     /// Deletes files in batch.
     ///
     /// # Arguments
     ///
-    /// * paths: An iterator of paths to delete, each path should be an absolute path starting with scheme string.
+    /// * paths: Absolute paths to delete, each starting with a scheme string.
     ///
     /// # Returns
     /// * A future that resolves to a result containing either:
     ///   - `Ok(())` if all deletions were successful.
     ///   - `Err(DeleteBatchError)` if any deletion failed.
-    fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send;
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError>;
 
     /// Write the provided data to the specified path.
-    fn write(
-        &self,
-        path: impl AsRef<str> + Send,
-        bytes: Bytes,
-    ) -> impl Future<Output = Result<(), WriteError>> + Send;
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
 
     /// Read a file from the specified path, possibly in chunks
     ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
-    fn read(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send;
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError>;
 
     /// Read a file from the specified path with a single request.
     ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
-    fn read_single(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send;
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError>;
 
     /// List files for this prefix.
     /// If the provided location does not end with a slash, the slash will be added automatically.
     /// Retries are handled internally.
-    fn list(
+    async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
-    ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>,
-    > + Send;
+    ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>;
 
-    /// Removes a directory and all its contents.
-    /// If the directory doesn't end with a slash, the slash is added automatically.
-    fn remove_all(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        async move {
-            let path = path.as_ref();
-            let mut join_set = JoinSet::new();
-
-            // Use the existing list function to get all objects
-            let mut list_stream = self.list(path, None).await?;
-            let mut list_failed = Ok(());
-
-            // Process each batch as it arrives from the stream
-            while let Some(file_info_result) = list_stream.next().await {
-                let locations = match file_info_result {
-                    Ok(file_infos) => file_infos
-                        .iter()
-                        .map(|file_info| file_info.location().clone())
-                        .collect::<Vec<_>>(),
-                    Err(e) => {
-                        list_failed = Err(e);
-                        break;
-                    }
-                };
-
-                // Skip empty pages
-                if locations.is_empty() {
-                    continue;
-                }
-
-                // Store the future but don't await yet - allows parallel execution
-                let storage = self.clone();
-                join_set.spawn(async move { storage.delete_batch(locations).await });
-            }
-
-            if let Err(e) = list_failed {
-                // Abort non-finished futures if listing failed
-                abort_unfinished_batch_delete_futures(&mut join_set).await;
-                // Return the error from listing
-                return Err(e.into());
-            }
-
-            // If no objects found, we're done
-            if join_set.is_empty() {
-                return Ok(());
-            }
-
-            // Wait for all deletion futures to complete, collecting errors
-            let mut return_error = None;
-
-            while let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        // Fatal error supersedes PartialErrors
-                        return_error = match e {
-                            DeleteBatchError::InvalidLocation(e) => Some(e.into()),
-                            DeleteBatchError::IOError(e) => Some(e.into()),
-                        }
-                    }
-                    Err(e) => {
-                        return_error = Some(DeleteError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!("Failed to join batch deletion task handle: {e}"),
-                            path.to_string(),
-                        )));
-                    }
-                }
-            }
-
-            // Return the first error if any occurred
-            match return_error {
-                Some(e) => Err(e),
-                None => Ok(()),
-            }
-        }
+    /// Remove a directory and all of its contents under the given prefix.
+    ///
+    /// Default implementation collects all objcts under given prefix before deletion
+    /// to avoid `list` to miss objects if a backend is using remote pagination.
+    /// `list`ed objects are removed with `.delete_batch`.
+    ///
+    /// If a storage backend has an actual recursive delete function, this method
+    /// should be implemented on the concrete storage backends' implementation.
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+        let locations = self
+            .list(path, None)
+            .await
+            .map_err(|e| {
+                DeleteError::InvalidLocation(
+                    e.with_context("Remove all operation failed when listing files"),
+                )
+            })?
+            .try_fold(Vec::new(), async |mut out, file_infos| {
+                out.extend(file_infos.iter().map(|fi| fi.location().to_string()));
+                Ok(out)
+            })
+            .await
+            .map_err(|e| {
+                DeleteError::IOError(
+                    e.with_context("Remove all operation failed when listing files"),
+                )
+            })?;
+        self.delete_batch(&locations).await.map_err(|e| match e {
+            DeleteBatchError::InvalidLocation(invalid_location) => DeleteError::InvalidLocation(
+                invalid_location.with_context("Remove all operation failed when deleting files"),
+            ),
+            DeleteBatchError::IOError(ioerror) => DeleteError::IOError(
+                ioerror.with_context("Remove all operation failed when deleting files"),
+            ),
+        })
     }
 }
 
+#[async_trait::async_trait]
 impl LakekeeperStorage for StorageBackend {
-    fn delete(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        let path = path.as_ref().to_string();
-        let storage = self.clone();
-        async move {
-            match storage {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.delete(path).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => memory_storage.delete(path).await,
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.delete(path).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.delete(path).await,
-            }
+    async fn delete(&self, path: &str) -> Result<(), DeleteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.delete(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.delete(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.delete(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.delete(path).await,
         }
     }
 
-    fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
-        let paths: Vec<String> = paths.into_iter().map(|p| p.as_ref().to_string()).collect();
-        let storage = self.clone();
-        async move {
-            match storage {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.delete_batch(paths).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => memory_storage.delete_batch(paths).await,
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.delete_batch(paths).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.delete_batch(paths).await,
-            }
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.delete_batch(paths).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.delete_batch(paths).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.delete_batch(paths).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.delete_batch(paths).await,
         }
     }
 
-    fn write(
-        &self,
-        path: impl AsRef<str> + Send,
-        bytes: Bytes,
-    ) -> impl Future<Output = Result<(), WriteError>> + Send {
-        let path = path.as_ref().to_string();
-        let storage = self.clone();
-        async move {
-            match storage {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.write(path, bytes).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => memory_storage.write(path, bytes).await,
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.write(path, bytes).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.write(path, bytes).await,
-            }
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.write(path, bytes).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.write(path, bytes).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.write(path, bytes).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.write(path, bytes).await,
         }
     }
 
-    fn read(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        let path = path.as_ref().to_string();
-        let storage = self.clone();
-        async move {
-            match storage {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.read(path).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => memory_storage.read(path).await,
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.read(path).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.read(path).await,
-            }
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.read(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.read(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.read(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.read(path).await,
         }
     }
 
-    fn read_single(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-        let path = path.as_ref().to_string();
-        let storage = self.clone();
-        async move {
-            match storage {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.read_single(path).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => memory_storage.read_single(path).await,
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.read_single(path).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.read_single(path).await,
-            }
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.read_single(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.read_single(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.read_single(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.read_single(path).await,
         }
     }
 
-    fn list(
+    async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
-    ) -> impl Future<
-        Output = Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>,
-    > + Send {
-        let path = path.as_ref().to_string();
-        async move {
-            match self {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.list(path, page_size).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => {
-                    memory_storage.list(path, page_size).await
-                }
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.list(path, page_size).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.list(path, page_size).await,
-            }
+    ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.list(path, page_size).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.list(path, page_size).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.list(path, page_size).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.list(path, page_size).await,
         }
     }
 
-    fn remove_all(
-        &self,
-        path: impl AsRef<str> + Send,
-    ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-        let path = path.as_ref().to_string();
-        async move {
-            match self {
-                #[cfg(feature = "storage-s3")]
-                StorageBackend::S3(s3_storage) => s3_storage.remove_all(path).await,
-                #[cfg(feature = "storage-in-memory")]
-                StorageBackend::Memory(memory_storage) => memory_storage.remove_all(path).await,
-                #[cfg(feature = "storage-adls")]
-                StorageBackend::Adls(adls_storage) => adls_storage.remove_all(path).await,
-                #[cfg(feature = "storage-gcs")]
-                StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
-            }
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.remove_all(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.remove_all(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.remove_all(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.remove_all(path).await,
         }
     }
 }
 
-// Macro to generate LakekeeperStorage implementations for smart pointer types
-macro_rules! impl_lakekeeper_storage_for_smart_pointer {
-    ($($wrapper:ty),+ $(,)?) => {
+// Delegating `LakekeeperStorage` impls for smart pointers.
+//
+// Each invocation row supplies the full `impl … for TYPE [where …]` header
+// as a token tree, so generics and where-clauses stay flexible. Method
+// bodies use `&**self` to dispatch through the inner type:
+//   * `Arc<T>` / `Box<T>` with `T: LakekeeperStorage` → `&T`.
+//   * `Arc<dyn LakekeeperStorage>` / `Box<dyn LakekeeperStorage>` →
+//     `&dyn LakekeeperStorage`, dispatching through the vtable. Trait
+//     objects don't implement their own trait, so these explicit impls are
+//     required in addition to the blanket ones.
+//
+// Method bodies are inlined inside the macro rather than passed in as `tt`
+// parameters: `#[async_trait::async_trait]` generates hygienic
+// `'async_trait` lifetimes from the token spans of the `async fn`
+// signatures, and tokens originating inside a nested macro invocation
+// violate those lifetime bounds (E0195); `&**self` likewise resolves with
+// call-site hygiene when threaded through a `tt` (E0425).
+//
+// Adding a new method on `LakekeeperStorage` therefore requires updating
+// only this one place.
+macro_rules! impl_lakekeeper_storage_delegating {
+    ( $( ( $($impl_header:tt)* ) ; )+ ) => {
         $(
-            impl<T> LakekeeperStorage for $wrapper
-            where
-                T: LakekeeperStorage,
-            {
-                fn delete(
-                    &self,
-                    path: impl AsRef<str> + Send,
-                ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-                    self.as_ref().delete(path)
+            #[async_trait::async_trait]
+            $($impl_header)* {
+                async fn delete(&self, path: &str) -> Result<(), DeleteError> {
+                    (**self).delete(path).await
                 }
 
-                fn delete_batch(
+                async fn delete_batch(
                     &self,
-                    paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-                ) -> impl Future<Output = Result<(), DeleteBatchError>> + Send {
-                    self.as_ref().delete_batch(paths)
+                    paths: &[String],
+                ) -> Result<(), DeleteBatchError> {
+                    (**self).delete_batch(paths).await
                 }
 
-                fn write(
-                    &self,
-                    path: impl AsRef<str> + Send,
-                    bytes: Bytes,
-                ) -> impl Future<Output = Result<(), WriteError>> + Send {
-                    self.as_ref().write(path, bytes)
+                async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+                    (**self).write(path, bytes).await
                 }
 
-                fn read(
-                    &self,
-                    path: impl AsRef<str> + Send,
-                ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-                    self.as_ref().read(path)
+                async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+                    (**self).read(path).await
                 }
 
-                fn read_single(
-                    &self,
-                    path: impl AsRef<str> + Send,
-                ) -> impl Future<Output = Result<Bytes, ReadError>> + Send {
-                    self.as_ref().read_single(path)
+                async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
+                    (**self).read_single(path).await
                 }
 
-                fn list(
+                async fn list(
                     &self,
-                    path: impl AsRef<str> + Send,
+                    path: &str,
                     page_size: Option<usize>,
-                ) -> impl Future<
-                    Output = Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>,
-                > + Send {
-                    self.as_ref().list(path, page_size)
+                ) -> Result<
+                    BoxStream<'_, Result<Vec<FileInfo>, IOError>>,
+                    InvalidLocationError,
+                > {
+                    (**self).list(path, page_size).await
                 }
 
-                fn remove_all(
-                    &self,
-                    path: impl AsRef<str> + Send,
-                ) -> impl Future<Output = Result<(), DeleteError>> + Send {
-                    self.as_ref().remove_all(path)
+                async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+                    (**self).remove_all(path).await
                 }
             }
         )+
     };
 }
 
-// Generate implementations for Arc<T> and Box<T>
-impl_lakekeeper_storage_for_smart_pointer!(Arc<T>, Box<T>);
-
-async fn abort_unfinished_batch_delete_futures(
-    join_set: &mut JoinSet<Result<(), DeleteBatchError>>,
-) {
-    // Abort all running tasks
-    join_set.abort_all();
-
-    // Await all futures, log any errors except Join Errors where `is_canceled` is true
-    while let Some(result) = join_set.join_next().await {
-        match result {
-            Ok(Ok(())) => {}
-            Err(e) => {
-                if !e.is_cancelled() {
-                    tracing::debug!(
-                        "Unexpected error while awaiting batch deletion future of an aborted task: {e}"
-                    );
-                }
-            }
-            Ok(Err(e)) => {
-                tracing::debug!("Batch deletion future of an aborted task failed: {e}");
-            }
-        }
-    }
+impl_lakekeeper_storage_delegating! {
+    (impl<T> LakekeeperStorage for Arc<T> where T: LakekeeperStorage) ;
+    (impl<T> LakekeeperStorage for Box<T> where T: LakekeeperStorage) ;
+    (impl LakekeeperStorage for Arc<dyn LakekeeperStorage>) ;
+    (impl LakekeeperStorage for Box<dyn LakekeeperStorage>) ;
 }
 
 /// Helper function to calculate the ranges for reading the object in chunks.
@@ -640,7 +514,7 @@ where
     T: Send + 'static,
 {
     async_stream::stream! {
-        let mut join_set = JoinSet::new();
+        let mut join_set = tokio::task::JoinSet::new();
         let mut futures_iter = futures.into_iter();
 
         // Initial spawn up to parallelism limit
@@ -676,6 +550,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt as _;
+
     use super::*;
 
     #[test]

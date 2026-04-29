@@ -97,7 +97,7 @@ impl<A: Authorizer> TableCreationGuard<A> {
         }
 
         if let Some((io, metadata_location)) = self.metadata_location.take()
-            && let Err(e) = io.delete(&metadata_location).await
+            && let Err(e) = io.delete(metadata_location.as_str()).await
         {
             tracing::warn!(
                 "Failed to cleanup metadata file at {metadata_location} after failed transaction: {e}",

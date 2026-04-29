@@ -1,5 +1,5 @@
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnect
 metadata:
   name: kafka-connect
@@ -12,11 +12,11 @@ spec:
   image: kafka-connect-iceberg-sink-connector:0.1
   bootstrapServers: my-cluster-kafka-bootstrap:9092
   replicas: 1
+  groupId: kafka-connect-group
+  offsetStorageTopic: connect-cluster-offsets
+  configStorageTopic: connect-cluster-configs
+  statusStorageTopic: connect-cluster-status
   config:
-    group.id: kafka-connect-group
-    offset.storage.topic: connect-cluster-offsets
-    config.storage.topic: connect-cluster-configs
-    status.storage.topic: connect-cluster-status
     offset.storage.replication.factor: 1
     config.storage.replication.factor: 1
     status.storage.replication.factor: 1
@@ -35,7 +35,7 @@ spec:
       tmpDirSizeLimit: 10Gi
 
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnector
 metadata:
   name: kafka-to-iceberg

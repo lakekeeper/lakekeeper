@@ -1,4 +1,4 @@
-use futures::{StreamExt, TryStreamExt, stream::BoxStream};
+use futures::{StreamExt, stream::BoxStream};
 use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use lakekeeper_io::{
@@ -84,7 +84,7 @@ pub(crate) async fn list_location<'a>(
     page_size: Option<usize>,
 ) -> Result<BoxStream<'a, std::result::Result<Vec<Location>, IOError>>, InvalidLocationError> {
     tracing::debug!("Listing location: {}", location);
-    let entries = io.list(location, page_size).await?;
+    let entries = io.list(location.as_str(), page_size).await?;
     let entries = entries
         .map(|entry| {
             entry.map(|file_infos| {
@@ -94,7 +94,6 @@ pub(crate) async fn list_location<'a>(
                     .collect::<Vec<_>>()
             })
         })
-        .into_stream()
         .boxed();
     Ok(entries)
 }

@@ -100,9 +100,9 @@ impl AdlsStorage {
     }
 }
 
+#[async_trait::async_trait]
 impl LakekeeperStorage for AdlsStorage {
-    async fn delete(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path = path.as_ref();
+    async fn delete(&self, path: &str) -> Result<(), DeleteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
         // Get the container/filesystem name and the blob path (key)
@@ -123,10 +123,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>>,
-    ) -> Result<(), DeleteBatchError> {
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         // Group paths by account and filesystem
         let grouped_paths = group_paths_by_container(paths)?;
 
@@ -198,8 +195,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
-        let path = path.as_ref();
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
         // Get the container/filesystem name and the blob path (key)
@@ -281,8 +277,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(())
     }
 
-    async fn read_single(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
-        let path = path.as_ref();
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
         // Get the container/filesystem name and the blob path (key)
@@ -299,8 +294,7 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(read_file_response.data)
     }
 
-    async fn read(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
-        let path = path.as_ref();
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
         // Get the container/filesystem name and the blob path (key)
@@ -381,11 +375,11 @@ impl LakekeeperStorage for AdlsStorage {
 
     async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
-        let path = format!("{}/", path.as_ref().trim_end_matches('/'));
+        let path = format!("{}/", path.trim_end_matches('/'));
         let adls_location = AdlsLocation::try_from_str(&path, true)
             .map_err(|e| e.with_context("List Operation failed"))?;
         let base_location = adls_location.location().clone();
@@ -426,8 +420,18 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(stream.boxed())
     }
 
-    async fn remove_all(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path = path.as_ref().trim_end_matches('/');
+    /// Native ADLS Gen2 recursive delete via `DELETE` + `recursive=true`.
+    ///
+    /// The trailing slash is stripped before parsing: the ADLS API
+    /// accepts either form for a path, and `recursive=true` is what signals
+    /// directory semantics. For file paths the `recursive` flag is ignored
+    /// server-side, so the same call safely handles both files and directories.
+    ///
+    /// `NotFound` responses are treated as success, matching the idempotent
+    /// semantics of `delete` and `delete_batch` on this backend — removing an
+    /// already-absent prefix is a no-op, not an error.
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+        let path = path.trim_end_matches('/');
         let adls_location = AdlsLocation::try_from_str(path, true)?;
 
         // Get the container/filesystem name and the blob path (key)
@@ -437,9 +441,8 @@ impl LakekeeperStorage for AdlsStorage {
         let mut delete_stream = client.delete().recursive(true).into_stream();
 
         while let Some(result) = delete_stream.next().await {
-            if let Some(err) = result.err() {
-                return Err(DeleteError::IOError(parse_error(err, path)));
-            }
+            let result = result.map(|_| ()).map_err(|e| parse_error(e, path));
+            delete_not_found_is_ok(result).map_err(DeleteError::IOError)?;
         }
 
         Ok(())
