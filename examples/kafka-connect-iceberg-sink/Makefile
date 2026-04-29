@@ -64,9 +64,16 @@ build-kafka-connect:
 	kind load docker-image kafka-connect-iceberg-sink-connector:0.1 --name $(CLUSTER)
 
 install-kafka:
-	kubectl create -f 'https://strimzi.io/install/latest?namespace=kafka' -n $(NAMESPACE)
+	kubectl create -f 'https://strimzi.io/install/1.0.0?namespace=kafka' -n $(NAMESPACE)
 	@echo "⏳ Waiting for Strimzi Operator to be ready..."
 	kubectl rollout status deployment/strimzi-cluster-operator -n $(NAMESPACE)
+	kubectl wait --for=condition=Established \
+		crd/kafkas.kafka.strimzi.io \
+		crd/kafkanodepools.kafka.strimzi.io \
+		crd/kafkatopics.kafka.strimzi.io \
+		crd/kafkaconnects.kafka.strimzi.io \
+		crd/kafkaconnectors.kafka.strimzi.io \
+		--timeout=120s
 	kubectl apply -f kafka/cluster.yaml
 	kubectl apply -f kafka/schema-registry.yaml
 	kubectl apply -f kafka/topics.yaml
