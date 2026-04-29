@@ -17,7 +17,7 @@ pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{TryStreamExt as _Ext, stream::BoxStream};
+use futures::{TryStreamExt as _, stream::BoxStream};
 pub use location::{Location, LocationParseError};
 pub use tokio;
 pub use tryhard;
@@ -362,32 +362,26 @@ impl LakekeeperStorage for StorageBackend {
     }
 }
 
-// Unified delegating `LakekeeperStorage` impls.
+// Delegating `LakekeeperStorage` impls for smart pointers.
 //
-// Each invocation row supplies `($($impl_header:tt)*)` — the full
-// `impl … LakekeeperStorage for TYPE [where …]` header, captured as a token
-// tree so that generics, where-clauses and the presence or absence of a
-// `T: LakekeeperStorage` bound stay flexible.
+// Each invocation row supplies the full `impl … for TYPE [where …]` header
+// as a token tree, so generics and where-clauses stay flexible. Method
+// bodies use `&**self` to dispatch through the inner type:
+//   * `Arc<T>` / `Box<T>` with `T: LakekeeperStorage` → `&T`.
+//   * `Arc<dyn LakekeeperStorage>` / `Box<dyn LakekeeperStorage>` →
+//     `&dyn LakekeeperStorage`, dispatching through the vtable. Trait
+//     objects don't implement their own trait, so these explicit impls are
+//     required in addition to the blanket ones.
 //
-// Every method body uses `&**self` to obtain a reference to the underlying
-// implementor:
-//   * For `Arc<T>` / `Box<T>` with `T: LakekeeperStorage`, this yields `&T`.
-//   * For `Arc<dyn LakekeeperStorage>` / `Box<dyn LakekeeperStorage>`, this
-//     yields `&dyn LakekeeperStorage`, which dispatches through the vtable.
-// Trait objects do not implement their own trait, so an explicit impl is
-// required for the dyn wrappers in addition to the blanket impls.
+// Method bodies are inlined inside the macro rather than passed in as `tt`
+// parameters: `#[async_trait::async_trait]` generates hygienic
+// `'async_trait` lifetimes from the token spans of the `async fn`
+// signatures, and tokens originating inside a nested macro invocation
+// violate those lifetime bounds (E0195); `&**self` likewise resolves with
+// call-site hygiene when threaded through a `tt` (E0425).
 //
-// Delegation expressions are written inside the macro definition (not passed
-// in as parameters) so `self` resolves with the method body's hygiene context;
-// passing `&**self` through a `tt` parameter captures the call-site hygiene
-// of `self`, triggering E0425. Method bodies live inline here for the same
-// reason their signatures do: `#[async_trait::async_trait]` generates
-// hygienic `'async_trait` lifetimes from the token spans of the `async fn`
-// signatures, and tokens originating inside a nested declarative macro
-// invocation violate the trait's lifetime bounds (E0195).
-//
-// Adding a new method on `LakekeeperStorage` therefore requires updating only
-// this one place.
+// Adding a new method on `LakekeeperStorage` therefore requires updating
+// only this one place.
 macro_rules! impl_lakekeeper_storage_delegating {
     ( $( ( $($impl_header:tt)* ) ; )+ ) => {
         $(
