@@ -128,7 +128,9 @@
                 "generic-table-v1-create-generic-table",
                 "generic-table-v1-list-generic-tables",
                 "generic-table-v1-load-generic-table",
-                "generic-table-v1-drop-generic-table"
+                "generic-table-v1-drop-generic-table",
+                "management-v1-get-generic-table-actions",
+                "generic-table-v1-rename-generic-table"
               ]
             }
           }

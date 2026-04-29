@@ -21,6 +21,7 @@ type lakekeeper_generic_table
     define can_write_data: modify
     define can_read_data: select
     define can_get_metadata: describe
+    define can_rename: modify
     define can_include_in_list: can_get_metadata
     define can_get_tasks: describe
     define can_control_tasks: modify

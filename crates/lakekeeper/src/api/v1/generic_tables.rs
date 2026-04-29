@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{
-        ApiContext, Result,
+        ApiContext, RenameTableRequest, Result,
         iceberg::{
             types::{DropParams, Prefix, ReferencedByQuery, ReferencingView},
             v1::{
@@ -217,6 +217,13 @@ where
         state: ApiContext<S>,
         request_metadata: RequestMetadata,
     ) -> Result<()>;
+
+    async fn rename_generic_table(
+        prefix: Option<Prefix>,
+        request: RenameTableRequest,
+        state: ApiContext<S>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()>;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -295,6 +302,20 @@ pub fn router<I: GenericTableService<S>, S: crate::api::ThreadSafe>() -> Router<
                     )
                     .await
                     .map(|()| StatusCode::NO_CONTENT.into_response())
+                },
+            ),
+        )
+        // /{prefix}/generic-tables/rename
+        .route(
+            "/{prefix}/generic-tables/rename",
+            post(
+                |Path(prefix): Path<Prefix>,
+                 State(api_context): State<ApiContext<S>>,
+                 Extension(metadata): Extension<RequestMetadata>,
+                 Json(request): Json<RenameTableRequest>| async move {
+                    I::rename_generic_table(Some(prefix), request, api_context, metadata)
+                        .await
+                        .map(|()| StatusCode::NO_CONTENT.into_response())
                 },
             ),
         )

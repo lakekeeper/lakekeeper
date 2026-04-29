@@ -3,16 +3,19 @@ mod credentials;
 mod drop;
 mod list;
 mod load;
+mod rename;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use iceberg::{NamespaceIdent, TableIdent};
+use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     api::{
-        ApiContext,
+        ApiContext, RenameTableRequest,
         iceberg::{
-            types::DropParams,
+            types::{DropParams, Prefix},
             v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
         },
         v1::generic_tables::{
@@ -24,12 +27,14 @@ use crate::{
     request_metadata::RequestMetadata,
     server::CatalogServer,
     service::{
-        CatalogGenericTableOps, CatalogNamespaceOps, CatalogStore, CatalogWarehouseOps,
-        GenericTableInfo, NamespaceHierarchy, ResolvedWarehouse, Result, SecretStore, State,
-        Transaction, WarehouseId,
+        CatalogBackendError, CatalogGenericTableOps, CatalogNamespaceOps, CatalogStore,
+        CatalogWarehouseOps, GenericTableInfo, IcebergErrorResponse, LoadGenericTableError,
+        NamespaceHierarchy, ResolvedWarehouse, Result, SecretStore, State, Transaction,
+        WarehouseId,
         authz::{
             AuthZCannotSeeGenericTable, AuthZError, AuthZGenericTableOps, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, refresh_warehouse_and_namespace_if_needed,
+            AuthzNamespaceOps, AuthzWarehouseOps, RequireGenericTableActionError,
+            refresh_warehouse_and_namespace_if_needed,
         },
     },
 };
@@ -39,7 +44,7 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
     authorizer: &A,
     request_metadata: &RequestMetadata,
     warehouse_id: WarehouseId,
-    namespace: iceberg::NamespaceIdent,
+    namespace: NamespaceIdent,
     table_name: &str,
     action: impl Into<A::GenericTableAction> + Send,
     catalog_state: C::State,
@@ -56,7 +61,7 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
 
     let namespace_id = namespace_hierarchy.namespace.namespace_id();
 
-    let table_ident = iceberg::TableIdent::new(namespace.clone(), table_name.to_string());
+    let table_ident = TableIdent::new(namespace.clone(), table_name.to_string());
 
     let mut t = C::Transaction::begin_read(catalog_state.clone())
         .await
@@ -65,7 +70,7 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
         .await
     {
         Ok(info) => info,
-        Err(crate::service::LoadGenericTableError::GenericTableNotFound(_)) => {
+        Err(LoadGenericTableError::GenericTableNotFound(_)) => {
             return Err(
                 AuthZCannotSeeGenericTable::new_not_found(warehouse_id, table_ident).into(),
             );
@@ -90,7 +95,7 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
             &warehouse,
             &namespace_hierarchy,
             table_ident,
-            Ok::<_, crate::service::authz::RequireGenericTableActionError>(Some(info)),
+            Ok::<_, RequireGenericTableActionError>(Some(info)),
             action,
         )
         .await?;
@@ -99,13 +104,11 @@ async fn load_and_authorize_generic_table_operation<C: CatalogStore, A: Authoriz
 }
 
 /// Convert a catalog error into `AuthZError` via `CatalogBackendError`.
-fn iceberg_err_to_authz(e: impl Into<crate::service::IcebergErrorResponse>) -> AuthZError {
-    let err_model = iceberg_ext::catalog::rest::ErrorModel::from(e.into());
-    AuthZError::RequireGenericTableActionError(
-        crate::service::authz::RequireGenericTableActionError::CatalogBackendError(
-            crate::service::CatalogBackendError::new_unexpected(err_model),
-        ),
-    )
+fn iceberg_err_to_authz(e: impl Into<IcebergErrorResponse>) -> AuthZError {
+    let err_model = ErrorModel::from(e.into());
+    AuthZError::RequireGenericTableActionError(RequireGenericTableActionError::CatalogBackendError(
+        CatalogBackendError::new_unexpected(err_model),
+    ))
 }
 
 #[async_trait]
@@ -164,6 +167,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
     ) -> Result<()> {
         drop::drop_generic_table::<C, A, S>(parameters, drop_params, state, request_metadata).await
     }
+
+    async fn rename_generic_table(
+        prefix: Option<Prefix>,
+        request: RenameTableRequest,
+        state: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<()> {
+        rename::rename_generic_table::<C, A, S>(prefix, request, state, request_metadata).await
+    }
 }
 
 #[cfg(test)]
@@ -171,12 +183,12 @@ pub(crate) mod test {
     use std::collections::HashMap;
 
     use http::StatusCode;
-    use iceberg::NamespaceIdent;
+    use iceberg::{NamespaceIdent, TableIdent};
     use sqlx::PgPool;
 
     use crate::{
         api::{
-            ApiContext,
+            ApiContext, RenameTableRequest,
             iceberg::{
                 types::DropParams,
                 v1::{DataAccessMode, namespace::NamespaceParameters},
@@ -633,6 +645,175 @@ pub(crate) mod test {
         )
         .await
         .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_rename_generic_table(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let prefix = whi.to_string();
+
+        CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            create_request("orig"),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::rename_generic_table(
+            Some(prefix.clone().into()),
+            RenameTableRequest {
+                source: TableIdent::new(namespace.clone(), "orig".to_string()),
+                destination: TableIdent::new(namespace.clone(), "renamed".to_string()),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let err = CatalogServer::load_generic_table(
+            GenericTableParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+                table_name: "orig".to_string(),
+            },
+            ctx.clone(),
+            DataAccessMode::ClientManaged,
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("source should be gone");
+        assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+
+        let loaded = CatalogServer::load_generic_table(
+            GenericTableParameters {
+                prefix: Some(prefix.into()),
+                namespace,
+                table_name: "renamed".to_string(),
+            },
+            ctx,
+            DataAccessMode::ClientManaged,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(loaded.table.name, "renamed");
+    }
+
+    #[sqlx::test]
+    async fn test_rename_generic_table_cross_namespace(pool: PgPool) {
+        let (ctx, source_ns, whi) = setup(pool).await;
+        let prefix = whi.to_string();
+        let dest_ns = initialize_namespace(
+            ctx.v1_state.catalog.clone(),
+            whi,
+            &NamespaceIdent::new(uuid::Uuid::now_v7().to_string()),
+            None,
+        )
+        .await
+        .namespace_ident()
+        .clone();
+
+        CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: source_ns.clone(),
+            },
+            create_request("movable"),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::rename_generic_table(
+            Some(prefix.clone().into()),
+            RenameTableRequest {
+                source: TableIdent::new(source_ns, "movable".to_string()),
+                destination: TableIdent::new(dest_ns.clone(), "movable".to_string()),
+            },
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let loaded = CatalogServer::load_generic_table(
+            GenericTableParameters {
+                prefix: Some(prefix.into()),
+                namespace: dest_ns,
+                table_name: "movable".to_string(),
+            },
+            ctx,
+            DataAccessMode::ClientManaged,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(loaded.table.name, "movable");
+    }
+
+    #[sqlx::test]
+    async fn test_rename_generic_table_source_missing(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+
+        let err = CatalogServer::rename_generic_table(
+            Some(whi.to_string().into()),
+            RenameTableRequest {
+                source: TableIdent::new(namespace.clone(), "ghost".to_string()),
+                destination: TableIdent::new(namespace, "renamed".to_string()),
+            },
+            ctx,
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("missing source must fail");
+        assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn test_rename_generic_table_idempotent_replay(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let prefix = whi.to_string();
+
+        CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(prefix.clone().into()),
+                namespace: namespace.clone(),
+            },
+            create_request("idem-src"),
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let key = IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap();
+        let mut metadata = random_request_metadata();
+        metadata.with_idempotency_key(key);
+
+        let req = RenameTableRequest {
+            source: TableIdent::new(namespace.clone(), "idem-src".to_string()),
+            destination: TableIdent::new(namespace.clone(), "idem-dst".to_string()),
+        };
+
+        CatalogServer::rename_generic_table(
+            Some(prefix.clone().into()),
+            req.clone(),
+            ctx.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+
+        CatalogServer::rename_generic_table(Some(prefix.into()), req, ctx, metadata)
+            .await
+            .expect("idempotent replay should succeed");
     }
 
     #[sqlx::test]

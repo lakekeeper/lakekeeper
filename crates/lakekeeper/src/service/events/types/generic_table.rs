@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use iceberg_ext::catalog::rest::RenameTableRequest;
+
 use crate::{
     api::{
         RequestMetadata,
@@ -7,7 +9,7 @@ use crate::{
         v1::generic_tables::CreateGenericTableRequest,
     },
     service::{
-        GenericTableInfo, ResolvedWarehouse,
+        GenericTableInfo, NamespaceWithParent, ResolvedWarehouse,
         authz::{CatalogGenericTableAction, CatalogNamespaceAction},
         events::{
             APIEventContext,
@@ -46,6 +48,15 @@ pub struct LoadGenericTableEvent {
     pub generic_table: Arc<GenericTableInfo>,
     pub storage_permissions: Option<StoragePermissions>,
     pub data_access: DataAccessMode,
+    pub request_metadata: Arc<RequestMetadata>,
+}
+
+/// Event emitted when a generic table is renamed
+#[derive(Clone, Debug)]
+pub struct RenameGenericTableEvent {
+    pub source_generic_table: ResolvedGenericTable,
+    pub destination_namespace: NamespaceWithParent,
+    pub request: Arc<RenameTableRequest>,
     pub request_metadata: Arc<RequestMetadata>,
 }
 
@@ -115,6 +126,24 @@ impl
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {
             let () = dispatcher.generic_table_dropped(event).await;
+        });
+    }
+
+    /// Emit `generic_table_renamed` event
+    pub(crate) fn emit_generic_table_renamed_async(
+        self,
+        destination_namespace: NamespaceWithParent,
+        request: Arc<RenameTableRequest>,
+    ) {
+        let event = RenameGenericTableEvent {
+            source_generic_table: self.resolved_entity.data,
+            destination_namespace,
+            request,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.generic_table_renamed(event).await;
         });
     }
 }

@@ -1186,7 +1186,7 @@ pub(crate) async fn rename_tabular(
                 WHERE tabular_id = $2
                     AND warehouse_id = $4
                     AND typ = $3
-                    AND metadata_location IS NOT NULL
+                    AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND deleted_at IS NULL
                 FOR UPDATE
             ),
@@ -1302,7 +1302,7 @@ pub(crate) async fn rename_tabular(
                 WHERE tabular_id = $4
                     AND warehouse_id = $2
                     AND typ = $5
-                    AND metadata_location IS NOT NULL
+                    AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND name = $6
                     AND deleted_at IS NULL
                 FOR UPDATE

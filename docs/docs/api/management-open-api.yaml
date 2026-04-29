@@ -5227,6 +5227,14 @@ components:
             action:
               type: string
               enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
                 - include_in_list
         - type: object
           required:

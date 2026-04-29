@@ -900,18 +900,20 @@ pub enum CatalogGenericTableAction {
     ReadData,
     WriteData,
     GetMetadata,
+    Rename,
     IncludeInList,
     Undrop,
     GetTasks,
     ControlTasks,
 }
-static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 8]> =
+static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 9]> =
     LazyLock::new(|| {
         [
             CatalogGenericTableAction::Drop,
             CatalogGenericTableAction::ReadData,
             CatalogGenericTableAction::WriteData,
             CatalogGenericTableAction::GetMetadata,
+            CatalogGenericTableAction::Rename,
             CatalogGenericTableAction::IncludeInList,
             CatalogGenericTableAction::Undrop,
             CatalogGenericTableAction::GetTasks,
@@ -920,7 +922,7 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 8]> =
     });
 impl CatalogGenericTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogGenericTableAction; 8] {
+    pub fn variants() -> &'static [CatalogGenericTableAction; 9] {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }

@@ -139,6 +139,10 @@ impl EventDispatcher {
         dispatch_event!(self, generic_table_loaded, event);
     }
 
+    pub(crate) async fn generic_table_renamed(&self, event: types::RenameGenericTableEvent) {
+        dispatch_event!(self, generic_table_renamed, event);
+    }
+
     pub(crate) async fn tabular_undropped(&self, event: types::UndropTabularEvent) {
         dispatch_event!(self, tabular_undropped, event);
     }
@@ -364,6 +368,14 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn generic_table_loaded(
         &self,
         _event: types::LoadGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully renamed
+    async fn generic_table_renamed(
+        &self,
+        _event: types::RenameGenericTableEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

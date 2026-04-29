@@ -172,6 +172,7 @@ generate_endpoints! {
         ListGenericTables(GET, "/v1/{prefix}/namespaces/{namespace}/generic-tables"),
         LoadGenericTable(GET, "/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}"),
         DropGenericTable(DELETE, "/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}"),
+        RenameGenericTable(POST, "/v1/{prefix}/generic-tables/rename"),
     }
 
     enum Sign {

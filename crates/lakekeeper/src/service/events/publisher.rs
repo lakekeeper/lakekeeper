@@ -476,6 +476,39 @@ impl EventListener for CloudEventsPublisher {
         Ok(())
     }
 
+    async fn generic_table_renamed(
+        &self,
+        event: types::RenameGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::RenameGenericTableEvent {
+            source_generic_table,
+            destination_namespace: _,
+            request,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "renameGenericTable",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(
+                    source_generic_table.generic_table.generic_table_id,
+                ),
+                warehouse_id: source_generic_table.warehouse.warehouse_id,
+                name: request.source.name.clone(),
+                namespace: request.source.namespace.to_url_string(),
+                prefix: source_generic_table.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `renameGenericTable` event")?;
+        Ok(())
+    }
+
     async fn tabular_undropped(&self, event: types::UndropTabularEvent) -> anyhow::Result<()> {
         let types::UndropTabularEvent {
             warehouse,
