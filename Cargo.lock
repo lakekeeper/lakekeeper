@@ -3721,8 +3721,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.13.15"
-source = "git+https://github.com/lakekeeper/console?rev=v0.13.15#e26ddd52a80ee3d82f33807be95f0dfc463753d0"
+version = "0.13.16"
+source = "git+https://github.com/lakekeeper/console?rev=v0.13.16#ab40dd5886fc1c28512fa84e4162f35064989ef1"
 dependencies = [
  "fs_extra",
  "mime_guess",
@@ -4413,8 +4413,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 [[package]]
 name = "openfga-client"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3753b8e89cad306e35d8bdf4e002795155ab81b108eddb0b32563aa188368c34"
+source = "git+https://github.com/vakamo-labs/openfga-client.git?rev=6121e38#6121e38ce39601c15b330dddcf8654a35c2d796c"
 dependencies = [
  "async-stream",
  "futures",
