@@ -196,6 +196,59 @@ impl LakekeeperStorage for MemoryStorage {
         self.read(path).await
     }
 
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        if range.end < range.start {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "Invalid range: start ({}) > end ({})",
+                    range.start, range.end
+                ),
+                path.to_string(),
+            )));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let key = normalize_memory_path(path)?;
+        let data = self.data.read().await;
+        let (bytes, _) = data.get(&key).ok_or_else(|| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::NotFound,
+                "Object not found in memory storage",
+                key.clone(),
+            ))
+        })?;
+
+        let start = usize::try_from(range.start).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range start {} too large for this platform", range.start),
+                key.clone(),
+            ))
+        })?;
+        let end = usize::try_from(range.end).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range end {} too large for this platform", range.end),
+                key.clone(),
+            ))
+        })?;
+        if end > bytes.len() {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range end {end} exceeds file size {}", bytes.len()),
+                key.clone(),
+            )));
+        }
+        Ok(bytes.slice(start..end))
+    }
+
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
         let key = normalize_memory_path(path)?;
 

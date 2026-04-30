@@ -23,9 +23,9 @@ use google_cloud_storage::{
 use tokio;
 
 use crate::{
-    calculate_ranges, delete_not_found_is_ok, execute_with_parallelism, gcs::{gcs_error::parse_error, GcsLocation}, safe_usize_to_i32, safe_usize_to_i64,
-    validate_file_size, DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError,
-    InvalidLocationError,
+    delete_not_found_is_ok, execute_with_parallelism, gcs::{gcs_error::parse_error, GcsLocation}, safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo,
+    IOError, InvalidLocationError,
     LakekeeperStorage,
     Location, ReadError, WriteError,
 };
@@ -306,56 +306,77 @@ impl LakekeeperStorage for GcsStorage {
             return self.read_single(path).await;
         }
 
+        // Delegate the chunked-download wiring (including its own HEAD for
+        // generation pinning) to `read_range`. The extra HEAD on the chunked
+        // path is acceptable for large reads where the download dominates.
+        self.read_range(path, 0..file_size as u64).await
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        if range.end < range.start {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "Invalid range: start ({}) > end ({})",
+                    range.start, range.end
+                ),
+                path.to_string(),
+            )));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let location = GcsLocation::try_from_str(path)?;
+        let range_size_u64 = range.end - range.start;
+        let range_size = usize::try_from(range_size_u64).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range size {range_size_u64} too large for this platform"),
+                path.to_string(),
+            ))
+        })?;
+
+        if range_size <= MAX_BYTES_PER_REQUEST {
+            let request = build_get_object_request(&location);
+            return fetch_range(&self.client, &request, range).await;
+        }
+
+        let head_response = head(&self.client, &location).await?;
         let mut request = build_get_object_request(&location);
         request.generation = Some(head_response.generation);
 
-        // Calculate the chunks, starting from 0 up to the size of the object in DEFAULT_BYTES_PER_REQUEST chunks
-        let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
-
-        let download_futures: Vec<_> = chunks
-            .into_iter()
-            .enumerate()
-            .map(|(chunk_index, (start, end))| {
-                let client = self.client.clone();
+        let client = self.client.clone();
+        let request = std::sync::Arc::new(request);
+        let range_start = range.start;
+        crate::parallel_chunked_read(
+            range_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            10,
+            path,
+            move |rel_start, rel_end, chunk_index| {
+                let client = client.clone();
                 let request = request.clone();
-                let path = path.to_string();
-
+                let abs_start = range_start + rel_start as u64;
+                let abs_end = range_start + rel_end as u64 + 1;
                 async move {
-                    let range = Range(Some(start as u64), Some(end as u64));
-
-                    let chunk_data =
-                        client
-                            .download_object(&request, &range)
-                            .await
-                            .map_err(|e| {
-                                ReadError::IOError(parse_error(e, &path).with_context(format!(
-                                    "Failed to download chunk {chunk_index} (bytes {start}-{end})"
-                                )))
-                            })?;
-
-                    Ok::<(usize, Bytes), ReadError>((chunk_index, Bytes::from(chunk_data)))
+                    let chunk = fetch_range(&client, &request, abs_start..abs_end)
+                        .await
+                        .map_err(|e| match e {
+                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                            ))),
+                            other @ ReadError::InvalidLocation(_) => other,
+                        })?;
+                    Ok((chunk_index, chunk))
                 }
-            })
-            .collect();
-
-        let download_stream = execute_with_parallelism(download_futures, 10).map(|result| {
-            result
-                .map_err(|join_err| {
-                    ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Task join error during parallel download: {join_err}"),
-                        "parallel_download".to_string(),
-                    ))
-                })
-                .and_then(|inner_result| inner_result)
-        });
-        tokio::pin!(download_stream);
-
-        // Use the shared utility function to assemble chunks
-        let bytes =
-            crate::assemble_chunks(download_stream, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
-
-        Ok(bytes)
+            },
+        )
+            .await
     }
 
     async fn list(
@@ -439,6 +460,20 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
         let size = u64::try_from(object.size).ok();
         Ok(FileInfo::new(last_modified, location, size))
     }
+}
+
+async fn fetch_range(
+    client: &Client,
+    request: &GetObjectRequest,
+    range: std::ops::Range<u64>,
+) -> Result<Bytes, ReadError> {
+    let r = Range(Some(range.start), Some(range.end - 1));
+    let data = client.download_object(request, &r).await.map_err(|e| {
+        ReadError::IOError(
+            parse_error(e, &request.object).with_context("Failed to download byte range."),
+        )
+    })?;
+    Ok(Bytes::from(data))
 }
 
 async fn head(client: &Client, location: &GcsLocation) -> Result<Object, ReadError> {

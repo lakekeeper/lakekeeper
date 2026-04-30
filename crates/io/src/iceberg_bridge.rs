@@ -45,17 +45,17 @@ impl From<DeleteBatchError> for iceberg::Error {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IcebergStorageBridge {
     lakekeeper_io: Arc<dyn LakekeeperStorage>,
 }
 
 impl IcebergStorageBridge {
+    #[must_use]
     pub fn new(lakekeeper_io: Arc<dyn LakekeeperStorage>) -> Self {
         Self { lakekeeper_io }
     }
 }
-
 
 impl Serialize for IcebergStorageBridge {
     fn serialize<S: Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
@@ -96,7 +96,10 @@ impl Storage for IcebergStorageBridge {
     }
 
     async fn reader(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileRead>> {
-        todo!()
+        Ok(Box::new(IcebergFileRead {
+            storage: self.lakekeeper_io.clone(),
+            path: path.to_string(),
+        }))
     }
 
     async fn write(&self, path: &str, bs: bytes::Bytes) -> iceberg::Result<()> {
@@ -106,7 +109,7 @@ impl Storage for IcebergStorageBridge {
             .map_err(Into::into)
     }
 
-    async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileWrite>> {
+    async fn writer(&self, _path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileWrite>> {
         todo!()
     }
 
@@ -133,11 +136,33 @@ impl Storage for IcebergStorageBridge {
     }
 
     fn new_input(&self, path: &str) -> iceberg::Result<iceberg::io::InputFile> {
-        todo!()
+        Ok(iceberg::io::InputFile::new(
+            Arc::new(self.clone()),
+            path.to_string(),
+        ))
     }
 
     fn new_output(&self, path: &str) -> iceberg::Result<iceberg::io::OutputFile> {
-        todo!()
+        Ok(iceberg::io::OutputFile::new(
+            Arc::new(self.clone()),
+            path.to_string(),
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct IcebergFileRead {
+    storage: Arc<dyn LakekeeperStorage>,
+    path: String,
+}
+
+#[async_trait]
+impl iceberg::io::FileRead for IcebergFileRead {
+    async fn read(&self, range: std::ops::Range<u64>) -> iceberg::Result<bytes::Bytes> {
+        self.storage
+            .read_range(&self.path, range)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -147,6 +172,7 @@ pub struct IcebergStorageBridgeFactory {
 }
 
 impl IcebergStorageBridgeFactory {
+    #[must_use]
     pub fn new(bridge: Arc<IcebergStorageBridge>) -> Self {
         Self { bridge }
     }

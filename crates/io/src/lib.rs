@@ -17,12 +17,11 @@ pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{TryStreamExt as _, stream::BoxStream};
+use futures::{stream::BoxStream, TryStreamExt as _};
 pub use location::{Location, LocationParseError};
-use serde::{Deserialize, Serialize};
 pub use tokio;
 pub use tryhard;
-use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
+use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
 
 #[cfg(feature = "storage-adls")]
 pub mod adls;
@@ -117,9 +116,9 @@ pub enum StorageBackend {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RetryConfig<B, E>
 where
-    for<'a> B: BackoffStrategy<'a, E>,
-    for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
-    B: Send,
+        for<'a> B: BackoffStrategy<'a, E>,
+        for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
+        B: Send,
 {
     retries: u32,
     backoff_strategy: B,
@@ -129,9 +128,9 @@ where
 
 impl<B, E> RetryConfig<B, E>
 where
-    for<'a> B: BackoffStrategy<'a, E>,
-    for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
-    B: Send + Clone,
+        for<'a> B: BackoffStrategy<'a, E>,
+        for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
+        B: Send + Clone,
 {
     pub fn new(retries: u32, backoff_strategy: B) -> Self {
         Self {
@@ -236,6 +235,22 @@ where
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError>;
+
+    /// Read a contiguous byte range from the specified path.
+    ///
+    /// `range` is a half-open `[start, end)` interval over the file's bytes.
+    /// For ranges larger than the backend's chunked-read threshold, the
+    /// implementation downloads the range in parallel chunks and assembles
+    /// them. An empty range returns empty bytes without contacting the
+    /// backend.
+    ///
+    /// # Arguments
+    /// path: It should be an absolute path starting with scheme string.
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError>;
 
     /// Retrieve metadata about a file at the given path.
     ///
@@ -373,6 +388,25 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.read_range(path, range).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => {
+                memory_storage.read_range(path, range).await
+            }
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.read_range(path, range).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.read_range(path, range).await,
+        }
+    }
+
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
         match self {
             #[cfg(feature = "storage-s3")]
@@ -465,6 +499,14 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).read_single(path).await
                 }
 
+                async fn read_range(
+                    &self,
+                    path: &str,
+                    range: std::ops::Range<u64>,
+                ) -> Result<Bytes, ReadError> {
+                    (**self).read_range(path, range).await
+                }
+
                 async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
                     (**self).metadata(path).await
                 }
@@ -526,7 +568,7 @@ pub(crate) async fn assemble_chunks<S, E>(
     chunk_size: usize,
 ) -> Result<bytes::Bytes, E>
 where
-    S: futures::StreamExt<Item = Result<(usize, bytes::Bytes), E>> + Unpin,
+    S: futures::StreamExt<Item=Result<(usize, bytes::Bytes), E>> + Unpin,
 {
     // Pre-allocate buffer with exact size
     let mut combined_data = vec![0u8; total_size];
@@ -544,6 +586,50 @@ where
 
     let bytes = bytes::Bytes::from(combined_data);
     Ok(bytes)
+}
+
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-gcs",
+    feature = "storage-adls"
+))]
+pub(crate) async fn parallel_chunked_read<F, Fut>(
+    range_size: usize,
+    chunk_size: usize,
+    parallelism: usize,
+    error_context: &str,
+    fetch_chunk: F,
+) -> Result<bytes::Bytes, ReadError>
+where
+    F: Fn(usize, usize, usize) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output=Result<(usize, bytes::Bytes), ReadError>> + Send + 'static,
+{
+    use futures::StreamExt as _;
+
+    let chunks = calculate_ranges(range_size, chunk_size);
+    let download_futures = chunks
+        .into_iter()
+        .enumerate()
+        .map(move |(chunk_index, (start, end))| {
+            let fetch_chunk = fetch_chunk.clone();
+            async move { fetch_chunk(start, end, chunk_index).await }
+        });
+
+    let context = error_context.to_string();
+    let download_stream =
+        execute_with_parallelism(download_futures, parallelism).map(move |result| {
+            result
+                .map_err(|join_err| {
+                    ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Task join error during parallel download: {join_err}"),
+                        context.clone(),
+                    ))
+                })
+                .and_then(|inner| inner)
+        });
+    tokio::pin!(download_stream);
+    assemble_chunks(download_stream, range_size, chunk_size).await
 }
 
 #[cfg(any(feature = "storage-gcs", feature = "storage-adls"))]
@@ -566,10 +652,10 @@ pub(crate) fn delete_not_found_is_ok(result: Result<(), IOError>) -> Result<(), 
 pub fn execute_with_parallelism<I, F, T>(
     futures: I,
     parallelism: usize,
-) -> impl futures::Stream<Item = Result<T, tokio::task::JoinError>>
+) -> impl futures::Stream<Item=Result<T, tokio::task::JoinError>>
 where
-    I: IntoIterator<Item = F>,
-    F: Future<Output = T> + Send + 'static,
+    I: IntoIterator<Item=F>,
+    F: Future<Output=T> + Send + 'static,
     T: Send + 'static,
 {
     async_stream::stream! {
@@ -649,8 +735,8 @@ mod tests {
     async fn test_execute_with_parallelism() {
         use std::{
             sync::{
-                Arc,
                 atomic::{AtomicUsize, Ordering},
+                Arc,
             },
             time::Duration,
         };
@@ -683,8 +769,8 @@ mod tests {
                 let mut max = max_concurrent.load(Ordering::SeqCst);
                 while max < current
                     && max_concurrent
-                        .compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_err()
+                    .compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
                 {
                     max = max_concurrent.load(Ordering::SeqCst);
                 }

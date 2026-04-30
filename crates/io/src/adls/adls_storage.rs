@@ -8,7 +8,8 @@ use std::{
 use azure_core::prelude::Range;
 use azure_storage::CloudLocation;
 use azure_storage_datalake::prelude::{
-    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, HeadPathResponse, Path,
+    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, GetFileResponse,
+    HeadPathResponse, Path,
 };
 use bytes::Bytes;
 use chrono::DateTime;
@@ -16,10 +17,10 @@ use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    adls::{adls_error::parse_error, AdlsLocation}, calculate_ranges, delete_not_found_is_ok, error::ErrorKind, execute_with_parallelism, safe_usize_to_i64,
-    validate_file_size, DeleteBatchError, DeleteError,
-    FileInfo,
-    IOError, InvalidLocationError,
+    adls::{adls_error::parse_error, AdlsLocation}, delete_not_found_is_ok, error::ErrorKind, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
+    DeleteBatchError, DeleteError, FileInfo,
+    IOError,
+    InvalidLocationError,
     LakekeeperStorage,
     Location, ReadError, WriteError,
 };
@@ -328,62 +329,117 @@ impl LakekeeperStorage for AdlsStorage {
             return self.read_single(path).await;
         }
 
-        let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
         let head_last_modified = head_response.last_modified;
-
-        let download_futures: Vec<_> = chunks
-            .into_iter()
-            .enumerate()
-            .map(|(chunk_index, (start, end))| {
-                let client = client.clone();
-                let path = path.to_string();
-
+        let client_for_chunks = client.clone();
+        crate::parallel_chunked_read(
+            file_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            10,
+            path,
+            move |start, end, chunk_index| {
+                let client = client_for_chunks.clone();
+                let abs_start = start as u64;
+                let abs_end = end as u64 + 1;
                 async move {
-                    let chunk_data = client
-                        .read()
-                        .range(Range::new(start as u64, (end + 1) as u64))
+                    let response = fetch_range(&client, abs_start..abs_end)
                         .await
-                        .map_err(|e| {
-                            ReadError::IOError(parse_error(e, &path).with_context(format!(
-                                "Failed to download chunk {chunk_index} (bytes {start}-{end})"
-                            )))
+                        .map_err(|e| match e {
+                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                            ))),
+                            other @ ReadError::InvalidLocation(_) => other,
                         })?;
-
-                    if chunk_data.last_modified != head_last_modified {
+                    if response.last_modified != head_last_modified {
                         return Err(ReadError::IOError(IOError::new(
                             ErrorKind::Unexpected,
                             format!(
                                 "File was modified during multi-part download: expected last modified time {}, got {}",
-                                head_last_modified,
-                                chunk_data.last_modified
+                                head_last_modified, response.last_modified
                             ),
-                            path.clone(),
+                            format!("chunk {chunk_index} (bytes {abs_start}-{abs_end})"),
                         )));
                     }
-
-                    Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.data))
+                    Ok((chunk_index, response.data))
                 }
-            })
-            .collect();
+            },
+        )
+            .await
+    }
 
-        let download_stream = execute_with_parallelism(download_futures, 10).map(|result| {
-            result
-                .map_err(|join_err| {
-                    ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Task join error during parallel download: {join_err}"),
-                        "parallel_download".to_string(),
-                    ))
-                })
-                .and_then(|inner_result| inner_result)
-        });
-        tokio::pin!(download_stream);
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        if range.end < range.start {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "Invalid range: start ({}) > end ({})",
+                    range.start, range.end
+                ),
+                path.to_string(),
+            )));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
 
-        // Use the shared utility function to assemble chunks
-        let bytes =
-            crate::assemble_chunks(download_stream, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+        require_key(&adls_location)?;
+        let client = self.get_file_client(&adls_location)?;
 
-        Ok(bytes)
+        let range_size_u64 = range.end - range.start;
+        let range_size = usize::try_from(range_size_u64).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range size {range_size_u64} too large for this platform"),
+                path.to_string(),
+            ))
+        })?;
+
+        if range_size <= MAX_BYTES_PER_REQUEST {
+            let response = fetch_range(&client, range).await?;
+            return Ok(response.data);
+        }
+
+        let head_response = head(&client, &adls_location).await?;
+        let head_last_modified = head_response.last_modified;
+        let range_start = range.start;
+        let client_for_chunks = client.clone();
+        crate::parallel_chunked_read(
+            range_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            10,
+            path,
+            move |rel_start, rel_end, chunk_index| {
+                let client = client_for_chunks.clone();
+                let abs_start = range_start + rel_start as u64;
+                let abs_end = range_start + rel_end as u64 + 1;
+                async move {
+                    let response = fetch_range(&client, abs_start..abs_end)
+                        .await
+                        .map_err(|e| match e {
+                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                            ))),
+                            other @ ReadError::InvalidLocation(_) => other,
+                        })?;
+                    if response.last_modified != head_last_modified {
+                        return Err(ReadError::IOError(IOError::new(
+                            ErrorKind::Unexpected,
+                            format!(
+                                "File was modified during multi-part download: expected last modified time {}, got {}",
+                                head_last_modified, response.last_modified
+                            ),
+                            format!("chunk {chunk_index} (bytes {abs_start}-{abs_end})"),
+                        )));
+                    }
+                    Ok((chunk_index, response.data))
+                }
+            },
+        )
+            .await
     }
 
     async fn list(
@@ -494,6 +550,20 @@ async fn head(
         )
     })
 }
+
+async fn fetch_range(
+    client: &FileClient,
+    range: std::ops::Range<u64>,
+) -> Result<GetFileResponse, ReadError> {
+    client
+        .read()
+        .range(Range::new(range.start, range.end))
+        .await
+        .map_err(|e| {
+            ReadError::IOError(parse_error(e, "").with_context("Failed to download byte range."))
+        })
+}
+
 
 fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
     if adls_location.blob_name().is_empty() || adls_location.blob_name() == "/" {

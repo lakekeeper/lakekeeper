@@ -6,23 +6,23 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, LakekeeperStorage, Location, ReadError,
-    WriteError,
-    error::{ErrorKind, InvalidLocationError, RetryableError},
-    execute_with_parallelism,
-    s3::{
-        S3Location,
+    error::{ErrorKind, InvalidLocationError, RetryableError}, execute_with_parallelism, s3::{
         s3_error::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
             parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
             parse_upload_part_error,
         },
-    },
-    safe_usize_to_i32, validate_file_size,
+        S3Location,
+    }, safe_usize_to_i32, validate_file_size, DeleteBatchError, DeleteError,
+    FileInfo,
+    IOError,
+    LakekeeperStorage,
+    Location,
+    ReadError, WriteError,
 };
 
 // Convert MB constants to bytes - these will always be safe conversions from u16
@@ -256,59 +256,72 @@ impl LakekeeperStorage for S3Storage {
             return self.read_single(path).await;
         }
 
-        // For large files, use parallel chunk downloads
-        let chunks = crate::calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
+        // Delegate the chunked-download wiring to `read_range`; passing the
+        // full file as a range yields identical behaviour without repeating
+        // the closure that drives the parallel chunk fetches.
+        self.read_range(path, 0..file_size as u64).await
+    }
 
-        let download_futures = chunks.into_iter().enumerate().map(|(chunk_index, (start, end))| {
-            let client = self.client.clone();
-            let s3_location = s3_location.clone();
-            let path = path.to_string();
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        if range.end < range.start {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "Invalid range: start ({}) > end ({})",
+                    range.start, range.end
+                ),
+                path.to_string(),
+            )));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
 
-            async move {
-                let range_header = format!("bytes={start}-{end}");
-                let response = client
-                    .get_object()
-                    .bucket(s3_location.bucket_name())
-                    .key(s3_key_to_str(&s3_location.key()))
-                    .range(range_header)
-                    .send()
-                    .await
-                    .map_err(|e| parse_get_object_error(e, &s3_location))?;
+        let s3_location = S3Location::try_from_str(path, true)?;
+        let range_size_u64 = range.end - range.start;
+        let range_size = usize::try_from(range_size_u64).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range size {range_size_u64} too large for this platform"),
+                path.to_string(),
+            ))
+        })?;
 
-                let chunk_data = response.body.collect().await.map_err(|e| {
-                    ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Error collecting S3 chunk {chunk_index} bytestream (bytes {start}-{end}): {e}"),
-                        path.clone(),
-                    ).set_source(anyhow::anyhow!(e)))
-                })?;
+        if range_size <= MAX_BYTES_PER_REQUEST {
+            return fetch_range(&self.client, &s3_location, range).await;
+        }
 
-                Ok::<(usize, Bytes), ReadError>((chunk_index, chunk_data.into_bytes()))
-            }
-        });
-
-        // Execute downloads with parallelism limit of 10
-        let download_results = execute_with_parallelism(download_futures, 10);
-        tokio::pin!(download_results);
-
-        // Transform the stream to handle the nested Result and convert JoinError to ReadError
-        let flattened_results = download_results.map(|result| {
-            result
-                .map_err(|join_error| {
-                    ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Download task panicked: {join_error}"),
-                        path.to_string(),
-                    ))
-                })
-                .and_then(|inner| inner)
-        });
-
-        // Use the shared utility function to assemble chunks
-        let combined_data =
-            crate::assemble_chunks(flattened_results, file_size, DEFAULT_BYTES_PER_REQUEST).await?;
-
-        Ok(combined_data)
+        let client = self.client.clone();
+        let location_for_chunks = s3_location.clone();
+        let range_start = range.start;
+        crate::parallel_chunked_read(
+            range_size,
+            DEFAULT_BYTES_PER_REQUEST,
+            10,
+            path,
+            move |rel_start, rel_end, chunk_index| {
+                let client = client.clone();
+                let location = location_for_chunks.clone();
+                let abs_start = range_start + rel_start as u64;
+                let abs_end = range_start + rel_end as u64 + 1;
+                async move {
+                    let chunk = fetch_range(&client, &location, abs_start..abs_end)
+                        .await
+                        .map_err(|e| match e {
+                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                            ))),
+                            other @ ReadError::InvalidLocation(_) => other,
+                        })?;
+                    Ok((chunk_index, chunk))
+                }
+            },
+        )
+            .await
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -329,7 +342,7 @@ impl LakekeeperStorage for S3Storage {
                 format!("Error in S3 get bytestream: {e}"),
                 s3_location.as_str().to_string(),
             )
-            .set_source(anyhow::anyhow!(e))
+                .set_source(anyhow::anyhow!(e))
         })?;
 
         Ok(body.into_bytes())
@@ -402,10 +415,10 @@ impl LakekeeperStorage for S3Storage {
                             }
                         }
                     })
-                    .retries(3)
-                    .exponential_backoff(std::time::Duration::from_millis(100))
-                    .max_delay(std::time::Duration::from_secs(10))
-                    .await;
+                        .retries(3)
+                        .exponential_backoff(std::time::Duration::from_millis(100))
+                        .max_delay(std::time::Duration::from_secs(10))
+                        .await;
 
                     match result {
                         Ok(Ok(response)) => {
@@ -450,9 +463,31 @@ fn try_parse_file_info(
     }
 }
 
-/// Wraps the S3 `head_object` call so it can be reused by `read` and
-/// `metadata`. Returns the SDK-native [`HeadObjectOutput`] so callers can
-/// project the fields they need.
+async fn fetch_range(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    range: std::ops::Range<u64>,
+) -> Result<Bytes, ReadError> {
+    let response = client
+        .get_object()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .range(format!("bytes={}-{}", range.start, range.end - 1))
+        .send()
+        .await
+        .map_err(|e| parse_get_object_error(e, location))?;
+
+    let body = response.body.collect().await.map_err(|e| {
+        IOError::new(
+            ErrorKind::Unexpected,
+            format!("Error collecting S3 range bytestream: {e}"),
+            location.as_str().to_string(),
+        )
+            .set_source(anyhow::anyhow!(e))
+    })?;
+    Ok(body.into_bytes())
+}
+
 async fn head(
     client: &aws_sdk_s3::Client,
     location: &S3Location,
@@ -466,8 +501,6 @@ async fn head(
         .map_err(|e| ReadError::IOError(parse_head_object_error(e, location)))
 }
 
-/// Convert an `aws_smithy_types::DateTime` returned by the AWS SDK into a
-/// `chrono::DateTime<Utc>`. Sub-second precision is preserved.
 fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp(timestamp.secs(), timestamp.subsec_nanos())
 }
@@ -479,7 +512,7 @@ fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Ut
 /// - Key: Bucket name
 /// - Value: A `HashMap` of S3 keys to their original paths
 fn group_paths_by_bucket(
-    paths: impl IntoIterator<Item = impl AsRef<str>>,
+    paths: impl IntoIterator<Item=impl AsRef<str>>,
 ) -> Result<HashMap<String, HashMap<String, String>>, InvalidLocationError> {
     let mut s3_locations: HashMap<String, HashMap<String, String>> = HashMap::new();
 
@@ -530,13 +563,13 @@ fn create_delete_futures(
     s3_locations: HashMap<String, HashMap<String, String>>,
 ) -> Result<
     impl Iterator<
-        Item = impl std::future::Future<
-            Output = Result<
+        Item=impl std::future::Future<
+            Output=Result<
                 aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
                 AWSBatchDeleteError,
             >,
         > + Send
-               + 'static,
+        + 'static,
     >,
     InvalidLocationError,
 > {
@@ -596,13 +629,13 @@ fn create_delete_futures(
 /// Processes delete results and handles errors as they complete.
 async fn process_delete_results(
     delete_futures: impl Iterator<
-        Item = impl std::future::Future<
-            Output = Result<
+        Item=impl std::future::Future<
+            Output=Result<
                 aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
                 AWSBatchDeleteError,
             >,
         > + Send
-               + 'static,
+        + 'static,
     >,
     key_to_path_mapping: HashMap<String, String>,
 ) -> Result<(), IOError> {
