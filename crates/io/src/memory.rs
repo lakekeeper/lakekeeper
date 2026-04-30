@@ -196,6 +196,37 @@ impl LakekeeperStorage for MemoryStorage {
         self.read(path).await
     }
 
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        let key = normalize_memory_path(path)?;
+
+        let data = self.data.read().await;
+        let (bytes, last_modified) = data.get(&key).ok_or_else(|| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::NotFound,
+                "Object not found in memory storage",
+                key.clone(),
+            ))
+        })?;
+
+        let location_str = format!("{MEMORY_PREFIX}{key}");
+        let location = location_str.parse::<Location>().map_err(|e| {
+            ReadError::IOError(
+                IOError::new(
+                    ErrorKind::Unexpected,
+                    format!("Failed to parse location: {e}"),
+                    location_str.clone(),
+                )
+                .set_source(anyhow::anyhow!(e)),
+            )
+        })?;
+
+        Ok(FileInfo::new(
+            Some(*last_modified),
+            location,
+            Some(bytes.len() as u64),
+        ))
+    }
+
     async fn list(
         &self,
         path: &str,
@@ -208,10 +239,12 @@ impl LakekeeperStorage for MemoryStorage {
         };
 
         let data = self.data.read().await;
-        let mut matching_files: Vec<(String, DateTime<Utc>)> = data
+        let mut matching_files: Vec<(String, u64, DateTime<Utc>)> = data
             .iter()
             .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(key, (_, last_modified))| (key.clone(), *last_modified))
+            .map(|(key, (bytes, last_modified))| {
+                (key.clone(), bytes.len() as u64, *last_modified)
+            })
             .collect();
 
         // Sort for consistent ordering
@@ -220,15 +253,15 @@ impl LakekeeperStorage for MemoryStorage {
         let page_size = page_size.unwrap_or(1000);
 
         let mut all_file_infos = Vec::new();
-        for (key, last_modified) in matching_files {
+        for (key, size, last_modified) in matching_files {
             let location_str = format!("{MEMORY_PREFIX}{key}");
             match location_str.parse::<Location>() {
                 Ok(location) => {
-                    let file_info = FileInfo {
-                        last_modified: Some(last_modified),
+                    all_file_infos.push(FileInfo::new(
+                        Some(last_modified),
                         location,
-                    };
-                    all_file_infos.push(file_info);
+                        Some(size),
+                    ));
                 }
                 Err(e) => {
                     let error = IOError::new(

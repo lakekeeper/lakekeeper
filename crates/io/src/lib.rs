@@ -19,6 +19,7 @@ pub use error::{
 };
 use futures::{TryStreamExt as _, stream::BoxStream};
 pub use location::{Location, LocationParseError};
+use serde::{Deserialize, Serialize};
 pub use tokio;
 pub use tryhard;
 use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
@@ -32,6 +33,14 @@ mod location;
 pub mod memory;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
+
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-in-memory",
+    feature = "storage-s3"
+))]
+pub mod iceberg_bridge;
 
 #[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
 /// Fallible usize→i32 conversion with additional context for diagnostics.
@@ -156,14 +165,20 @@ where
 pub struct FileInfo {
     last_modified: Option<DateTime<Utc>>,
     location: Location,
+    size: Option<u64>,
 }
 
 impl FileInfo {
     #[must_use]
-    pub fn new(last_modified: Option<DateTime<Utc>>, location: Location) -> Self {
+    pub fn new(
+        last_modified: Option<DateTime<Utc>>,
+        location: Location,
+        size: Option<u64>,
+    ) -> Self {
         Self {
             last_modified,
             location,
+            size,
         }
     }
 
@@ -175,6 +190,11 @@ impl FileInfo {
     #[must_use]
     pub fn location(&self) -> &Location {
         &self.location
+    }
+
+    #[must_use]
+    pub fn size(&self) -> Option<u64> {
+        self.size
     }
 }
 
@@ -216,6 +236,28 @@ where
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError>;
+
+    /// Retrieve metadata about a file at the given path.
+    ///
+    /// Returns a [`FileInfo`] populated with the fields the backend exposes
+    /// (e.g. `size`, `last_modified`).
+    ///
+    /// # Arguments
+    /// path: It should be an absolute path starting with scheme string.
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError>;
+
+    /// Check whether a file exists at the given path.
+    ///
+    /// Default implementation calls [`LakekeeperStorage::metadata`] and maps
+    /// `ErrorKind::NotFound` to `Ok(false)`. Backends with a cheaper
+    /// existence check should override this method.
+    async fn exists(&self, path: &str) -> Result<bool, ReadError> {
+        match self.metadata(path).await {
+            Ok(_) => Ok(true),
+            Err(ReadError::IOError(e)) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
 
     /// List files for this prefix.
     /// If the provided location does not end with a slash, the slash will be added automatically.
@@ -331,6 +373,19 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.metadata(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.metadata(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.metadata(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.metadata(path).await,
+        }
+    }
+
     async fn list(
         &self,
         path: &str,
@@ -408,6 +463,10 @@ macro_rules! impl_lakekeeper_storage_delegating {
 
                 async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
                     (**self).read_single(path).await
+                }
+
+                async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+                    (**self).metadata(path).await
                 }
 
                 async fn list(

@@ -1,8 +1,11 @@
 use std::{collections::HashMap, str::FromStr};
 
-use aws_sdk_s3::types::{Object, ObjectIdentifier, ServerSideEncryption};
+use aws_sdk_s3::{
+    operation::head_object::HeadObjectOutput,
+    types::{Object, ObjectIdentifier, ServerSideEncryption},
+};
 use bytes::Bytes;
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream};
 
 use crate::{
@@ -245,17 +248,7 @@ impl LakekeeperStorage for S3Storage {
 
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
-
-        // First, get object metadata to determine size
-        let head_response = self
-            .client
-            .head_object()
-            .bucket(s3_location.bucket_name())
-            .key(s3_key_to_str(&s3_location.key()))
-            .send()
-            .await
-            .map_err(|e| parse_head_object_error(e, &s3_location))?;
-
+        let head_response = head(&self.client, &s3_location).await?;
         let content_length = head_response.content_length().unwrap_or(0);
         let file_size = validate_file_size(content_length, path)?;
 
@@ -340,6 +333,20 @@ impl LakekeeperStorage for S3Storage {
         })?;
 
         Ok(body.into_bytes())
+    }
+
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        let head_response = head(&self.client, &s3_location).await?;
+        let size = head_response
+            .content_length()
+            .and_then(|n| u64::try_from(n).ok());
+        let last_modified = head_response.last_modified().and_then(parse_timestamp);
+        Ok(FileInfo::new(
+            last_modified,
+            s3_location.location().clone(),
+            size,
+        ))
     }
 
     async fn list(
@@ -434,17 +441,35 @@ fn try_parse_file_info(
 ) -> impl FnMut(&Object) -> Option<FileInfo> {
     move |object| {
         let key = object.key()?;
-        let last_modified = object.last_modified().and_then(|last_modified| {
-            DateTime::from_timestamp(last_modified.secs(), last_modified.subsec_nanos())
-        });
+        let last_modified = object.last_modified().and_then(parse_timestamp);
+        let size = object.size().and_then(|n| u64::try_from(n).ok());
         let scheme = base_location.scheme();
         let full_path = format!("{scheme}://{s3_bucket}/{key}");
         let location = Location::from_str(&full_path).ok()?;
-        Some(FileInfo {
-            last_modified,
-            location,
-        })
+        Some(FileInfo::new(last_modified, location, size))
     }
+}
+
+/// Wraps the S3 `head_object` call so it can be reused by `read` and
+/// `metadata`. Returns the SDK-native [`HeadObjectOutput`] so callers can
+/// project the fields they need.
+async fn head(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+) -> Result<HeadObjectOutput, ReadError> {
+    client
+        .head_object()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .send()
+        .await
+        .map_err(|e| ReadError::IOError(parse_head_object_error(e, location)))
+}
+
+/// Convert an `aws_smithy_types::DateTime` returned by the AWS SDK into a
+/// `chrono::DateTime<Utc>`. Sub-second precision is preserved.
+fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Utc>> {
+    DateTime::from_timestamp(timestamp.secs(), timestamp.subsec_nanos())
 }
 
 /// Groups paths by S3 bucket and ensures uniqueness of keys per bucket.

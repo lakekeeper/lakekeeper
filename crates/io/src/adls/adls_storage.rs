@@ -8,7 +8,7 @@ use std::{
 use azure_core::prelude::Range;
 use azure_storage::CloudLocation;
 use azure_storage_datalake::prelude::{
-    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, Path,
+    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, HeadPathResponse, Path,
 };
 use bytes::Bytes;
 use chrono::DateTime;
@@ -16,12 +16,12 @@ use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
+    adls::{adls_error::parse_error, AdlsLocation}, calculate_ranges, delete_not_found_is_ok, error::ErrorKind, execute_with_parallelism, safe_usize_to_i64,
+    validate_file_size, DeleteBatchError, DeleteError,
+    FileInfo,
+    IOError, InvalidLocationError,
+    LakekeeperStorage,
     Location, ReadError, WriteError,
-    adls::{AdlsLocation, adls_error::parse_error},
-    calculate_ranges, delete_not_found_is_ok,
-    error::ErrorKind,
-    execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
 
 #[derive(Debug, Clone)]
@@ -294,18 +294,30 @@ impl LakekeeperStorage for AdlsStorage {
         Ok(read_file_response.data)
     }
 
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+        require_key(&adls_location)?;
+        let client = self.get_file_client(&adls_location)?;
+        let head_response = head(&client, &adls_location).await?;
+        let size = head_response
+            .content_length
+            .and_then(|cl| u64::try_from(cl).ok());
+        let last_modified =
+            DateTime::from_timestamp(head_response.last_modified.unix_timestamp(), 0);
+        Ok(FileInfo::new(
+            last_modified,
+            adls_location.location().clone(),
+            size,
+        ))
+    }
+
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
-
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
-
         let client = self.get_file_client(&adls_location)?;
-        let status = client.get_properties().await.map_err(|e| {
-            ReadError::IOError(parse_error(e, path).with_context("Failed to get ADLS file status"))
-        })?;
+        let head_response = head(&client, &adls_location).await?;
 
-        let Some(content_length) = status.content_length else {
+        let Some(content_length) = head_response.content_length else {
             return self.read_single(path).await;
         };
 
@@ -317,6 +329,7 @@ impl LakekeeperStorage for AdlsStorage {
         }
 
         let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
+        let head_last_modified = head_response.last_modified;
 
         let download_futures: Vec<_> = chunks
             .into_iter()
@@ -336,12 +349,12 @@ impl LakekeeperStorage for AdlsStorage {
                             )))
                         })?;
 
-                    if chunk_data.last_modified != status.last_modified {
+                    if chunk_data.last_modified != head_last_modified {
                         return Err(ReadError::IOError(IOError::new(
                             ErrorKind::Unexpected,
                             format!(
                                 "File was modified during multi-part download: expected last modified time {}, got {}",
-                                status.last_modified,
+                                head_last_modified,
                                 chunk_data.last_modified
                             ),
                             path.clone(),
@@ -464,13 +477,22 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
             path_name
         );
         let location = Location::from_str(&full_path).ok()?;
-        let last_modified = path.last_modified;
-        let last_modified = DateTime::from_timestamp(last_modified.unix_timestamp(), 0);
-        Some(FileInfo {
-            last_modified,
-            location,
-        })
+        let last_modified = DateTime::from_timestamp(path.last_modified.unix_timestamp(), 0);
+        let size = u64::try_from(path.content_length).ok();
+        Some(FileInfo::new(last_modified, location, size))
     }
+}
+
+async fn head(
+    client: &FileClient,
+    location: &AdlsLocation,
+) -> Result<HeadPathResponse, ReadError> {
+    client.get_properties().await.map_err(|e| {
+        ReadError::IOError(
+            parse_error(e, location.location().as_str())
+                .with_context("Failed to get ADLS file status"),
+        )
+    })
 }
 
 fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
@@ -488,7 +510,7 @@ fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError>
 /// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
 /// vectors of `(blob_path, original_path)` tuples.
 fn group_paths_by_container(
-    paths: impl IntoIterator<Item = impl AsRef<str>>,
+    paths: impl IntoIterator<Item=impl AsRef<str>>,
 ) -> Result<HashMap<(String, String), Vec<AdlsLocation>>, InvalidLocationError> {
     let mut grouped_paths: HashMap<(String, String), Vec<AdlsLocation>> = HashMap::new();
 

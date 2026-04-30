@@ -4,17 +4,18 @@ use std::{
 };
 
 use bytes::Bytes;
-use chrono::DateTime;
-use futures::{StreamExt as _, stream};
+use chrono::{DateTime, Utc};
+use futures::{stream, StreamExt as _};
 use google_cloud_storage::{
     client::Client,
     http::{
         objects::{
-            Object,
             delete::DeleteObjectRequest,
             download::Range,
+            get::GetObjectRequest,
             list::ListObjectsRequest,
             upload::{Media, UploadObjectRequest, UploadType},
+            Object,
         },
         resumable_upload_client::{ChunkSize, UploadStatus},
     },
@@ -22,11 +23,11 @@ use google_cloud_storage::{
 use tokio;
 
 use crate::{
-    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperStorage, Location, ReadError, WriteError, calculate_ranges, delete_not_found_is_ok,
-    execute_with_parallelism,
-    gcs::{GcsLocation, gcs_error::parse_error},
-    safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
+    calculate_ranges, delete_not_found_is_ok, execute_with_parallelism, gcs::{gcs_error::parse_error, GcsLocation}, safe_usize_to_i32, safe_usize_to_i64,
+    validate_file_size, DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError,
+    InvalidLocationError,
+    LakekeeperStorage,
+    Location, ReadError, WriteError,
 };
 
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
@@ -269,14 +270,17 @@ impl LakekeeperStorage for GcsStorage {
         }
     }
 
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        let location = GcsLocation::try_from_str(path)?;
+        let head_response = head(&self.client, &location).await?;
+        let size = u64::try_from(head_response.size).ok();
+        let last_modified = parse_timestamp(&head_response);
+        Ok(FileInfo::new(last_modified, location.location().clone(), size))
+    }
+
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         let location = GcsLocation::try_from_str(path)?;
-
-        let request = google_cloud_storage::http::objects::get::GetObjectRequest {
-            bucket: location.bucket_name().to_string(),
-            object: location.object_name(),
-            ..Default::default()
-        };
+        let request = build_get_object_request(&location);
 
         let range = Range::default();
         let data = self
@@ -295,43 +299,17 @@ impl LakekeeperStorage for GcsStorage {
 
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let location = GcsLocation::try_from_str(path)?;
-
-        let mut request = google_cloud_storage::http::objects::get::GetObjectRequest {
-            bucket: location.bucket_name().to_string(),
-            object: location.object_name(),
-            ..Default::default()
-        };
-
-        let status = self.client.get_object(&request).await.map_err(|e| {
-            ReadError::IOError(
-                parse_error(e, location.as_str())
-                    .with_context("Failed to get metadata about the object."),
-            )
-        })?;
-
-        let file_size = validate_file_size(status.size, location.as_str())?;
+        let head_response = head(&self.client, &location).await?;
+        let file_size = validate_file_size(head_response.size, location.as_str())?;
 
         if file_size < MAX_BYTES_PER_REQUEST {
-            let range = Range::default();
-            // If the object is small enough, we can read it in one go
-            let data = self
-                .client
-                .download_object(&request, &range)
-                .await
-                .map_err(|e| {
-                    ReadError::IOError(
-                        parse_error(e, location.as_str())
-                            .with_context("Failed to download full object."),
-                    )
-                })?;
-
-            return Ok(bytes::Bytes::from(data));
+            return self.read_single(path).await;
         }
 
-        request.generation = Some(status.generation);
+        let mut request = build_get_object_request(&location);
+        request.generation = Some(head_response.generation);
 
         // Calculate the chunks, starting from 0 up to the size of the object in DEFAULT_BYTES_PER_REQUEST chunks
-        let file_size = validate_file_size(status.size, location.as_str())?;
         let chunks = calculate_ranges(file_size, DEFAULT_BYTES_PER_REQUEST);
 
         let download_futures: Vec<_> = chunks
@@ -457,12 +435,33 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
                 gcs_path,
             )
         })?;
-        let last_modified = object
-            .updated
-            .and_then(|timestamp| DateTime::from_timestamp(timestamp.unix_timestamp(), 0));
-        Ok(FileInfo {
-            last_modified,
-            location,
-        })
+        let last_modified = parse_timestamp(&object);
+        let size = u64::try_from(object.size).ok();
+        Ok(FileInfo::new(last_modified, location, size))
     }
+}
+
+async fn head(client: &Client, location: &GcsLocation) -> Result<Object, ReadError> {
+    let request = build_get_object_request(location);
+    client.get_object(&request).await.map_err(|e| {
+        ReadError::IOError(
+            parse_error(e, location.as_str())
+                .with_context("Failed to get metadata about the object."),
+        )
+    })
+}
+
+fn build_get_object_request(location: &GcsLocation) -> GetObjectRequest {
+    GetObjectRequest {
+        bucket: location.bucket_name().to_string(),
+        object: location.object_name(),
+        ..Default::default()
+    }
+}
+
+fn parse_timestamp(object: &Object) -> Option<DateTime<Utc>> {
+    object
+        .updated
+        .as_ref()
+        .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), 0))
 }

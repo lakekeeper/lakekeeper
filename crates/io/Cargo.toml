@@ -70,11 +70,13 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
+iceberg = { workspace = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true, optional = true }
 reqwest-retry = { workspace = true, optional = true }
+serde = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
@@ -82,6 +84,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
+typetag = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 veil = { workspace = true }
