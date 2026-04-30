@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use futures::{stream, StreamExt};
 
 use crate::{
-    error::{ErrorKind, InvalidLocationError, RetryableError}, execute_with_parallelism, s3::{
+    error::{ErrorKind, InvalidLocationError, RetryableError}, execute_with_parallelism, iceberg_bridge::LakekeeperFileWrite, s3::{
         s3_error::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
@@ -17,7 +17,8 @@ use crate::{
             parse_upload_part_error,
         },
         S3Location,
-    }, safe_usize_to_i32, validate_file_size, DeleteBatchError, DeleteError,
+    }, safe_usize_to_i32, validate_file_size, DeleteBatchError,
+    DeleteError,
     FileInfo,
     IOError,
     LakekeeperStorage,
@@ -83,167 +84,80 @@ impl LakekeeperStorage for S3Storage {
             .map_err(Into::into)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let s3_location = S3Location::try_from_str(path, true)?;
 
         if bytes.len() < MAX_BYTES_PER_REQUEST {
-            // Small file - use single PUT request
-            let mut put_object = self
-                .client
-                .put_object()
-                .bucket(s3_location.bucket_name())
-                .key(s3_key_to_str(&s3_location.key()))
-                .body(bytes.into());
+            return put_object_single(
+                &self.client,
+                &s3_location,
+                self.aws_kms_key_arn.as_deref(),
+                bytes,
+            )
+                .await;
+        }
 
-            if let Some(kms_key_arn) = &self.aws_kms_key_arn {
-                put_object = put_object
-                    .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
-                    .set_ssekms_key_id(Some(kms_key_arn.clone()));
+        // Large file: parallel multipart upload.
+        let file_size = bytes.len();
+        let mut chunk_size = DEFAULT_BYTES_PER_REQUEST;
+        if file_size.div_ceil(chunk_size) > MAX_PARTS_PER_UPLOAD {
+            chunk_size = file_size.div_ceil(MAX_PARTS_PER_UPLOAD);
+        }
+
+        let upload_id =
+            start_multipart(&self.client, &s3_location, self.aws_kms_key_arn.as_deref()).await?;
+
+        // Materialise chunks into owned `Bytes` so the per-part futures do
+        // not borrow from `bytes` and can be moved into `execute_with_parallelism`.
+        let chunks: Vec<(usize, Bytes)> = bytes
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(i, chunk)| (i + 1, Bytes::copy_from_slice(chunk)))
+            .collect();
+
+        let upload_futures = chunks.into_iter().map(|(part_number, chunk)| {
+            let client = self.client.clone();
+            let location = s3_location.clone();
+            let upload_id = upload_id.clone();
+            async move {
+                let part_number = safe_usize_to_i32(part_number, location.as_str())
+                    .map_err(|e| e.with_context("Too many parts to write"))?;
+                let part =
+                    upload_part(&client, &location, &upload_id, part_number, chunk).await?;
+                Ok::<(i32, aws_sdk_s3::types::CompletedPart), WriteError>((part_number, part))
             }
-            put_object.send().await.map_err(|e| {
-                WriteError::IOError(parse_put_object_error(e, s3_location.as_str()))
-            })?;
+        });
 
-            Ok(())
-        } else {
-            // Large file - use multipart upload
-            let file_size = bytes.len();
+        let upload_results = execute_with_parallelism(upload_futures, 10);
+        tokio::pin!(upload_results);
 
-            // Calculate optimal chunk size to respect MAX_PARTS_PER_UPLOAD constraint
-            let mut chunk_size = DEFAULT_BYTES_PER_REQUEST;
-            let estimated_parts = file_size.div_ceil(chunk_size);
-
-            if estimated_parts > MAX_PARTS_PER_UPLOAD {
-                // Increase chunk size to stay within MAX_PARTS_PER_UPLOAD
-                chunk_size = file_size.div_ceil(MAX_PARTS_PER_UPLOAD);
-            }
-
-            // Create multipart upload
-            let mut create_multipart = self
-                .client
-                .create_multipart_upload()
-                .bucket(s3_location.bucket_name())
-                .key(s3_key_to_str(&s3_location.key()));
-
-            if let Some(kms_key_arn) = &self.aws_kms_key_arn {
-                create_multipart = create_multipart
-                    .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
-                    .set_ssekms_key_id(Some(kms_key_arn.clone()));
-            }
-
-            let multipart_response = create_multipart.send().await.map_err(|e| {
-                WriteError::IOError(
-                    parse_create_multipart_upload_error(e, s3_location.as_str())
-                        .with_context("Failed to create multipart upload."),
-                )
-            })?;
-
-            let upload_id = multipart_response.upload_id().ok_or_else(|| {
+        let mut completed_parts = Vec::new();
+        while let Some(result) = upload_results.next().await {
+            let join_result = result.map_err(|e| {
                 WriteError::IOError(IOError::new(
                     ErrorKind::Unexpected,
-                    "S3 multipart upload response missing upload_id".to_string(),
+                    format!("Upload task panicked: {e}"),
                     s3_location.as_str().to_string(),
                 ))
             })?;
-
-            // Create chunks and upload them in parallel
-            let chunks: Vec<_> = bytes
-                .chunks(chunk_size)
-                .enumerate()
-                .map(|(i, chunk)| (i + 1, Bytes::copy_from_slice(chunk))) // S3 part numbers start at 1
-                .collect();
-
-            // Create upload futures
-            let upload_futures = chunks.into_iter().map(|(part_number, chunk_data)| {
-                let client = self.client.clone();
-                let s3_location = s3_location.clone();
-                let upload_id = upload_id.to_string();
-
-                async move {
-                    let part_number_i32 = safe_usize_to_i32(part_number, s3_location.as_str())
-                        .map_err(|e| e.with_context("Too many parts to write"))?;
-                    let upload_part_response = client
-                        .upload_part()
-                        .bucket(s3_location.bucket_name())
-                        .key(s3_key_to_str(&s3_location.key()))
-                        .upload_id(&upload_id)
-                        .part_number(part_number_i32)
-                        .body(chunk_data.into())
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            WriteError::IOError(
-                                parse_upload_part_error(e, s3_location.as_str())
-                                    .with_context(format!("Failed to upload part {part_number}")),
-                            )
-                        })?;
-
-                    let etag = upload_part_response.e_tag().ok_or_else(|| {
-                        WriteError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!("S3 upload part response missing ETag for part {part_number}"),
-                            s3_location.as_str().to_string(),
-                        ))
-                    })?;
-
-                    let completed_part = aws_sdk_s3::types::CompletedPart::builder()
-                        .part_number(part_number_i32)
-                        .e_tag(etag)
-                        .build();
-
-                    Ok::<(i32, aws_sdk_s3::types::CompletedPart), WriteError>((
-                        part_number_i32,
-                        completed_part,
-                    ))
-                }
-            });
-
-            // Execute uploads with parallelism limit of 10
-            let upload_results = execute_with_parallelism(upload_futures, 10);
-            tokio::pin!(upload_results);
-
-            // Collect all completed parts
-            let mut completed_parts = Vec::new();
-            while let Some(result) = upload_results.next().await {
-                let join_result = result.map_err(|e| {
-                    WriteError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Upload task panicked: {e}"),
-                        s3_location.as_str().to_string(),
-                    ))
-                })?;
-                let (part_number, completed_part) = join_result?;
-                completed_parts.push((part_number, completed_part));
-            }
-
-            // Sort parts by part number to ensure correct order
-            completed_parts.sort_by_key(|(part_number, _)| *part_number);
-            let completed_parts: Vec<_> =
-                completed_parts.into_iter().map(|(_, part)| part).collect();
-
-            // Complete the multipart upload
-            let completed_multipart_upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
-                .set_parts(Some(completed_parts))
-                .build();
-
-            self.client
-                .complete_multipart_upload()
-                .bucket(s3_location.bucket_name())
-                .key(s3_key_to_str(&s3_location.key()))
-                .upload_id(upload_id)
-                .multipart_upload(completed_multipart_upload)
-                .send()
-                .await
-                .map_err(|e| {
-                    WriteError::IOError(
-                        parse_complete_multipart_upload_error(e, s3_location.as_str())
-                            .with_context("Failed to complete multipart upload."),
-                    )
-                })?;
-
-            Ok(())
+            let (part_number, completed_part) = join_result?;
+            completed_parts.push((part_number, completed_part));
         }
+        completed_parts.sort_by_key(|(part_number, _)| *part_number);
+        let completed_parts: Vec<_> =
+            completed_parts.into_iter().map(|(_, part)| part).collect();
+
+        complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await
+    }
+
+    async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
+        Ok(Box::new(S3FileWrite {
+            client: self.client.clone(),
+            location: s3_location,
+            kms_key_arn: self.aws_kms_key_arn.clone(),
+            state: S3WriterState::Buffering(bytes::BytesMut::new()),
+        }))
     }
 
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -503,6 +417,315 @@ async fn head(
 
 fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp(timestamp.secs(), timestamp.subsec_nanos())
+}
+
+/// Upload a small object in a single PUT request.
+async fn put_object_single(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    kms_key_arn: Option<&str>,
+    bytes: Bytes,
+) -> Result<(), WriteError> {
+    let mut put = client
+        .put_object()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .body(bytes.into());
+    if let Some(arn) = kms_key_arn {
+        put = put
+            .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
+            .set_ssekms_key_id(Some(arn.to_string()));
+    }
+    put.send()
+        .await
+        .map_err(|e| WriteError::IOError(parse_put_object_error(e, location.as_str())))?;
+    Ok(())
+}
+
+/// Initiate a multipart upload, returning the SDK-issued upload id.
+async fn start_multipart(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    kms_key_arn: Option<&str>,
+) -> Result<String, WriteError> {
+    let mut create = client
+        .create_multipart_upload()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()));
+    if let Some(arn) = kms_key_arn {
+        create = create
+            .set_server_side_encryption(Some(ServerSideEncryption::AwsKms))
+            .set_ssekms_key_id(Some(arn.to_string()));
+    }
+    let response = create.send().await.map_err(|e| {
+        WriteError::IOError(
+            parse_create_multipart_upload_error(e, location.as_str())
+                .with_context("Failed to create multipart upload."),
+        )
+    })?;
+    response
+        .upload_id()
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            WriteError::IOError(IOError::new(
+                ErrorKind::Unexpected,
+                "S3 multipart upload response missing upload_id".to_string(),
+                location.as_str().to_string(),
+            ))
+        })
+}
+
+/// Upload a single multipart part. Returns the SDK [`CompletedPart`]
+/// descriptor expected by `complete_multipart`.
+async fn upload_part(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    upload_id: &str,
+    part_number: i32,
+    bytes: Bytes,
+) -> Result<aws_sdk_s3::types::CompletedPart, WriteError> {
+    let response = client
+        .upload_part()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .upload_id(upload_id)
+        .part_number(part_number)
+        .body(bytes.into())
+        .send()
+        .await
+        .map_err(|e| {
+            WriteError::IOError(
+                parse_upload_part_error(e, location.as_str())
+                    .with_context(format!("Failed to upload part {part_number}")),
+            )
+        })?;
+    let etag = response.e_tag().ok_or_else(|| {
+        WriteError::IOError(IOError::new(
+            ErrorKind::Unexpected,
+            format!("S3 upload part response missing ETag for part {part_number}"),
+            location.as_str().to_string(),
+        ))
+    })?;
+    Ok(aws_sdk_s3::types::CompletedPart::builder()
+        .part_number(part_number)
+        .e_tag(etag)
+        .build())
+}
+
+/// Finalise a multipart upload using the previously uploaded parts.
+async fn complete_multipart(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    upload_id: &str,
+    completed_parts: Vec<aws_sdk_s3::types::CompletedPart>,
+) -> Result<(), WriteError> {
+    let multipart = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+        .set_parts(Some(completed_parts))
+        .build();
+    client
+        .complete_multipart_upload()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .upload_id(upload_id)
+        .multipart_upload(multipart)
+        .send()
+        .await
+        .map_err(|e| {
+            WriteError::IOError(
+                parse_complete_multipart_upload_error(e, location.as_str())
+                    .with_context("Failed to complete multipart upload."),
+            )
+        })?;
+    Ok(())
+}
+
+/// Best-effort multipart abort used on the streaming-writer error path.
+async fn abort_multipart(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    upload_id: &str,
+) -> Result<(), WriteError> {
+    client
+        .abort_multipart_upload()
+        .bucket(location.bucket_name())
+        .key(s3_key_to_str(&location.key()))
+        .upload_id(upload_id)
+        .send()
+        .await
+        .map_err(|e| {
+            WriteError::IOError(IOError::new(
+                ErrorKind::Unexpected,
+                format!("Failed to abort S3 multipart upload: {e}"),
+                location.as_str().to_string(),
+            ))
+        })?;
+    Ok(())
+}
+
+/// Streaming writer for S3.
+///
+/// Buffers bytes locally; falls back to `PutObject` for files that fit in
+/// `MAX_BYTES_PER_REQUEST`, and switches to a multipart upload as soon as
+/// more than that has been written. Each part flush uses
+/// `DEFAULT_BYTES_PER_REQUEST` (≥ S3's 5 `MiB` minimum, except the final
+/// part which has no minimum).
+#[derive(Debug)]
+pub(crate) struct S3FileWrite {
+    client: aws_sdk_s3::Client,
+    location: S3Location,
+    kms_key_arn: Option<String>,
+    state: S3WriterState,
+}
+
+#[derive(Debug)]
+enum S3WriterState {
+    Buffering(bytes::BytesMut),
+    Multipart {
+        upload_id: String,
+        next_part_number: i32,
+        completed_parts: Vec<aws_sdk_s3::types::CompletedPart>,
+        buffer: bytes::BytesMut,
+    },
+    Closed,
+}
+
+#[async_trait::async_trait]
+impl LakekeeperFileWrite for S3FileWrite {
+    async fn write(&mut self, bytes_in: Bytes) -> Result<(), WriteError> {
+        match &mut self.state {
+            S3WriterState::Closed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to closed writer",
+                    self.location.as_str().to_string(),
+                )));
+            }
+            S3WriterState::Buffering(buffer) => {
+                buffer.extend_from_slice(&bytes_in);
+                if buffer.len() < MAX_BYTES_PER_REQUEST {
+                    return Ok(());
+                }
+                let upload_id = start_multipart(
+                    &self.client,
+                    &self.location,
+                    self.kms_key_arn.as_deref(),
+                )
+                    .await?;
+                let rest = std::mem::take(buffer);
+                self.state = S3WriterState::Multipart {
+                    upload_id,
+                    next_part_number: 1,
+                    completed_parts: Vec::new(),
+                    buffer: rest,
+                };
+                self.flush_multipart_buffer().await?;
+            }
+            S3WriterState::Multipart { buffer, .. } => {
+                buffer.extend_from_slice(&bytes_in);
+                self.flush_multipart_buffer().await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), WriteError> {
+        let state = std::mem::replace(&mut self.state, S3WriterState::Closed);
+        match state {
+            S3WriterState::Closed => Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Writer already closed",
+                self.location.as_str().to_string(),
+            ))),
+            S3WriterState::Buffering(buffer) => {
+                put_object_single(
+                    &self.client,
+                    &self.location,
+                    self.kms_key_arn.as_deref(),
+                    buffer.freeze(),
+                )
+                    .await
+            }
+            S3WriterState::Multipart {
+                upload_id,
+                mut next_part_number,
+                mut completed_parts,
+                buffer,
+            } => {
+                if !buffer.is_empty() {
+                    let part = match upload_part(
+                        &self.client,
+                        &self.location,
+                        &upload_id,
+                        next_part_number,
+                        buffer.freeze(),
+                    )
+                        .await
+                    {
+                        Ok(part) => part,
+                        Err(e) => {
+                            let _ = abort_multipart(&self.client, &self.location, &upload_id).await;
+                            return Err(e);
+                        }
+                    };
+                    completed_parts.push(part);
+                    next_part_number += 1;
+                }
+                let _ = next_part_number; // currently unused after final flush
+                if let Err(e) =
+                    complete_multipart(&self.client, &self.location, &upload_id, completed_parts)
+                        .await
+                {
+                    let _ = abort_multipart(&self.client, &self.location, &upload_id).await;
+                    return Err(e);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl S3FileWrite {
+    /// Flush every full `DEFAULT_BYTES_PER_REQUEST`-sized part the multipart
+    /// buffer can produce. Any tail smaller than the part size remains
+    /// buffered and is flushed by `close` as the final (size-unconstrained)
+    /// part. The caller is responsible for appending new bytes to the
+    /// buffer before invoking this method.
+    async fn flush_multipart_buffer(&mut self) -> Result<(), WriteError> {
+        let S3WriterState::Multipart {
+            upload_id,
+            next_part_number,
+            completed_parts,
+            buffer,
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+
+        while buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
+            let part_bytes = buffer.split_to(DEFAULT_BYTES_PER_REQUEST).freeze();
+            match upload_part(
+                &self.client,
+                &self.location,
+                upload_id,
+                *next_part_number,
+                part_bytes,
+            )
+                .await
+            {
+                Ok(part) => {
+                    completed_parts.push(part);
+                    *next_part_number += 1;
+                }
+                Err(e) => {
+                    let upload_id = upload_id.clone();
+                    let _ = abort_multipart(&self.client, &self.location, &upload_id).await;
+                    self.state = S3WriterState::Closed;
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Groups paths by S3 bucket and ensures uniqueness of keys per bucket.

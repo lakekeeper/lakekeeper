@@ -17,15 +17,16 @@ use google_cloud_storage::{
             upload::{Media, UploadObjectRequest, UploadType},
             Object,
         },
-        resumable_upload_client::{ChunkSize, UploadStatus},
+        resumable_upload_client::{ChunkSize, ResumableUploadClient, UploadStatus},
     },
 };
 use tokio;
 
 use crate::{
-    delete_not_found_is_ok, execute_with_parallelism, gcs::{gcs_error::parse_error, GcsLocation}, safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
-    DeleteBatchError, DeleteError, ErrorKind, FileInfo,
-    IOError, InvalidLocationError,
+    delete_not_found_is_ok, execute_with_parallelism, gcs::{gcs_error::parse_error, GcsLocation}, iceberg_bridge::LakekeeperFileWrite, safe_usize_to_i32, safe_usize_to_i64,
+    validate_file_size, DeleteBatchError, DeleteError, ErrorKind,
+    FileInfo, IOError,
+    InvalidLocationError,
     LakekeeperStorage,
     Location, ReadError, WriteError,
 };
@@ -146,128 +147,65 @@ impl LakekeeperStorage for GcsStorage {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let location = GcsLocation::try_from_str(path)?;
 
-        let upload_request = UploadObjectRequest {
-            bucket: location.bucket_name().to_string(),
-            ..Default::default()
-        };
-
         if bytes.len() < MAX_BYTES_PER_REQUEST {
-            let mut media = Media::new(location.object_name().clone());
-            media.content_length = Some(bytes.len() as u64);
-            let upload_type = UploadType::Simple(media);
+            return upload_simple(&self.client, &location, bytes).await;
+        }
 
-            self.client
-                .upload_object(&upload_request, bytes, &upload_type)
-                .await
-                .map(|_| ())
-                .map_err(|e| {
-                    parse_error(e, location.as_str())
-                        .with_context("Failed to upload single part object.")
-                        .into()
-                })
-        } else {
-            let chunks: Vec<_> = bytes
+        let total_size = safe_usize_to_i64(bytes.len(), location.as_str())?;
+        let upload_client = prepare_resumable(&self.client, &location, total_size).await?;
+        let total_bytes = bytes.len() as u64;
+
+        let upload_futures: Vec<_> =
+            bytes
                 .chunks(DEFAULT_BYTES_PER_REQUEST)
                 .enumerate()
                 .map(|(i, chunk)| {
-                    let offset = i * DEFAULT_BYTES_PER_REQUEST;
-                    (offset, Bytes::copy_from_slice(chunk))
-                })
-                .collect();
-
-            let upload_type = UploadType::Multipart(Box::new(Object {
-                name: location.object_name(),
-                bucket: location.bucket_name().to_string(),
-                size: safe_usize_to_i64(bytes.len(), location.as_str())?,
-                ..Default::default()
-            }));
-            let upload_client = self
-                .client
-                .prepare_resumable_upload(&upload_request, &upload_type)
-                .await
-                .map_err(|e| {
-                    parse_error(e, location.as_str())
-                        .with_context("Failed to prepare resumable upload.")
-                })?;
-
-            let upload_futures: Vec<_> = chunks
-                .into_iter()
-                .map(|(offset, chunk)| {
+                    let offset = (i * DEFAULT_BYTES_PER_REQUEST) as u64;
+                    let chunk = Bytes::copy_from_slice(chunk);
+                    let upload_client = upload_client.clone();
                     let path = path.to_string();
-                    let upload_client_cloned = upload_client.clone();
-                    let len_bytes = bytes.len() as u64;
-
                     async move {
-                        let chunk_size = ChunkSize::new(
-                            offset as u64,
-                            offset as u64 + chunk.len() as u64 - 1,
-                            Some(len_bytes),
-                        );
-                        upload_client_cloned
-                            .upload_multiple_chunk(chunk, &chunk_size)
+                        upload_chunk(&upload_client, offset, chunk, Some(total_bytes))
                             .await
-                            .map_err(|e| {
-                                WriteError::IOError(parse_error(e, &path).with_context(format!(
-                                    "Failed to upload chunk at offset {offset}"
-                                )))
+                            .map_err(|e| match e {
+                                WriteError::IOError(io) => {
+                                    WriteError::IOError(io.with_context(format!(
+                                        "Failed to upload chunk at offset {offset} for {path}"
+                                    )))
+                                }
+                                other @ WriteError::InvalidLocation(_) => other,
                             })
                     }
                 })
                 .collect();
 
-            // Wait for all uploads to complete
-            let upload_stream = execute_with_parallelism(upload_futures, 1).map(|result| {
-                result.map_err(|join_err| {
-                    WriteError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Task join error during multipart upload: {join_err}"),
-                        "multipart_upload".to_string(),
-                    ))
-                })
-            });
-            tokio::pin!(upload_stream);
-
-            while let Some(result) = upload_stream.next().await {
-                let _status = result?;
-            }
-
-            let status =
-                upload_client
-                    .status(Some(bytes.len() as u64))
-                    .await
-                    .map_err(|e| {
-                        WriteError::IOError(parse_error(e, location.as_str()).with_context(
-                            "Failed to get upload status after uploading all chunks.",
-                        ))
-                    })?;
-
-            match status {
-                UploadStatus::Ok(_) => {}
-                UploadStatus::ResumeIncomplete(i) => {
-                    return Err(WriteError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!(
-                            "Multipart upload should be completed, but returned status is `ResumeIncomplete` with uploaded range {i:?}"
-                        ),
-                        location.as_str().to_string(),
-                    )));
-                }
-                UploadStatus::NotStarted => {
-                    return Err(WriteError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        "Multipart upload should be completed, but returned status is `NotStarted`"
-                            .to_string(),
-                        location.as_str().to_string(),
-                    )));
-                }
-            }
-
-            Ok(())
+        let upload_stream = execute_with_parallelism(upload_futures, 1).map(|result| {
+            result.map_err(|join_err| {
+                WriteError::IOError(IOError::new(
+                    ErrorKind::Unexpected,
+                    format!("Task join error during multipart upload: {join_err}"),
+                    "multipart_upload".to_string(),
+                ))
+            })
+        });
+        tokio::pin!(upload_stream);
+        while let Some(result) = upload_stream.next().await {
+            let _ = result?;
         }
+
+        verify_resumable_complete(&upload_client, &location, total_bytes).await
+    }
+
+    async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
+        let location = GcsLocation::try_from_str(path)?;
+        Ok(Box::new(GcsFileWrite {
+            client: self.client.clone(),
+            location,
+            state: GcsWriterState::Buffering(Vec::new()),
+        }))
     }
 
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
@@ -499,4 +437,246 @@ fn parse_timestamp(object: &Object) -> Option<DateTime<Utc>> {
         .updated
         .as_ref()
         .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), 0))
+}
+
+/// Upload a small object in a single request.
+async fn upload_simple(
+    client: &Client,
+    location: &GcsLocation,
+    bytes: Bytes,
+) -> Result<(), WriteError> {
+    let upload_request = UploadObjectRequest {
+        bucket: location.bucket_name().to_string(),
+        ..Default::default()
+    };
+    let mut media = Media::new(location.object_name().clone());
+    media.content_length = Some(bytes.len() as u64);
+    let upload_type = UploadType::Simple(media);
+    client
+        .upload_object(&upload_request, bytes, &upload_type)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            parse_error(e, location.as_str())
+                .with_context("Failed to upload single part object.")
+                .into()
+        })
+}
+
+/// Initiate a resumable upload session for the given object.
+///
+/// `total_size_hint` is the size the caller expects the final object to
+/// be. For streaming writers the size may not be known up-front; pass `0`
+/// (the GCS API ignores this value when individual chunks specify their
+/// own totals).
+async fn prepare_resumable(
+    client: &Client,
+    location: &GcsLocation,
+    total_size_hint: i64,
+) -> Result<ResumableUploadClient, WriteError> {
+    let upload_request = UploadObjectRequest {
+        bucket: location.bucket_name().to_string(),
+        ..Default::default()
+    };
+    let upload_type = UploadType::Multipart(Box::new(Object {
+        name: location.object_name(),
+        bucket: location.bucket_name().to_string(),
+        size: total_size_hint,
+        ..Default::default()
+    }));
+    client
+        .prepare_resumable_upload(&upload_request, &upload_type)
+        .await
+        .map_err(|e| {
+            parse_error(e, location.as_str())
+                .with_context("Failed to prepare resumable upload.")
+                .into()
+        })
+}
+
+/// Upload a single chunk of a resumable upload.
+///
+/// `total_size` is `Some(total)` for the final chunk and `None` for any
+/// preceding chunk; the GCS protocol uses this to mark the upload as
+/// complete.
+async fn upload_chunk(
+    upload_client: &ResumableUploadClient,
+    offset: u64,
+    chunk: Bytes,
+    total_size: Option<u64>,
+) -> Result<(), WriteError> {
+    let chunk_size = ChunkSize::new(offset, offset + chunk.len() as u64 - 1, total_size);
+    upload_client
+        .upload_multiple_chunk(chunk, &chunk_size)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            WriteError::IOError(parse_error(e, &format!("offset {offset}")).with_context(format!(
+                "Failed to upload chunk at offset {offset}"
+            )))
+        })
+}
+
+/// Issue a final status query against the resumable upload session and
+/// surface anything other than [`UploadStatus::Ok`] as an error.
+async fn verify_resumable_complete(
+    upload_client: &ResumableUploadClient,
+    location: &GcsLocation,
+    total_bytes: u64,
+) -> Result<(), WriteError> {
+    let status = upload_client.status(Some(total_bytes)).await.map_err(|e| {
+        WriteError::IOError(
+            parse_error(e, location.as_str())
+                .with_context("Failed to get upload status after uploading all chunks."),
+        )
+    })?;
+    match status {
+        UploadStatus::Ok(_) => Ok(()),
+        UploadStatus::ResumeIncomplete(i) => Err(WriteError::IOError(IOError::new(
+            ErrorKind::Unexpected,
+            format!(
+                "Multipart upload should be completed, but returned status is `ResumeIncomplete` with uploaded range {i:?}"
+            ),
+            location.as_str().to_string(),
+        ))),
+        UploadStatus::NotStarted => Err(WriteError::IOError(IOError::new(
+            ErrorKind::Unexpected,
+            "Multipart upload should be completed, but returned status is `NotStarted`"
+                .to_string(),
+            location.as_str().to_string(),
+        ))),
+    }
+}
+
+/// Streaming writer for GCS.
+///
+/// Buffers bytes locally; promotes to a resumable upload session once
+/// `MAX_BYTES_PER_REQUEST` has accumulated. Each chunk flush uses
+/// `DEFAULT_BYTES_PER_REQUEST` (a multiple of 256 `KiB` as required by the
+/// GCS resumable protocol; the final chunk has no minimum).
+pub(crate) struct GcsFileWrite {
+    client: Client,
+    location: GcsLocation,
+    state: GcsWriterState,
+}
+
+impl std::fmt::Debug for GcsFileWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GcsFileWrite")
+            .field("location", &self.location)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+enum GcsWriterState {
+    Buffering(Vec<u8>),
+    Resumable {
+        upload_client: ResumableUploadClient,
+        offset: u64,
+        buffer: Vec<u8>,
+    },
+    Closed,
+}
+
+impl std::fmt::Debug for GcsWriterState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GcsWriterState::Buffering(buffer) => f
+                .debug_tuple("Buffering")
+                .field(&format_args!("{} bytes", buffer.len()))
+                .finish(),
+            GcsWriterState::Resumable { offset, buffer, .. } => f
+                .debug_struct("Resumable")
+                .field("offset", offset)
+                .field("buffered_bytes", &buffer.len())
+                .finish(),
+            GcsWriterState::Closed => f.write_str("Closed"),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LakekeeperFileWrite for GcsFileWrite {
+    async fn write(&mut self, bytes_in: Bytes) -> Result<(), WriteError> {
+        match &mut self.state {
+            GcsWriterState::Closed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to closed writer",
+                    self.location.as_str().to_string(),
+                )));
+            }
+            GcsWriterState::Buffering(buffer) => {
+                buffer.extend_from_slice(&bytes_in);
+                if buffer.len() < MAX_BYTES_PER_REQUEST {
+                    return Ok(());
+                }
+                let upload_client = prepare_resumable(&self.client, &self.location, 0).await?;
+                let buffer = std::mem::take(buffer);
+                self.state = GcsWriterState::Resumable {
+                    upload_client,
+                    offset: 0,
+                    buffer,
+                };
+                self.flush_resumable_buffer().await?;
+            }
+            GcsWriterState::Resumable { buffer, .. } => {
+                buffer.extend_from_slice(&bytes_in);
+                self.flush_resumable_buffer().await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), WriteError> {
+        let state = std::mem::replace(&mut self.state, GcsWriterState::Closed);
+        match state {
+            GcsWriterState::Closed => Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Writer already closed",
+                self.location.as_str().to_string(),
+            ))),
+            GcsWriterState::Buffering(buffer) => {
+                upload_simple(&self.client, &self.location, Bytes::from(buffer)).await
+            }
+            GcsWriterState::Resumable {
+                upload_client,
+                offset,
+                buffer,
+            } => {
+                // Always send a finalizing chunk (the GCS resumable protocol
+                // requires a chunk carrying `Some(total_size)` to terminate
+                // the session; a zero-length finalizer is valid).
+                let total_bytes = offset + buffer.len() as u64;
+                upload_chunk(&upload_client, offset, Bytes::from(buffer), Some(total_bytes))
+                    .await?;
+                verify_resumable_complete(&upload_client, &self.location, total_bytes).await
+            }
+        }
+    }
+}
+
+impl GcsFileWrite {
+    /// Flush every full `DEFAULT_BYTES_PER_REQUEST`-sized chunk the
+    /// resumable buffer can produce. Any tail remains buffered and is
+    /// flushed by `close` as the finalising chunk.
+    async fn flush_resumable_buffer(&mut self) -> Result<(), WriteError> {
+        let GcsWriterState::Resumable {
+            upload_client,
+            offset,
+            buffer,
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+
+        while buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
+            let chunk: Vec<u8> = buffer.drain(..DEFAULT_BYTES_PER_REQUEST).collect();
+            let chunk_offset = *offset;
+            *offset += chunk.len() as u64;
+            upload_chunk(upload_client, chunk_offset, Bytes::from(chunk), None).await?;
+        }
+        Ok(())
+    }
 }

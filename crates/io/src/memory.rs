@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
-    Location, ReadError, WriteError, error::ErrorKind,
+    Location, ReadError, WriteError, error::ErrorKind, iceberg_bridge::LakekeeperFileWrite,
 };
 
 type MemoryFile = (Bytes, DateTime<Utc>);
@@ -176,6 +176,16 @@ impl LakekeeperStorage for MemoryStorage {
         let mut data = self.data.write().await;
         data.insert(key, (bytes, Utc::now()));
         Ok(())
+    }
+
+    async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
+        let key = normalize_memory_path(path)?;
+        Ok(Box::new(MemoryFileWrite {
+            data: self.data.clone(),
+            key,
+            buffer: Vec::new(),
+            closed: false,
+        }))
     }
 
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -359,6 +369,48 @@ impl LakekeeperStorage for MemoryStorage {
     }
 }
 
+/// Streaming writer for the in-memory backend.
+///
+/// Buffers all written bytes locally and inserts them into the shared
+/// store on `close`. Calling `write` after `close` returns an error.
+#[derive(Debug)]
+pub(crate) struct MemoryFileWrite {
+    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
+    key: String,
+    buffer: Vec<u8>,
+    closed: bool,
+}
+
+#[async_trait::async_trait]
+impl LakekeeperFileWrite for MemoryFileWrite {
+    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Cannot write after close",
+                self.key.clone(),
+            )));
+        }
+        self.buffer.extend_from_slice(&bytes);
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Writer already closed",
+                self.key.clone(),
+            )));
+        }
+        let bytes = Bytes::from(std::mem::take(&mut self.buffer));
+        let mut data = self.data.write().await;
+        data.insert(self.key.clone(), (bytes, Utc::now()));
+        self.closed = true;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -387,6 +439,40 @@ mod tests {
 
         // Verify delete doesn't fail for non-existent paths
         storage.delete(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_round_trip() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/streaming.bin";
+        {
+            let mut writer = storage.writer(path).await.unwrap();
+            writer.write(Bytes::from("hello, ")).await.unwrap();
+            writer.write(Bytes::from("world!")).await.unwrap();
+            writer.close().await.unwrap();
+        }
+        let data = storage.read(path).await.unwrap();
+        assert_eq!(data, Bytes::from("hello, world!"));
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_close_twice_errors() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/twice.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("data")).await.unwrap();
+        writer.close().await.unwrap();
+        assert!(writer.close().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_write_after_close_errors() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/after_close.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("data")).await.unwrap();
+        writer.close().await.unwrap();
+        assert!(writer.write(Bytes::from("more")).await.is_err());
     }
 
     #[tokio::test]

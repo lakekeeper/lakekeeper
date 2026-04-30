@@ -17,12 +17,14 @@ use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    adls::{adls_error::parse_error, AdlsLocation}, delete_not_found_is_ok, error::ErrorKind, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
-    DeleteBatchError, DeleteError, FileInfo,
+    adls::{adls_error::parse_error, AdlsLocation}, delete_not_found_is_ok, error::ErrorKind, execute_with_parallelism, iceberg_bridge::LakekeeperFileWrite, safe_usize_to_i64,
+    validate_file_size, DeleteBatchError, DeleteError,
+    FileInfo,
     IOError,
     InvalidLocationError,
     LakekeeperStorage,
-    Location, ReadError, WriteError,
+    Location,
+    ReadError, WriteError,
 };
 
 #[derive(Debug, Clone)]
@@ -198,61 +200,28 @@ impl LakekeeperStorage for AdlsStorage {
 
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
-
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
-
         let client = self.get_file_client(&adls_location)?;
-
-        let _create_result = client
-            .create()
-            .await
-            .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
-
         let file_length = safe_usize_to_i64(bytes.len(), path)?;
 
-        // If the data is small enough, upload in a single request
+        create_file(&client, path).await?;
+
         if bytes.len() <= MAX_BYTES_PER_REQUEST {
             // ToDo: Use a single request: https://github.com/Azure/azure-sdk-for-rust/issues/2911
-            let append = client.append(0, bytes);
-
-            append
-                .await
-                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
-
-            client
-                .flush(file_length)
-                .close(true)
-                .await
-                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
+            append_chunk(&client, 0, bytes, path).await?;
         } else {
-            // Split data into chunks and upload concurrently
-            let chunks: Vec<_> = bytes
+            let upload_futures: Vec<_> = bytes
                 .chunks(DEFAULT_BYTES_PER_REQUEST)
                 .enumerate()
                 .map(|(i, chunk)| {
                     let offset = i64::try_from(i * DEFAULT_BYTES_PER_REQUEST).unwrap_or(i64::MAX);
-                    (offset, Bytes::copy_from_slice(chunk))
-                })
-                .collect();
-
-            // Create futures for concurrent uploads with a limit of 10 parallel requests
-            let upload_futures: Vec<_> = chunks
-                .into_iter()
-                .map(|(offset, chunk)| {
+                    let chunk = Bytes::copy_from_slice(chunk);
                     let client = client.clone();
                     let path = path.to_string();
-
-                    async move {
-                        client
-                            .append(offset, chunk)
-                            .await
-                            .map_err(|e| WriteError::IOError(parse_error(e, &path)))
-                    }
+                    async move { append_chunk(&client, offset, chunk, &path).await }
                 })
                 .collect();
 
-            // Wait for all uploads to complete
             let upload_stream = execute_with_parallelism(upload_futures, 10).map(|result| {
                 result.map_err(|join_err| {
                     WriteError::IOError(IOError::new(
@@ -263,19 +232,26 @@ impl LakekeeperStorage for AdlsStorage {
                 })
             });
             tokio::pin!(upload_stream);
-
             while let Some(result) = upload_stream.next().await {
                 let _ = result?;
             }
-
-            client
-                .flush(file_length)
-                .close(true)
-                .await
-                .map_err(|e| WriteError::IOError(parse_error(e, path)))?;
         }
 
-        Ok(())
+        flush_close(&client, file_length, path).await
+    }
+
+    async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+        require_key(&adls_location)?;
+        let client = self.get_file_client(&adls_location)?;
+        create_file(&client, path).await?;
+        Ok(Box::new(AdlsFileWrite {
+            client,
+            path: path.to_string(),
+            offset: 0,
+            buffer: Vec::new(),
+            closed: false,
+        }))
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -329,39 +305,12 @@ impl LakekeeperStorage for AdlsStorage {
             return self.read_single(path).await;
         }
 
-        let head_last_modified = head_response.last_modified;
-        let client_for_chunks = client.clone();
-        crate::parallel_chunked_read(
-            file_size,
-            DEFAULT_BYTES_PER_REQUEST,
-            10,
+        chunked_read_with_integrity(
+            &client,
             path,
-            move |start, end, chunk_index| {
-                let client = client_for_chunks.clone();
-                let abs_start = start as u64;
-                let abs_end = end as u64 + 1;
-                async move {
-                    let response = fetch_range(&client, abs_start..abs_end)
-                        .await
-                        .map_err(|e| match e {
-                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                            ))),
-                            other @ ReadError::InvalidLocation(_) => other,
-                        })?;
-                    if response.last_modified != head_last_modified {
-                        return Err(ReadError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!(
-                                "File was modified during multi-part download: expected last modified time {}, got {}",
-                                head_last_modified, response.last_modified
-                            ),
-                            format!("chunk {chunk_index} (bytes {abs_start}-{abs_end})"),
-                        )));
-                    }
-                    Ok((chunk_index, response.data))
-                }
-            },
+            0,
+            file_size,
+            head_response.last_modified,
         )
             .await
     }
@@ -404,40 +353,12 @@ impl LakekeeperStorage for AdlsStorage {
         }
 
         let head_response = head(&client, &adls_location).await?;
-        let head_last_modified = head_response.last_modified;
-        let range_start = range.start;
-        let client_for_chunks = client.clone();
-        crate::parallel_chunked_read(
-            range_size,
-            DEFAULT_BYTES_PER_REQUEST,
-            10,
+        chunked_read_with_integrity(
+            &client,
             path,
-            move |rel_start, rel_end, chunk_index| {
-                let client = client_for_chunks.clone();
-                let abs_start = range_start + rel_start as u64;
-                let abs_end = range_start + rel_end as u64 + 1;
-                async move {
-                    let response = fetch_range(&client, abs_start..abs_end)
-                        .await
-                        .map_err(|e| match e {
-                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                            ))),
-                            other @ ReadError::InvalidLocation(_) => other,
-                        })?;
-                    if response.last_modified != head_last_modified {
-                        return Err(ReadError::IOError(IOError::new(
-                            ErrorKind::Unexpected,
-                            format!(
-                                "File was modified during multi-part download: expected last modified time {}, got {}",
-                                head_last_modified, response.last_modified
-                            ),
-                            format!("chunk {chunk_index} (bytes {abs_start}-{abs_end})"),
-                        )));
-                    }
-                    Ok((chunk_index, response.data))
-                }
-            },
+            range.start,
+            range_size,
+            head_response.last_modified,
         )
             .await
     }
@@ -564,6 +485,142 @@ async fn fetch_range(
         })
 }
 
+/// Run a parallel-chunked download over `[range_start, range_start + range_size)`
+/// and verify each chunk's `last_modified` against `head_last_modified`. A
+/// mismatch is surfaced as an error so concurrent overwrites cannot
+/// silently produce a corrupt download.
+async fn chunked_read_with_integrity(
+    client: &FileClient,
+    error_context: &str,
+    range_start: u64,
+    range_size: usize,
+    head_last_modified: time::OffsetDateTime,
+) -> Result<Bytes, ReadError> {
+    let client = client.clone();
+    crate::parallel_chunked_read(
+        range_size,
+        DEFAULT_BYTES_PER_REQUEST,
+        10,
+        error_context,
+        move |rel_start, rel_end, chunk_index| {
+            let client = client.clone();
+            let abs_start = range_start + rel_start as u64;
+            let abs_end = range_start + rel_end as u64 + 1;
+            async move {
+                let response = fetch_range(&client, abs_start..abs_end)
+                    .await
+                    .map_err(|e| match e {
+                        ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                            "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                        ))),
+                        other @ ReadError::InvalidLocation(_) => other,
+                    })?;
+                if response.last_modified != head_last_modified {
+                    return Err(ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!(
+                            "File was modified during multi-part download: expected last modified time {}, got {}",
+                            head_last_modified, response.last_modified
+                        ),
+                        format!("chunk {chunk_index} (bytes {abs_start}-{abs_end})"),
+                    )));
+                }
+                Ok((chunk_index, response.data))
+            }
+        },
+    )
+        .await
+}
+
+/// Create the empty target file. ADLS requires an explicit `create` before
+/// any append/flush.
+async fn create_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
+    client
+        .create()
+        .await
+        .map(|_| ())
+        .map_err(|e| WriteError::IOError(parse_error(e, path)))
+}
+
+/// Append a chunk at the given byte offset.
+async fn append_chunk(
+    client: &FileClient,
+    offset: i64,
+    chunk: Bytes,
+    path: &str,
+) -> Result<(), WriteError> {
+    client
+        .append(offset, chunk)
+        .await
+        .map(|_| ())
+        .map_err(|e| WriteError::IOError(parse_error(e, path)))
+}
+
+/// Finalise the file by flushing and closing it.
+async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Result<(), WriteError> {
+    client
+        .flush(file_length)
+        .close(true)
+        .await
+        .map(|_| ())
+        .map_err(|e| WriteError::IOError(parse_error(e, path)))
+}
+
+/// Streaming writer for ADLS.
+///
+/// The target file is created up-front by `writer`. Each `write` buffers
+/// locally and flushes append calls once `DEFAULT_BYTES_PER_REQUEST` bytes
+/// have accumulated. `close` flushes any remaining buffered bytes and
+/// finalises the file.
+#[derive(Debug)]
+pub(crate) struct AdlsFileWrite {
+    client: FileClient,
+    path: String,
+    offset: i64,
+    buffer: Vec<u8>,
+    closed: bool,
+}
+
+#[async_trait::async_trait]
+impl LakekeeperFileWrite for AdlsFileWrite {
+    async fn write(&mut self, bytes_in: Bytes) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Cannot write to closed writer",
+                self.path.clone(),
+            )));
+        }
+        self.buffer.extend_from_slice(&bytes_in);
+        while self.buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
+            let chunk: Vec<u8> = self.buffer.drain(..DEFAULT_BYTES_PER_REQUEST).collect();
+            let chunk_len = safe_usize_to_i64(chunk.len(), self.path.clone())
+                .map_err(WriteError::IOError)?;
+            append_chunk(&self.client, self.offset, Bytes::from(chunk), &self.path).await?;
+            self.offset += chunk_len;
+        }
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Writer already closed",
+                self.path.clone(),
+            )));
+        }
+        self.closed = true;
+        if !self.buffer.is_empty() {
+            let chunk = std::mem::take(&mut self.buffer);
+            let chunk_len = safe_usize_to_i64(chunk.len(), self.path.clone())
+                .map_err(WriteError::IOError)?;
+            append_chunk(&self.client, self.offset, Bytes::from(chunk), &self.path).await?;
+            self.offset += chunk_len;
+        }
+        flush_close(&self.client, self.offset, &self.path).await
+    }
+}
 
 fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
     if adls_location.blob_name().is_empty() || adls_location.blob_name() == "/" {

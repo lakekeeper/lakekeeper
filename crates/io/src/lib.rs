@@ -224,6 +224,19 @@ where
     /// Write the provided data to the specified path.
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
 
+    /// This method exists to satisfy the iceberg-rust `iceberg::io::FileWrite`
+    /// TODO: feature gate for iceberg bridge?
+    #[cfg(any(
+        feature = "storage-adls",
+        feature = "storage-gcs",
+        feature = "storage-in-memory",
+        feature = "storage-s3"
+    ))]
+    async fn writer(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::iceberg_bridge::LakekeeperFileWrite>, WriteError>;
+
     /// Read a file from the specified path, possibly in chunks
     ///
     /// # Arguments
@@ -238,14 +251,9 @@ where
 
     /// Read a contiguous byte range from the specified path.
     ///
-    /// `range` is a half-open `[start, end)` interval over the file's bytes.
-    /// For ranges larger than the backend's chunked-read threshold, the
-    /// implementation downloads the range in parallel chunks and assembles
-    /// them. An empty range returns empty bytes without contacting the
-    /// backend.
-    ///
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
+    /// range: Half-open `[start, end)` interval over the file's bytes.
     async fn read_range(
         &self,
         path: &str,
@@ -359,6 +367,22 @@ impl LakekeeperStorage for StorageBackend {
             StorageBackend::Adls(adls_storage) => adls_storage.write(path, bytes).await,
             #[cfg(feature = "storage-gcs")]
             StorageBackend::Gcs(gcs_storage) => gcs_storage.write(path, bytes).await,
+        }
+    }
+
+    async fn writer(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn crate::iceberg_bridge::LakekeeperFileWrite>, WriteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.writer(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.writer(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.writer(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.writer(path).await,
         }
     }
 
@@ -489,6 +513,13 @@ macro_rules! impl_lakekeeper_storage_delegating {
 
                 async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
                     (**self).write(path, bytes).await
+                }
+
+                async fn writer(
+                    &self,
+                    path: &str,
+                ) -> Result<Box<dyn $crate::iceberg_bridge::LakekeeperFileWrite>, WriteError> {
+                    (**self).writer(path).await
                 }
 
                 async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
