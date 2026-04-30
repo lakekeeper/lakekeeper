@@ -4,6 +4,9 @@ Lakekeeper can use [OpenFGA](https://openfga.dev) to store and evaluate permissi
 
 Check the [Authorization Configuration](./configuration.md#authorization) for setup details.
 
+!!! note "Minimum OpenFGA version"
+    **OpenFGA v1.11 or later is required.** The bootstrap and `lakekeeper openfga reconcile` paths use OpenFGA's idempotent-write semantics (`on_duplicate: ignore` / `on_missing: ignore`), introduced in v1.11. Earlier versions will fail with `cannot write a tuple which already exists` during a re-bootstrap or reconcile run. We test against v1.14.
+
 ## Grants
 The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on GitHub](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/). The following grants are available:
 
@@ -81,7 +84,7 @@ When deploying OpenFGA in production environments, ensure you follow the [OpenFG
 
 Lakekeeper includes [Query Consistency](https://openfga.dev/docs/interacting/consistency) specifications with each authorization request to OpenFGA. For most operations, `MINIMIZE_LATENCY` consistency provides optimal performance while maintaining sufficient data consistency guarantees.
 
-For medium to large-scale deployments, we strongly recommend enabling caching in OpenFGA and increasing the database connection pool limits. These optimizations significantly reduce database load and improve authorization latency. Configure the following environment variables in OpenFGA (written for version 1.10). You may increase the number of connections further if your database deployment can handle additional connections:
+For medium to large-scale deployments, we strongly recommend enabling caching in OpenFGA and increasing the database connection pool limits. These optimizations significantly reduce database load and improve authorization latency. Configure the following environment variables in OpenFGA (written for version 1.14). You may increase the number of connections further if your database deployment can handle additional connections:
 
 ```sh
 OPENFGA_DATASTORE_MAX_OPEN_CONNS=200
@@ -90,3 +93,57 @@ OPENFGA_CACHE_CONTROLLER_ENABLED=true
 OPENFGA_CHECK_QUERY_CACHE_ENABLED=true
 OPENFGA_CHECK_ITERATOR_CACHE_ENABLED=true
 ```
+
+## Reconciling OpenFGA against the catalog
+
+The Postgres catalog is the source of truth for *which objects exist* (projects, warehouses, namespaces, tables, views, roles). OpenFGA stores the **structural hierarchy** between those objects plus all permissions (grants, ownership, role assignments). Under normal operation Lakekeeper keeps the two in sync on every API call.
+
+Drift can still happen — for example after a backup/restore where Postgres and OpenFGA were snapshotted at different times, after pointing Lakekeeper at a fresh OpenFGA store, or after a rare bug. The `lakekeeper openfga reconcile` subcommand rebuilds the structural hierarchy in OpenFGA from the Postgres catalog.
+
+```sh
+# Add any hierarchy edges the catalog implies but OpenFGA is missing.
+# Purely additive; never deletes. Safe default.
+lakekeeper openfga reconcile --mode add-missing
+
+# Same plus delete structural tuples the catalog contradicts.
+lakekeeper openfga reconcile --mode add-and-delete-drift
+
+# Show the diff without writing anything.
+lakekeeper openfga reconcile --mode add-and-delete-drift --dry-run
+```
+
+### What reconcile touches
+
+Reconcile only operates on the **structural** parts of the OpenFGA store: the parent/child edges between server, projects, warehouses, namespaces, tables, views, and roles. Ownership tuples, grants, role assignments, bootstrap admin tuples, and authorization-model bookkeeping are left alone. Tuples whose endpoints both refer to objects that *don't* exist in the catalog are also untouched — there is no anchor by which to interpret them.
+
+### Operational notes
+
+- Run during a low-traffic window. Reconcile does **not** stop API writes; concurrent renames/creates/deletes can produce transient inconsistencies that self-heal on the next run.
+- A Postgres advisory lock prevents two reconciles from running at once. A held lock causes the second invocation to fail fast.
+- Use `--dry-run` first when you intend to delete drift.
+
+## Switching to OpenFGA or replacing the store
+
+OpenFGA can be enabled, or its store replaced, on an already-bootstrapped Lakekeeper. Reconcile rebuilds the **structural hierarchy** from the catalog — but the initial server `admin` / `operator` tuple, ownership records, grants, and role assignments are **not** stored in the catalog and cannot be reconstructed from it. Lakekeeper's `/management/v1/bootstrap` endpoint runs only once per catalog by design; the `lakekeeper reopen-bootstrap` CLI re-opens it for cases like this without touching `server_id`, catalog data, or existing OpenFGA tuples.
+
+### Procedure
+
+1. Stand up an OpenFGA deployment.
+2. Configure Lakekeeper for OpenFGA (`LAKEKEEPER__AUTHZ_BACKEND=openfga` plus the `LAKEKEEPER__OPENFGA__*` settings).
+3. Run `lakekeeper migrate` once. This installs the OpenFGA authorization model in the configured store.
+4. Run `lakekeeper openfga reconcile --mode add-missing` to seed the structural hierarchy from the catalog into OpenFGA.
+5. Re-open bootstrap and seed the initial admin/operator via the API:
+
+    ```sh
+    lakekeeper reopen-bootstrap --yes
+    ```
+
+    This flips `server.open_for_bootstrap` back to `true`. The `server_id` is preserved, so the hierarchy tuples written in step 4 remain valid.
+
+6. Open the Lakekeeper UI and complete the bootstrap flow as the intended initial admin (or operator) — same path as a fresh deploy.
+7. From that admin/operator account, recreate the role assignments and grants you need through the management API. If you exported tuples from the previous OpenFGA store, you can also selectively reimport them with the [fga CLI](https://github.com/openfga/cli) — reconcile leaves non-structural tuples alone.
+
+Switching *away* from OpenFGA (for example to Cedar) is not covered by reconcile and generally requires a new Lakekeeper instance.
+
+> Instance admins are useful as a parallel safety net while the OpenFGA store has no admin tuples: they can still manage projects, warehouses, namespaces, and tables. They do **not** confer data-plane access (`ReadData`, `WriteData`, view `Select`) and they **cannot** write to the OpenFGA permission-management endpoints — see [Instance Admins](./authorization.md#instance-admins).
+

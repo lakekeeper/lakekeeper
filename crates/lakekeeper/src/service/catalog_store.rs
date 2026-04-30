@@ -32,7 +32,7 @@ use crate::{
         },
     },
     service::{
-        ArcProjectId, RoleProviderId, RoleSourceId, TabularId, TabularIdentBorrowed,
+        ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -187,6 +187,17 @@ where
         terms_accepted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
+
+    /// Operator-only recovery: re-open the catalog so the bootstrap flow
+    /// can be run again. Used when switching authorizer backends or
+    /// recovering from a misconfigured first bootstrap. Must preserve
+    /// `server_id`, `terms_accepted`, and all catalog data; the next
+    /// `bootstrap` call will overwrite `terms_accepted`.
+    ///
+    /// Implementations must error if the catalog is already open for
+    /// bootstrap or no server row exists, so the operator notices when
+    /// the call is a no-op.
+    async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId>;
 
     // ---------------- Project Management ----------------
     /// Create a project

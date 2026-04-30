@@ -26,7 +26,7 @@ use lakekeeper::{
 use openfga_client::{
     client::{
         BasicOpenFgaClient, BatchCheckItem, CheckRequestTupleKey, ConsistencyPreference,
-        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
+        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition, WriteOptions,
         batch_check_single_result::CheckResult,
     },
     tonic,
@@ -69,6 +69,14 @@ impl OpenFGAAuthorizer {
             health: Arc::new(RwLock::new(vec![])),
             server_id,
         }
+    }
+
+    /// Reference to the underlying OpenFGA store client. Exposed for
+    /// maintenance entry points (e.g. reconcile) that need to issue
+    /// store-level reads/writes alongside the authorizer.
+    #[must_use]
+    pub fn client(&self) -> &BasicOpenFgaClient {
+        &self.client
     }
 }
 
@@ -157,17 +165,24 @@ impl Authorizer for OpenFGAAuthorizer {
             ServerRelation::Admin
         };
 
-        self.write(
-            Some(vec![TupleKey {
-                user: user.to_openfga(),
-                relation: relation.to_string(),
-                object: self.openfga_server().clone(),
-                condition: None,
-            }]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)?;
+        // Idempotent: a re-bootstrap (after `lakekeeper reopen-bootstrap`)
+        // may run against an OpenFGA store that already holds the same
+        // admin/operator tuple — strict writes would fail in that case.
+        self.client
+            .write_with_options(
+                Some(vec![TupleKey {
+                    user: user.to_openfga(),
+                    relation: relation.to_string(),
+                    object: self.openfga_server().clone(),
+                    condition: None,
+                }]),
+                None,
+                WriteOptions::new_idempotent(),
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to write bootstrap tuple to OpenFGA: {e}"))
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)?;
 
         Ok(())
     }

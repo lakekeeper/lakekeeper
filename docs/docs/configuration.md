@@ -237,7 +237,9 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 
 
 ### Authorization
-Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
+Authorization is only effective if [Authentication](#authentication) is enabled.
+
+We strongly recommend bootstrapping new deployments with authorization already enabled. Switching the configured `AUTHZ_BACKEND` after bootstrap is supported when moving to (or replacing the OpenFGA store behind) the OpenFGA backend — see [Switching to OpenFGA](./authorization-openfga.md#switching-to-openfga-or-replacing-the-store) for the procedure and its limitations (structural hierarchy is rebuilt from the catalog; ownership, grants, and role assignments are not). For other backends, create a new Lakekeeper instance and migrate your tables.
 
 | Variable                                 | Example                                                              | Description          |
 |------------------------------------------|----------------------------------------------------------------------|----------------------|
