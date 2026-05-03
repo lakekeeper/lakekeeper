@@ -67,6 +67,7 @@ hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
 iceberg = { workspace = true }
+iceberg-storage-opendal = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }

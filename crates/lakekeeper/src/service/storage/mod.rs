@@ -527,7 +527,7 @@ impl StorageProfile {
         match &self {
             StorageProfile::S3(_) => {
                 tracing::debug!("Getting s3 file io from table config for vended credentials.");
-                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config)?;
+                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config);
                 tracing::debug!(
                     "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
                 );
@@ -547,7 +547,7 @@ impl StorageProfile {
                 tracing::debug!(
                     "Validating adls vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
                 );
-                let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config)?;
+                let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config);
 
                 // Run both validations in parallel
                 let read_write_validation =
@@ -562,7 +562,7 @@ impl StorageProfile {
             }
             StorageProfile::Gcs(_) => {
                 tracing::debug!("Getting gcs file io from table config for vended credentials.");
-                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config)?;
+                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config);
                 tracing::debug!(
                     "Validating gcs vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
                 );
@@ -1633,18 +1633,18 @@ mod tests {
             .unwrap();
         let (downscoped1, downscoped2) = match profile {
             StorageProfile::Adls(_) => {
-                let downscoped1 = az::get_file_io_from_table_config(&config1.config).unwrap();
-                let downscoped2 = az::get_file_io_from_table_config(&config2.config).unwrap();
+                let downscoped1 = az::get_file_io_from_table_config(&config1.config);
+                let downscoped2 = az::get_file_io_from_table_config(&config2.config);
                 (downscoped1, downscoped2)
             }
             StorageProfile::S3(_) => {
-                let downscoped1 = s3::get_file_io_from_table_config(&config1.config).unwrap();
-                let downscoped2 = s3::get_file_io_from_table_config(&config2.config).unwrap();
+                let downscoped1 = s3::get_file_io_from_table_config(&config1.config);
+                let downscoped2 = s3::get_file_io_from_table_config(&config2.config);
                 (downscoped1, downscoped2)
             }
             StorageProfile::Gcs(_) => {
-                let downscoped1 = gcs::get_file_io_from_table_config(&config1.config).unwrap();
-                let downscoped2 = gcs::get_file_io_from_table_config(&config2.config).unwrap();
+                let downscoped1 = gcs::get_file_io_from_table_config(&config1.config);
+                let downscoped2 = gcs::get_file_io_from_table_config(&config2.config);
                 (downscoped1, downscoped2)
             }
             StorageProfile::Memory(_) => {

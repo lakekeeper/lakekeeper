@@ -36,8 +36,8 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
             storage_layout::StorageLayout,
         },
@@ -537,12 +537,12 @@ impl GcsProfile {
     }
 }
 
-pub(super) fn get_file_io_from_table_config(
-    config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("gcs")
-        .with_props(config.inner())
-        .build()?)
+pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
+    iceberg::io::FileIOBuilder::new(Arc::new(
+        iceberg_storage_opendal::OpenDalStorageFactory::Gcs,
+    ))
+    .with_props(config.inner())
+    .build()
 }
 
 impl TryFrom<GcsCredential> for GcsAuth {

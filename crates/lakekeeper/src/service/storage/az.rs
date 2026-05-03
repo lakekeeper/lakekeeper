@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -44,8 +44,8 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
             storage_layout::StorageLayout,
         },
@@ -661,9 +661,7 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
     format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
-pub(super) fn get_file_io_from_table_config(
-    config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
+pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
     // Add Authority host if not present
     let mut config = config.inner().clone();
 
@@ -688,9 +686,11 @@ pub(super) fn get_file_io_from_table_config(
             DEFAULT_AUTHORITY_HOST.to_string(),
         );
     }
-    Ok(iceberg::io::FileIOBuilder::new("abfss")
-        .with_props(config)
-        .build()?)
+    iceberg::io::FileIOBuilder::new(Arc::new(
+        iceberg_storage_opendal::OpenDalStorageFactory::Azdls,
+    ))
+    .with_props(config)
+    .build()
 }
 
 impl TryFrom<AzCredential> for AzureAuth {
