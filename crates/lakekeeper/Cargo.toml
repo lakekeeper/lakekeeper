@@ -67,7 +67,6 @@ hostname = { workspace = true }
 http = { workspace = true }
 http-body-util = { version = "~0.1" }
 iceberg = { workspace = true }
-iceberg-storage-opendal = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
@@ -122,6 +121,7 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 [dev-dependencies]
 assert-json-diff = { workspace = true }
 aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
 lakekeeper = { path = ".", features = ["test-utils"] }

@@ -42,6 +42,7 @@ storage-gcs = [
     "dep:reqwest-middleware",
     "dep:reqwest-retry",
     "dep:google-cloud-auth",
+    "dep:google-cloud-token",
 ]
 storage-in-memory = []
 default = ["storage-s3", "storage-adls", "storage-gcs"]
@@ -70,6 +71,7 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
+google-cloud-token = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }

@@ -60,6 +60,7 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
     let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(lakekeeper_io::s3::S3AccessKeyAuth {
         aws_access_key_id: access_key,
         aws_secret_access_key: secret_key,
+        aws_session_token: None,
         external_id: None,
     });
 

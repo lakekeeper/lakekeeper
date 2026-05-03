@@ -1,7 +1,8 @@
+#[cfg(test)]
+use std::sync::LazyLock;
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,6 @@ use azure_storage::{
     },
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use iceberg::io::ADLS_AUTHORITY_HOST;
 use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -88,6 +88,7 @@ fn default_true() -> bool {
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
+#[cfg(test)]
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
@@ -661,36 +662,37 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
     format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
-pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
-    // Add Authority host if not present
-    let mut config = config.inner().clone();
-
-    let sas_token_prefix = "adls.sas-token.";
-    // Iceberg Rust cannot parse tokens of form "<sas_token_prefix><storage_account_name>.<endpoint_suffix>=<sas_token>"
-    // https://github.com/apache/iceberg-rust/issues/1442
-    let mut matched = None;
-    for (key, value) in &config {
-        if key.starts_with(sas_token_prefix) {
-            matched = Some((key.clone(), value.clone()));
-            break;
-        }
-    }
-    if let Some((matched_key, sas_token)) = matched {
-        config.remove(&matched_key);
-        config.insert("adls.sas-token".to_string(), sas_token);
-    }
-
-    if !config.contains_key(ADLS_AUTHORITY_HOST) {
-        config.insert(
-            ADLS_AUTHORITY_HOST.to_string(),
-            DEFAULT_AUTHORITY_HOST.to_string(),
-        );
-    }
-    iceberg::io::FileIOBuilder::new(Arc::new(
-        iceberg_storage_opendal::OpenDalStorageFactory::Azdls,
-    ))
-    .with_props(config)
-    .build()
+/// Build an `AdlsStorage` client from vended-credentials properties.
+///
+/// Reads the SAS token (under the profile's account/endpoint-specific key)
+/// from the iceberg-format `TableProperties` previously produced by
+/// `generate_table_config`.
+///
+/// `profile` is required because the SAS-token property key embeds the storage
+/// account name and endpoint host (`adls.sas-token.<account>.<endpoint>`); it
+/// cannot be derived from `TableProperties` alone. Do not "normalize" this
+/// signature with the S3/GCS counterparts — removing `profile` will break the
+/// key lookup.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
+    profile: &AdlsProfile,
+    config: &TableProperties,
+) -> Result<AdlsStorage, CredentialsError> {
+    let sas_key = profile.iceberg_sas_property_key();
+    let sas_token =
+        config
+            .get_custom_prop(&sas_key)
+            .ok_or_else(|| CredentialsError::ShortTermCredential {
+                reason: format!(
+                    "ADLS vended credentials are missing SAS token at key '{sas_key}'."
+                ),
+                source: None,
+            })?;
+    let auth = AzureAuth::Sas(lakekeeper_io::adls::AzureSasAuth { sas_token });
+    profile
+        .azure_settings()
+        .get_storage_client(&auth)
+        .await
+        .map_err(Into::into)
 }
 
 impl TryFrom<AzCredential> for AzureAuth {

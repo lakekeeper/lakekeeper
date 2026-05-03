@@ -14,7 +14,7 @@ pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
-use iceberg::{NamespaceIdent, TableIdent, io::FileIO};
+use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
 use lakekeeper_io::{
     InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
@@ -37,7 +37,7 @@ use crate::{
     service::{
         BasicTabularInfo, NamespaceVersion, TabularId, TabularInfo, WarehouseVersion,
         storage::{
-            error::{IcebergFileIoError, UnexpectedStorageType},
+            error::UnexpectedStorageType,
             storage_layout::{
                 DEFAULT_LAYOUT, NamespaceNameContext, NamespacePath, StorageLayout,
                 TabularNameContext,
@@ -524,65 +524,54 @@ impl StorageProfile {
             )
             .await?;
 
-        match &self {
+        let sts_storage: StorageBackend = match &self {
             StorageProfile::S3(_) => {
-                tracing::debug!("Getting s3 file io from table config for vended credentials.");
-                let sts_file_io = s3::get_file_io_from_table_config(&tbl_config.config);
-                tracing::debug!(
-                    "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
-                );
-
-                // Run both validations in parallel
-                let read_write_validation =
-                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
-                let no_write_validation =
-                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
-
-                let (read_write_result, no_write_result) =
-                    tokio::join!(read_write_validation, no_write_validation);
-                read_write_result?;
-                no_write_result?;
+                tracing::debug!("Building S3 storage from vended credentials.");
+                s3::lakekeeper_io_from_vended_table_config(&tbl_config.config)
+                    .await?
+                    .into()
             }
-            StorageProfile::Adls(_) => {
-                tracing::debug!(
-                    "Validating adls vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
-                );
-                let sts_file_io = az::get_file_io_from_table_config(&tbl_config.config);
-
-                // Run both validations in parallel
-                let read_write_validation =
-                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
-                let no_write_validation =
-                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
-
-                let (read_write_result, no_write_result) =
-                    tokio::join!(read_write_validation, no_write_validation);
-                read_write_result?;
-                no_write_result?;
+            StorageProfile::Adls(profile) => {
+                tracing::debug!("Building ADLS storage from vended credentials.");
+                az::lakekeeper_io_from_vended_table_config(profile, &tbl_config.config)
+                    .await?
+                    .into()
             }
             StorageProfile::Gcs(_) => {
-                tracing::debug!("Getting gcs file io from table config for vended credentials.");
-                let sts_file_io = gcs::get_file_io_from_table_config(&tbl_config.config);
-                tracing::debug!(
-                    "Validating gcs vended credentials access to sub-location: {sub_location} and forbidden access to parent location: {test_location}"
-                );
-
-                // Run both validations in parallel
-                let read_write_validation =
-                    self.validate_read_write_iceberg(&sts_file_io, &sub_location, true);
-                let no_write_validation =
-                    self.validate_no_write_access_iceberg(&sts_file_io, test_location);
-
-                let (read_write_result, no_write_result) =
-                    tokio::join!(read_write_validation, no_write_validation);
-                read_write_result?;
-                no_write_result?;
+                tracing::debug!("Building GCS storage from vended credentials.");
+                gcs::lakekeeper_io_from_vended_table_config(&tbl_config.config)
+                    .await?
+                    .into()
             }
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => {
                 unreachable!("Local profile does not support vended credentials access validation")
             }
+        };
+
+        tracing::debug!(
+            "Validating read/write access to sub-location: {sub_location} and forbidden access to parent location: {test_location} using vended credentials"
+        );
+
+        // Run both validations in parallel
+        let read_write_validation =
+            self.validate_read_write_lakekeeper(&sts_storage, &sub_location);
+        let no_write_validation =
+            self.validate_no_write_access_lakekeeper(&sts_storage, test_location);
+
+        let (read_write_result, no_write_result) =
+            tokio::join!(read_write_validation, no_write_validation);
+
+        // If both validations failed, surface both — the no-write failure means
+        // downscoped credentials were over-permissive, which is a security signal
+        // that should not be hidden by an unrelated read/write failure.
+        if let (Err(rw), Err(nw)) = (&read_write_result, &no_write_result) {
+            tracing::warn!(
+                "Both vended-credentials validations failed. Read/write: {rw:?}. No-write: {nw:?}"
+            );
         }
+        read_write_result?;
+        no_write_result?;
 
         Ok(())
     }
@@ -638,72 +627,13 @@ impl StorageProfile {
         Ok(())
     }
 
-    async fn validate_read_write_iceberg(
-        &self,
-        file_io: &FileIO,
-        test_location: &Location,
-        is_vended_credentials: bool,
-    ) -> Result<(), ValidationError> {
-        let compression_codec = CompressionCodec::Gzip;
-
-        let mut test_file_write = self.default_metadata_location(
-            test_location,
-            &compression_codec,
-            uuid::Uuid::now_v7(),
-            0,
-        );
-        if is_vended_credentials {
-            let f = test_file_write
-                .path()
-                .and_then(|s| s.split('/').next_back())
-                .unwrap_or("missing")
-                .to_string();
-            test_file_write.pop().push("vended").push(&f);
-            tracing::debug!(
-                "Validating vended credential access to: {}",
-                test_file_write
-            );
-        } else {
-            test_file_write.pop().push("test");
-            tracing::debug!("Validating access to: {}", test_file_write);
-        }
-
-        // Test write
-        file_io
-            .new_output(&test_file_write)
-            .map_err(IcebergFileIoError::IcebergError)?
-            .write("test".into())
-            .await
-            .map_err(IcebergFileIoError::IcebergError)?;
-
-        // Test read
-        file_io
-            .new_input(&test_file_write)
-            .map_err(IcebergFileIoError::IcebergError)?
-            .read()
-            .await
-            .map_err(IcebergFileIoError::IcebergError)?;
-
-        // Test delete
-        file_io
-            .delete(&test_file_write)
-            .await
-            .map_err(IcebergFileIoError::IcebergError)?;
-
-        tracing::debug!(
-            "Successfully wrote, read and deleted file at `{test_file_write}` with Iceberg FileIO and vended credentials."
-        );
-
-        Ok(())
-    }
-
-    /// Validate that we cannot write to a location with vended credentials
+    /// Validate that we cannot write to a location with the given credentials.
     ///
     /// # Errors
     /// Fails if we can write to the location (which should not be allowed).
-    async fn validate_no_write_access_iceberg(
+    async fn validate_no_write_access_lakekeeper(
         &self,
-        file_io: &FileIO,
+        io: &impl LakekeeperStorage,
         test_location: &Location,
     ) -> Result<(), ValidationError> {
         let compression_codec = CompressionCodec::Gzip;
@@ -721,45 +651,34 @@ impl StorageProfile {
             test_file_write
         );
 
-        // Test that write should fail
-        match file_io
-            .new_output(&test_file_write)
-            .map_err(IcebergFileIoError::IcebergError)
+        match crate::server::io::write_file(
+            io,
+            &test_file_write,
+            "forbidden-content",
+            compression_codec,
+        )
+        .await
         {
-            Ok(output) => {
-                // If we got an output, try to write - this should fail
-                match output.write("forbidden-content".into()).await {
-                    Ok(()) => {
-                        // If write succeeded, this is an error - we should not be able to write here
-                        // Try to clean up the file we shouldn't have been able to create
-                        let _ = file_io.delete(&test_file_write).await;
-                        return Err(CredentialsError::ShortTermCredential {
-                            reason: "Downscoped credentials allow write access to parent location."
-                                .to_string(),
-                            source: None,
-                        }
-                        .into());
-                    }
-                    Err(_) => {
-                        // Expected - write should fail
-                        tracing::debug!(
-                            "Write correctly failed for forbidden location: {test_file_write}"
-                        );
-                    }
+            Ok(()) => {
+                // Should not have been able to write — try to clean up the rogue file.
+                if let Err(e) = crate::server::io::delete_file(io, &test_file_write).await {
+                    tracing::warn!(
+                        "Failed to delete rogue validation file at {test_file_write} (creds were over-permissive on write but cleanup failed): {e:?}"
+                    );
                 }
+                return Err(CredentialsError::ShortTermCredential {
+                    reason: "Downscoped credentials allow write access to parent location."
+                        .to_string(),
+                    source: None,
+                }
+                .into());
             }
-            Err(_) => {
-                // Expected - creating output should fail
+            Err(e) => {
                 tracing::debug!(
-                    "Output creation correctly failed for forbidden location: {test_file_write}"
+                    "Write correctly failed for forbidden location: {test_file_write} ({e:?})"
                 );
             }
         }
-
-        tracing::debug!(
-            "Successfully validated that write access is denied to: {}",
-            test_file_write
-        );
 
         Ok(())
     }
@@ -1631,22 +1550,37 @@ mod tests {
             )
             .await
             .unwrap();
-        let (downscoped1, downscoped2) = match profile {
-            StorageProfile::Adls(_) => {
-                let downscoped1 = az::get_file_io_from_table_config(&config1.config);
-                let downscoped2 = az::get_file_io_from_table_config(&config2.config);
-                (downscoped1, downscoped2)
-            }
-            StorageProfile::S3(_) => {
-                let downscoped1 = s3::get_file_io_from_table_config(&config1.config);
-                let downscoped2 = s3::get_file_io_from_table_config(&config2.config);
-                (downscoped1, downscoped2)
-            }
-            StorageProfile::Gcs(_) => {
-                let downscoped1 = gcs::get_file_io_from_table_config(&config1.config);
-                let downscoped2 = gcs::get_file_io_from_table_config(&config2.config);
-                (downscoped1, downscoped2)
-            }
+        let (downscoped1, downscoped2): (StorageBackend, StorageBackend) = match profile {
+            StorageProfile::Adls(p) => (
+                az::lakekeeper_io_from_vended_table_config(p, &config1.config)
+                    .await
+                    .unwrap()
+                    .into(),
+                az::lakekeeper_io_from_vended_table_config(p, &config2.config)
+                    .await
+                    .unwrap()
+                    .into(),
+            ),
+            StorageProfile::S3(_) => (
+                s3::lakekeeper_io_from_vended_table_config(&config1.config)
+                    .await
+                    .unwrap()
+                    .into(),
+                s3::lakekeeper_io_from_vended_table_config(&config2.config)
+                    .await
+                    .unwrap()
+                    .into(),
+            ),
+            StorageProfile::Gcs(_) => (
+                gcs::lakekeeper_io_from_vended_table_config(&config1.config)
+                    .await
+                    .unwrap()
+                    .into(),
+                gcs::lakekeeper_io_from_vended_table_config(&config2.config)
+                    .await
+                    .unwrap()
+                    .into(),
+            ),
             StorageProfile::Memory(_) => {
                 unreachable!("Local storage does not support vended credentials")
             }
@@ -1656,71 +1590,53 @@ mod tests {
         let test_file2 = table_location2.cloning_push("test.txt");
 
         downscoped1
-            .new_output(&test_file1)
-            .unwrap()
-            .write("test content 1".into())
+            .write(
+                test_file1.as_str(),
+                bytes::Bytes::from_static(b"test content 1"),
+            )
             .await
             .unwrap();
-
         downscoped2
-            .new_output(&test_file2)
-            .unwrap()
-            .write("test content 2".into())
+            .write(
+                test_file2.as_str(),
+                bytes::Bytes::from_static(b"test content 2"),
+            )
             .await
             .unwrap();
 
-        let input1 = downscoped1
-            .new_input(&test_file1)
-            .unwrap()
-            .read()
-            .await
-            .unwrap();
-        assert_eq!(input1, "test content 1");
+        let input1 = downscoped1.read(test_file1.as_str()).await.unwrap();
+        assert_eq!(input1.as_ref(), b"test content 1");
 
-        let input2 = downscoped2
-            .new_input(&test_file2)
-            .unwrap()
-            .read()
-            .await
-            .unwrap();
-        assert_eq!(input2, "test content 2");
+        let input2 = downscoped2.read(test_file2.as_str()).await.unwrap();
+        assert_eq!(input2.as_ref(), b"test content 2");
 
         // cannot read across locations
-        let _ = downscoped1
-            .new_input(&test_file2)
-            .unwrap()
-            .read()
-            .await
-            .unwrap_err();
-        let _ = downscoped2
-            .new_input(&test_file1)
-            .unwrap()
-            .read()
-            .await
-            .unwrap_err();
+        let _ = downscoped1.read(test_file2.as_str()).await.unwrap_err();
+        let _ = downscoped2.read(test_file1.as_str()).await.unwrap_err();
 
         // cannot write across locations
         let _ = downscoped1
-            .new_output(&test_file2)
-            .unwrap()
-            .write("this-should-fail".into())
+            .write(
+                test_file2.as_str(),
+                bytes::Bytes::from_static(b"this-should-fail"),
+            )
             .await
             .unwrap_err();
-
         let _ = downscoped2
-            .new_output(&test_file1)
-            .unwrap()
-            .write("this-should-fail".into())
+            .write(
+                test_file1.as_str(),
+                bytes::Bytes::from_static(b"this-should-fail"),
+            )
             .await
             .unwrap_err();
 
         // cannot delete across locations
-        downscoped1.delete(&test_file2).await.unwrap_err();
-        downscoped2.delete(&test_file1).await.unwrap_err();
+        downscoped1.delete(test_file2.as_str()).await.unwrap_err();
+        downscoped2.delete(test_file1.as_str()).await.unwrap_err();
 
         // can delete in own locations
-        downscoped1.delete(&test_file1).await.unwrap();
-        downscoped2.delete(&test_file2).await.unwrap();
+        downscoped1.delete(test_file1.as_str()).await.unwrap();
+        downscoped2.delete(test_file2.as_str()).await.unwrap();
 
         // cleanup
         profile
