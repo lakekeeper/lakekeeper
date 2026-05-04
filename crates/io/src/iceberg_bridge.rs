@@ -1,4 +1,3 @@
-use crate::BoxStream;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -7,45 +6,15 @@ use futures::StreamExt;
 use iceberg::io::{FileMetadata, Storage, StorageConfig, StorageFactory};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{DeleteBatchError, DeleteError, LakekeeperStorage, ReadError, WriteError};
-
-/// Streaming file writer.
-///
-/// This trait exists solely to satisfy the iceberg-rust
-/// [`iceberg::io::FileWrite`] contract via [`IcebergFileWrite`]; it is not a
-/// general-purpose internal API. The bridge wraps an
-/// `Box<dyn LakekeeperFileWrite>` returned from
-/// [`LakekeeperStorage::writer`](crate::LakekeeperStorage::writer) and
-/// forwards `write`/`close` calls.
-///
-/// The contract mirrors [`iceberg::io::FileWrite`]:
-/// - Call [`Self::write`] zero or more times to append bytes.
-/// - Call [`Self::close`] **exactly once** to finalise the file.
-///
-/// **Closing is mandatory.** Dropping a writer without first calling
-/// `close` may leave incomplete multipart or resumable uploads on the
-/// backend. These linger until a server-side lifecycle policy reaps them
-/// (and may incur storage charges for parts in the meantime). This trait
-/// intentionally does not implement `Drop` to attempt cleanup — the
-/// caller must drive the writer to `close` on every code path,
-/// including error paths.
-#[async_trait::async_trait]
-pub trait LakekeeperFileWrite: std::fmt::Debug + Send + Sync + 'static {
-    /// Append bytes to the file. Implementations may buffer locally and
-    /// only contact the backend once an internal threshold is reached.
-    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError>;
-
-    /// Finalise the file. Calling `close` on an already-closed writer
-    /// returns an error.
-    async fn close(&mut self) -> Result<(), WriteError>;
-}
+use crate::{BoxStream, DeleteBatchError, DeleteError, LakekeeperStorage, ReadError, WriteError};
 
 impl From<ReadError> for iceberg::Error {
     fn from(value: ReadError) -> Self {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
             format!("Read error {value}"),
-        ).with_source(value)
+        )
+        .with_source(value)
     }
 }
 impl From<WriteError> for iceberg::Error {
@@ -53,7 +22,8 @@ impl From<WriteError> for iceberg::Error {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
             format!("Write error {value}"),
-        ).with_source(value)
+        )
+        .with_source(value)
     }
 }
 
@@ -62,7 +32,8 @@ impl From<DeleteError> for iceberg::Error {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
             format!("Delete error {value}"),
-        ).with_source(value)
+        )
+        .with_source(value)
     }
 }
 
@@ -71,7 +42,8 @@ impl From<DeleteBatchError> for iceberg::Error {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
             format!("Delete stream error {value}"),
-        ).with_source(value)
+        )
+        .with_source(value)
     }
 }
 
@@ -133,10 +105,7 @@ impl Storage for IcebergStorageBridge {
     }
 
     async fn write(&self, path: &str, bs: bytes::Bytes) -> iceberg::Result<()> {
-        self.lakekeeper_io
-            .write(path, bs)
-            .await
-            .map_err(Into::into)
+        self.lakekeeper_io.write(path, bs).await.map_err(Into::into)
     }
 
     async fn writer(&self, path: &str) -> iceberg::Result<Box<dyn iceberg::io::FileWrite>> {
@@ -155,10 +124,7 @@ impl Storage for IcebergStorageBridge {
             .map_err(Into::into)
     }
 
-    async fn delete_stream(
-        &self,
-        paths: BoxStream<'static, String>,
-    ) -> iceberg::Result<()> {
+    async fn delete_stream(&self, paths: BoxStream<'static, String>) -> iceberg::Result<()> {
         let paths = paths.collect::<Vec<_>>().await;
         self.lakekeeper_io
             .delete_batch(&paths)
@@ -197,6 +163,28 @@ impl iceberg::io::FileRead for IcebergFileRead {
     }
 }
 
+/// Streaming file writer.
+///
+/// This trait exists solely to satisfy the iceberg-rust
+/// `iceberg::io::FileWrite` contract via `IcebergFileWrite`; it is not a
+/// general-purpose internal API.
+///
+/// **Closing is mandatory.** Dropping a writer without first calling
+/// `close` may leave incomplete multipart or resumable uploads on the
+/// backend. These linger until a server-side lifecycle policy reaps them
+/// (and may incur storage charges for parts in the meantime). Currently
+/// there is no stable `AsyncDrop`.
+#[async_trait::async_trait]
+pub trait LakekeeperFileWrite: std::fmt::Debug + Send + Sync + 'static {
+    /// Append bytes to the file. Implementations may buffer locally and
+    /// only contact the backend once an internal threshold is reached.
+    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError>;
+
+    /// Finalise the file. Calling `close` on an already-closed writer
+    /// returns an error.
+    async fn close(&mut self) -> Result<(), WriteError>;
+}
+
 #[derive(Debug)]
 pub(crate) struct IcebergFileWrite {
     inner: Box<dyn LakekeeperFileWrite>,
@@ -231,7 +219,6 @@ impl StorageFactory for IcebergStorageBridgeFactory {
         Ok(self.bridge.clone())
     }
 }
-
 
 impl Serialize for IcebergStorageBridgeFactory {
     fn serialize<S: Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {

@@ -17,11 +17,11 @@ pub use error::{
     DeleteBatchError, DeleteError, ErrorKind, IOError, InitializeClientError, InternalError,
     InvalidLocationError, ReadError, RetryableError, RetryableErrorKind, WriteError,
 };
-use futures::{stream::BoxStream, TryStreamExt as _};
+use futures::{TryStreamExt as _, stream::BoxStream};
 pub use location::{Location, LocationParseError};
 pub use tokio;
 pub use tryhard;
-use tryhard::{backoff_strategies::BackoffStrategy, RetryPolicy};
+use tryhard::{RetryPolicy, backoff_strategies::BackoffStrategy};
 
 #[cfg(feature = "storage-adls")]
 pub mod adls;
@@ -116,9 +116,9 @@ pub enum StorageBackend {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RetryConfig<B, E>
 where
-        for<'a> B: BackoffStrategy<'a, E>,
-        for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
-        B: Send,
+    for<'a> B: BackoffStrategy<'a, E>,
+    for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
+    B: Send,
 {
     retries: u32,
     backoff_strategy: B,
@@ -128,9 +128,9 @@ where
 
 impl<B, E> RetryConfig<B, E>
 where
-        for<'a> B: BackoffStrategy<'a, E>,
-        for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
-        B: Send + Clone,
+    for<'a> B: BackoffStrategy<'a, E>,
+    for<'a> <B as BackoffStrategy<'a, E>>::Output: Into<RetryPolicy>,
+    B: Send + Clone,
 {
     pub fn new(retries: u32, backoff_strategy: B) -> Self {
         Self {
@@ -224,8 +224,10 @@ where
     /// Write the provided data to the specified path.
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
 
-    /// This method exists to satisfy the iceberg-rust `iceberg::io::FileWrite`
-    /// TODO: feature gate for iceberg bridge?
+    /// This method exists to satisfy the iceberg-rust `iceberg::io::FileWrite`.
+    /// Unlike `reader`, `writer` needs an inner state and cannot simply deledgate
+    /// to a "plan" lakekeeer-io function. We return a trait for that inner state here
+    /// that needs to be implemented per backend.
     #[cfg(any(
         feature = "storage-adls",
         feature = "storage-gcs",
@@ -254,11 +256,8 @@ where
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
     /// range: Half-open `[start, end)` interval over the file's bytes.
-    async fn read_range(
-        &self,
-        path: &str,
-        range: std::ops::Range<u64>,
-    ) -> Result<Bytes, ReadError>;
+    async fn read_range(&self, path: &str, range: std::ops::Range<u64>)
+    -> Result<Bytes, ReadError>;
 
     /// Retrieve metadata about a file at the given path.
     ///
@@ -421,9 +420,7 @@ impl LakekeeperStorage for StorageBackend {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.read_range(path, range).await,
             #[cfg(feature = "storage-in-memory")]
-            StorageBackend::Memory(memory_storage) => {
-                memory_storage.read_range(path, range).await
-            }
+            StorageBackend::Memory(memory_storage) => memory_storage.read_range(path, range).await,
             #[cfg(feature = "storage-adls")]
             StorageBackend::Adls(adls_storage) => adls_storage.read_range(path, range).await,
             #[cfg(feature = "storage-gcs")]
@@ -599,7 +596,7 @@ pub(crate) async fn assemble_chunks<S, E>(
     chunk_size: usize,
 ) -> Result<bytes::Bytes, E>
 where
-    S: futures::StreamExt<Item=Result<(usize, bytes::Bytes), E>> + Unpin,
+    S: futures::StreamExt<Item = Result<(usize, bytes::Bytes), E>> + Unpin,
 {
     // Pre-allocate buffer with exact size
     let mut combined_data = vec![0u8; total_size];
@@ -633,18 +630,19 @@ pub(crate) async fn parallel_chunked_read<F, Fut>(
 ) -> Result<bytes::Bytes, ReadError>
 where
     F: Fn(usize, usize, usize) -> Fut + Send + Sync + Clone + 'static,
-    Fut: Future<Output=Result<(usize, bytes::Bytes), ReadError>> + Send + 'static,
+    Fut: Future<Output = Result<(usize, bytes::Bytes), ReadError>> + Send + 'static,
 {
     use futures::StreamExt as _;
 
     let chunks = calculate_ranges(range_size, chunk_size);
-    let download_futures = chunks
-        .into_iter()
-        .enumerate()
-        .map(move |(chunk_index, (start, end))| {
-            let fetch_chunk = fetch_chunk.clone();
-            async move { fetch_chunk(start, end, chunk_index).await }
-        });
+    let download_futures =
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(move |(chunk_index, (start, end))| {
+                let fetch_chunk = fetch_chunk.clone();
+                async move { fetch_chunk(start, end, chunk_index).await }
+            });
 
     let context = error_context.to_string();
     let download_stream =
@@ -683,10 +681,10 @@ pub(crate) fn delete_not_found_is_ok(result: Result<(), IOError>) -> Result<(), 
 pub fn execute_with_parallelism<I, F, T>(
     futures: I,
     parallelism: usize,
-) -> impl futures::Stream<Item=Result<T, tokio::task::JoinError>>
+) -> impl futures::Stream<Item = Result<T, tokio::task::JoinError>>
 where
-    I: IntoIterator<Item=F>,
-    F: Future<Output=T> + Send + 'static,
+    I: IntoIterator<Item = F>,
+    F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
     async_stream::stream! {
@@ -766,8 +764,8 @@ mod tests {
     async fn test_execute_with_parallelism() {
         use std::{
             sync::{
-                atomic::{AtomicUsize, Ordering},
                 Arc,
+                atomic::{AtomicUsize, Ordering},
             },
             time::Duration,
         };
@@ -800,8 +798,8 @@ mod tests {
                 let mut max = max_concurrent.load(Ordering::SeqCst);
                 while max < current
                     && max_concurrent
-                    .compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
+                        .compare_exchange_weak(max, current, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_err()
                 {
                     max = max_concurrent.load(Ordering::SeqCst);
                 }
