@@ -75,8 +75,8 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
-iceberg = { workspace = true, optional = true }
 google-cloud-token = { workspace = true, optional = true }
+iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }

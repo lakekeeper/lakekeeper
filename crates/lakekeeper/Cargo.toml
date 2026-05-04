@@ -68,7 +68,6 @@ http = { workspace = true }
 http-body-util = { version = "~0.1" }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
-iceberg-storage-opendal = { workspace = true }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
 lakekeeper-io = { path = "../io", features = [
