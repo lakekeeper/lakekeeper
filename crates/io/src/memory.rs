@@ -305,9 +305,7 @@ impl LakekeeperStorage for MemoryStorage {
         let mut matching_files: Vec<(String, u64, DateTime<Utc>)> = data
             .iter()
             .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(key, (bytes, last_modified))| {
-                (key.clone(), bytes.len() as u64, *last_modified)
-            })
+            .map(|(key, (bytes, last_modified))| (key.clone(), bytes.len() as u64, *last_modified))
             .collect();
 
         // Sort for consistent ordering
@@ -320,11 +318,7 @@ impl LakekeeperStorage for MemoryStorage {
             let location_str = format!("{MEMORY_PREFIX}{key}");
             match location_str.parse::<Location>() {
                 Ok(location) => {
-                    all_file_infos.push(FileInfo::new(
-                        Some(last_modified),
-                        location,
-                        Some(size),
-                    ));
+                    all_file_infos.push(FileInfo::new(Some(last_modified), location, Some(size)));
                 }
                 Err(e) => {
                     let error = IOError::new(

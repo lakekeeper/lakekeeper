@@ -5,17 +5,17 @@ use std::{
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{stream, StreamExt as _};
+use futures::{StreamExt as _, stream};
 use google_cloud_storage::{
     client::Client,
     http::{
         objects::{
+            Object,
             delete::DeleteObjectRequest,
             download::Range,
             get::GetObjectRequest,
             list::ListObjectsRequest,
             upload::{Media, UploadObjectRequest, UploadType},
-            Object,
         },
         resumable_upload_client::{ChunkSize, ResumableUploadClient, UploadStatus},
     },
@@ -23,12 +23,12 @@ use google_cloud_storage::{
 use tokio;
 
 use crate::{
-    delete_not_found_is_ok, execute_with_parallelism, gcs::{gcs_error::parse_error, GcsLocation}, iceberg_bridge::LakekeeperFileWrite, safe_usize_to_i32, safe_usize_to_i64,
-    validate_file_size, DeleteBatchError, DeleteError, ErrorKind,
-    FileInfo, IOError,
-    InvalidLocationError,
-    LakekeeperStorage,
-    Location, ReadError, WriteError,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperStorage, Location, ReadError, WriteError, delete_not_found_is_ok,
+    execute_with_parallelism,
+    gcs::{GcsLocation, gcs_error::parse_error},
+    iceberg_bridge::LakekeeperFileWrite,
+    safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
 };
 
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
@@ -158,29 +158,26 @@ impl LakekeeperStorage for GcsStorage {
         let upload_client = prepare_resumable(&self.client, &location, total_size).await?;
         let total_bytes = bytes.len() as u64;
 
-        let upload_futures: Vec<_> =
-            bytes
-                .chunks(DEFAULT_BYTES_PER_REQUEST)
-                .enumerate()
-                .map(|(i, chunk)| {
-                    let offset = (i * DEFAULT_BYTES_PER_REQUEST) as u64;
-                    let chunk = Bytes::copy_from_slice(chunk);
-                    let upload_client = upload_client.clone();
-                    let path = path.to_string();
-                    async move {
-                        upload_chunk(&upload_client, offset, chunk, Some(total_bytes))
-                            .await
-                            .map_err(|e| match e {
-                                WriteError::IOError(io) => {
-                                    WriteError::IOError(io.with_context(format!(
-                                        "Failed to upload chunk at offset {offset} for {path}"
-                                    )))
-                                }
-                                other @ WriteError::InvalidLocation(_) => other,
-                            })
-                    }
-                })
-                .collect();
+        let upload_futures: Vec<_> = bytes
+            .chunks(DEFAULT_BYTES_PER_REQUEST)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let offset = (i * DEFAULT_BYTES_PER_REQUEST) as u64;
+                let chunk = Bytes::copy_from_slice(chunk);
+                let upload_client = upload_client.clone();
+                let path = path.to_string();
+                async move {
+                    upload_chunk(&upload_client, offset, chunk, Some(total_bytes))
+                        .await
+                        .map_err(|e| match e {
+                            WriteError::IOError(io) => WriteError::IOError(io.with_context(
+                                format!("Failed to upload chunk at offset {offset} for {path}"),
+                            )),
+                            other @ WriteError::InvalidLocation(_) => other,
+                        })
+                }
+            })
+            .collect();
 
         let upload_stream = execute_with_parallelism(upload_futures, 1).map(|result| {
             result.map_err(|join_err| {
@@ -213,7 +210,11 @@ impl LakekeeperStorage for GcsStorage {
         let head_response = head(&self.client, &location).await?;
         let size = u64::try_from(head_response.size).ok();
         let last_modified = parse_timestamp(&head_response);
-        Ok(FileInfo::new(last_modified, location.location().clone(), size))
+        Ok(FileInfo::new(
+            last_modified,
+            location.location().clone(),
+            size,
+        ))
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -511,9 +512,10 @@ async fn upload_chunk(
         .await
         .map(|_| ())
         .map_err(|e| {
-            WriteError::IOError(parse_error(e, &format!("offset {offset}")).with_context(format!(
-                "Failed to upload chunk at offset {offset}"
-            )))
+            WriteError::IOError(
+                parse_error(e, &format!("offset {offset}"))
+                    .with_context(format!("Failed to upload chunk at offset {offset}")),
+            )
         })
 }
 
@@ -541,8 +543,7 @@ async fn verify_resumable_complete(
         ))),
         UploadStatus::NotStarted => Err(WriteError::IOError(IOError::new(
             ErrorKind::Unexpected,
-            "Multipart upload should be completed, but returned status is `NotStarted`"
-                .to_string(),
+            "Multipart upload should be completed, but returned status is `NotStarted`".to_string(),
             location.as_str().to_string(),
         ))),
     }
@@ -649,8 +650,13 @@ impl LakekeeperFileWrite for GcsFileWrite {
                 // requires a chunk carrying `Some(total_size)` to terminate
                 // the session; a zero-length finalizer is valid).
                 let total_bytes = offset + buffer.len() as u64;
-                upload_chunk(&upload_client, offset, Bytes::from(buffer), Some(total_bytes))
-                    .await?;
+                upload_chunk(
+                    &upload_client,
+                    offset,
+                    Bytes::from(buffer),
+                    Some(total_bytes),
+                )
+                .await?;
                 verify_resumable_complete(&upload_client, &self.location, total_bytes).await
             }
         }

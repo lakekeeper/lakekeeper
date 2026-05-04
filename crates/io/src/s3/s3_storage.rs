@@ -6,24 +6,24 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 
 use crate::{
-    error::{ErrorKind, InvalidLocationError, RetryableError}, execute_with_parallelism, iceberg_bridge::LakekeeperFileWrite, s3::{
+    DeleteBatchError, DeleteError, FileInfo, IOError, LakekeeperStorage, Location, ReadError,
+    WriteError,
+    error::{ErrorKind, InvalidLocationError, RetryableError},
+    execute_with_parallelism,
+    iceberg_bridge::LakekeeperFileWrite,
+    s3::{
+        S3Location,
         s3_error::{
             parse_aws_sdk_error, parse_batch_delete_error, parse_complete_multipart_upload_error,
             parse_create_multipart_upload_error, parse_delete_error, parse_get_object_error,
             parse_head_object_error, parse_list_objects_v2_error, parse_put_object_error,
             parse_upload_part_error,
         },
-        S3Location,
-    }, safe_usize_to_i32, validate_file_size, DeleteBatchError,
-    DeleteError,
-    FileInfo,
-    IOError,
-    LakekeeperStorage,
-    Location,
-    ReadError, WriteError,
+    },
+    safe_usize_to_i32, validate_file_size,
 };
 
 // Convert MB constants to bytes - these will always be safe conversions from u16
@@ -94,7 +94,7 @@ impl LakekeeperStorage for S3Storage {
                 self.aws_kms_key_arn.as_deref(),
                 bytes,
             )
-                .await;
+            .await;
         }
 
         // Large file: parallel multipart upload.
@@ -122,8 +122,7 @@ impl LakekeeperStorage for S3Storage {
             async move {
                 let part_number = safe_usize_to_i32(part_number, location.as_str())
                     .map_err(|e| e.with_context("Too many parts to write"))?;
-                let part =
-                    upload_part(&client, &location, &upload_id, part_number, chunk).await?;
+                let part = upload_part(&client, &location, &upload_id, part_number, chunk).await?;
                 Ok::<(i32, aws_sdk_s3::types::CompletedPart), WriteError>((part_number, part))
             }
         });
@@ -144,8 +143,7 @@ impl LakekeeperStorage for S3Storage {
             completed_parts.push((part_number, completed_part));
         }
         completed_parts.sort_by_key(|(part_number, _)| *part_number);
-        let completed_parts: Vec<_> =
-            completed_parts.into_iter().map(|(_, part)| part).collect();
+        let completed_parts: Vec<_> = completed_parts.into_iter().map(|(_, part)| part).collect();
 
         complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await
     }
@@ -256,7 +254,7 @@ impl LakekeeperStorage for S3Storage {
                 format!("Error in S3 get bytestream: {e}"),
                 s3_location.as_str().to_string(),
             )
-                .set_source(anyhow::anyhow!(e))
+            .set_source(anyhow::anyhow!(e))
         })?;
 
         Ok(body.into_bytes())
@@ -329,10 +327,10 @@ impl LakekeeperStorage for S3Storage {
                             }
                         }
                     })
-                        .retries(3)
-                        .exponential_backoff(std::time::Duration::from_millis(100))
-                        .max_delay(std::time::Duration::from_secs(10))
-                        .await;
+                    .retries(3)
+                    .exponential_backoff(std::time::Duration::from_millis(100))
+                    .max_delay(std::time::Duration::from_secs(10))
+                    .await;
 
                     match result {
                         Ok(Ok(response)) => {
@@ -397,7 +395,7 @@ async fn fetch_range(
             format!("Error collecting S3 range bytestream: {e}"),
             location.as_str().to_string(),
         )
-            .set_source(anyhow::anyhow!(e))
+        .set_source(anyhow::anyhow!(e))
     })?;
     Ok(body.into_bytes())
 }
@@ -605,12 +603,9 @@ impl LakekeeperFileWrite for S3FileWrite {
                 if buffer.len() < MAX_BYTES_PER_REQUEST {
                     return Ok(());
                 }
-                let upload_id = start_multipart(
-                    &self.client,
-                    &self.location,
-                    self.kms_key_arn.as_deref(),
-                )
-                    .await?;
+                let upload_id =
+                    start_multipart(&self.client, &self.location, self.kms_key_arn.as_deref())
+                        .await?;
                 let rest = std::mem::take(buffer);
                 self.state = S3WriterState::Multipart {
                     upload_id,
@@ -643,7 +638,7 @@ impl LakekeeperFileWrite for S3FileWrite {
                     self.kms_key_arn.as_deref(),
                     buffer.freeze(),
                 )
-                    .await
+                .await
             }
             S3WriterState::Multipart {
                 upload_id,
@@ -659,7 +654,7 @@ impl LakekeeperFileWrite for S3FileWrite {
                         next_part_number,
                         buffer.freeze(),
                     )
-                        .await
+                    .await
                     {
                         Ok(part) => part,
                         Err(e) => {
@@ -710,7 +705,7 @@ impl S3FileWrite {
                 *next_part_number,
                 part_bytes,
             )
-                .await
+            .await
             {
                 Ok(part) => {
                     completed_parts.push(part);
@@ -735,7 +730,7 @@ impl S3FileWrite {
 /// - Key: Bucket name
 /// - Value: A `HashMap` of S3 keys to their original paths
 fn group_paths_by_bucket(
-    paths: impl IntoIterator<Item=impl AsRef<str>>,
+    paths: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<HashMap<String, HashMap<String, String>>, InvalidLocationError> {
     let mut s3_locations: HashMap<String, HashMap<String, String>> = HashMap::new();
 
@@ -786,13 +781,13 @@ fn create_delete_futures(
     s3_locations: HashMap<String, HashMap<String, String>>,
 ) -> Result<
     impl Iterator<
-        Item=impl std::future::Future<
-            Output=Result<
+        Item = impl std::future::Future<
+            Output = Result<
                 aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
                 AWSBatchDeleteError,
             >,
         > + Send
-        + 'static,
+               + 'static,
     >,
     InvalidLocationError,
 > {
@@ -852,13 +847,13 @@ fn create_delete_futures(
 /// Processes delete results and handles errors as they complete.
 async fn process_delete_results(
     delete_futures: impl Iterator<
-        Item=impl std::future::Future<
-            Output=Result<
+        Item = impl std::future::Future<
+            Output = Result<
                 aws_sdk_s3::operation::delete_objects::DeleteObjectsOutput,
                 AWSBatchDeleteError,
             >,
         > + Send
-        + 'static,
+               + 'static,
     >,
     key_to_path_mapping: HashMap<String, String>,
 ) -> Result<(), IOError> {

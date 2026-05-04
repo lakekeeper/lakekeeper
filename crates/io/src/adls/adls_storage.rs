@@ -17,14 +17,14 @@ use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    adls::{adls_error::parse_error, AdlsLocation}, delete_not_found_is_ok, error::ErrorKind, execute_with_parallelism, iceberg_bridge::LakekeeperFileWrite, safe_usize_to_i64,
-    validate_file_size, DeleteBatchError, DeleteError,
-    FileInfo,
-    IOError,
-    InvalidLocationError,
-    LakekeeperStorage,
-    Location,
-    ReadError, WriteError,
+    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
+    Location, ReadError, WriteError,
+    adls::{AdlsLocation, adls_error::parse_error},
+    delete_not_found_is_ok,
+    error::ErrorKind,
+    execute_with_parallelism,
+    iceberg_bridge::LakekeeperFileWrite,
+    safe_usize_to_i64, validate_file_size,
 };
 
 #[derive(Debug, Clone)]
@@ -305,14 +305,7 @@ impl LakekeeperStorage for AdlsStorage {
             return self.read_single(path).await;
         }
 
-        chunked_read_with_integrity(
-            &client,
-            path,
-            0,
-            file_size,
-            head_response.last_modified,
-        )
-            .await
+        chunked_read_with_integrity(&client, path, 0, file_size, head_response.last_modified).await
     }
 
     async fn read_range(
@@ -360,7 +353,7 @@ impl LakekeeperStorage for AdlsStorage {
             range_size,
             head_response.last_modified,
         )
-            .await
+        .await
     }
 
     async fn list(
@@ -460,10 +453,7 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
     }
 }
 
-async fn head(
-    client: &FileClient,
-    location: &AdlsLocation,
-) -> Result<HeadPathResponse, ReadError> {
+async fn head(client: &FileClient, location: &AdlsLocation) -> Result<HeadPathResponse, ReadError> {
     client.get_properties().await.map_err(|e| {
         ReadError::IOError(
             parse_error(e, location.location().as_str())
@@ -594,8 +584,8 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         self.buffer.extend_from_slice(&bytes_in);
         while self.buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
             let chunk: Vec<u8> = self.buffer.drain(..DEFAULT_BYTES_PER_REQUEST).collect();
-            let chunk_len = safe_usize_to_i64(chunk.len(), self.path.clone())
-                .map_err(WriteError::IOError)?;
+            let chunk_len =
+                safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
             append_chunk(&self.client, self.offset, Bytes::from(chunk), &self.path).await?;
             self.offset += chunk_len;
         }
@@ -613,8 +603,8 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         self.closed = true;
         if !self.buffer.is_empty() {
             let chunk = std::mem::take(&mut self.buffer);
-            let chunk_len = safe_usize_to_i64(chunk.len(), self.path.clone())
-                .map_err(WriteError::IOError)?;
+            let chunk_len =
+                safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
             append_chunk(&self.client, self.offset, Bytes::from(chunk), &self.path).await?;
             self.offset += chunk_len;
         }
@@ -637,7 +627,7 @@ fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError>
 /// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
 /// vectors of `(blob_path, original_path)` tuples.
 fn group_paths_by_container(
-    paths: impl IntoIterator<Item=impl AsRef<str>>,
+    paths: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<HashMap<(String, String), Vec<AdlsLocation>>, InvalidLocationError> {
     let mut grouped_paths: HashMap<(String, String), Vec<AdlsLocation>> = HashMap::new();
 
