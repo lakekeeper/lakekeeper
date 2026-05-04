@@ -122,6 +122,7 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 [dev-dependencies]
 assert-json-diff = { workspace = true }
 aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
 lakekeeper = { path = ".", features = ["test-utils"] }

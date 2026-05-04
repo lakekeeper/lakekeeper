@@ -537,12 +537,24 @@ impl GcsProfile {
     }
 }
 
-pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
-    iceberg::io::FileIOBuilder::new(Arc::new(
-        iceberg_storage_opendal::OpenDalStorageFactory::Gcs,
-    ))
-    .with_props(config.inner())
-    .build()
+/// Build a `GcsStorage` client from vended-credentials properties.
+///
+/// Reads the downscoped `OAuth2` access token from the iceberg-format
+/// `TableProperties` previously produced by `generate_table_config`.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
+    config: &TableProperties,
+) -> Result<GcsStorage, CredentialsError> {
+    let access_token = config.get_prop_opt::<gcs::Token>().ok_or_else(|| {
+        CredentialsError::ShortTermCredential {
+            reason: "GCS vended credentials are missing the OAuth2 access token.".to_string(),
+            source: None,
+        }
+    })?;
+    let auth = GcsAuth::BearerToken(lakekeeper_io::gcs::GcsBearerTokenAuth { access_token });
+    GCSSettings {}
+        .get_storage_client(&auth)
+        .await
+        .map_err(Into::into)
 }
 
 impl TryFrom<GcsCredential> for GcsAuth {

@@ -133,6 +133,10 @@ pub struct S3AccessKeyAuth {
     pub aws_access_key_id: String,
     #[redact(partial)]
     pub aws_secret_access_key: String,
+    /// Session token for temporary credentials (vended via STS).
+    #[builder(default)]
+    #[redact(partial)]
+    pub aws_session_token: Option<String>,
     #[builder(default)]
     #[redact(partial)]
     pub external_id: Option<String>,
@@ -201,12 +205,13 @@ impl S3Settings {
             Some(S3Auth::AccessKey(S3AccessKeyAuth {
                 aws_access_key_id,
                 aws_secret_access_key,
+                aws_session_token,
                 external_id: _, // External ID handled below in assume role path
             })) => {
                 let aws_credentials = aws_credential_types::Credentials::new(
                     aws_access_key_id,
                     aws_secret_access_key,
-                    None,
+                    aws_session_token.clone(),
                     None,
                     "lakekeeper-secret-storage",
                 );

@@ -58,12 +58,20 @@ pub enum AzureAuth {
     ClientCredentials(AzureClientCredentialsAuth),
     SharedAccessKey(AzureSharedAccessKeyAuth),
     AzureSystemIdentity,
+    /// SAS (Shared Access Signature) token. Used with downscoped credentials vended via SAS delegation.
+    Sas(AzureSasAuth),
 }
 
 #[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct AzureSharedAccessKeyAuth {
     #[redact(partial)]
     pub key: String,
+}
+
+#[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
+pub struct AzureSasAuth {
+    #[redact(partial)]
+    pub sas_token: String,
 }
 
 #[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
@@ -132,6 +140,11 @@ impl AzureSettings {
                 let identity: Arc<DefaultAzureCredential> = self.get_system_identity().await?;
                 StorageCredentials::token_credential(identity)
             }
+            AzureAuth::Sas(AzureSasAuth { sas_token }) => StorageCredentials::sas_token(sas_token)
+                .map_err(|e| InitializeClientError {
+                    reason: format!("Invalid Azure SAS token: {e}"),
+                    source: Some(Box::new(e)),
+                })?,
         })
     }
 

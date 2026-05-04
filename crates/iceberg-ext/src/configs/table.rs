@@ -157,5 +157,6 @@ mod tests {
         assert_eq!(iceberg::io::S3_PATH_STYLE_ACCESS, s3::PathStyleAccess::KEY);
         assert_eq!(iceberg::io::S3_ACCESS_KEY_ID, s3::AccessKeyId::KEY);
         assert_eq!(iceberg::io::S3_SECRET_ACCESS_KEY, s3::SecretAccessKey::KEY);
+        assert_eq!(iceberg::io::S3_SESSION_TOKEN, s3::SessionToken::KEY);
     }
 }

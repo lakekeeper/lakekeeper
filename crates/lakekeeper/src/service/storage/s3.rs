@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
     time::{Duration, Instant},
 };
 
@@ -12,10 +12,7 @@ use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
-    configs::{
-        ConfigProperty,
-        table::{TableProperties, client, creds, custom, s3},
-    },
+    configs::table::{TableProperties, client, creds, custom, s3},
 };
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -1202,27 +1199,49 @@ struct R2TemporaryCredentialsResult {
     session_token: String,
 }
 
-pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
-    let mut builder = iceberg::io::FileIOBuilder::new(Arc::new(
-        iceberg_storage_opendal::OpenDalStorageFactory::S3 {
-            customized_credential_load: None,
-        },
-    ));
+/// Build an `S3Storage` client from vended-credentials properties.
+///
+/// Reads region, endpoint, path-style-access, and the temporary credentials
+/// (access key id, secret access key, session token) from the iceberg-format
+/// `TableProperties` previously produced by `generate_table_config`.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
+    config: &TableProperties,
+) -> Result<S3Storage, CredentialsError> {
+    let region = config.get_prop_opt::<s3::Region>().unwrap_or_default();
+    let endpoint = config.get_prop_opt::<s3::Endpoint>();
+    let path_style_access = config.get_prop_opt::<s3::PathStyleAccess>();
 
-    for key in [
-        s3::Region::KEY,
-        s3::Endpoint::KEY,
-        s3::AccessKeyId::KEY,
-        s3::SecretAccessKey::KEY,
-        s3::SessionToken::KEY,
-        s3::PathStyleAccess::KEY,
-    ] {
-        if let Some(value) = config.get_custom_prop(key) {
-            builder = builder.with_prop(key, value);
+    let auth = match (
+        config.get_prop_opt::<s3::AccessKeyId>(),
+        config.get_prop_opt::<s3::SecretAccessKey>(),
+    ) {
+        (Some(aws_access_key_id), Some(aws_secret_access_key)) => {
+            Some(S3Auth::AccessKey(S3AccessKeyAuth {
+                aws_access_key_id,
+                aws_secret_access_key,
+                aws_session_token: config.get_prop_opt::<s3::SessionToken>(),
+                external_id: None,
+            }))
         }
-    }
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(CredentialsError::MissingCredential(
+                "Vended S3 credentials missing s3.secret-access-key".to_string(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(CredentialsError::MissingCredential(
+                "Vended S3 credentials missing s3.access-key-id".to_string(),
+            ));
+        }
+    };
 
-    builder.build()
+    let settings = S3Settings::builder()
+        .region(region)
+        .endpoint(endpoint)
+        .path_style_access(path_style_access)
+        .build();
+    Ok(settings.get_storage_client(auth.as_ref()).await)
 }
 
 fn validate_region(region: &str) -> Result<(), InvalidProfileError> {
@@ -1260,6 +1279,7 @@ impl From<S3AccessKeyCredential> for S3AccessKeyAuth {
         S3AccessKeyAuth {
             aws_access_key_id: access_key_credential.access_key_id,
             aws_secret_access_key: access_key_credential.secret_access_key,
+            aws_session_token: None,
             external_id: access_key_credential.external_id,
         }
     }
@@ -1297,6 +1317,7 @@ impl TryFrom<S3Credential> for S3Auth {
             }) => S3Auth::AccessKey(S3AccessKeyAuth {
                 aws_access_key_id: access_key_id,
                 aws_secret_access_key: secret_access_key,
+                aws_session_token: None,
                 external_id: None, // Cloudflare R2 does not use external ID
             }),
         })
