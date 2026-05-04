@@ -78,6 +78,45 @@ pub(super) async fn get_validation_data<
     }
 }
 
+/// Re-open the catalog for bootstrap. Operator-only recovery path (see
+/// the `lakekeeper reopen-bootstrap` CLI subcommand) used when switching
+/// authorizer backends or recovering from a misconfigured first
+/// bootstrap. Flips `open_for_bootstrap` back to `true`; leaves
+/// `server_id`, `terms_accepted`, and all catalog data untouched.
+///
+/// Returns the existing `server_id`, or an error if no server row exists
+/// (run `migrate` first) or the catalog is already open for bootstrap
+/// (no-op refused so the operator notices).
+pub(super) async fn reopen_for_bootstrap<
+    'e,
+    'c: 'e,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    connection: E,
+) -> Result<ServerId> {
+    let row = sqlx::query!(
+        r#"
+        UPDATE server
+        SET open_for_bootstrap = true
+        WHERE server.open_for_bootstrap = false
+        RETURNING server_id
+        "#
+    )
+    .fetch_optional(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error while re-opening catalog for bootstrap.".to_string()))?;
+
+    match row {
+        Some(r) => Ok(ServerId::from(r.server_id)),
+        None => Err(ErrorModel::bad_request(
+            "Catalog is already open for bootstrap, or no server row exists (did you run `lakekeeper migrate`?).".to_string(),
+            "CatalogAlreadyOpenForBootstrap",
+            None,
+        )
+        .into()),
+    }
+}
+
 pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     terms_accepted: bool,
     connection: E,
@@ -134,6 +173,48 @@ mod test {
 
         let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
         assert!(!success);
+    }
+
+    #[sqlx::test]
+    async fn test_reopen_for_bootstrap_round_trip(pool: PgPool) {
+        migrate(&pool).await.unwrap();
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        // Fresh server: already open. reopen must refuse so the operator
+        // notices they're calling it in the wrong state.
+        let err = reopen_for_bootstrap(&state.read_write.write_pool)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already open"),
+            "expected 'already open' refusal; got: {err}"
+        );
+
+        // Bootstrap, then reopen, then verify state is set up for /bootstrap again.
+        let initial = get_validation_data(&state.read_pool()).await.unwrap();
+        let server_id_before = initial.server_id();
+        bootstrap(true, &state.read_write.write_pool).await.unwrap();
+        let after_bootstrap = get_validation_data(&state.read_pool()).await.unwrap();
+        assert!(!after_bootstrap.is_open_for_bootstrap());
+        assert!(after_bootstrap.terms_accepted());
+
+        let returned_id = reopen_for_bootstrap(&state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert_eq!(returned_id, server_id_before);
+
+        let after_reopen = get_validation_data(&state.read_pool()).await.unwrap();
+        assert!(after_reopen.is_open_for_bootstrap());
+        // server_id and terms_accepted are intentionally preserved.
+        assert_eq!(after_reopen.server_id(), server_id_before);
+        assert!(
+            after_reopen.terms_accepted(),
+            "terms_accepted must not be reset by reopen — only the next bootstrap call rewrites it"
+        );
+
+        // After reopen, bootstrap is callable again.
+        let success = bootstrap(true, &state.read_write.write_pool).await.unwrap();
+        assert!(success, "bootstrap should succeed after reopen");
     }
 
     #[sqlx::test]

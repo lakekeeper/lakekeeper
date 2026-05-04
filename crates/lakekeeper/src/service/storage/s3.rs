@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     hash::Hash,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -48,8 +48,8 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
             storage_layout::StorageLayout,
         },
@@ -1202,10 +1202,12 @@ struct R2TemporaryCredentialsResult {
     session_token: String,
 }
 
-pub(super) fn get_file_io_from_table_config(
-    config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
-    let mut builder = iceberg::io::FileIOBuilder::new("s3").clone();
+pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
+    let mut builder = iceberg::io::FileIOBuilder::new(Arc::new(
+        iceberg_storage_opendal::OpenDalStorageFactory::S3 {
+            customized_credential_load: None,
+        },
+    ));
 
     for key in [
         s3::Region::KEY,
@@ -1220,7 +1222,7 @@ pub(super) fn get_file_io_from_table_config(
         }
     }
 
-    Ok(builder.build()?)
+    builder.build()
 }
 
 fn validate_region(region: &str) -> Result<(), InvalidProfileError> {

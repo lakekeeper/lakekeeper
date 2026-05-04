@@ -98,11 +98,11 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "8ccb1759a0d7a1a8072d129dfddef0955ce02296", }
-iceberg-storage = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "8ccb1759a0d7a1a8072d129dfddef0955ce02296", features = [
-    "storage-gcs",
-    "storage-azdls",
-    "storage-s3",
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599" }
+iceberg-storage-opendal = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599", default-features = false, features = [
+    "opendal-s3",
+    "opendal-gcs",
+    "opendal-azdls",
 ] }
 iso8601 = "0.6.2"
 itertools = "0.14.0"

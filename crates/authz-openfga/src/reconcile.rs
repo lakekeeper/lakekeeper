@@ -93,8 +93,6 @@ const READ_PAGE_SIZE: i32 = 100;
 /// Postgres advisory lock key. Stable arbitrary value; the lock is scoped
 /// to "reconcile-with-deletion".
 const RECONCILE_LOCK_KEY: i64 = 0x5f8e_2d63_a4b1_00ff;
-/// Cap on how many pages to scan when sanity-checking server-id consistency.
-const SERVER_ID_SANITY_MAX_PAGES: u32 = 50;
 
 // ============================================================================
 // Public types
@@ -118,8 +116,12 @@ pub enum ReconcileMode {
 /// `tuples_submitted` is an **upper bound** on tuples actually persisted
 /// because writes are idempotent and OpenFGA does not return a count of
 /// duplicates. `tuples_deleted` is exact.
+///
+/// In `dry_run` mode the same fields describe what *would* have been
+/// written or deleted; no OpenFGA mutation occurs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
+    pub dry_run: bool,
     pub tuples_submitted: u64,
     pub write_requests: u64,
     pub tuples_deleted: u64,
@@ -152,6 +154,9 @@ pub type RebuildReport = ReconcileReport;
 /// Add any structural hierarchy tuples the catalog implies but OpenFGA is
 /// missing. Never deletes. Generic over the catalog backend.
 ///
+/// When `dry_run` is true, the OpenFGA writes are skipped but the report
+/// reflects what *would* have been written.
+///
 /// See module docs.
 ///
 /// # Errors
@@ -160,15 +165,19 @@ pub async fn rebuild_hierarchy_tuples_from_catalog<C>(
     catalog_state: C::State,
     sink: &BasicOpenFgaClient,
     server_id: ServerId,
+    dry_run: bool,
 ) -> anyhow::Result<ReconcileReport>
 where
     C: CatalogStore,
 {
-    tracing::info!("rebuild (additive): starting for server {server_id}");
-    let mut report = ReconcileReport::default();
+    tracing::info!("rebuild (additive): starting for server {server_id} (dry_run={dry_run})");
+    let mut report = ReconcileReport {
+        dry_run,
+        ..ReconcileReport::default()
+    };
     let idx = CatalogIndex::build::<C>(&catalog_state, server_id).await?;
     log_index(&idx);
-    write_missing_from_index(&idx, sink, &mut report).await?;
+    write_missing_from_index(&idx, sink, &mut report, dry_run).await?;
     log_done(&report, "rebuild");
     Ok(report)
 }
@@ -181,18 +190,26 @@ where
 /// deletion. Postgres-only because of the advisory lock and per-delete
 /// revalidation.
 ///
+/// When `dry_run` is true, no OpenFGA writes or deletes occur — the report
+/// counts what *would* have been changed. The advisory lock is still
+/// acquired so a dry-run reads a stable snapshot relative to other
+/// reconciles.
+///
 /// # Errors
 /// * Catalog or OpenFGA call fails.
 /// * Advisory lock is already held by another reconcile.
-/// * Server-id sanity check finds tuples for a different server.
 pub async fn reconcile_hierarchy_tuples_from_catalog(
     catalog_state: CatalogState,
     sink: &BasicOpenFgaClient,
     server_id: ServerId,
     mode: ReconcileMode,
+    dry_run: bool,
 ) -> anyhow::Result<ReconcileReport> {
-    tracing::info!("reconcile: starting (mode={mode:?}, server_id={server_id})");
-    let mut report = ReconcileReport::default();
+    tracing::info!("reconcile: starting (mode={mode:?}, server_id={server_id}, dry_run={dry_run})");
+    let mut report = ReconcileReport {
+        dry_run,
+        ..ReconcileReport::default()
+    };
 
     let _lock = AdvisoryLock::acquire(&catalog_state).await?;
 
@@ -204,13 +221,12 @@ pub async fn reconcile_hierarchy_tuples_from_catalog(
     log_index(&idx);
 
     if matches!(mode, ReconcileMode::AddMissingAndDeleteDrift) {
-        verify_server_id_consistency(sink, server_id).await?;
-        diff_walk_and_delete(&idx, sink, &mut report).await?;
+        diff_walk_and_delete(&idx, sink, &mut report, dry_run).await?;
     }
 
     // Always run the additive pass last so that anything missing (or freshly
     // unknown after a delete) gets added back.
-    write_missing_from_index(&idx, sink, &mut report).await?;
+    write_missing_from_index(&idx, sink, &mut report, dry_run).await?;
 
     log_done(&report, "reconcile");
     Ok(report)
@@ -526,9 +542,10 @@ async fn write_missing_from_index(
     idx: &CatalogIndex,
     sink: &BasicOpenFgaClient,
     report: &mut ReconcileReport,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     let server = idx.server_id.to_openfga();
-    let mut writer = BatchWriter::new(sink, report);
+    let mut writer = BatchWriter::new(sink, report, dry_run);
 
     for project in &idx.projects {
         writer
@@ -574,6 +591,7 @@ async fn diff_walk_and_delete(
     idx: &CatalogIndex,
     sink: &BasicOpenFgaClient,
     report: &mut ReconcileReport,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     let consistent_sink = sink
         .clone()
@@ -624,7 +642,7 @@ async fn diff_walk_and_delete(
 
             if delete_buffer.len() >= WRITE_BATCH_SIZE {
                 let chunk = std::mem::take(&mut delete_buffer);
-                flush_deletes(&consistent_sink, chunk, report).await?;
+                flush_deletes(&consistent_sink, chunk, report, dry_run).await?;
             }
         }
 
@@ -634,7 +652,7 @@ async fn diff_walk_and_delete(
         continuation = Some(resp.continuation_token);
     }
     if !delete_buffer.is_empty() {
-        flush_deletes(&consistent_sink, delete_buffer, report).await?;
+        flush_deletes(&consistent_sink, delete_buffer, report, dry_run).await?;
     }
     Ok(())
 }
@@ -682,56 +700,16 @@ async fn flush_deletes(
     sink: &BasicOpenFgaClient,
     chunk: Vec<TupleKeyWithoutCondition>,
     report: &mut ReconcileReport,
+    dry_run: bool,
 ) -> anyhow::Result<()> {
     let n = chunk.len();
-    sink.write_with_options(None, Some(chunk), WriteOptions::new_idempotent())
-        .await
-        .map_err(|e| anyhow::anyhow!("reconcile: openfga delete failed: {e}"))?;
+    if !dry_run {
+        sink.write_with_options(None, Some(chunk), WriteOptions::new_idempotent())
+            .await
+            .map_err(|e| anyhow::anyhow!("reconcile: openfga delete failed: {e}"))?;
+    }
     report.tuples_deleted += n as u64;
     report.delete_requests += 1;
-    Ok(())
-}
-
-// ============================================================================
-// Server-id sanity
-// ============================================================================
-
-async fn verify_server_id_consistency(
-    sink: &BasicOpenFgaClient,
-    server_id: ServerId,
-) -> anyhow::Result<()> {
-    let consistent_sink = sink
-        .clone()
-        .set_consistency(ConsistencyPreference::HigherConsistency);
-    let configured = server_id.to_openfga();
-    let mut continuation: Option<String> = None;
-    let mut pages_scanned = 0u32;
-
-    loop {
-        let resp = consistent_sink
-            .read(READ_PAGE_SIZE, None, continuation.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("reconcile: server-id sanity Read failed: {e}"))?;
-        let resp = resp.into_inner();
-        for tuple in resp.tuples.iter().filter_map(|t| t.key.as_ref()) {
-            if tuple.relation == "server"
-                && tuple.object.starts_with("project:")
-                && tuple.user.starts_with("server:")
-                && tuple.user != configured
-            {
-                anyhow::bail!(
-                    "reconcile: refusing to run; OpenFGA store contains hierarchy tuples for {} but configured server is {}",
-                    tuple.user,
-                    configured
-                );
-            }
-        }
-        pages_scanned += 1;
-        if resp.continuation_token.is_empty() || pages_scanned >= SERVER_ID_SANITY_MAX_PAGES {
-            break;
-        }
-        continuation = Some(resp.continuation_token);
-    }
     Ok(())
 }
 
@@ -775,15 +753,17 @@ struct BatchWriter<'a> {
     buffer: Vec<TupleKey>,
     options: WriteOptions,
     report: &'a mut ReconcileReport,
+    dry_run: bool,
 }
 
 impl<'a> BatchWriter<'a> {
-    fn new(sink: &'a BasicOpenFgaClient, report: &'a mut ReconcileReport) -> Self {
+    fn new(sink: &'a BasicOpenFgaClient, report: &'a mut ReconcileReport, dry_run: bool) -> Self {
         Self {
             sink,
             buffer: Vec::with_capacity(WRITE_BATCH_SIZE),
             options: WriteOptions::new_idempotent(),
             report,
+            dry_run,
         }
     }
 
@@ -806,10 +786,14 @@ impl<'a> BatchWriter<'a> {
     }
 
     async fn write_chunk(&mut self, chunk: Vec<TupleKey>) -> anyhow::Result<()> {
-        self.sink
-            .write_with_options(Some(chunk), None, self.options)
-            .await
-            .map_err(|e| anyhow::anyhow!("reconcile: openfga write_with_options failed: {e}"))?;
+        if !self.dry_run {
+            self.sink
+                .write_with_options(Some(chunk), None, self.options)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("reconcile: openfga write_with_options failed: {e}")
+                })?;
+        }
         self.report.write_requests += 1;
         Ok(())
     }
@@ -832,8 +816,9 @@ fn log_index(idx: &CatalogIndex) {
 }
 
 fn log_done(report: &ReconcileReport, fn_label: &str) {
+    let label = if report.dry_run { "dry-run" } else { "applied" };
     tracing::info!(
-        "{fn_label}: done; submitted={}, deleted={}, ignored_unmanaged={}, ignored_orphan={}",
+        "{fn_label} ({label}): submitted={}, deleted={}, ignored_unmanaged={}, ignored_orphan={}",
         report.tuples_submitted,
         report.tuples_deleted,
         report.tuples_ignored_unmanaged,
@@ -1003,6 +988,7 @@ mod openfga_integration_tests {
             pg_state(&pool),
             &authorizer.client,
             server_id,
+            false,
         )
         .await
         .unwrap();
@@ -1012,6 +998,7 @@ mod openfga_integration_tests {
             pg_state(&pool),
             &authorizer.client,
             server_id,
+            false,
         )
         .await
         .unwrap();
@@ -1056,6 +1043,7 @@ mod openfga_integration_tests {
             pg_state(&pool),
             &authorizer.client,
             server_id,
+            false,
         )
         .await
         .unwrap();
@@ -1105,6 +1093,7 @@ mod openfga_integration_tests {
             pg_state(&pool),
             &authorizer.client,
             server_id,
+            false,
         )
         .await
         .unwrap();
@@ -1126,6 +1115,7 @@ mod openfga_integration_tests {
             pg_state(&pool),
             &sink,
             server_id,
+            false,
         )
         .await
         .unwrap();
@@ -1221,6 +1211,7 @@ mod openfga_integration_tests {
             &authorizer.client,
             server_id,
             ReconcileMode::AddMissingAndDeleteDrift,
+            false,
         )
         .await
         .unwrap();
@@ -1282,6 +1273,7 @@ mod openfga_integration_tests {
             &authorizer.client,
             server_id,
             ReconcileMode::AddMissingAndDeleteDrift,
+            false,
         )
         .await
         .unwrap();
@@ -1319,6 +1311,7 @@ mod openfga_integration_tests {
             &authorizer.client,
             server_id,
             ReconcileMode::AddMissingAndDeleteDrift,
+            false,
         )
         .await;
 
@@ -1334,5 +1327,53 @@ mod openfga_integration_tests {
 
         // Release: drop conn (advisory_lock is session-scoped so it's released on close).
         drop(conn);
+    }
+
+    #[sqlx::test]
+    async fn test_reconcile_dry_run_reports_without_mutating(pool: sqlx::PgPool) {
+        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
+        let server_id = authorizer.server_id();
+        let (warehouse, root_ns_id, _child, _role) =
+            populate(&authorizer, &pool, &operator_id).await;
+
+        // Plant drift the same way the deletion test does — a stale parent
+        // edge that catalog state contradicts.
+        let bogus_table = Uuid::now_v7();
+        let stale_forward = TupleKey {
+            user: format!("namespace:{root_ns_id}"),
+            relation: "parent".to_string(),
+            object: format!("lakekeeper_table:{}/{bogus_table}", warehouse.warehouse_id),
+            condition: None,
+        };
+        authorizer
+            .client
+            .write(Some(vec![stale_forward.clone()]), None)
+            .await
+            .unwrap();
+
+        let state_before = read_all_tuples(&authorizer.client).await;
+
+        let report = reconcile_hierarchy_tuples_from_catalog(
+            pg_state(&pool),
+            &authorizer.client,
+            server_id,
+            ReconcileMode::AddMissingAndDeleteDrift,
+            true, // dry_run
+        )
+        .await
+        .unwrap();
+
+        assert!(report.dry_run, "report must mark itself as a dry run");
+        assert!(
+            report.tuples_deleted >= 1,
+            "dry run should still account for what it would delete; report={report:?}"
+        );
+
+        let state_after = read_all_tuples(&authorizer.client).await;
+        assert_eq!(
+            state_before, state_after,
+            "dry run must not mutate the OpenFGA store"
+        );
     }
 }

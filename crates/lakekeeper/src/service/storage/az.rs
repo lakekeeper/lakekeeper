@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
 
@@ -44,8 +44,8 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
             storage_layout::StorageLayout,
         },
@@ -661,24 +661,22 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
     format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
-pub(super) fn get_file_io_from_table_config(
-    config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
+pub(super) fn get_file_io_from_table_config(config: &TableProperties) -> iceberg::io::FileIO {
     // Add Authority host if not present
     let mut config = config.inner().clone();
 
     let sas_token_prefix = "adls.sas-token.";
     // Iceberg Rust cannot parse tokens of form "<sas_token_prefix><storage_account_name>.<endpoint_suffix>=<sas_token>"
     // https://github.com/apache/iceberg-rust/issues/1442
-    let mut sas_token = None;
+    let mut matched = None;
     for (key, value) in &config {
         if key.starts_with(sas_token_prefix) {
-            sas_token = Some(value.clone());
+            matched = Some((key.clone(), value.clone()));
             break;
         }
     }
-    if let Some(sas_token) = sas_token {
-        config.remove(sas_token_prefix);
+    if let Some((matched_key, sas_token)) = matched {
+        config.remove(&matched_key);
         config.insert("adls.sas-token".to_string(), sas_token);
     }
 
@@ -688,9 +686,11 @@ pub(super) fn get_file_io_from_table_config(
             DEFAULT_AUTHORITY_HOST.to_string(),
         );
     }
-    Ok(iceberg::io::FileIOBuilder::new("abfss")
-        .with_props(config)
-        .build()?)
+    iceberg::io::FileIOBuilder::new(Arc::new(
+        iceberg_storage_opendal::OpenDalStorageFactory::Azdls,
+    ))
+    .with_props(config)
+    .build()
 }
 
 impl TryFrom<AzCredential> for AzureAuth {

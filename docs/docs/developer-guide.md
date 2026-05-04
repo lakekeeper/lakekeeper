@@ -221,7 +221,7 @@ Some authorization unit tests need to be run against an OpenFGA server. They are
 
 ```bash
 # Start an OpenFGA server in a docker container
-docker rm --force openfga-client && docker run -d --name openfga-client -p 36080:8080 -p 36081:8081 -p 36300:3000 openfga/openfga:v1.8 run
+docker rm --force openfga-client && docker run -d --name openfga-client -p 36080:8080 -p 36081:8081 -p 36300:3000 openfga/openfga:v1.14 run
 
 # Set Lakekeeper's OpenFGA endpoint
 export LAKEKEEPER_TEST__OPENFGA__ENDPOINT="http://localhost:36081"

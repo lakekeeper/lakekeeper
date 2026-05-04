@@ -13,7 +13,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lakekeeper::{
     CONFIG,
     implementations::{CatalogState, postgres::PostgresBackend},
@@ -110,6 +110,71 @@ enum Commands {
     #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
+    /// OpenFGA authorizer maintenance operations.
+    Openfga {
+        #[command(subcommand)]
+        command: OpenfgaCommands,
+    },
+    /// Re-open the catalog so `/management/v1/bootstrap` can be called again.
+    ///
+    /// Operator-only recovery path used when switching authorizer backends
+    /// (for example `AllowAll` → `OpenFGA` on an already-bootstrapped
+    /// catalog) or when fixing a misconfigured first bootstrap. Flips the
+    /// `open_for_bootstrap` flag in Postgres back to `true`. Does not
+    /// touch the server-id, catalog data, or any existing OpenFGA tuples.
+    /// After running this, an authenticated principal must call
+    /// `/management/v1/bootstrap` to seed the initial admin/operator.
+    ReopenBootstrap {
+        #[clap(
+            long,
+            short = 'y',
+            default_value_t = false,
+            help = "Required confirmation. Without --yes the command refuses to run."
+        )]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum OpenfgaCommands {
+    /// Reconcile structural OpenFGA hierarchy tuples against the Postgres
+    /// catalog. Catalog is the source of truth: missing edges are added,
+    /// and (in `add-and-delete-drift` mode) drift is removed.
+    ///
+    /// Run during a low-traffic window — concurrent API writes can produce
+    /// transient inconsistencies that self-heal on the next run.
+    Reconcile {
+        #[clap(
+            long,
+            value_enum,
+            default_value_t = ReconcileModeArg::AddMissing,
+            help = "Reconcile semantics. `add-missing` is purely additive; `add-and-delete-drift` also removes structural tuples the catalog contradicts."
+        )]
+        mode: ReconcileModeArg,
+        #[clap(
+            long,
+            default_value_t = false,
+            help = "Compute and report the diff without writing to OpenFGA."
+        )]
+        dry_run: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ReconcileModeArg {
+    /// Add missing hierarchy edges, never delete.
+    AddMissing,
+    /// Add missing edges and delete drift (structural tuples the catalog contradicts).
+    AddAndDeleteDrift,
+}
+
+impl From<ReconcileModeArg> for lakekeeper_authz_openfga::ReconcileMode {
+    fn from(m: ReconcileModeArg) -> Self {
+        match m {
+            ReconcileModeArg::AddMissing => Self::AddMissingOnly,
+            ReconcileModeArg::AddAndDeleteDrift => Self::AddMissingAndDeleteDrift,
+        }
+    }
 }
 
 #[tokio::main]
@@ -161,6 +226,16 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Version {}) => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
+        Some(Commands::Openfga { command }) => match command {
+            OpenfgaCommands::Reconcile { mode, dry_run } => {
+                print_info();
+                openfga_reconcile(mode.into(), dry_run).await?;
+            }
+        },
+        Some(Commands::ReopenBootstrap { yes }) => {
+            print_info();
+            reopen_bootstrap(yes).await?;
+        }
         #[cfg(feature = "open-api")]
         Some(Commands::ManagementOpenapi {}) => {
             use lakekeeper::{
@@ -205,6 +280,115 @@ async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
         migrate().await?;
     }
     serve(force_start).await
+}
+
+async fn reopen_bootstrap(yes: bool) -> anyhow::Result<()> {
+    if !yes {
+        anyhow::bail!(
+            "reopen-bootstrap re-allows /management/v1/bootstrap to be called. \
+             Re-run with --yes to confirm."
+        );
+    }
+
+    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
+        CONFIG
+            .to_pool_opts()
+            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
+    )
+    .await?;
+    let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
+
+    let server_id =
+        <PostgresBackend as lakekeeper::service::CatalogStore>::reopen_for_bootstrap(catalog_state)
+            .await
+            .map_err(|e| anyhow::anyhow!("reopen-bootstrap failed: {e}"))?;
+    tracing::info!(
+        "Catalog re-opened for bootstrap (server_id={server_id}). \
+         Call POST /management/v1/bootstrap to seed admin/operator."
+    );
+    println!();
+    println!("Catalog re-opened for bootstrap.");
+    println!("  server_id: {server_id}");
+    println!("  next:      POST /management/v1/bootstrap (with an authenticated principal)");
+
+    Ok(())
+}
+
+async fn openfga_reconcile(
+    mode: lakekeeper_authz_openfga::ReconcileMode,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    if !lakekeeper_authz_openfga::CONFIG.is_openfga_enabled() {
+        anyhow::bail!(
+            "openfga reconcile requires LAKEKEEPER__AUTHZ_BACKEND=openfga; current backend is {:?}",
+            CONFIG.authz_backend
+        );
+    }
+
+    let read_pool = lakekeeper::implementations::postgres::get_reader_pool(
+        CONFIG
+            .to_pool_opts()
+            .max_connections(CONFIG.pg_read_pool_connections),
+    )
+    .await?;
+    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
+        CONFIG
+            .to_pool_opts()
+            .max_connections(CONFIG.pg_write_pool_connections),
+    )
+    .await?;
+    let catalog_state = CatalogState::from_pools(read_pool, write_pool);
+
+    let server_id = <PostgresBackend as lakekeeper::service::CatalogStore>::get_server_info(
+        catalog_state.clone(),
+    )
+    .await?
+    .server_id();
+
+    let authorizer =
+        lakekeeper_authz_openfga::new_authorizer_from_default_config(server_id).await?;
+
+    tracing::info!("openfga reconcile: starting (mode={mode:?}, dry_run={dry_run})");
+    let report = lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog(
+        catalog_state,
+        authorizer.client(),
+        server_id,
+        mode,
+        dry_run,
+    )
+    .await?;
+
+    let action = if report.dry_run { "would" } else { "did" };
+    println!();
+    println!(
+        "OpenFGA reconcile report ({})",
+        if report.dry_run { "dry run" } else { "applied" }
+    );
+    println!("  mode: {mode:?}");
+    println!(
+        "  {action} submit {} tuple(s) in {} request(s)",
+        report.tuples_submitted, report.write_requests
+    );
+    println!(
+        "  {action} delete {} tuple(s) in {} request(s)",
+        report.tuples_deleted, report.delete_requests
+    );
+    println!(
+        "  ignored (unmanaged relation/type): {}",
+        report.tuples_ignored_unmanaged
+    );
+    println!(
+        "  ignored (both endpoints unknown):  {}",
+        report.tuples_ignored_orphan
+    );
+    if !report.per_type.is_empty() {
+        println!("  per-type submitted:");
+        for (ty, n) in &report.per_type {
+            println!("    {ty:<10} {n}");
+        }
+    }
+
+    Ok(())
 }
 
 async fn migrate() -> anyhow::Result<()> {
