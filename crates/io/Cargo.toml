@@ -27,6 +27,7 @@ storage-s3 = [
     "dep:aws-credential-types",
     "dep:aws-smithy-async",
     "dep:aws-smithy-http-client",
+    "dep:iceberg",
     "dep:webpki-root-certs",
 ]
 storage-adls = [
@@ -35,16 +36,18 @@ storage-adls = [
     "dep:azure_identity",
     "dep:azure_storage",
     "dep:azure_storage_datalake",
+    "dep:iceberg",
     "dep:moka",
     "dep:time",
 ]
 storage-gcs = [
     "dep:google-cloud-storage",
+    "dep:iceberg",
     "dep:reqwest-middleware",
     "dep:reqwest-retry",
     "dep:google-cloud-auth",
 ]
-storage-in-memory = []
+storage-in-memory = ["dep:iceberg"]
 default = ["storage-s3", "storage-adls", "storage-gcs"]
 
 [dependencies]
@@ -71,7 +74,7 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
-iceberg = { workspace = true }
+iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 reqwest = { workspace = true }

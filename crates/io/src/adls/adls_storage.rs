@@ -300,12 +300,23 @@ impl LakekeeperStorage for AdlsStorage {
 
         let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
 
+        if file_size == 0 {
+            return Ok(Bytes::new());
+        }
+
         if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
             return self.read_single(path).await;
         }
 
-        chunked_read_with_integrity(&client, path, 0, file_size, head_response.last_modified).await
+        parallel_chunked_read_with_integrity(
+            &client,
+            path,
+            0,
+            file_size,
+            head_response.last_modified,
+        )
+        .await
     }
 
     async fn read_range(
@@ -340,13 +351,17 @@ impl LakekeeperStorage for AdlsStorage {
             ))
         })?;
 
+        if range_size == 0 {
+            return Ok(Bytes::new());
+        }
+
         if range_size <= MAX_BYTES_PER_REQUEST {
             let response = fetch_range(&client, range).await?;
             return Ok(response.data);
         }
 
         let head_response = head(&client, &adls_location).await?;
-        chunked_read_with_integrity(
+        parallel_chunked_read_with_integrity(
             &client,
             path,
             range.start,
@@ -479,13 +494,16 @@ async fn fetch_range(
 /// and verify each chunk's `last_modified` against `head_last_modified`. A
 /// mismatch is surfaced as an error so concurrent overwrites cannot
 /// silently produce a corrupt download.
-async fn chunked_read_with_integrity(
+async fn parallel_chunked_read_with_integrity(
     client: &FileClient,
     error_context: &str,
     range_start: u64,
     range_size: usize,
     head_last_modified: time::OffsetDateTime,
 ) -> Result<Bytes, ReadError> {
+    if range_size == 0 {
+        return Ok(Bytes::new());
+    }
     let client = client.clone();
     crate::parallel_chunked_read(
         range_size,

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, ops::Range, str::FromStr};
 
 use aws_sdk_s3::{
     operation::head_object::HeadObjectOutput,
@@ -164,21 +164,19 @@ impl LakekeeperStorage for S3Storage {
         let content_length = head_response.content_length().unwrap_or(0);
         let file_size = validate_file_size(content_length, path)?;
 
+        if file_size == 0 {
+            return Ok(Bytes::new());
+        }
+
         if file_size < MAX_BYTES_PER_REQUEST {
             return self.read_single(path).await;
         }
 
-        // Delegate the chunked-download wiring to `read_range`; passing the
-        // full file as a range yields identical behaviour without repeating
-        // the closure that drives the parallel chunk fetches.
-        self.read_range(path, 0..file_size as u64).await
+        parallel_chunked_read(&self.client, &s3_location, 0, file_size).await
     }
 
-    async fn read_range(
-        &self,
-        path: &str,
-        range: std::ops::Range<u64>,
-    ) -> Result<Bytes, ReadError> {
+    async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
+        let s3_location = S3Location::try_from_str(path, true)?;
         if range.end < range.start {
             return Err(ReadError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
@@ -186,54 +184,31 @@ impl LakekeeperStorage for S3Storage {
                     "Invalid range: start ({}) > end ({})",
                     range.start, range.end
                 ),
-                path.to_string(),
+                s3_location.to_string(),
             )));
         }
         if range.is_empty() {
             return Ok(Bytes::new());
         }
 
-        let s3_location = S3Location::try_from_str(path, true)?;
         let range_size_u64 = range.end - range.start;
         let range_size = usize::try_from(range_size_u64).map_err(|_| {
             ReadError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
                 format!("Range size {range_size_u64} too large for this platform"),
-                path.to_string(),
+                s3_location.to_string(),
             ))
         })?;
+
+        if range_size == 0 {
+            return Ok(Bytes::new());
+        }
 
         if range_size <= MAX_BYTES_PER_REQUEST {
             return fetch_range(&self.client, &s3_location, range).await;
         }
 
-        let client = self.client.clone();
-        let location_for_chunks = s3_location.clone();
-        let range_start = range.start;
-        crate::parallel_chunked_read(
-            range_size,
-            DEFAULT_BYTES_PER_REQUEST,
-            10,
-            path,
-            move |rel_start, rel_end, chunk_index| {
-                let client = client.clone();
-                let location = location_for_chunks.clone();
-                let abs_start = range_start + rel_start as u64;
-                let abs_end = range_start + rel_end as u64 + 1;
-                async move {
-                    let chunk = fetch_range(&client, &location, abs_start..abs_end)
-                        .await
-                        .map_err(|e| match e {
-                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                            ))),
-                            other @ ReadError::InvalidLocation(_) => other,
-                        })?;
-                    Ok((chunk_index, chunk))
-                }
-            },
-        )
-            .await
+        parallel_chunked_read(&self.client, &s3_location, range.start, range_size).await
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -417,6 +392,48 @@ fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Ut
     DateTime::from_timestamp(timestamp.secs(), timestamp.subsec_nanos())
 }
 
+/// Run a parallel-chunked download over `[range_start, range_start + range_size)`.
+/// In contrast to ADLS, this does not check for integrity via `e_tag` or `version_id`,
+/// because this would be a change from previous behaviour.
+async fn parallel_chunked_read(
+    client: &aws_sdk_s3::Client,
+    s3_location: &S3Location,
+    range_start: u64,
+    range_size: usize,
+) -> Result<Bytes, ReadError> {
+    if range_size == 0 {
+        return Ok(Bytes::new());
+    }
+
+    let client = client.clone();
+    let location_for_chunks = s3_location.clone();
+
+    //
+    crate::parallel_chunked_read(
+        range_size,
+        DEFAULT_BYTES_PER_REQUEST,
+        10,
+        s3_location.as_str(),
+        move |rel_start, rel_end, chunk_index| {
+            let client = client.clone();
+            let location = location_for_chunks.clone();
+            let abs_start = range_start + rel_start as u64;
+            let abs_end = range_start + rel_end as u64 + 1;
+            async move {
+                let chunk = fetch_range(&client, &location, abs_start..abs_end)
+                    .await
+                    .map_err(|e| match e {
+                        ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                            "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                        ))),
+                        other @ ReadError::InvalidLocation(_) => other,
+                    })?;
+                Ok((chunk_index, chunk))
+            }
+        },
+    )
+    .await
+}
 /// Upload a small object in a single PUT request.
 async fn put_object_single(
     client: &aws_sdk_s3::Client,
@@ -585,6 +602,8 @@ enum S3WriterState {
         buffer: bytes::BytesMut,
     },
     Closed,
+    Aborted,
+    AbortFailed,
 }
 
 #[async_trait::async_trait]
@@ -595,7 +614,21 @@ impl LakekeeperFileWrite for S3FileWrite {
                 return Err(WriteError::IOError(IOError::new(
                     ErrorKind::ConditionNotMatch,
                     "Cannot write to closed writer",
-                    self.location.as_str().to_string(),
+                    self.location.to_string(),
+                )));
+            }
+            S3WriterState::Aborted => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannor write to writer which was previously aborted due to an error",
+                    self.location.to_string(),
+                )));
+            }
+            S3WriterState::AbortFailed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to writer which was previously attempted to be aborted due to an error",
+                    self.location.to_string(),
                 )));
             }
             S3WriterState::Buffering(buffer) => {
@@ -623,14 +656,21 @@ impl LakekeeperFileWrite for S3FileWrite {
         Ok(())
     }
 
+    /// Closes the streaming write to S3.
+    ///
+    /// If an error occured during closing, subsequent calls will only
+    /// return generic error. Callers need to inspect `write` errors
+    /// or first `close` error, if required.
     async fn close(&mut self) -> Result<(), WriteError> {
         let state = std::mem::replace(&mut self.state, S3WriterState::Closed);
         match state {
-            S3WriterState::Closed => Err(WriteError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                "Writer already closed",
-                self.location.as_str().to_string(),
-            ))),
+            S3WriterState::Closed | S3WriterState::Aborted | S3WriterState::AbortFailed => {
+                Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Writer already closed or aborted",
+                    self.location.to_string(),
+                )))
+            }
             S3WriterState::Buffering(buffer) => {
                 put_object_single(
                     &self.client,
@@ -642,7 +682,7 @@ impl LakekeeperFileWrite for S3FileWrite {
             }
             S3WriterState::Multipart {
                 upload_id,
-                mut next_part_number,
+                next_part_number,
                 mut completed_parts,
                 buffer,
             } => {
@@ -657,15 +697,25 @@ impl LakekeeperFileWrite for S3FileWrite {
                     .await
                     {
                         Ok(part) => part,
-                        Err(e) => {
-                            let _ = abort_multipart(&self.client, &self.location, &upload_id).await;
-                            return Err(e);
+                        Err(upload_error) => {
+                            if let Err(abort_error) =
+                                abort_multipart(&self.client, &self.location, &upload_id).await
+                            {
+                                let _ =
+                                    std::mem::replace(&mut self.state, S3WriterState::AbortFailed);
+                                return Err(abort_error);
+                            }
+                            let _ = std::mem::replace(&mut self.state, S3WriterState::Aborted);
+                            return Err(upload_error);
                         }
                     };
+                    // Note: no need to increase next_part_number here,
+                    // because state is dropped after when `close` finisehes
+                    // and we can no longer reach the `Multipart` state.
+                    // We still need to record `completed_parts` to finish
+                    // the the multipart upload.
                     completed_parts.push(part);
-                    next_part_number += 1;
                 }
-                let _ = next_part_number; // currently unused after final flush
                 if let Err(e) =
                     complete_multipart(&self.client, &self.location, &upload_id, completed_parts)
                         .await
@@ -711,11 +761,16 @@ impl S3FileWrite {
                     completed_parts.push(part);
                     *next_part_number += 1;
                 }
-                Err(e) => {
+                Err(upload_error) => {
                     let upload_id = upload_id.clone();
-                    let _ = abort_multipart(&self.client, &self.location, &upload_id).await;
-                    self.state = S3WriterState::Closed;
-                    return Err(e);
+                    if let Err(abort_error) =
+                        abort_multipart(&self.client, &self.location, &upload_id).await
+                    {
+                        self.state = S3WriterState::AbortFailed;
+                        return Err(abort_error);
+                    }
+                    self.state = S3WriterState::Aborted;
+                    return Err(upload_error);
                 }
             }
         }

@@ -12,7 +12,7 @@ impl From<ReadError> for iceberg::Error {
     fn from(value: ReadError) -> Self {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
-            format!("Read error {value}"),
+            format!("Read error: {value}"),
         )
         .with_source(value)
     }
@@ -21,7 +21,7 @@ impl From<WriteError> for iceberg::Error {
     fn from(value: WriteError) -> Self {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
-            format!("Write error {value}"),
+            format!("Write error: {value}"),
         )
         .with_source(value)
     }
@@ -31,7 +31,7 @@ impl From<DeleteError> for iceberg::Error {
     fn from(value: DeleteError) -> Self {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
-            format!("Delete error {value}"),
+            format!("Delete error: {value}"),
         )
         .with_source(value)
     }
@@ -41,7 +41,7 @@ impl From<DeleteBatchError> for iceberg::Error {
     fn from(value: DeleteBatchError) -> Self {
         iceberg::Error::new(
             iceberg::ErrorKind::Unexpected,
-            format!("Delete stream error {value}"),
+            format!("Delete stream error: {value}"),
         )
         .with_source(value)
     }
@@ -125,11 +125,14 @@ impl Storage for IcebergStorageBridge {
     }
 
     async fn delete_stream(&self, paths: BoxStream<'static, String>) -> iceberg::Result<()> {
-        let paths = paths.collect::<Vec<_>>().await;
-        self.lakekeeper_io
-            .delete_batch(&paths)
-            .await
-            .map_err(Into::into)
+        let mut paths = paths.chunks(1000);
+        while let Some(chunk) = paths.next().await {
+            self.lakekeeper_io
+                .delete_batch(&chunk)
+                .await
+                .map_err(Into::<iceberg::Error>::into)?;
+        }
+        Ok(())
     }
 
     fn new_input(&self, path: &str) -> iceberg::Result<iceberg::io::InputFile> {
@@ -231,7 +234,7 @@ impl Serialize for IcebergStorageBridgeFactory {
 impl<'de> Deserialize<'de> for IcebergStorageBridgeFactory {
     fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         Err(serde::de::Error::custom(
-            "LakekeeperIoIcebergBrideStorageFactory cannot be deserialized",
+            "IcebergStorageBridgeFactory cannot be deserialized",
         ))
     }
 }
