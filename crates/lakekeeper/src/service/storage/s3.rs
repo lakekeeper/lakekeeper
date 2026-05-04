@@ -1223,7 +1223,17 @@ pub(super) async fn lakekeeper_io_from_vended_table_config(
                 external_id: None,
             }))
         }
-        _ => None,
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(CredentialsError::MissingCredential(
+                "Vended S3 credentials missing s3.secret-access-key".to_string(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(CredentialsError::MissingCredential(
+                "Vended S3 credentials missing s3.access-key-id".to_string(),
+            ));
+        }
     };
 
     let settings = S3Settings::builder()
