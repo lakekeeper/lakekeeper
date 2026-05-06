@@ -16,13 +16,12 @@ use futures::StreamExt as _;
 use tokio;
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
-    Location, ReadError, WriteError,
+    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperFileWrite,
+    LakekeeperStorage, Location, ReadError, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
     delete_not_found_is_ok,
     error::ErrorKind,
     execute_with_parallelism,
-    iceberg_bridge::LakekeeperFileWrite,
     safe_usize_to_i64, validate_file_size,
 };
 

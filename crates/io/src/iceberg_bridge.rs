@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::StreamExt;
 use iceberg::io::{FileMetadata, Storage, StorageConfig, StorageFactory};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{BoxStream, DeleteBatchError, DeleteError, LakekeeperStorage, ReadError, WriteError};
+use crate::{
+    BoxStream, DeleteBatchError, DeleteError, LakekeeperFileWrite, LakekeeperStorage, ReadError,
+    WriteError,
+};
 
 impl From<ReadError> for iceberg::Error {
     fn from(value: ReadError) -> Self {
@@ -164,28 +166,6 @@ impl iceberg::io::FileRead for IcebergFileRead {
             .await
             .map_err(Into::into)
     }
-}
-
-/// Streaming file writer.
-///
-/// This trait exists solely to satisfy the iceberg-rust
-/// `iceberg::io::FileWrite` contract via `IcebergFileWrite`; it is not a
-/// general-purpose internal API.
-///
-/// **Closing is mandatory.** Dropping a writer without first calling
-/// `close` may leave incomplete multipart or resumable uploads on the
-/// backend. These linger until a server-side lifecycle policy reaps them
-/// (and may incur storage charges for parts in the meantime). Currently
-/// there is no stable `AsyncDrop`.
-#[async_trait::async_trait]
-pub trait LakekeeperFileWrite: std::fmt::Debug + Send + Sync + 'static {
-    /// Append bytes to the file. Implementations may buffer locally and
-    /// only contact the backend once an internal threshold is reached.
-    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError>;
-
-    /// Finalise the file. Calling `close` on an already-closed writer
-    /// returns an error.
-    async fn close(&mut self) -> Result<(), WriteError>;
 }
 
 #[derive(Debug)]

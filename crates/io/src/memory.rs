@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
-    Location, ReadError, WriteError, error::ErrorKind, iceberg_bridge::LakekeeperFileWrite,
+    LakekeeperFileWrite, Location, ReadError, WriteError, error::ErrorKind,
 };
 
 type MemoryFile = (Bytes, DateTime<Utc>);

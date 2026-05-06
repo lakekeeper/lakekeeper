@@ -24,10 +24,9 @@ use tokio;
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperStorage, Location, ReadError, WriteError, delete_not_found_is_ok,
-    execute_with_parallelism,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
+    delete_not_found_is_ok, execute_with_parallelism,
     gcs::{GcsLocation, gcs_error::parse_error},
-    iceberg_bridge::LakekeeperFileWrite,
     safe_usize_to_i32, safe_usize_to_i64, validate_file_size,
 };
 

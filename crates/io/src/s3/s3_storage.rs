@@ -9,11 +9,10 @@ use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream};
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, LakekeeperStorage, Location, ReadError,
-    WriteError,
+    DeleteBatchError, DeleteError, FileInfo, IOError, LakekeeperFileWrite, LakekeeperStorage,
+    Location, ReadError, WriteError,
     error::{ErrorKind, InvalidLocationError, RetryableError},
     execute_with_parallelism,
-    iceberg_bridge::LakekeeperFileWrite,
     s3::{
         S3Location,
         s3_error::{

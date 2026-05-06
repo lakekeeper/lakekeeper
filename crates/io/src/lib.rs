@@ -197,6 +197,30 @@ impl FileInfo {
     }
 }
 
+/// Streaming file writer.
+///
+/// **Closing is mandatory.** Dropping a writer without first calling
+/// `close` may leave incomplete multipart or resumable uploads on the
+/// backend. These linger until a server-side lifecycle policy reaps them
+/// (and may incur storage charges for parts in the meantime). Currently
+/// there is no stable `AsyncDrop`.
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-in-memory",
+    feature = "storage-s3"
+))]
+#[async_trait::async_trait]
+pub trait LakekeeperFileWrite: std::fmt::Debug + Send + Sync + 'static {
+    /// Append bytes to the file. Implementations may buffer locally and
+    /// only contact the backend once an internal threshold is reached.
+    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError>;
+
+    /// Finalise the file. Calling `close` on an already-closed writer
+    /// returns an error.
+    async fn close(&mut self) -> Result<(), WriteError>;
+}
+
 #[async_trait::async_trait]
 pub trait LakekeeperStorage
 where
@@ -237,7 +261,7 @@ where
     async fn writer(
         &self,
         path: &str,
-    ) -> Result<Box<dyn crate::iceberg_bridge::LakekeeperFileWrite>, WriteError>;
+    ) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError>;
 
     /// Read a file from the specified path, possibly in chunks
     ///
@@ -372,7 +396,7 @@ impl LakekeeperStorage for StorageBackend {
     async fn writer(
         &self,
         path: &str,
-    ) -> Result<Box<dyn crate::iceberg_bridge::LakekeeperFileWrite>, WriteError> {
+    ) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.writer(path).await,
@@ -515,7 +539,7 @@ macro_rules! impl_lakekeeper_storage_delegating {
                 async fn writer(
                     &self,
                     path: &str,
-                ) -> Result<Box<dyn $crate::iceberg_bridge::LakekeeperFileWrite>, WriteError> {
+                ) -> Result<Box<dyn $crate::LakekeeperFileWrite>, WriteError> {
                     (**self).writer(path).await
                 }
 
