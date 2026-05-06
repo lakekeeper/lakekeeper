@@ -624,6 +624,8 @@ enum GcsWriterState {
         buffer: BytesMut,
     },
     Closed,
+    Aborted,
+    AbortFailed,
 }
 
 impl std::fmt::Debug for GcsWriterState {
@@ -639,6 +641,8 @@ impl std::fmt::Debug for GcsWriterState {
                 .field("buffered_bytes", &buffer.len())
                 .finish(),
             GcsWriterState::Closed => f.write_str("Closed"),
+            GcsWriterState::Aborted => f.write_str("Aborted"),
+            GcsWriterState::AbortFailed => f.write_str("AbortFailed"),
         }
     }
 }
@@ -651,6 +655,20 @@ impl LakekeeperFileWrite for GcsFileWrite {
                 return Err(WriteError::IOError(IOError::new(
                     ErrorKind::ConditionNotMatch,
                     "Cannot write to closed writer",
+                    self.location.to_string(),
+                )));
+            }
+            GcsWriterState::Aborted => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to aborted writer",
+                    self.location.to_string(),
+                )));
+            }
+            GcsWriterState::AbortFailed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to writer that failed to abort",
                     self.location.to_string(),
                 )));
             }
@@ -679,11 +697,13 @@ impl LakekeeperFileWrite for GcsFileWrite {
     async fn close(&mut self) -> Result<(), WriteError> {
         let state = std::mem::replace(&mut self.state, GcsWriterState::Closed);
         match state {
-            GcsWriterState::Closed => Err(WriteError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                "Writer already closed",
-                self.location.to_string(),
-            ))),
+            GcsWriterState::Closed | GcsWriterState::Aborted | GcsWriterState::AbortFailed => {
+                Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Writer already closed or aborted",
+                    self.location.to_string(),
+                )))
+            }
             GcsWriterState::Buffering(buffer) => {
                 upload_simple(&self.client, &self.location, buffer.freeze()).await
             }
@@ -733,5 +753,43 @@ impl GcsFileWrite {
             upload_chunk(upload_client, &self.location, chunk_offset, chunk, None).await?;
         }
         Ok(())
+    }
+}
+
+impl Drop for GcsFileWrite {
+    fn drop(&mut self) {
+        let state = std::mem::replace(&mut self.state, GcsWriterState::Aborted);
+        let GcsWriterState::Resumable { upload_client, .. } = state else {
+            // Buffering: nothing on GCS yet.
+            // Closed / Aborted / AbortFailed: terminal states, no action.
+            return;
+        };
+
+        // `Handle::current()` panics when called
+        // outside a tokio runtime (runtime already shut down) or
+        // race with shutdown
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.state = GcsWriterState::AbortFailed;
+            tracing::warn!(
+                location = %self.location,
+                "GcsFileWrite dropeed without closing outside runtime, upload session cannot be canceled. Incomplete file may exist in target location."
+            );
+            return;
+        };
+
+        // Once stable `std::future::AsyncDrop`
+        // (https://doc.rust-lang.org/std/future/trait.AsyncDrop.html —
+        // currently nightly-only and experimental) exists, we can change this
+        // to `.cancel().await` without `spawn`
+        let location = self.location.to_string();
+        handle.spawn(async move {
+            if let Err(e) = upload_client.cancel().await {
+                tracing::warn!(
+                    %location,
+                    error = ?e,
+                    "GcsFileWrite dropeed without closing and canceling upload session failed. Incomplete file may exist in target location."
+                );
+            }
+        });
     }
 }

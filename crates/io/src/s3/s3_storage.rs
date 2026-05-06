@@ -810,6 +810,45 @@ impl S3FileWrite {
     }
 }
 
+impl Drop for S3FileWrite {
+    fn drop(&mut self) {
+        let state = std::mem::replace(&mut self.state, S3WriterState::Aborted);
+        let S3WriterState::Multipart { upload_id, .. } = state else {
+            // Buffering: nothing on S3 yet.
+            // Closed / Aborted / AbortFailed: terminal states, no action.
+            return;
+        };
+
+        //`Handle::current()` panics when called
+        // outside a tokio runtime (runtime already shut down) or
+        // race with shutdown
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.state = S3WriterState::AbortFailed;
+            tracing::warn!(
+                location = %self.location,
+                "S3FileWrite dropeed without closing outside runtime, cannot abort multipart upload. Incomplete file may exist in target location."
+            );
+            return;
+        };
+
+        // Once stable `std::future::AsyncDrop`
+        // (https://doc.rust-lang.org/std/future/trait.AsyncDrop.html —
+        // currently nightly-only and experimental) exists, we can change this
+        // to `.abort_multipart(...).await` without `spawn`
+        let client = self.client.clone();
+        let location = self.location.clone();
+        handle.spawn(async move {
+            if let Err(e) = abort_multipart(&client, &location, &upload_id).await {
+                tracing::warn!(
+                    location = %location,
+                    error = ?e,
+                    "S3FileWrite dropped without closing and abort multipart upload failed. Incopmplete file may exist in target location."
+                );
+            }
+        });
+    }
+}
+
 /// Groups paths by S3 bucket and ensures uniqueness of keys per bucket.
 /// Returns a map from bucket name to a map of S3 key to original path.
 ///

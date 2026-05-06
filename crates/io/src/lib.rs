@@ -199,11 +199,11 @@ impl FileInfo {
 
 /// Streaming file writer.
 ///
-/// **Closing is mandatory.** Dropping a writer without first calling
-/// `close` may leave incomplete multipart or resumable uploads on the
-/// backend. These linger until a server-side lifecycle policy reaps them
-/// (and may incur storage charges for parts in the meantime). Currently
-/// there is no stable `AsyncDrop`.
+/// Always call `close().await` for deterministic finalization and cleanup.
+///
+/// Implementations may provide `Drop`, but this should be considered
+/// a best-effort cancel/abort of upload, not `close` (finalization) of upload.
+/// Note that `Drop` may fail in a shutdown race situation with Tokio Runtime.
 #[cfg(any(
     feature = "storage-adls",
     feature = "storage-gcs",
@@ -258,10 +258,7 @@ where
         feature = "storage-in-memory",
         feature = "storage-s3"
     ))]
-    async fn writer(
-        &self,
-        path: &str,
-    ) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError>;
+    async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError>;
 
     /// Read a file from the specified path, possibly in chunks
     ///
@@ -393,10 +390,7 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
-    async fn writer(
-        &self,
-        path: &str,
-    ) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
+    async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
         match self {
             #[cfg(feature = "storage-s3")]
             StorageBackend::S3(s3_storage) => s3_storage.writer(path).await,
