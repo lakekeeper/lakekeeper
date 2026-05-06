@@ -247,17 +247,12 @@ mod tests {
     #[test]
     fn validate_safe_for_cel_single_quoted_accepts_plain_value() {
         validate_safe_for_cel_single_quoted("foo/bar").unwrap();
-        // Multibyte UTF-8 and double quotes are fine inside a single-quoted
-        // CEL literal — they have no special meaning.
         validate_safe_for_cel_single_quoted("foo/bar/üñîçødé").unwrap();
         validate_safe_for_cel_single_quoted(r#"foo"bar"#).unwrap();
     }
 
     #[test]
     fn validate_safe_for_cel_single_quoted_rejects_single_quote() {
-        // Injection payload: `') || true || resource.name.startsWith('`. Must
-        // be rejected, otherwise the closing `'` would terminate the literal
-        // and let the rest be parsed as CEL syntax.
         let err = validate_safe_for_cel_single_quoted("') || true || resource.name.startsWith('")
             .expect_err("single quote must be rejected");
         assert!(matches!(err, TableConfigError::Internal(_, _)));
@@ -265,9 +260,6 @@ mod tests {
 
     #[test]
     fn validate_safe_for_cel_single_quoted_rejects_backslash() {
-        // Backslash starts an escape sequence in non-raw CEL strings (e.g.
-        // `\'` would be a literal `'`, defeating the closing-delimiter
-        // check). Must be rejected.
         let err = validate_safe_for_cel_single_quoted(r"foo\bar")
             .expect_err("backslash must be rejected");
         assert!(matches!(err, TableConfigError::Internal(_, _)));
@@ -281,8 +273,6 @@ mod tests {
 
     #[test]
     fn options_neutralizes_cel_injection_in_path() {
-        // End-to-end: the constructed CEL expression must not be twistable
-        // into evaluating to `true` by an injection attempt in the path.
         let bucket = "my-bucket";
         let location: Location = "gs://my-bucket/wh/safe-prefix/".parse().unwrap();
         let opts =
@@ -293,31 +283,17 @@ mod tests {
             .as_ref()
             .unwrap()
             .expression;
-        // GCP's CEL subset doesn't accept raw-string literals or string
-        // concat; safety comes from `validate_safe_for_cel_single_quoted`
-        // having rejected anything that could escape the surrounding `'...'`.
-        // The expression should embed bucket/path inline as plain literals.
         assert!(
             expr.contains("/buckets/my-bucket/objects/wh/safe-prefix/"),
             "expected inline path literal in expression, got: {expr}"
         );
-        // And it must not regress to using the rejected raw-string / concat
-        // forms.
-        assert!(
-            !expr.contains("r'"),
-            "expression must not use raw-string literals (rejected by GCP), got: {expr}"
-        );
-        assert!(
-            !expr.contains(" + "),
-            "expression must not use string concat (rejected by GCP), got: {expr}"
-        );
+        // Guard against regressing to forms GCP rejects.
+        assert!(!expr.contains("r'"), "raw-string literal in: {expr}");
+        assert!(!expr.contains(" + "), "string concat in: {expr}");
     }
 
     #[test]
     fn options_rejects_cel_injection_payload_in_path() {
-        // A table location whose path contains `'` must cause credential
-        // construction to fail outright rather than producing a smuggled CEL
-        // expression.
         let bucket = "my-bucket";
         let location: Location = "gs://my-bucket/x'/data/"
             .parse()
