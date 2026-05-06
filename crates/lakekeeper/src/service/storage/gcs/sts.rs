@@ -320,8 +320,11 @@ mod tests {
     #[test]
     fn options_rejects_cross_bucket_table_location() {
         let location: Location = "gs://other-bucket/data/".parse().unwrap();
-        let result =
-            Options::from_location_and_permissions("my-bucket", &location, StoragePermissions::Read);
+        let result = Options::from_location_and_permissions(
+            "my-bucket",
+            &location,
+            StoragePermissions::Read,
+        );
         let Err(err) = result else {
             panic!("cross-bucket location must be rejected");
         };
