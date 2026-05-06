@@ -223,6 +223,7 @@ enum S3ErrorCode {
     KMSNotFoundException,
     NoSuchBucket,
     NoSuchKey,
+    PreconditionFailed,
     #[strum(serialize = "503 SlowDown")]
     SlowDown503,
     TokenRefreshRequired,
@@ -244,6 +245,7 @@ impl S3ErrorCode {
             | S3ErrorCode::KMSDisabledException
             | S3ErrorCode::KMSNotFoundException => ErrorKind::ConfigInvalid,
             S3ErrorCode::NoSuchBucket | S3ErrorCode::NoSuchKey => ErrorKind::NotFound,
+            S3ErrorCode::PreconditionFailed => ErrorKind::ConditionNotMatch,
             S3ErrorCode::TokenRefreshRequired => ErrorKind::CredentialsExpired,
             S3ErrorCode::RequestTimeout => ErrorKind::RequestTimeout,
             S3ErrorCode::ServiceUnavailable => ErrorKind::ServiceUnavailable,

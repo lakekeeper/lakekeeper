@@ -168,10 +168,11 @@ impl LakekeeperStorage for S3Storage {
 
         if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
-            return fetch_range(&self.client, &s3_location, 0..file_size as u64).await;
+            return fetch_range(&self.client, &s3_location, 0..file_size as u64, None).await;
         }
 
-        parallel_chunked_read(&self.client, &s3_location, 0, file_size).await
+        let etag = head_response.e_tag().map(ToString::to_string);
+        parallel_chunked_read(&self.client, &s3_location, 0, file_size, etag).await
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, ReadError> {
@@ -200,10 +201,12 @@ impl LakekeeperStorage for S3Storage {
         })?;
 
         if range_size <= MAX_BYTES_PER_REQUEST {
-            return fetch_range(&self.client, &s3_location, range).await;
+            return fetch_range(&self.client, &s3_location, range, None).await;
         }
 
-        parallel_chunked_read(&self.client, &s3_location, range.start, range_size).await
+        let head_response = head(&self.client, &s3_location).await?;
+        let etag = head_response.e_tag().map(ToString::to_string);
+        parallel_chunked_read(&self.client, &s3_location, range.start, range_size, etag).await
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
@@ -349,13 +352,18 @@ async fn fetch_range(
     client: &aws_sdk_s3::Client,
     location: &S3Location,
     range: std::ops::Range<u64>,
+    if_match: Option<&str>,
 ) -> Result<Bytes, ReadError> {
-    let response = client
+    let mut request = client
         .get_object()
         .bucket(location.bucket_name())
         .key(s3_key_to_str(&location.key()))
         // range header for s3 client is inclusive
-        .range(format!("bytes={}-{}", range.start, range.end - 1))
+        .range(format!("bytes={}-{}", range.start, range.end - 1));
+    if let Some(etag) = if_match {
+        request = request.if_match(etag);
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| parse_get_object_error(e, location))?;
@@ -389,13 +397,15 @@ fn parse_timestamp(timestamp: &aws_smithy_types::DateTime) -> Option<DateTime<Ut
 }
 
 /// Run a parallel-chunked download over `[range_start, range_start + range_size)`.
-/// In contrast to ADLS, this does not check for integrity via `e_tag` or `version_id`,
-/// because this would be a change from previous behaviour.
+///
+/// Each chunk fetch sets `If-Match: <etag>` if present. If etag is set and
+/// file is overwritten while download in flight, a `ReadError` is returned.
 async fn parallel_chunked_read(
     client: &aws_sdk_s3::Client,
     s3_location: &S3Location,
     range_start: u64,
     range_size: usize,
+    if_match: Option<String>,
 ) -> Result<Bytes, ReadError> {
     if range_size == 0 {
         return Ok(Bytes::new());
@@ -412,19 +422,23 @@ async fn parallel_chunked_read(
         move |rel_start, rel_end, chunk_index| {
             let client = client.clone();
             let location = location_for_chunks.clone();
+            let if_match = if_match.clone();
             let abs_start = range_start + rel_start as u64;
             let abs_end = range_start + rel_end as u64 + 1;
             async move {
-                let chunk = fetch_range(&client, &location, abs_start..abs_end)
-                    .await
-                    .map_err(|e| match e {
+                let chunk =
+                    fetch_range(&client, &location, abs_start..abs_end, if_match.as_deref())
+                        .await
+                        .map_err(|e| {
+                            match e {
                         ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
                             "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
                         ))),
                         invalid_location_error @ ReadError::InvalidLocation(_) => {
                             invalid_location_error
                         }
-                    })?;
+                    }
+                        })?;
                 Ok((chunk_index, chunk))
             }
         },
