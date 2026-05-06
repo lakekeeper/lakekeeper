@@ -23,7 +23,7 @@ pub(crate) async fn downscope(
             bucket,
             &stc_request.table_location,
             stc_request.storage_permissions,
-        ),
+        )?,
     )?;
 
     let response = HTTP_CLIENT
@@ -117,13 +117,19 @@ impl Options {
         bucket: &str,
         table_location: &Location,
         storage_permissions: StoragePermissions,
-    ) -> Self {
+    ) -> Result<Self, TableConfigError> {
         let mut table_location = table_location.clone();
         table_location.with_trailing_slash();
         let prefixless_location = table_location
             .as_str()
             .replace(&format!("gs://{bucket}/"), "");
-        Options {
+
+        // The bucket is admin-set and validated to `[a-z0-9.\-_]`, but wrap
+        // it as a raw literal anyway as defense in depth.
+        let bucket_cel = cel_raw_single_quoted(bucket)?;
+        let path_cel = cel_raw_single_quoted(&prefixless_location)?;
+
+        Ok(Options {
             access_boundary: AccessBoundary {
                 access_boundary_rules: vec![AccessBoundaryRule {
                     available_resource: format!(
@@ -143,15 +149,60 @@ impl Options {
                     },
                     availability_condition: AvailabilityCondition {
                         title: "obj-prefixes".to_string(),
-                        // need the getAttribute to allow Listing operations
+                        // need the getAttribute to allow Listing operations.
+                        // `bucket_cel` and `path_cel` are complete raw string
+                        // literals (`r'...'`) so they're embedded without
+                        // surrounding quotes. CEL string-concat (`+`) builds
+                        // the prefix; this avoids re-quoting and makes the
+                        // injection-resistance obvious from the format string.
                         expression: format!(
-                            "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefixless_location}') || resource.name.startsWith('projects/_/buckets/{bucket}/folders/{prefixless_location}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefixless_location}')",
+                            "resource.name.startsWith('projects/_/buckets/' + {bucket_cel} + '/objects/' + {path_cel}) || resource.name.startsWith('projects/_/buckets/' + {bucket_cel} + '/folders/' + {path_cel}) || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith({path_cel})",
                         ),
                     }.into(),
                 }],
             },
+        })
+    }
+}
+
+/// Wrap `value` as a CEL raw single-quoted string literal: `r'...'`.
+///
+/// Returns the complete literal *including* the `r'` prefix and `'` suffix, so
+/// the caller embeds it without adding their own quotes.
+///
+/// CEL raw strings do not interpret escape sequences ([CEL spec §
+/// String literals](https://github.com/google/cel-spec/blob/master/doc/langdef.md)),
+/// which collapses the escaping problem to "what character can close the
+/// literal." For raw single-quoted strings the answer is exactly:
+///
+/// - `'`  — the closing delimiter
+/// - `\n` / `\r` — single-quoted strings (raw or not) cannot contain unescaped
+///   newlines per the grammar
+///
+/// All three are rejected here. `\`, `"`, control bytes, and multibyte UTF-8
+/// pass through verbatim and are matched as literals by the CEL evaluator.
+fn cel_raw_single_quoted(value: &str) -> Result<String, TableConfigError> {
+    for c in value.chars() {
+        let reject = c == '\''
+            || c == '\n'
+            || c == '\r'
+            // Defense in depth: reject all other ASCII / Unicode control
+            // characters too. Some are technically allowed in CEL string
+            // literals but a NUL byte (or other unusual control) reaching
+            // GCP's evaluator could cause string truncation / non-canonical
+            // matching that's worth refusing outright.
+            || c.is_control();
+        if reject {
+            return Err(TableConfigError::Internal(
+                format!(
+                    "Refusing to build GCS access boundary: input contains a character that cannot appear in a CEL raw single-quoted string (U+{:04X})",
+                    c as u32
+                ),
+                None,
+            ));
         }
     }
+    Ok(format!("r'{value}'"))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -214,5 +265,92 @@ impl From<&GcsServiceKey> for CredentialsFile {
             quota_project_id: None,
             workforce_pool_user_project: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cel_raw_single_quoted_wraps_plain_value() {
+        assert_eq!(cel_raw_single_quoted("foo/bar").unwrap(), "r'foo/bar'");
+    }
+
+    #[test]
+    fn cel_raw_single_quoted_passes_through_backslash_and_double_quote() {
+        // These are the chars a hand-rolled escape function is most likely to
+        // get wrong. Raw strings just pass them through.
+        assert_eq!(
+            cel_raw_single_quoted(r#"a\b"c"#).unwrap(),
+            r#"r'a\b"c'"#
+        );
+    }
+
+    #[test]
+    fn cel_raw_single_quoted_rejects_single_quote() {
+        // Injection payload: `') || true || resource.name.startsWith('`. Must
+        // be rejected before the literal is constructed, otherwise the closing
+        // `'` would let the rest be parsed as CEL syntax.
+        let err = cel_raw_single_quoted("') || true || resource.name.startsWith('")
+            .expect_err("single quote must be rejected");
+        assert!(matches!(err, TableConfigError::Internal(_, _)));
+    }
+
+    #[test]
+    fn cel_raw_single_quoted_rejects_newline_and_carriage_return() {
+        cel_raw_single_quoted("foo\nbar").expect_err("newline must be rejected");
+        cel_raw_single_quoted("foo\rbar").expect_err("CR must be rejected");
+    }
+
+    #[test]
+    fn options_neutralizes_cel_injection_in_path() {
+        // End-to-end: the constructed CEL expression must not be twistable
+        // into evaluating to `true` by an injection attempt in the path.
+        let bucket = "my-bucket";
+        let location: Location = "gs://my-bucket/wh/safe-prefix/"
+            .parse()
+            .unwrap();
+        let opts = Options::from_location_and_permissions(
+            bucket,
+            &location,
+            StoragePermissions::Read,
+        )
+        .unwrap();
+        let expr = &opts.access_boundary.access_boundary_rules[0]
+            .availability_condition
+            .as_ref()
+            .unwrap()
+            .expression;
+        // Must contain raw-string literals, not bare format!-interpolated
+        // strings — that's what closes the injection class.
+        assert!(
+            expr.contains("r'wh/safe-prefix/'"),
+            "expected raw-string path literal in expression, got: {expr}"
+        );
+        assert!(
+            expr.contains("r'my-bucket'"),
+            "expected raw-string bucket literal in expression, got: {expr}"
+        );
+    }
+
+    #[test]
+    fn options_rejects_cel_injection_payload_in_path() {
+        // A table location whose path contains `'` must cause credential
+        // construction to fail outright rather than producing a smuggled CEL
+        // expression.
+        let bucket = "my-bucket";
+        let location: Location = "gs://my-bucket/x'/data/"
+            .parse()
+            .expect("URL parse should accept ' (sub-delim)");
+        let result = Options::from_location_and_permissions(
+            bucket,
+            &location,
+            StoragePermissions::Read,
+        );
+        let Err(err) = result else {
+            panic!("input with ' must be rejected");
+        };
+        assert!(matches!(err, TableConfigError::Internal(_, _)));
     }
 }

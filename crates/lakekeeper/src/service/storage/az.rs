@@ -488,6 +488,7 @@ impl AdlsProfile {
     ) -> Result<String, CredentialsError> {
         let path = reduce_scheme_string(stc_request.table_location.as_ref());
         let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
+
         let depth = rootless_path.split('/').count();
 
         let canonical_resource = format!(

@@ -82,6 +82,21 @@ impl AdlsLocation {
                     format!("ADLS path segment `{path_segment}` must not contain slashes."),
                 ));
             }
+            // Reject `..` and `.` segments. This is an Azure-specific
+            // correctness fix, not a security one. Azure normalises `..` in
+            // request URLs during SAS canonical-resource reconstruction —
+            // verified by integration test
+            // `azure_sas_canonical_resource_is_literal_not_normalised` —
+            // which means a SAS signed with a literal `..` canonical can
+            // never authenticate a request and the table would silently have
+            // unusable credentials. Refusing the location at the boundary
+            // gives a clear error instead of a perpetually-failing 403.
+            if *path_segment == ".." || *path_segment == "." {
+                return Err(InvalidLocationError::new(
+                    location_dbg.clone(),
+                    format!("ADLS path segment `{path_segment}` is not allowed."),
+                ));
+            }
         }
 
         let endpoint_suffix = normalize_host(host)
