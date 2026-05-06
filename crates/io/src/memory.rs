@@ -381,7 +381,7 @@ impl LakekeeperFileWrite for MemoryFileWrite {
         if self.closed {
             return Err(WriteError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
-                "Cannot write after close",
+                "Cannot write to closed writer",
                 self.key.clone(),
             )));
         }

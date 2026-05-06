@@ -136,7 +136,7 @@ impl LakekeeperStorage for S3Storage {
                 WriteError::IOError(IOError::new(
                     ErrorKind::Unexpected,
                     format!("Upload task panicked: {e}"),
-                    s3_location.as_str().to_string(),
+                    s3_location.to_string(),
                 ))
             })?;
             let (part_number, completed_part) = join_result?;
@@ -224,7 +224,7 @@ impl LakekeeperStorage for S3Storage {
             IOError::new(
                 ErrorKind::Unexpected,
                 format!("Error in S3 get bytestream: {e}"),
-                s3_location.as_str().to_string(),
+                s3_location.to_string(),
             )
             .set_source(anyhow::anyhow!(e))
         })?;
@@ -366,7 +366,7 @@ async fn fetch_range(
         IOError::new(
             ErrorKind::Unexpected,
             format!("Error collecting S3 range bytestream: {e}"),
-            location.as_str().to_string(),
+            location.to_string(),
         )
         .set_source(anyhow::anyhow!(e))
     })?;
@@ -484,7 +484,7 @@ async fn start_multipart(
             WriteError::IOError(IOError::new(
                 ErrorKind::Unexpected,
                 "S3 multipart upload response missing upload_id".to_string(),
-                location.as_str().to_string(),
+                location.to_string(),
             ))
         })
 }
@@ -498,6 +498,7 @@ async fn upload_part(
     part_number: i32,
     bytes: Bytes,
 ) -> Result<aws_sdk_s3::types::CompletedPart, WriteError> {
+    let chunk_len = bytes.len();
     let response = client
         .upload_part()
         .bucket(location.bucket_name())
@@ -508,16 +509,15 @@ async fn upload_part(
         .send()
         .await
         .map_err(|e| {
-            WriteError::IOError(
-                parse_upload_part_error(e, location.as_str())
-                    .with_context(format!("Failed to upload part {part_number}")),
-            )
+            WriteError::IOError(parse_upload_part_error(e, location.as_str()).with_context(
+                format!("Failed to upload part {part_number} ({chunk_len} bytes)"),
+            ))
         })?;
     let etag = response.e_tag().ok_or_else(|| {
         WriteError::IOError(IOError::new(
             ErrorKind::Unexpected,
             format!("S3 upload part response missing ETag for part {part_number}"),
-            location.as_str().to_string(),
+            location.to_string(),
         ))
     })?;
     Ok(aws_sdk_s3::types::CompletedPart::builder()
@@ -569,7 +569,9 @@ async fn abort_multipart(
         .map_err(|e| {
             WriteError::IOError(IOError::new(
                 ErrorKind::Unexpected,
-                format!("Failed to abort S3 multipart upload: {e}"),
+                format!(
+                    "Failed to abort S3 multipart upload. Partial upload may result in storage cost. {e}"
+                ),
                 location.to_string(),
             ))
         })?;
@@ -583,7 +585,6 @@ async fn abort_multipart(
 /// more than that has been written. Each part flush uses
 /// `DEFAULT_BYTES_PER_REQUEST` (≥ S3's 5 `MiB` minimum, except the final
 /// part which has no minimum).
-#[derive(Debug)]
 pub(crate) struct S3FileWrite {
     client: aws_sdk_s3::Client,
     location: S3Location,
@@ -591,7 +592,15 @@ pub(crate) struct S3FileWrite {
     state: S3WriterState,
 }
 
-#[derive(Debug)]
+impl std::fmt::Debug for S3FileWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3FileWrite")
+            .field("location", &self.location)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
 enum S3WriterState {
     Buffering(bytes::BytesMut),
     Multipart {
@@ -603,6 +612,31 @@ enum S3WriterState {
     Closed,
     Aborted,
     AbortFailed,
+}
+
+impl std::fmt::Debug for S3WriterState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Buffering(buffer) => f
+                .debug_tuple("Buffering")
+                .field(&format_args!("{} bytes", buffer.len()))
+                .finish(),
+            Self::Multipart {
+                next_part_number,
+                completed_parts,
+                buffer,
+                ..
+            } => f
+                .debug_struct("Multipart")
+                .field("next_part_number", next_part_number)
+                .field("completed_parts", &completed_parts.len())
+                .field("buffered_bytes", &buffer.len())
+                .finish_non_exhaustive(),
+            Self::Closed => f.write_str("Closed"),
+            Self::Aborted => f.write_str("Aborted"),
+            Self::AbortFailed => f.write_str("AbortFailed"),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -619,14 +653,14 @@ impl LakekeeperFileWrite for S3FileWrite {
             S3WriterState::Aborted => {
                 return Err(WriteError::IOError(IOError::new(
                     ErrorKind::ConditionNotMatch,
-                    "Cannor write to writer which was previously aborted due to an error",
+                    "Cannot write to aborted writer",
                     self.location.to_string(),
                 )));
             }
             S3WriterState::AbortFailed => {
                 return Err(WriteError::IOError(IOError::new(
                     ErrorKind::ConditionNotMatch,
-                    "Cannot write to writer which was previously attempted to be aborted due to an error",
+                    "Cannot write to writer that failed to abort",
                     self.location.to_string(),
                 )));
             }
@@ -924,11 +958,11 @@ async fn process_delete_results(
 
         // Handle join error
         let aws_result = result.map_err(|e| {
-            IOError::new(
+            IOError::new_without_location(
                 ErrorKind::Unexpected,
                 format!("Delete task panicked: {e}"),
-                "S3 batch delete".to_string(),
             )
+            .with_context("S3 batch delete")
         })?;
 
         // Increment the counter for each processed batch

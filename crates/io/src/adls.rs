@@ -188,7 +188,7 @@ impl AzureSettings {
         &self,
     ) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
         let authority_host_str = self.authority_host.as_ref().map_or(
-            DEFAULT_AUTHORITY_HOST.as_str().to_string(),
+            DEFAULT_AUTHORITY_HOST.to_string(),
             ToString::to_string,
         );
         let cache_key = format!("{}::{}", authority_host_str, self.cloud_location.account());

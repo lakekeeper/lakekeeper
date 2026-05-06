@@ -10,7 +10,7 @@ use azure_storage_datalake::prelude::{
     DataLakeClient, DirectoryClient, FileClient, FileSystemClient, GetFileResponse,
     HeadPathResponse, Path,
 };
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use chrono::DateTime;
 use futures::StreamExt as _;
 use tokio;
@@ -211,31 +211,42 @@ impl LakekeeperStorage for AdlsStorage {
             let upload_futures: Vec<_> = bytes
                 .chunks(DEFAULT_BYTES_PER_REQUEST)
                 .enumerate()
-                .map(|(i, chunk)| {
-                    let offset = i64::try_from(i * DEFAULT_BYTES_PER_REQUEST).map_err(|_| {
+                .map(|(chunk_index, chunk)| {
+                    let raw_offset = chunk_index * DEFAULT_BYTES_PER_REQUEST;
+                    let offset = i64::try_from(raw_offset).map_err(|_| {
                         WriteError::IOError(IOError::new(
                             ErrorKind::ConditionNotMatch,
                             format!(
-                                "Calculated offset for write exceeds limit: {} > {}",
-                                i * DEFAULT_BYTES_PER_REQUEST,
+                                "Calculated offset for write exceeds i64 limit: {raw_offset} > {}",
                                 i64::MAX
                             ),
-                            "multipart_upload".to_string(),
+                            path.to_string(),
                         ))
                     })?;
                     let chunk = Bytes::copy_from_slice(chunk);
                     let client = client.clone();
                     let path = path.to_string();
-                    Ok(async move { append_chunk(&client, offset, chunk, &path).await })
+                    Ok(async move {
+                        append_chunk(&client, offset, chunk, &path)
+                            .await
+                            .map_err(|e| match e {
+                                WriteError::IOError(io) => WriteError::IOError(
+                                    io.with_context(format!("Multipart upload chunk {chunk_index}")),
+                                ),
+                                other @ WriteError::InvalidLocation(_) => other,
+                            })
+                    })
                 })
                 .collect::<Result<Vec<_>, WriteError>>()?;
 
-            let upload_stream = execute_with_parallelism(upload_futures, 10).map(|result| {
-                result.map_err(|join_err| {
+            let path_for_join_err = path.to_string();
+            let upload_stream = execute_with_parallelism(upload_futures, 10).map(move |result| {
+                let path_for_err = path_for_join_err.clone();
+                result.map_err(move |join_err| {
                     WriteError::IOError(IOError::new(
                         ErrorKind::Unexpected,
                         format!("Task join error during multipart upload: {join_err}"),
-                        "multipart_upload".to_string(),
+                        path_for_err,
                     ))
                 })
             });
@@ -257,7 +268,7 @@ impl LakekeeperStorage for AdlsStorage {
             client,
             path: path.to_string(),
             offset: 0,
-            buffer: Vec::new(),
+            buffer: BytesMut::new(),
             closed: false,
         }))
     }
@@ -591,11 +602,11 @@ async fn parallel_chunked_read_with_integrity(
 /// Create the empty target file. ADLS requires an explicit `create` before
 /// any append/flush.
 async fn create_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
-    client
-        .create()
-        .await
-        .map(|_| ())
-        .map_err(|e| WriteError::IOError(parse_error(e, path)))
+    client.create().await.map(|_| ()).map_err(|e| {
+        WriteError::IOError(
+            parse_error(e, path).with_context("Failed to create ADLS file."),
+        )
+    })
 }
 
 /// Append a chunk at the given byte offset.
@@ -605,11 +616,13 @@ async fn append_chunk(
     chunk: Bytes,
     path: &str,
 ) -> Result<(), WriteError> {
-    client
-        .append(offset, chunk)
-        .await
-        .map(|_| ())
-        .map_err(|e| WriteError::IOError(parse_error(e, path)))
+    let chunk_len = chunk.len();
+    client.append(offset, chunk).await.map(|_| ()).map_err(|e| {
+        WriteError::IOError(parse_error(e, path).with_context(format!(
+            "Failed to upload chunk (bytes {offset}-{end})",
+            end = offset.saturating_add_unsigned(chunk_len as u64)
+        )))
+    })
 }
 
 /// Finalise the file by flushing and closing it.
@@ -619,7 +632,11 @@ async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Resul
         .close(true)
         .await
         .map(|_| ())
-        .map_err(|e| WriteError::IOError(parse_error(e, path)))
+        .map_err(|e| {
+            WriteError::IOError(parse_error(e, path).with_context(format!(
+                "Failed to flush and close ADLS file (length {file_length})"
+            )))
+        })
 }
 
 /// Groups paths by account and filesystem (container).
@@ -630,13 +647,23 @@ async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Resul
 /// locally and flushes append calls once `DEFAULT_BYTES_PER_REQUEST` bytes
 /// have accumulated. `close` flushes any remaining buffered bytes and
 /// finalises the file.
-#[derive(Debug)]
 pub(crate) struct AdlsFileWrite {
     client: FileClient,
     path: String,
     offset: i64,
-    buffer: Vec<u8>,
+    buffer: BytesMut,
     closed: bool,
+}
+
+impl std::fmt::Debug for AdlsFileWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdlsFileWrite")
+            .field("path", &self.path)
+            .field("offset", &self.offset)
+            .field("buffered_bytes", &self.buffer.len())
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
+    }
 }
 
 #[async_trait::async_trait]
@@ -651,10 +678,10 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         }
         self.buffer.extend_from_slice(&bytes_in);
         while self.buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
-            let chunk: Vec<u8> = self.buffer.drain(..DEFAULT_BYTES_PER_REQUEST).collect();
+            let chunk = self.buffer.split_to(DEFAULT_BYTES_PER_REQUEST).freeze();
             let chunk_len =
                 safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
-            append_chunk(&self.client, self.offset, Bytes::from(chunk), &self.path).await?;
+            append_chunk(&self.client, self.offset, chunk, &self.path).await?;
             self.offset += chunk_len;
         }
         Ok(())
@@ -672,10 +699,10 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         // No abort for append upload, if final flush+close fails, incomplete
         // file gets garbage collected
         if !self.buffer.is_empty() {
-            let chunk = std::mem::take(&mut self.buffer);
+            let chunk = self.buffer.split().freeze();
             let chunk_len =
                 safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
-            append_chunk(&self.client, self.offset, Bytes::from(chunk), &self.path).await?;
+            append_chunk(&self.client, self.offset, chunk, &self.path).await?;
             self.offset += chunk_len;
         }
         flush_close(&self.client, self.offset, &self.path).await
