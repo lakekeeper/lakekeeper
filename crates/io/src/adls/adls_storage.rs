@@ -13,16 +13,12 @@ use azure_storage_datalake::prelude::{
 use bytes::{Bytes, BytesMut};
 use chrono::DateTime;
 use futures::StreamExt as _;
-use tokio;
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperFileWrite,
-    LakekeeperStorage, Location, ReadError, WriteError,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
     adls::{AdlsLocation, adls_error::parse_error},
-    delete_not_found_is_ok,
-    error::ErrorKind,
-    execute_with_parallelism,
-    safe_usize_to_i64, validate_file_size,
+    delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
 };
 
 #[derive(Debug, Clone)]
@@ -229,9 +225,11 @@ impl LakekeeperStorage for AdlsStorage {
                         append_chunk(&client, offset, chunk, &path)
                             .await
                             .map_err(|e| match e {
-                                WriteError::IOError(io) => WriteError::IOError(
-                                    io.with_context(format!("Multipart upload chunk {chunk_index}")),
-                                ),
+                                WriteError::IOError(io) => {
+                                    WriteError::IOError(io.with_context(format!(
+                                        "Multipart upload chunk {chunk_index}"
+                                    )))
+                                }
                                 other @ WriteError::InvalidLocation(_) => other,
                             })
                     })
@@ -602,9 +600,7 @@ async fn parallel_chunked_read_with_integrity(
 /// any append/flush.
 async fn create_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
     client.create().await.map(|_| ()).map_err(|e| {
-        WriteError::IOError(
-            parse_error(e, path).with_context("Failed to create ADLS file."),
-        )
+        WriteError::IOError(parse_error(e, path).with_context("Failed to create ADLS file."))
     })
 }
 

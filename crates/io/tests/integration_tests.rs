@@ -261,7 +261,10 @@ test_all_storages!(
 );
 test_all_storages!(test_writer_basic, test_writer_basic_impl);
 test_all_storages!(test_writer_multi_chunks, test_writer_multi_chunks_impl);
-test_all_storages!(test_writer_large_streaming, test_writer_large_streaming_impl);
+test_all_storages!(
+    test_writer_large_streaming,
+    test_writer_large_streaming_impl
+);
 test_all_storages!(
     test_writer_close_twice_errors,
     test_writer_close_twice_errors_impl
@@ -275,7 +278,10 @@ test_all_storages!(test_read_range_large, test_read_range_large_impl);
 test_all_storages!(test_metadata_basic, test_metadata_basic_impl);
 test_all_storages!(test_metadata_not_found, test_metadata_not_found_impl);
 test_all_storages!(test_exists, test_exists_impl);
-test_all_storages!(test_writer_then_read_range, test_writer_then_read_range_impl);
+test_all_storages!(
+    test_writer_then_read_range,
+    test_writer_then_read_range_impl
+);
 test_all_storages!(test_writer_then_metadata, test_writer_then_metadata_impl);
 test_all_storages!(
     test_write_then_read_single_and_read,
@@ -1465,9 +1471,7 @@ async fn test_writer_multi_chunks_impl(
 ) -> anyhow::Result<()> {
     let path = config.test_path("writer-multi-chunks.bin");
 
-    let chunks: Vec<Bytes> = (0..16u8)
-        .map(|i| Bytes::from(vec![i; 1024]))
-        .collect();
+    let chunks: Vec<Bytes> = (0..16u8).map(|i| Bytes::from(vec![i; 1024])).collect();
     let mut expected = bytes::BytesMut::new();
     for chunk in &chunks {
         expected.extend_from_slice(chunk);
@@ -1635,12 +1639,8 @@ async fn test_metadata_not_found_impl(
     let result = storage.metadata(&path).await;
     match result {
         Err(ReadError::IOError(e)) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(other) => Err(anyhow::anyhow!(
-            "expected NotFound IOError, got {other:?}"
-        )),
-        Ok(_) => Err(anyhow::anyhow!(
-            "expected metadata to fail on missing file"
-        )),
+        Err(other) => Err(anyhow::anyhow!("expected NotFound IOError, got {other:?}")),
+        Ok(_) => Err(anyhow::anyhow!("expected metadata to fail on missing file")),
     }
 }
 
@@ -1654,10 +1654,7 @@ async fn test_exists_impl(storage: &StorageBackend, config: &TestConfig) -> anyh
     );
 
     storage.write(&path, Bytes::from_static(b"hi")).await?;
-    assert!(
-        storage.exists(&path).await?,
-        "file must exist after write"
-    );
+    assert!(storage.exists(&path).await?, "file must exist after write");
 
     storage.delete(&path).await?;
     assert!(

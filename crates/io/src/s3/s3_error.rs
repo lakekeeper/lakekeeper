@@ -10,7 +10,7 @@ use aws_sdk_s3::{
     },
 };
 
-use crate::{IOError, error::ErrorKind};
+use crate::{ErrorKind, IOError};
 
 pub(crate) fn parse_delete_error(err: SdkError<DeleteObjectError>, location: &str) -> IOError {
     let e = err.into_service_error();

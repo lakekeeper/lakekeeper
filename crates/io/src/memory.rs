@@ -6,8 +6,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
-    LakekeeperFileWrite, Location, ReadError, WriteError, error::ErrorKind,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 type MemoryFile = (Bytes, DateTime<Utc>);

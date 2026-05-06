@@ -9,9 +9,8 @@ use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream};
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, LakekeeperFileWrite, LakekeeperStorage,
-    Location, ReadError, WriteError,
-    error::{ErrorKind, InvalidLocationError, RetryableError},
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, RetryableError, WriteError,
     execute_with_parallelism,
     s3::{
         S3Location,

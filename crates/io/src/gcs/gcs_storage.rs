@@ -20,7 +20,6 @@ use google_cloud_storage::{
         resumable_upload_client::{ChunkSize, ResumableUploadClient, UploadStatus},
     },
 };
-use tokio;
 
 use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,

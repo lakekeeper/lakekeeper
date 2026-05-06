@@ -1,6 +1,6 @@
 use azure_core::StatusCode;
 
-use crate::{IOError, error::ErrorKind};
+use crate::{ErrorKind, IOError};
 
 pub(crate) fn parse_error(err: azure_core::Error, location: &str) -> IOError {
     let err = Box::new(err);
