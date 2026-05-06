@@ -133,11 +133,14 @@ pub(crate) fn parse_get_object_error(
 ) -> IOError {
     let e = err.into_service_error();
 
-    let lakekeeper_kind = e
-        .meta()
-        .code()
-        .and_then(|s| S3ErrorCode::from_str(s).ok())
-        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+    let lakekeeper_kind = match &e {
+        aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => ErrorKind::NotFound,
+        _ => e
+            .meta()
+            .code()
+            .and_then(|s| S3ErrorCode::from_str(s).ok())
+            .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind()),
+    };
 
     let msg = e.meta().message().map_or_else(
         || format!("Unknown S3 error during read: {e}"),
@@ -153,11 +156,17 @@ pub(crate) fn parse_head_object_error(
 ) -> IOError {
     let e = err.into_service_error();
 
-    let lakekeeper_kind = e
-        .meta()
-        .code()
-        .and_then(|s| S3ErrorCode::from_str(s).ok())
-        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+    // `HeadObjectError::NotFound` is a typed variant. S3 HEAD responses
+    // carry no body, so `e.meta().code()` is empty for 404s — fall through
+    // to the typed variant before consulting the error code map.
+    let lakekeeper_kind = match &e {
+        aws_sdk_s3::operation::head_object::HeadObjectError::NotFound(_) => ErrorKind::NotFound,
+        _ => e
+            .meta()
+            .code()
+            .and_then(|s| S3ErrorCode::from_str(s).ok())
+            .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind()),
+    };
 
     let msg = e.meta().message().map_or_else(
         || format!("Unknown S3 error during head operation: {e}"),
