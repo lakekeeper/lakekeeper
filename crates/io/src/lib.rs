@@ -84,6 +84,30 @@ pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Resu
     }
 }
 
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-s3"
+))]
+/// Converts a backend-reported file size from `i64` to `u64` for use in
+/// [`FileInfo::size`]. Negative sizes are unexpected — they indicate a
+/// protocol or parser bug in the backend SDK — so we emit a warning and
+/// return `None` rather than failing the whole list page over a single
+/// malformed entry.
+pub(crate) fn list_size_to_u64(raw: i64, location: &str) -> Option<u64> {
+    u64::try_from(raw)
+        .inspect_err(|e| {
+            tracing::warn!(
+                size = raw,
+                location,
+                error = %e,
+                "Storage backend reported invalid object size during list; \
+                 size will be omitted from FileInfo"
+            );
+        })
+        .ok()
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, strum_macros::Display)]
 pub enum OperationType {
     Delete,
@@ -156,14 +180,20 @@ where
 pub struct FileInfo {
     last_modified: Option<DateTime<Utc>>,
     location: Location,
+    size: Option<u64>,
 }
 
 impl FileInfo {
     #[must_use]
-    pub fn new(last_modified: Option<DateTime<Utc>>, location: Location) -> Self {
+    pub fn new(
+        last_modified: Option<DateTime<Utc>>,
+        location: Location,
+        size: Option<u64>,
+    ) -> Self {
         Self {
             last_modified,
             location,
+            size,
         }
     }
 
@@ -175,6 +205,14 @@ impl FileInfo {
     #[must_use]
     pub fn location(&self) -> &Location {
         &self.location
+    }
+
+    /// Object size in bytes. `None` if the storage backend did not surface
+    /// a size for this entry (e.g. backends that omit the field, or
+    /// directory-style entries without a content length).
+    #[must_use]
+    pub fn size(&self) -> Option<u64> {
+        self.size
     }
 }
 

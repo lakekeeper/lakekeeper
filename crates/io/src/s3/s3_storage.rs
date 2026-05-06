@@ -440,10 +440,10 @@ fn try_parse_file_info(
         let scheme = base_location.scheme();
         let full_path = format!("{scheme}://{s3_bucket}/{key}");
         let location = Location::from_str(&full_path).ok()?;
-        Some(FileInfo {
-            last_modified,
-            location,
-        })
+        let size = object
+            .size()
+            .and_then(|s| crate::list_size_to_u64(s, &full_path));
+        Some(FileInfo::new(last_modified, location, size))
     }
 }
 
