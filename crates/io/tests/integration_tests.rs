@@ -1133,9 +1133,15 @@ async fn test_special_characters_in_url_segments_impl(
         "üñîçødé",
         "日本語",
     ];
-    // Negative: segments that must be rejected up-front (Azure rejects
-    // whitespace-only segments with `InvalidUri`).
-    let negative_segments = vec!["%20", "%09", "%20%20"];
+    // Negative: segments that must be rejected up-front. The reasons differ
+    // (Azure InvalidUri for whitespace-only; `url::Url` normalises encoded
+    // dot-segments and encoded `/`) but the outcome is the same: silent
+    // path divergence that we surface as a clean parse-time error.
+    let negative_segments = vec![
+        "%20", "%09", "%20%20", // whitespace-only
+        "%2E", "%2e", "%2E%2E", "%2e%2e", // dot-segments
+        "%2F",    // encoded slash
+    ];
 
     let base_dir = config.test_dir_path("special-chars-url-segments");
     let mut written_paths = Vec::new();
@@ -1167,14 +1173,19 @@ async fn test_special_characters_in_url_segments_impl(
         let _ = storage.delete(path).await;
     }
 
-    for seg in &negative_segments {
-        let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
-        match storage.write(&path, Bytes::from("x")).await {
-            Ok(()) => {
-                failures.push(format!("write({seg}): expected reject, got Ok"));
-                let _ = storage.delete(&path).await;
+    // The decoded-segment rejections live in `AdlsLocation` only — S3 keys
+    // and GCS object names accept these chars literally, so the test is
+    // ADLS-specific.
+    if matches!(storage, StorageBackend::Adls(_)) {
+        for seg in &negative_segments {
+            let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
+            match storage.write(&path, Bytes::from("x")).await {
+                Ok(()) => {
+                    failures.push(format!("write({seg}): expected reject, got Ok"));
+                    let _ = storage.delete(&path).await;
+                }
+                Err(_) => { /* expected */ }
             }
-            Err(_) => { /* expected */ }
         }
     }
 

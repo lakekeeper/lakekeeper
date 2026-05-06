@@ -62,6 +62,10 @@ SPECIAL_CHARS = [
 def _lookup(table: dict, provider: str, flavor: Optional[str]) -> Optional[str]:
     return table.get((provider, flavor or "")) or table.get((provider, "*"))
 
+# Per-request timeout (seconds). Prevents CI hangs on a stalled cloud
+# endpoint or slow Lakekeeper. Generous enough for cold cloud calls.
+HTTP_TIMEOUT = 30
+
 # Minimal Iceberg schema used for every funky-location table.
 SCHEMA = {
     "type": "struct",
@@ -97,6 +101,7 @@ def _create_namespace(warehouse: conftest.Warehouse, namespace: str) -> None:
         f"{_wh_url(warehouse)}/namespaces",
         headers=_auth(warehouse),
         json={"namespace": [namespace], "properties": {}},
+        timeout=HTTP_TIMEOUT,
     )
     r.raise_for_status()
 
@@ -107,6 +112,7 @@ def _load_namespace_location(
     r = requests.get(
         f"{_wh_url(warehouse)}/namespaces/{quote(namespace, safe='')}",
         headers=_auth(warehouse),
+        timeout=HTTP_TIMEOUT,
     )
     r.raise_for_status()
     return r.json()["properties"]["location"].rstrip("/")
@@ -122,6 +128,7 @@ def _create_table(
         f"{_wh_url(warehouse)}/namespaces/{quote(namespace, safe='')}/tables",
         headers=_auth(warehouse),
         json={"name": table, "location": location, "schema": SCHEMA},
+        timeout=HTTP_TIMEOUT,
     )
     r.raise_for_status()
     return r.json()
@@ -138,6 +145,7 @@ def _load_table_with_creds(
             **_auth(warehouse),
             "X-Iceberg-Access-Delegation": "vended-credentials",
         },
+        timeout=HTTP_TIMEOUT,
     )
     r.raise_for_status()
     return r.json()
@@ -178,7 +186,10 @@ def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
         path = parsed.path
         https_url = f"https://{host}/{fs}{path}?{sas}"
         r = requests.put(
-            https_url, headers={"x-ms-blob-type": "BlockBlob"}, data=b"canary"
+            https_url,
+            headers={"x-ms-blob-type": "BlockBlob"},
+            data=b"canary",
+            timeout=HTTP_TIMEOUT,
         )
         if 200 <= r.status_code < 300:
             return None
@@ -194,6 +205,7 @@ def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
             https_url,
             headers={"Authorization": f"Bearer {token}"},
             data=b"canary",
+            timeout=HTTP_TIMEOUT,
         )
         if 200 <= r.status_code < 300:
             return None

@@ -19,6 +19,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 SUITE="$1"
+if [ -z "$SUITE" ]; then
+    echo "usage: bash run.sh <tox-env>[-<iceberg-version>] [extra pytest args...]" >&2
+    echo "  e.g.  bash run.sh spark_minio_sts-1.10.1" >&2
+    exit 2
+fi
 TOX_NAME="${SUITE%%-*}"
 SPARK_VERSION="${SUITE#*-}"
 # No version suffix → SPARK_VERSION equals TOX_NAME; normalise to empty.

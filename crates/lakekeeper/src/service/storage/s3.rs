@@ -2144,7 +2144,13 @@ pub(crate) mod test {
 
     #[test]
     fn policy_string_neutralizes_question_mark_in_table_path() {
-        let table_location = "s3://bucket-name/wh/ev?l/table";
+        // `Location::from_str` now rejects raw `?` at parse time, so this
+        // state can't be reached via REST anymore. Build via `extend()`
+        // (which doesn't re-parse) to defense-in-depth check that the
+        // escape is wired up in the policy path even if some future code
+        // bypasses the parser.
+        let mut table_location: Location = "s3://bucket-name/wh".parse().unwrap();
+        table_location.extend(["ev?l", "table"]);
         let profile = S3Profile::builder()
             .bucket("bucket-name".to_string())
             .key_prefix("wh".to_string())
@@ -2153,10 +2159,7 @@ pub(crate) mod test {
             .sts_enabled(true)
             .build();
         let policy = profile
-            .get_sts_policy_string(
-                &table_location.parse().unwrap(),
-                StoragePermissions::ReadWriteDelete,
-            )
+            .get_sts_policy_string(&table_location, StoragePermissions::ReadWriteDelete)
             .unwrap();
         assert!(
             policy.contains("wh/ev${?}l/table"),
@@ -2164,7 +2167,7 @@ pub(crate) mod test {
         );
         assert!(
             !policy.contains("wh/ev?l/table"),
-            "raw user-supplied `?` leaked into policy: {policy}"
+            "raw `?` leaked into policy: {policy}"
         );
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }
