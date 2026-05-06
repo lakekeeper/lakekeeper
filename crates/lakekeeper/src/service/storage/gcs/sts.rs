@@ -120,9 +120,20 @@ impl Options {
     ) -> Result<Self, TableConfigError> {
         let mut table_location = table_location.clone();
         table_location.with_trailing_slash();
+        let bucket_prefix = format!("gs://{bucket}/");
         let prefixless_location = table_location
             .as_str()
-            .replace(&format!("gs://{bucket}/"), "");
+            .strip_prefix(&bucket_prefix)
+            .ok_or_else(|| {
+                TableConfigError::Internal(
+                    format!(
+                        "Refusing to build GCS access boundary: table location `{}` is not under bucket `{bucket}`",
+                        table_location.as_str()
+                    ),
+                    None,
+                )
+            })?
+            .to_owned();
 
         validate_safe_for_cel_single_quoted(bucket)?;
         validate_safe_for_cel_single_quoted(&prefixless_location)?;
@@ -302,6 +313,17 @@ mod tests {
             Options::from_location_and_permissions(bucket, &location, StoragePermissions::Read);
         let Err(err) = result else {
             panic!("input with ' must be rejected");
+        };
+        assert!(matches!(err, TableConfigError::Internal(_, _)));
+    }
+
+    #[test]
+    fn options_rejects_cross_bucket_table_location() {
+        let location: Location = "gs://other-bucket/data/".parse().unwrap();
+        let result =
+            Options::from_location_and_permissions("my-bucket", &location, StoragePermissions::Read);
+        let Err(err) = result else {
+            panic!("cross-bucket location must be rejected");
         };
         assert!(matches!(err, TableConfigError::Internal(_, _)));
     }
