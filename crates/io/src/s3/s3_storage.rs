@@ -169,7 +169,8 @@ impl LakekeeperStorage for S3Storage {
         }
 
         if file_size < MAX_BYTES_PER_REQUEST {
-            return self.read_single(path).await;
+            // If the file is small enough, read it in a single request
+            return fetch_range(&self.client, &s3_location, 0..file_size as u64).await;
         }
 
         parallel_chunked_read(&self.client, &s3_location, 0, file_size).await
@@ -199,10 +200,6 @@ impl LakekeeperStorage for S3Storage {
                 s3_location.to_string(),
             ))
         })?;
-
-        if range_size == 0 {
-            return Ok(Bytes::new());
-        }
 
         if range_size <= MAX_BYTES_PER_REQUEST {
             return fetch_range(&self.client, &s3_location, range).await;
@@ -359,6 +356,7 @@ async fn fetch_range(
         .get_object()
         .bucket(location.bucket_name())
         .key(s3_key_to_str(&location.key()))
+        // range header for s3 client is inclusive
         .range(format!("bytes={}-{}", range.start, range.end - 1))
         .send()
         .await
@@ -408,7 +406,6 @@ async fn parallel_chunked_read(
     let client = client.clone();
     let location_for_chunks = s3_location.clone();
 
-    //
     crate::parallel_chunked_read(
         range_size,
         DEFAULT_BYTES_PER_REQUEST,
@@ -426,7 +423,9 @@ async fn parallel_chunked_read(
                         ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
                             "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
                         ))),
-                        other @ ReadError::InvalidLocation(_) => other,
+                        invalid_location_error @ ReadError::InvalidLocation(_) => {
+                            invalid_location_error
+                        }
                     })?;
                 Ok((chunk_index, chunk))
             }
@@ -571,7 +570,7 @@ async fn abort_multipart(
             WriteError::IOError(IOError::new(
                 ErrorKind::Unexpected,
                 format!("Failed to abort S3 multipart upload: {e}"),
-                location.as_str().to_string(),
+                location.to_string(),
             ))
         })?;
     Ok(())

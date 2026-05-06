@@ -237,18 +237,29 @@ impl LakekeeperStorage for GcsStorage {
     }
 
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
-        let location = GcsLocation::try_from_str(path)?;
-        let head_response = head(&self.client, &location).await?;
-        let file_size = validate_file_size(head_response.size, location.as_str())?;
+        let gcs_location = GcsLocation::try_from_str(path)?;
 
-        if file_size < MAX_BYTES_PER_REQUEST {
-            return self.read_single(path).await;
+        let head_response = head(&self.client, &gcs_location).await?;
+        let file_size = validate_file_size(head_response.size, gcs_location.as_str())?;
+
+        if file_size == 0 {
+            return Ok(Bytes::new());
         }
 
-        // Delegate the chunked-download wiring (including its own HEAD for
-        // generation pinning) to `read_range`. The extra HEAD on the chunked
-        // path is acceptable for large reads where the download dominates.
-        self.read_range(path, 0..file_size as u64).await
+        if file_size < MAX_BYTES_PER_REQUEST {
+            // If the file is small enough, read it in a single request
+            let request = build_get_object_request(&gcs_location);
+            return fetch_range(&self.client, &request, None..None).await;
+        }
+
+        parallel_chunked_read_with_fixed_generation(
+            &self.client,
+            &gcs_location,
+            0,
+            file_size,
+            Some(head_response.generation),
+        )
+        .await
     }
 
     async fn read_range(
@@ -256,6 +267,7 @@ impl LakekeeperStorage for GcsStorage {
         path: &str,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, ReadError> {
+        let gcs_location = GcsLocation::try_from_str(path)?;
         if range.end < range.start {
             return Err(ReadError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
@@ -263,14 +275,13 @@ impl LakekeeperStorage for GcsStorage {
                     "Invalid range: start ({}) > end ({})",
                     range.start, range.end
                 ),
-                path.to_string(),
+                gcs_location.as_str().into(),
             )));
         }
         if range.is_empty() {
             return Ok(Bytes::new());
         }
 
-        let location = GcsLocation::try_from_str(path)?;
         let range_size_u64 = range.end - range.start;
         let range_size = usize::try_from(range_size_u64).map_err(|_| {
             ReadError::IOError(IOError::new(
@@ -281,41 +292,19 @@ impl LakekeeperStorage for GcsStorage {
         })?;
 
         if range_size <= MAX_BYTES_PER_REQUEST {
-            let request = build_get_object_request(&location);
-            return fetch_range(&self.client, &request, range).await;
+            let request = build_get_object_request(&gcs_location);
+            return fetch_range(&self.client, &request, Some(range.start)..Some(range.end)).await;
         }
 
-        let head_response = head(&self.client, &location).await?;
-        let mut request = build_get_object_request(&location);
-        request.generation = Some(head_response.generation);
-
-        let client = self.client.clone();
-        let request = std::sync::Arc::new(request);
-        let range_start = range.start;
-        crate::parallel_chunked_read(
+        let head_response = head(&self.client, &gcs_location).await?;
+        parallel_chunked_read_with_fixed_generation(
+            &self.client,
+            &gcs_location,
+            range.start,
             range_size,
-            DEFAULT_BYTES_PER_REQUEST,
-            10,
-            path,
-            move |rel_start, rel_end, chunk_index| {
-                let client = client.clone();
-                let request = request.clone();
-                let abs_start = range_start + rel_start as u64;
-                let abs_end = range_start + rel_end as u64 + 1;
-                async move {
-                    let chunk = fetch_range(&client, &request, abs_start..abs_end)
-                        .await
-                        .map_err(|e| match e {
-                            ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                                "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                            ))),
-                            other @ ReadError::InvalidLocation(_) => other,
-                        })?;
-                    Ok((chunk_index, chunk))
-                }
-            },
+            Some(head_response.generation),
         )
-            .await
+        .await
     }
 
     async fn list(
@@ -401,12 +390,21 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
     }
 }
 
+/// Fetch range of bytes with `range`
+///
+/// - Some(n)..Some(m) -> bytes `[n, m)`
+/// - None..Some(n) -> last `m-1` bytes
+/// - Some(n)..None -> bytes `[n..end_of_file]`
+/// - None..None -> whole file
+///
+/// Checks on range are defered to `client`
 async fn fetch_range(
     client: &Client,
     request: &GetObjectRequest,
-    range: std::ops::Range<u64>,
+    range: std::ops::Range<Option<u64>>,
 ) -> Result<Bytes, ReadError> {
-    let r = Range(Some(range.start), Some(range.end - 1));
+    // `download_object`s' `range` is inclusive, so subtract 1
+    let r = Range(range.start, range.end.map(|end| end - 1));
     let data = client.download_object(request, &r).await.map_err(|e| {
         ReadError::IOError(
             parse_error(e, &request.object).with_context("Failed to download byte range."),
@@ -431,6 +429,49 @@ fn build_get_object_request(location: &GcsLocation) -> GetObjectRequest {
         object: location.object_name(),
         ..Default::default()
     }
+}
+
+async fn parallel_chunked_read_with_fixed_generation(
+    client: &Client,
+    gcs_location: &GcsLocation,
+    range_start: u64,
+    range_size: usize,
+    generation: Option<i64>,
+) -> Result<Bytes, ReadError> {
+    if range_size == 0 {
+        return Ok(Bytes::new());
+    }
+
+    let mut request = build_get_object_request(gcs_location);
+    request.generation = generation;
+
+    let client = client.clone();
+    crate::parallel_chunked_read(
+        range_size,
+        DEFAULT_BYTES_PER_REQUEST,
+        10,
+        gcs_location.as_str(),
+        move |rel_start, rel_end, chunk_index| {
+            let client = client.clone();
+            let request = request.clone();
+            let abs_start = range_start + rel_start as u64;
+            let abs_end = range_start + rel_end as u64 + 1;
+            async move {
+                let chunk = fetch_range(&client, &request, Some(abs_start)..Some(abs_end))
+                    .await
+                    .map_err(|e| match e {
+                        ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                            "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                        ))),
+                        invalid_location_error @ ReadError::InvalidLocation(_) => {
+                            invalid_location_error
+                        }
+                    })?;
+                Ok((chunk_index, chunk))
+            }
+        },
+    )
+    .await
 }
 
 fn parse_timestamp(object: &Object) -> Option<DateTime<Utc>> {

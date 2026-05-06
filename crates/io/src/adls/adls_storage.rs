@@ -5,7 +5,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use azure_core::prelude::Range;
 use azure_storage::CloudLocation;
 use azure_storage_datalake::prelude::{
     DataLakeClient, DirectoryClient, FileClient, FileSystemClient, GetFileResponse,
@@ -207,20 +206,29 @@ impl LakekeeperStorage for AdlsStorage {
         create_file(&client, path).await?;
 
         if bytes.len() <= MAX_BYTES_PER_REQUEST {
-            // ToDo: Use a single request: https://github.com/Azure/azure-sdk-for-rust/issues/2911
             append_chunk(&client, 0, bytes, path).await?;
         } else {
             let upload_futures: Vec<_> = bytes
                 .chunks(DEFAULT_BYTES_PER_REQUEST)
                 .enumerate()
                 .map(|(i, chunk)| {
-                    let offset = i64::try_from(i * DEFAULT_BYTES_PER_REQUEST).unwrap_or(i64::MAX);
+                    let offset = i64::try_from(i * DEFAULT_BYTES_PER_REQUEST).map_err(|_| {
+                        WriteError::IOError(IOError::new(
+                            ErrorKind::ConditionNotMatch,
+                            format!(
+                                "Calculated offset for write exceeds limit: {} > {}",
+                                i * DEFAULT_BYTES_PER_REQUEST,
+                                i64::MAX
+                            ),
+                            "multipart_upload".to_string(),
+                        ))
+                    })?;
                     let chunk = Bytes::copy_from_slice(chunk);
                     let client = client.clone();
                     let path = path.to_string();
-                    async move { append_chunk(&client, offset, chunk, &path).await }
+                    Ok(async move { append_chunk(&client, offset, chunk, &path).await })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, WriteError>>()?;
 
             let upload_stream = execute_with_parallelism(upload_futures, 10).map(|result| {
                 result.map_err(|join_err| {
@@ -262,13 +270,11 @@ impl LakekeeperStorage for AdlsStorage {
 
         let client = self.get_file_client(&adls_location)?;
 
-        let read_file_response = client.read().await.map_err(|e| {
+        client.read().await.map(|gfr| gfr.data).map_err(|e| {
             ReadError::IOError(
                 parse_error(e, path).with_context("Failed to read ADLS file in single request."),
             )
-        })?;
-
-        Ok(read_file_response.data)
+        })
     }
 
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
@@ -292,12 +298,16 @@ impl LakekeeperStorage for AdlsStorage {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
         let client = self.get_file_client(&adls_location)?;
+
         let head_response = head(&client, &adls_location).await?;
-
         let Some(content_length) = head_response.content_length else {
-            return self.read_single(path).await;
+            // If we do not get content_length, we cannot read in chunks,
+            // so read the file in one request. We can use `fetch_range`
+            // with `u64::MAX`, which is set by client if no range is provided
+            return fetch_range(&client, 0..u64::MAX, adls_location)
+                .await
+                .map(|gfr| gfr.data);
         };
-
         let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
 
         if file_size == 0 {
@@ -306,7 +316,9 @@ impl LakekeeperStorage for AdlsStorage {
 
         if file_size < MAX_BYTES_PER_REQUEST {
             // If the file is small enough, read it in a single request
-            return self.read_single(path).await;
+            return fetch_range(&client, 0..file_size as u64, adls_location)
+                .await
+                .map(|gfr| gfr.data);
         }
 
         parallel_chunked_read_with_integrity(
@@ -315,6 +327,7 @@ impl LakekeeperStorage for AdlsStorage {
             0,
             file_size,
             head_response.last_modified,
+            adls_location,
         )
         .await
     }
@@ -324,6 +337,8 @@ impl LakekeeperStorage for AdlsStorage {
         path: &str,
         range: std::ops::Range<u64>,
     ) -> Result<Bytes, ReadError> {
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+        require_key(&adls_location)?;
         if range.end < range.start {
             return Err(ReadError::IOError(IOError::new(
                 ErrorKind::ConditionNotMatch,
@@ -338,10 +353,6 @@ impl LakekeeperStorage for AdlsStorage {
             return Ok(Bytes::new());
         }
 
-        let adls_location = AdlsLocation::try_from_str(path, true)?;
-        require_key(&adls_location)?;
-        let client = self.get_file_client(&adls_location)?;
-
         let range_size_u64 = range.end - range.start;
         let range_size = usize::try_from(range_size_u64).map_err(|_| {
             ReadError::IOError(IOError::new(
@@ -351,13 +362,12 @@ impl LakekeeperStorage for AdlsStorage {
             ))
         })?;
 
-        if range_size == 0 {
-            return Ok(Bytes::new());
-        }
+        let client = self.get_file_client(&adls_location)?;
 
         if range_size <= MAX_BYTES_PER_REQUEST {
-            let response = fetch_range(&client, range).await?;
-            return Ok(response.data);
+            return fetch_range(&client, range, adls_location)
+                .await
+                .map(|gfr| gfr.data);
         }
 
         let head_response = head(&client, &adls_location).await?;
@@ -367,6 +377,7 @@ impl LakekeeperStorage for AdlsStorage {
             range.start,
             range_size,
             head_response.last_modified,
+            adls_location,
         )
         .await
     }
@@ -468,6 +479,41 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
     }
 }
 
+fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
+    if adls_location.blob_name().is_empty() || adls_location.blob_name() == "/" {
+        return Err(InvalidLocationError::new(
+            adls_location.to_string(),
+            "Operation requires a path inside the ADLS Filesystem".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
+/// vectors of `(blob_path, original_path)` tuples.
+fn group_paths_by_container(
+    paths: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<HashMap<(String, String), Vec<AdlsLocation>>, InvalidLocationError> {
+    let mut grouped_paths: HashMap<(String, String), Vec<AdlsLocation>> = HashMap::new();
+
+    for p in paths {
+        let path = p.as_ref();
+        let adls_location = AdlsLocation::try_from_str(path, true)?;
+
+        // Make sure we have a key (blob path)
+        require_key(&adls_location)?;
+
+        let account = adls_location.account_name().to_string();
+        let filesystem = adls_location.filesystem().to_string();
+
+        grouped_paths
+            .entry((account, filesystem))
+            .or_default()
+            .push(adls_location);
+    }
+
+    Ok(grouped_paths)
+}
 async fn head(client: &FileClient, location: &AdlsLocation) -> Result<HeadPathResponse, ReadError> {
     client.get_properties().await.map_err(|e| {
         ReadError::IOError(
@@ -480,14 +526,14 @@ async fn head(client: &FileClient, location: &AdlsLocation) -> Result<HeadPathRe
 async fn fetch_range(
     client: &FileClient,
     range: std::ops::Range<u64>,
+    adls_location: AdlsLocation,
 ) -> Result<GetFileResponse, ReadError> {
-    client
-        .read()
-        .range(Range::new(range.start, range.end))
-        .await
-        .map_err(|e| {
-            ReadError::IOError(parse_error(e, "").with_context("Failed to download byte range."))
-        })
+    client.read().range(range).await.map_err(|e| {
+        ReadError::IOError(
+            parse_error(e, &adls_location.to_string())
+                .with_context("Failed to download byte range."),
+        )
+    })
 }
 
 /// Run a parallel-chunked download over `[range_start, range_start + range_size)`
@@ -500,6 +546,7 @@ async fn parallel_chunked_read_with_integrity(
     range_start: u64,
     range_size: usize,
     head_last_modified: time::OffsetDateTime,
+    adls_location: AdlsLocation,
 ) -> Result<Bytes, ReadError> {
     if range_size == 0 {
         return Ok(Bytes::new());
@@ -514,23 +561,24 @@ async fn parallel_chunked_read_with_integrity(
             let client = client.clone();
             let abs_start = range_start + rel_start as u64;
             let abs_end = range_start + rel_end as u64 + 1;
+            let adls_location = adls_location.clone();
             async move {
-                let response = fetch_range(&client, abs_start..abs_end)
+                let response = fetch_range(&client, abs_start..abs_end, adls_location.clone())
                     .await
                     .map_err(|e| match e {
                         ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
                             "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
                         ))),
-                        other @ ReadError::InvalidLocation(_) => other,
+                        invalid_location_error @ ReadError::InvalidLocation(_) => invalid_location_error,
                     })?;
                 if response.last_modified != head_last_modified {
                     return Err(ReadError::IOError(IOError::new(
                         ErrorKind::Unexpected,
                         format!(
-                            "File was modified during multi-part download: expected last modified time {}, got {}",
+                            "File was modified during chunked parallel download: expected last modified time {}, got {}",
                             head_last_modified, response.last_modified
                         ),
-                        format!("chunk {chunk_index} (bytes {abs_start}-{abs_end})"),
+                        adls_location.to_string(),
                     )));
                 }
                 Ok((chunk_index, response.data))
@@ -574,9 +622,11 @@ async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Resul
         .map_err(|e| WriteError::IOError(parse_error(e, path)))
 }
 
-/// Streaming writer for ADLS.
+/// Groups paths by account and filesystem (container).
+///
 ///
 /// The target file is created up-front by `writer`. Each `write` buffers
+/// Streaming writer for ADLS.
 /// locally and flushes append calls once `DEFAULT_BYTES_PER_REQUEST` bytes
 /// have accumulated. `close` flushes any remaining buffered bytes and
 /// finalises the file.
@@ -619,6 +669,8 @@ impl LakekeeperFileWrite for AdlsFileWrite {
             )));
         }
         self.closed = true;
+        // No abort for append upload, if final flush+close fails, incomplete
+        // file gets garbage collected
         if !self.buffer.is_empty() {
             let chunk = std::mem::take(&mut self.buffer);
             let chunk_len =
@@ -628,42 +680,4 @@ impl LakekeeperFileWrite for AdlsFileWrite {
         }
         flush_close(&self.client, self.offset, &self.path).await
     }
-}
-
-fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError> {
-    if adls_location.blob_name().is_empty() || adls_location.blob_name() == "/" {
-        return Err(InvalidLocationError::new(
-            adls_location.to_string(),
-            "Operation requires a path inside the ADLS Filesystem".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// Groups paths by account and filesystem (container).
-///
-/// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
-/// vectors of `(blob_path, original_path)` tuples.
-fn group_paths_by_container(
-    paths: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<HashMap<(String, String), Vec<AdlsLocation>>, InvalidLocationError> {
-    let mut grouped_paths: HashMap<(String, String), Vec<AdlsLocation>> = HashMap::new();
-
-    for p in paths {
-        let path = p.as_ref();
-        let adls_location = AdlsLocation::try_from_str(path, true)?;
-
-        // Make sure we have a key (blob path)
-        require_key(&adls_location)?;
-
-        let account = adls_location.account_name().to_string();
-        let filesystem = adls_location.filesystem().to_string();
-
-        grouped_paths
-            .entry((account, filesystem))
-            .or_default()
-            .push(adls_location);
-    }
-
-    Ok(grouped_paths)
 }

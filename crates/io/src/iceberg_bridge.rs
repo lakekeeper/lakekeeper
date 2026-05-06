@@ -219,6 +219,7 @@ impl IcebergStorageBridgeFactory {
 #[typetag::serde]
 impl StorageFactory for IcebergStorageBridgeFactory {
     fn build(&self, _config: &StorageConfig) -> iceberg::Result<Arc<dyn Storage>> {
+        // we ignore `config` because the inner `bridge` is already configured.
         Ok(self.bridge.clone())
     }
 }
