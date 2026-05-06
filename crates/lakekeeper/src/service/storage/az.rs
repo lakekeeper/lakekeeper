@@ -488,14 +488,17 @@ impl AdlsProfile {
     ) -> Result<String, CredentialsError> {
         let path = reduce_scheme_string(stc_request.table_location.as_ref());
         let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
-
         let depth = rootless_path.split('/').count();
 
+        // Azure recomputes the canonical-resource by URL-decoding the request
+        // URL path. Hand-rolling the canonical with the encoded form (e.g.
+        // literal `%3F` or `%20`) produces a signature mismatch.
+        let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
         let canonical_resource = format!(
             "/blob/{}/{}/{}",
             self.account_name.as_str(),
             self.filesystem.as_str(),
-            rootless_path
+            decoded_path
         );
 
         tracing::debug!(

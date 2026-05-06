@@ -3767,6 +3767,7 @@ dependencies = [
  "md5",
  "moka",
  "pastey",
+ "percent-encoding",
  "reqwest 0.12.28",
  "reqwest-middleware",
  "reqwest-retry",

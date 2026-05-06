@@ -135,8 +135,8 @@ impl Options {
             })?
             .to_owned();
 
-        validate_safe_for_cel_single_quoted(bucket)?;
-        validate_safe_for_cel_single_quoted(&prefixless_location)?;
+        let bucket_cel = escape_for_cel_single_quoted(bucket)?;
+        let path_cel = escape_for_cel_single_quoted(&prefixless_location)?;
 
         Ok(Options {
             access_boundary: AccessBoundary {
@@ -160,7 +160,7 @@ impl Options {
                         title: "obj-prefixes".to_string(),
                         // getAttribute is needed for Listing operations.
                         expression: format!(
-                            "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefixless_location}') || resource.name.startsWith('projects/_/buckets/{bucket}/folders/{prefixless_location}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefixless_location}')",
+                            "resource.name.startsWith('projects/_/buckets/{bucket_cel}/objects/{path_cel}') || resource.name.startsWith('projects/_/buckets/{bucket_cel}/folders/{path_cel}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{path_cel}')",
                         ),
                     }.into(),
                 }],
@@ -169,23 +169,34 @@ impl Options {
     }
 }
 
-/// Reject characters that can escape a CEL single-quoted string literal.
+/// Escape `value` for interpolation inside a CEL single-quoted literal.
 /// GCP's access-boundary CEL doesn't accept `r'...'` raw strings or `+`
-/// concat, so values are interpolated directly into `'...'`.
-fn validate_safe_for_cel_single_quoted(value: &str) -> Result<(), TableConfigError> {
+/// concat. Control chars without a CEL escape are rejected.
+fn escape_for_cel_single_quoted(value: &str) -> Result<String, TableConfigError> {
+    let mut out = String::with_capacity(value.len());
     for c in value.chars() {
-        let reject = c == '\'' || c == '\\' || c == '\n' || c == '\r' || c.is_control();
-        if reject {
-            return Err(TableConfigError::Internal(
-                format!(
-                    "Refusing to build GCS access boundary: input contains a character that cannot appear in a CEL single-quoted string (U+{:04X})",
-                    c as u32
-                ),
-                None,
-            ));
+        match c {
+            '\'' => out.push_str("\\'"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                return Err(TableConfigError::Internal(
+                    format!(
+                        "Refusing to build GCS access boundary: input contains an unsupported control character (U+{:04X})",
+                        c as u32
+                    ),
+                    None,
+                ));
+            }
+            c => out.push(c),
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -256,30 +267,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_safe_for_cel_single_quoted_accepts_plain_value() {
-        validate_safe_for_cel_single_quoted("foo/bar").unwrap();
-        validate_safe_for_cel_single_quoted("foo/bar/üñîçødé").unwrap();
-        validate_safe_for_cel_single_quoted(r#"foo"bar"#).unwrap();
+    fn escape_for_cel_single_quoted_passes_plain_value() {
+        assert_eq!(escape_for_cel_single_quoted("foo/bar").unwrap(), "foo/bar");
+        assert_eq!(
+            escape_for_cel_single_quoted("foo/bar/üñîçødé").unwrap(),
+            "foo/bar/üñîçødé",
+        );
     }
 
     #[test]
-    fn validate_safe_for_cel_single_quoted_rejects_single_quote() {
-        let err = validate_safe_for_cel_single_quoted("') || true || resource.name.startsWith('")
-            .expect_err("single quote must be rejected");
-        assert!(matches!(err, TableConfigError::Internal(_, _)));
+    fn escape_for_cel_single_quoted_escapes_quote_backslash_and_double_quote() {
+        // Injection payload: closing the literal early. The `'` must be
+        // escaped to `\'` so the CEL parser keeps reading inside the literal.
+        assert_eq!(
+            escape_for_cel_single_quoted("') || true || x.startsWith('").unwrap(),
+            "\\') || true || x.startsWith(\\'",
+        );
+        assert_eq!(
+            escape_for_cel_single_quoted(r"foo\bar").unwrap(),
+            r"foo\\bar"
+        );
+        assert_eq!(
+            escape_for_cel_single_quoted(r#"foo"bar"#).unwrap(),
+            r#"foo\"bar"#
+        );
     }
 
     #[test]
-    fn validate_safe_for_cel_single_quoted_rejects_backslash() {
-        let err = validate_safe_for_cel_single_quoted(r"foo\bar")
-            .expect_err("backslash must be rejected");
-        assert!(matches!(err, TableConfigError::Internal(_, _)));
+    fn escape_for_cel_single_quoted_escapes_handled_control_chars() {
+        assert_eq!(escape_for_cel_single_quoted("a\nb").unwrap(), "a\\nb");
+        assert_eq!(escape_for_cel_single_quoted("a\rb").unwrap(), "a\\rb");
+        assert_eq!(escape_for_cel_single_quoted("a\tb").unwrap(), "a\\tb");
+        assert_eq!(escape_for_cel_single_quoted("a\u{08}b").unwrap(), "a\\bb");
+        assert_eq!(escape_for_cel_single_quoted("a\u{0C}b").unwrap(), "a\\fb");
     }
 
     #[test]
-    fn validate_safe_for_cel_single_quoted_rejects_newline_and_carriage_return() {
-        validate_safe_for_cel_single_quoted("foo\nbar").expect_err("newline must be rejected");
-        validate_safe_for_cel_single_quoted("foo\rbar").expect_err("CR must be rejected");
+    fn escape_for_cel_single_quoted_rejects_unsupported_control_chars() {
+        // NUL and other unhandled control chars have no CEL escape.
+        for cp in [0x00u32, 0x01, 0x07, 0x0B, 0x1F, 0x7F] {
+            let input = format!("a{}b", char::from_u32(cp).unwrap());
+            let err = escape_for_cel_single_quoted(&input)
+                .expect_err(&format!("U+{cp:04X} must be rejected"));
+            assert!(matches!(err, TableConfigError::Internal(_, _)));
+        }
     }
 
     #[test]
@@ -304,17 +335,26 @@ mod tests {
     }
 
     #[test]
-    fn options_rejects_cel_injection_payload_in_path() {
+    fn options_escapes_quote_in_path_instead_of_rejecting() {
+        // A path containing `'` must produce a CEL expression where the quote
+        // is escaped (`\'`), not closed early. The location is accepted, not
+        // rejected.
         let bucket = "my-bucket";
         let location: Location = "gs://my-bucket/x'/data/"
             .parse()
             .expect("URL parse should accept ' (sub-delim)");
-        let result =
-            Options::from_location_and_permissions(bucket, &location, StoragePermissions::Read);
-        let Err(err) = result else {
-            panic!("input with ' must be rejected");
-        };
-        assert!(matches!(err, TableConfigError::Internal(_, _)));
+        let opts =
+            Options::from_location_and_permissions(bucket, &location, StoragePermissions::Read)
+                .unwrap();
+        let expr = &opts.access_boundary.access_boundary_rules[0]
+            .availability_condition
+            .as_ref()
+            .unwrap()
+            .expression;
+        assert!(
+            expr.contains("/objects/x\\'/data/"),
+            "expected escaped `'` in expression, got: {expr}"
+        );
     }
 
     #[test]

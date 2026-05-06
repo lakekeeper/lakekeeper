@@ -74,6 +74,7 @@ google-cloud-storage = { workspace = true, features = [], optional = true }
 google-cloud-token = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
+percent-encoding = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true, optional = true }
 reqwest-retry = { workspace = true, optional = true }

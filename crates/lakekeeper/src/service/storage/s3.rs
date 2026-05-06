@@ -928,15 +928,17 @@ impl S3Profile {
 
     fn permission_to_actions(storage_permissions: StoragePermissions) -> &'static [&'static str] {
         match storage_permissions {
-            StoragePermissions::Read => &["s3:GetObject"],
+            StoragePermissions::Read => &["s3:GetObject", "s3:GetObjectVersion"],
             StoragePermissions::ReadWrite => &[
                 "s3:GetObject",
+                "s3:GetObjectVersion",
                 "s3:PutObject",
                 "s3:AbortMultipartUpload",
                 "s3:ListMultipartUploadParts",
             ],
             StoragePermissions::ReadWriteDelete => &[
                 "s3:GetObject",
+                "s3:GetObjectVersion",
                 "s3:PutObject",
                 "s3:DeleteObject",
                 "s3:AbortMultipartUpload",
@@ -984,6 +986,15 @@ impl S3Profile {
                         "s3:prefix": key_wildcard,
                     },
                 },
+            }),
+            // Some AWS clients call GetBucketLocation to discover the bucket's
+            // region before issuing data-plane requests. Without it, requests
+            // can fail with `IllegalLocationConstraintException`.
+            json!({
+                "Sid": "GetBucketLocation",
+                "Effect": "Allow",
+                "Action": "s3:GetBucketLocation",
+                "Resource": bucket_arn,
             }),
         ];
 

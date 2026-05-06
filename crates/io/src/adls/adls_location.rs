@@ -1,5 +1,6 @@
 use std::str::FromStr as _;
 
+use percent_encoding::percent_decode_str;
 use url::Host;
 
 use crate::{
@@ -82,19 +83,17 @@ impl AdlsLocation {
                     format!("ADLS path segment `{path_segment}` must not contain slashes."),
                 ));
             }
-            // Reject `..` and `.` segments. This is an Azure-specific
-            // correctness fix, not a security one. Azure normalises `..` in
-            // request URLs during SAS canonical-resource reconstruction —
-            // verified by integration test
-            // `azure_sas_canonical_resource_is_literal_not_normalised` —
-            // which means a SAS signed with a literal `..` canonical can
-            // never authenticate a request and the table would silently have
-            // unusable credentials. Refusing the location at the boundary
-            // gives a clear error instead of a perpetually-failing 403.
-            if *path_segment == ".." || *path_segment == "." {
+            // Azure ADLS Gen2 rejects path segments that decode to whitespace
+            // only (e.g. `%20`) with `400 InvalidUri`. Reject up-front with a
+            // clear error rather than letting it surface as an opaque
+            // server-side failure.
+            let decoded = percent_decode_str(path_segment).decode_utf8_lossy();
+            if !decoded.is_empty() && decoded.trim().is_empty() {
                 return Err(InvalidLocationError::new(
                     location_dbg.clone(),
-                    format!("ADLS path segment `{path_segment}` is not allowed."),
+                    format!(
+                        "ADLS path segment `{path_segment}` decodes to whitespace only, which Azure rejects."
+                    ),
                 ));
             }
         }
@@ -523,6 +522,25 @@ mod test {
             let parsed_location = AdlsLocation::try_from_location(&location, false);
             assert!(parsed_location.is_err(), "{parsed_location:?}");
         }
+    }
+
+    #[test]
+    fn test_rejects_whitespace_only_segment() {
+        // Azure ADLS Gen2 returns 400 InvalidUri for these; reject up-front.
+        for bad in [
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%20/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%09/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%20%20/bar",
+        ] {
+            let loc = Location::from_str(bad).unwrap();
+            let res = AdlsLocation::try_from_location(&loc, false);
+            assert!(res.is_err(), "expected reject for `{bad}`");
+        }
+        // Non-empty segments containing whitespace are fine.
+        let ok = "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%20y/bar";
+        let loc = Location::from_str(ok).unwrap();
+        AdlsLocation::try_from_location(&loc, false)
+            .unwrap_or_else(|e| panic!("expected accept for `{ok}`: {e}"));
     }
 
     #[test]
