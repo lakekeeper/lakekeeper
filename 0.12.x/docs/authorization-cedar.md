@@ -514,7 +514,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"WarehouseDescribeActions",
                 Lakekeeper::Action::"NamespaceDescribeActions",
                 Lakekeeper::Action::"TableSelectActions",
-                Lakekeeper::Action::"ViewDescribeActions"
+                Lakekeeper::Action::"ViewSelectActions"
             ],
         resource
     ) when {
@@ -533,7 +533,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"WarehouseDescribeActions",
                 Lakekeeper::Action::"NamespaceDescribeActions",
                 Lakekeeper::Action::"TableSelectActions",
-                Lakekeeper::Action::"ViewDescribeActions"
+                Lakekeeper::Action::"ViewSelectActions"
             ],
         resource
     ) when {
@@ -552,7 +552,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
                 Lakekeeper::Action::"WarehouseDescribeActions",
                 Lakekeeper::Action::"NamespaceDescribeActions",
                 Lakekeeper::Action::"TableSelectActions",
-                Lakekeeper::Action::"ViewDescribeActions"
+                Lakekeeper::Action::"ViewSelectActions"
             ],
         resource in Lakekeeper::Project::"my-project"
     ) when {
@@ -1097,6 +1097,7 @@ The following Action Groups are available: `NamespaceDescribeActions` (read-only
 | `GetViewMetadata`                          | View view definition and metadata |
 | `IncludeViewInList`                        | Include view in list operations (visibility) |
 | `GetViewTasks`                             | List background tasks for the view |
+| `SelectView`                               | Execute the view to produce rows (data-plane; required to traverse the view in a `referenced-by` chain) |
 | <nobr>`IntrospectViewAuthorization`</nobr> | Check access permissions on the view for other users |
 | `DropView`                                 | Delete the view                 |
 | `RenameView`                               | Change view name or move to different namespace |
@@ -1105,7 +1106,7 @@ The following Action Groups are available: `NamespaceDescribeActions` (read-only
 | `SetViewProtection`                        | Enable/disable deletion protection |
 | `CommitView`                               | Commit view changes (update definition, properties) |
 
-The following Action Groups are available: `ViewDescribeActions` (metadata only), `ViewModifyActions` (includes Describe + modifications), `ViewActions` (all)
+*Action Groups*: `ViewDescribeActions` (metadata only), `ViewSelectActions` (includes Describe + execute), `ViewModifyActions` (includes Describe + Select + modifications), `ViewActions` (all)
 
 ### Context-Aware Actions
 

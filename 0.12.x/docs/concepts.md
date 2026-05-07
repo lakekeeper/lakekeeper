@@ -20,6 +20,64 @@ Lakekeeper is an implementation of the Apache Iceberg REST Catalog API.  Lakekee
 To get started quickly with the latest version of Lakekeeper check our [Getting Started Guide](../../getting-started.md).
 
 
+## Identifier Case Sensitivity
+All entity names in Lakekeeper — including Projects, Warehouses, Namespaces, Tables, Views, and Roles — are **case-insensitive but case-preserving**:
+
+- **Case-insensitive matching**: Looking up `my_table`, `My_Table`, or `MY_TABLE` all resolve to the same entity. This applies to all operations: reads, writes, renames, drops, and listing.
+- **Case-preserving storage**: The name you provide at creation time is stored exactly as given. Lakekeeper does not normalize names to lowercase.
+- **No case-only duplicates**: You cannot create two entities whose names differ only in case within the same scope. For example, creating namespace `Analytics` and then `analytics` in the same warehouse will fail with a conflict error.
+- **Requested case in responses**: API responses return entity names using the case from the *request*, not the case stored in the database. For example, if a table was created as `my_table` and you query for `MY_TABLE`, the response will contain `MY_TABLE`.
+
+This behavior is implemented via PostgreSQL's ICU collation (`und-u-ks-level2`) on all identifier columns and is transparent to all query engines — no client-side configuration is needed.
+
+### Why this design?
+
+Query engines disagree on identifier case — and they disagree in the worst possible way. Some fold to lowercase, one folds to **uppercase**, and some preserve case exactly. Without a case-insensitive catalog, a table created by one engine can become invisible to another:
+
+| Engine | Unquoted identifiers | Quoted identifiers | Sent to catalog |
+|--------|---------------------|--------------------|-----------------|
+| Spark | Lowercased | Backticks preserve case | Lowercase |
+| Trino / Starburst | Lowercased | `"..."` preserves case | Lowercase (unquoted), preserved (quoted) |
+| DuckDB | Lowercased | `"..."` preserves case | Lowercase (unquoted), preserved (quoted) |
+| StarRocks | Lowercased | Generally lowercased | Lowercase |
+| RisingWave | Lowercased | `"..."` preserves case | Lowercase (unquoted), preserved (quoted) |
+| Athena (Spark) | **Always lowercased** | **Quoted still lowercased** | **Always lowercase** |
+| Snowflake | **Uppercased** | `"..."` preserves case | **Uppercase** (unquoted), preserved (quoted) |
+| PyIceberg | N/A (programmatic) | N/A | **Exactly as provided** |
+
+Notice the conflict: Spark sends `monthly_revenue`, Snowflake sends `MONTHLY_REVENUE`, and PyIceberg sends whatever the user typed. With a case-sensitive catalog, **the same table has three different names depending on which engine created it** — and none of them can find each other's tables.
+
+Consider this real-world scenario with a case-sensitive catalog:
+
+1. A data engineer creates a table via PyIceberg: `catalog.create_table("Reporting.Monthly Revenue", schema)` — stored as `Monthly Revenue`.
+2. An analyst in Spark runs `SELECT * FROM reporting.monthly_revenue` — Spark sends `monthly_revenue`. **:x: Table not found.**
+3. A BI team queries from Snowflake: `SELECT * FROM reporting.monthly_revenue` — Snowflake sends `MONTHLY_REVENUE`. **:x: Table not found.**
+4. Even the original engineer, switching to Trino, tries `SELECT * FROM reporting."Monthly Revenue"` — Trino lowercases the unquoted parts. **:x: Table not found** (unless quoted exactly right).
+
+The table exists. It has data. Yet three out of four engines cannot see it. The only way to access it is to know the exact case used at creation time and quote it precisely — fragile and error-prone.
+
+**With Lakekeeper, all four queries find the table instantly.** No quoting tricks, no configuration, no coordination between teams about naming conventions.
+
+#### Why not just lowercase everything?
+
+An alternative approach is to normalize all identifiers to lowercase on the catalog side. This solves interoperability but destroys information. If a data team carefully names their gold layer tables `Monthly Revenue`, `Customer Events`, or `Order Line Items`, a normalizing catalog turns them all into `monthly revenue`, `customer events`, and `order line items`. The intent behind the original naming is lost.
+
+This matters most for **UI and management tools**. Dashboards, the Lakekeeper UI, data catalogs, and lineage tools all display table names to humans. `Monthly Revenue` is immediately readable; `monthly revenue` is slightly worse; and once you have hundreds of tables, the difference between well-cased names and a wall of lowercase text adds up. By preserving the original case, Lakekeeper lets teams maintain meaningful, readable names while every query engine can still access them with whatever case it uses internally. You get proper casing for humans and seamless access for machines — without compromise.
+
+| Scenario | Lakekeeper | Case-sensitive catalog |
+|----------|:----------:|:----------------------:|
+| Spark reads table created by PyIceberg | :white_check_mark: | :x: |
+| Snowflake reads table created by Spark | :white_check_mark: | :x: |
+| Spark reads table created by Snowflake | :white_check_mark: | :x: |
+| Trino reads table created by Spark | :white_check_mark: | :white_check_mark: |
+| PyIceberg reads table created by Spark | :white_check_mark: | :white_check_mark: (1) |
+| Trino with quoted `"MyTable"` finds Spark's `mytable` | :white_check_mark: | :x: |
+| Athena reads table created by any engine | :white_check_mark: | :x: (2) |
+| UI shows `Monthly Revenue` + all engines can query it | :white_check_mark: | :x: |
+
+(1) Only if PyIceberg uses the exact same case that the creating engine sent (typically lowercase).
+(2) Athena always lowercases identifiers, including quoted ones. Tables created with mixed case via PyIceberg or quoted identifiers in Trino are unreachable from Athena in a case-sensitive catalog.
+
 ## Entity Hierarchy
 
 In addition to entities defined in the Apache Iceberg specification or the REST specification (Namespaces, Tables, etc.), Lakekeeper introduces new entities for permission management and multi-tenant setups. The following entities are available in Lakekeeper:

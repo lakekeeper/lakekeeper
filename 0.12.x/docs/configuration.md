@@ -73,6 +73,31 @@ Lakekeeper supports configuring separate database URLs for read and write operat
 | `LAKEKEEPER__PG_CONNECTION_MAX_LIFETIME`               | `1800`                                                | Maximum lifetime of connections in seconds |
 | `LAKEKEEPER__PG_ACQUIRE_TIMEOUT`                       | `10`                                                  | Timeout to acquire a new postgres connection in seconds. Default: `5` |
 
+#### Required Postgres extensions
+
+Lakekeeper migrations require the following extensions: `uuid-ossp`, `pgcrypto`, `pg_trgm`, `btree_gin`, `btree_gist`. They are part of the standard `postgresql-contrib` package and are pre-installed on most managed Postgres offerings (AWS RDS, Cloud SQL, Azure Database, etc.).
+
+If the role Lakekeeper connects as has `CREATE` privilege on the database, the migrations will create the extensions automatically. Otherwise — for example, when running Lakekeeper as a low-privilege role (see below) — an administrator must pre-create them once per database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+CREATE EXTENSION IF NOT EXISTS "btree_gin";
+CREATE EXTENSION IF NOT EXISTS "btree_gist";
+```
+
+#### Using a non-`public` Postgres schema
+
+By default Lakekeeper creates its tables in whichever schema Postgres resolves via `search_path` — typically `public`. To install it into a dedicated schema (e.g. for tenant isolation or policies that disallow DDL in `public`), set the default `search_path` on the role Lakekeeper connects as, server-side:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS lakekeeper AUTHORIZATION lakekeeper;
+ALTER ROLE lakekeeper SET search_path = lakekeeper, public;
+```
+
+Postgres applies this before any query runs on a new session, so both migrations and runtime queries land in `lakekeeper`. Keep `public` in `search_path` so functions installed by extensions there (e.g. `uuid_generate_v1mc` from `uuid-ossp`) still resolve. If you use separate roles for `LAKEKEEPER__PG_DATABASE_URL_READ` and `LAKEKEEPER__PG_DATABASE_URL_WRITE`, run `ALTER ROLE` for both. Setting `search_path` via the URL `options` parameter is fragile — encoding pitfalls and connection poolers (e.g. PgBouncer in transaction pooling mode) often drop it — so the role-level default is the recommended approach.
+
 ### Vault KV Version 2
 
 Configuration parameters if a Vault KV version 2 (i.e. Hashicorp Vault) compatible storage is used as a backend. Currently, we only support the `userpass` authentication method. Configuration may be passed as single values like `LAKEKEEPER__KV2__URL=http://vault.local` or as a compound value:
@@ -212,11 +237,14 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 
 
 ### Authorization
-Authorization is only effective if [Authentication](#authentication) is enabled. Authorization must not be enabled after Lakekeeper has been bootstrapped! Please create a new Lakekeeper instance, bootstrap it with authorization enabled, and migrate your tables.
+Authorization is only effective if [Authentication](#authentication) is enabled.
 
-| Variable                                 | Example    | Description          |
-|------------------------------------------|------------|----------------------|
-| <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall` | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
+We strongly recommend bootstrapping new deployments with authorization already enabled. Switching the configured `AUTHZ_BACKEND` after bootstrap is supported when moving to (or replacing the OpenFGA store behind) the OpenFGA backend — see [Switching to OpenFGA](./authorization-openfga.md#switching-to-openfga-or-replacing-the-store) for the procedure and its limitations (structural hierarchy is rebuilt from the catalog; ownership, grants, and role assignments are not). For other backends, create a new Lakekeeper instance and migrate your tables.
+
+| Variable                                 | Example                                                              | Description          |
+|------------------------------------------|----------------------------------------------------------------------|----------------------|
+| <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall`                                                           | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
+| <nobr>`LAKEKEEPER__INSTANCE_ADMINS`</nobr> | `["kubernetes~system:serviceaccount:lakekeeper:operator","oidc~alice"]` | TOML inline array of user IDs (`<idp_id>~<subject>`) that are granted instance-admin privileges via deployment config. Even a single admin must be wrapped in brackets. See [Instance Admins](./authorization.md#instance-admins) for scope and rationale. Default: `[]`. |
 
 ##### OpenFGA
 | Variable                                                 | Example                                                                    | Description |
@@ -394,7 +422,19 @@ Lakekeeper collects statistics about the usage of its endpoints. Every Lakekeepe
 
 ### SSL Dependencies
 
-You may be running Lakekeeper in your own environment which uses self-signed certificates for e.g. Minio. Lakekeeper is built with reqwest's `rustls-tls-native-roots` feature activated, this means `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables are respected. If both are not set, the system's default CA store is used. If you want to use a custom CA store, set `SSL_CERT_FILE` to the path of the CA file or `SSL_CERT_DIR` to the path of the CA directory. The certificate used by the server cannot be a CA. It needs to be an end entity certificate, else you may run into `CaUsedAsEndEntity` errors.
+Lakekeeper validates outbound TLS connections against two root stores combined:
+
+- **Mozilla root CAs** bundled into the binary via `webpki-roots` / `webpki-root-certs`. Public endpoints (AWS, GCS, Azure, OIDC providers) work out of the box, including on minimal images with no system CA bundle (scratch, `distroless`, `ubi-micro`).
+- **System / custom CAs** loaded via `rustls-native-certs`, which respects `SSL_CERT_FILE` and `SSL_CERT_DIR`. Point these at a PEM bundle or directory to trust self-signed certificates (e.g. for MinIO, internal IdPs). When unset, the standard host paths are consulted (`/etc/ssl/certs/...`, `/etc/pki/tls/certs/...`, etc.).
+
+The certificate presented by an endpoint cannot itself be a CA — it must be an end-entity certificate, otherwise TLS handshakes fail with `CaUsedAsEndEntity`.
+
+Two code paths do *not* use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
+
+- **Vault** integration (via `vaultrs` → `rustls-platform-verifier`). You can also pass a PEM bundle explicitly through the Vault client configuration.
+- **Kafka** integration (via `librdkafka` / OpenSSL).
+
+The official `distroless` and `ubi` images ship a CA bundle, so these work without extra configuration. If you roll your own minimal image and use Vault or Kafka, install `ca-certificates` or copy a bundle to `/etc/ssl/certs/ca-certificates.crt`.
 
 ### Request Limits
 
@@ -423,6 +463,48 @@ Lakekeeper can generate detailed audit logs for all authorization events. Audit 
 | Variable                                           | Example | Description   |
 |----------------------------------------------------|---------|---------------|
 | <nobr>`LAKEKEEPER__AUDIT__TRACING__ENABLED`</nobr> | `true`  | Enable audit logging for authorization events. When enabled, all authorization checks (both successful and failed) are logged at the `INFO` level with `event_source = "audit"`. Audit logs include the actor, action, resource, and outcome. Default: `false` |
+
+### Trusted Engines
+
+Trusted engines enable Lakekeeper to make context-aware authorization decisions for views with delegated execution (DEFINER security model). When configured, Lakekeeper:
+
+1. **Protects the owner property** — only requests from a matched engine can set or remove the view property that controls delegated execution (e.g. `trino.run-as-owner`).
+2. **Evaluates `referenced-by` chains** — when a trusted engine sends the `referenced-by` query parameter on `loadTable` / `loadView`, Lakekeeper resolves the full view chain and checks permissions for the correct user at each step.
+
+For a detailed explanation of DEFINER vs INVOKER views, see the [View Security](./view-security.md) guide.
+
+Trusted engines are configured as a map under `LAKEKEEPER__TRUSTED_ENGINES`. Each entry has a logical name (the map key), a type, the owner property name, and one or more identities that define which tokens are trusted.
+
+#### Configuration
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__TYPE</code> | `trino` | Engine type. Currently only `trino` is supported. |
+| <code>LAKEKEEPER__TRUSTED_ENGINES__<wbr>&lt;NAME&gt;__OWNER_PROPERTY</code> | `trino.run-as-owner` | The view property that identifies the owner for delegated execution. |
+
+Each engine requires one or more **identities** — keyed by Identity Provider ID (e.g. `oidc`, `kubernetes` as configured in [Authentication](./authentication.md)) — that define which tokens are trusted. A token matches an identity if the Identity Provider ID matches AND (any audience matches OR any subject matches). Multiple engines can match a single token. List values use bracket syntax: `[value1, value2]` — even for a single value: `[value]`.
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <nobr>`LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`</nobr><br><nobr>`IDENTITIES__<IDP_ID>__AUDIENCES`</nobr> | `[trino_dev, trino_prod]` | List of JWT audiences. A token matches if any of its audiences appears in this list. |
+| <nobr>`LAKEKEEPER__TRUSTED_ENGINES__<NAME>__`</nobr><br><nobr>`IDENTITIES__<IDP_ID>__SUBJECTS`</nobr> | `[trino-sa]` | List of JWT subjects. A token matches if its subject appears in this list. Useful for service accounts. |
+
+**Example:** Trust a Trino engine whose tokens come from the `oidc` provider with audience `trino`:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino]
+```
+
+**Example with multiple IdPs:** Trust Trino from both an OIDC provider and a Kubernetes service account:
+
+```bash
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__TYPE=trino
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY=trino.run-as-owner
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino_dev, trino_prod]
+LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
+```
 
 ### Role Provider
 

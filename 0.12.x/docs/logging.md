@@ -61,6 +61,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `properties`, `updated-properties`, `removed-properties`). See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
+| `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./authorization.md#instance-admins). |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
@@ -142,6 +143,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
     "actor_type": "principal",
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
+  "privilege_source": "authorizer",
   "decision": "allowed",
   "authorizations": [
     {
@@ -183,6 +185,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
     "actor_type": "principal",
     "principal": "oidc~user@example.com"
   },
+  "privilege_source": "authorizer",
   "decision": "denied",
   "authorizations": [
     {
@@ -242,6 +245,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
     "actor_type": "principal",
     "principal": "oidc~94eb1d88-7854-43a0-b517-a75f92c533a5"
   },
+  "privilege_source": "authorizer",
   "decision": "allowed",
   "authorizations": [
     {
