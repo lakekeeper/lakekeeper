@@ -880,7 +880,9 @@ pub(crate) mod test {
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!(
@@ -894,7 +896,9 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")

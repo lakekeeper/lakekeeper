@@ -414,7 +414,6 @@ pub(crate) fn get_partial_fs_locations(
 ) -> Result<Vec<String>, InternalParseLocationError> {
     location
         .partial_locations()
-        .into_iter()
         // Keep only the last part of the location
         .map(|l| {
             let location = Location::from_str(l)?;

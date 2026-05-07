@@ -999,10 +999,20 @@ impl S3Profile {
         ];
 
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            // Read-only creds only need to decrypt existing data keys.
+            // GenerateDataKey is a write-side action (creates new data
+            // keys to encrypt new objects); granting it on a Read-only
+            // role broadens KMS access beyond the table access mode.
+            let kms_actions: &[&str] = match storage_permissions {
+                StoragePermissions::Read => &["kms:Decrypt"],
+                StoragePermissions::ReadWrite | StoragePermissions::ReadWriteDelete => {
+                    &["kms:Decrypt", "kms:GenerateDataKey"]
+                }
+            };
             statements.push(json!({
                 "Sid": "KmsAccess",
                 "Effect": "Allow",
-                "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+                "Action": kms_actions,
                 "Resource": kms_key_arn,
             }));
         }
@@ -1579,7 +1589,9 @@ pub(crate) mod test {
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!("s3://test-bucket/test_prefix/{namespace_uuid}/{tabular_uuid}")
@@ -1590,7 +1602,9 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!("s3://test-bucket/{namespace_uuid}/{tabular_uuid}")
@@ -1625,12 +1639,16 @@ pub(crate) mod test {
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
         let expected = format!("s3://test-bucket/foo/{tabular_uuid}");
 
-        let location = profile.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = profile
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
 
         assert_eq!(location.to_string(), expected);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo").unwrap();
-        let location = profile.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = profile
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(location.to_string(), expected);
     }
 
@@ -2144,13 +2162,10 @@ pub(crate) mod test {
 
     #[test]
     fn policy_string_neutralizes_question_mark_in_table_path() {
-        // `Location::from_str` now rejects raw `?` at parse time, so this
-        // state can't be reached via REST anymore. Build via `extend()`
-        // (which doesn't re-parse) to defense-in-depth check that the
-        // escape is wired up in the policy path even if some future code
-        // bypasses the parser.
-        let mut table_location: Location = "s3://bucket-name/wh".parse().unwrap();
-        table_location.extend(["ev?l", "table"]);
+        // `Location::from_str` rejects raw `?` at parse time. The canonical
+        // form for `?` in a path is `%3F` — verify the IAM glob escape
+        // turns the decoded `?` into the AWS-safe `${?}` literal.
+        let table_location: Location = "s3://bucket-name/wh/ev%3Fl/table".parse().unwrap();
         let profile = S3Profile::builder()
             .bucket("bucket-name".to_string())
             .key_prefix("wh".to_string())

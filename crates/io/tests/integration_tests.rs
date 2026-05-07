@@ -1113,15 +1113,17 @@ async fn test_special_characters_impl(
 }
 
 /// Like `test_special_characters_impl` but the special chars appear as
-/// pre-percent-encoded URL segments (e.g. `%3F`, `%20`) — what
+/// path segments inside URL-style locations — covering both
+/// pre-percent-encoded segments (e.g. `%3F`, `%20`) and raw non-ASCII
+/// Unicode (e.g. `üñîçødé`, `日本語`). Both forms must round-trip
+/// write → read → list when used as a directory name. This is what
 /// Lakekeeper REST receives when a client provides a URL-style location.
 async fn test_special_characters_in_url_segments_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // Each entry: a URL-encoded path segment that should round-trip through
-    // write → read → list when used as a directory name in a URL location.
-    // Positive: segments that must round-trip end-to-end.
+    // Positive: percent-encoded *and* raw-Unicode segments that must
+    // round-trip end-to-end through write → read → list.
     let positive_segments = vec![
         "%3F",     // ?
         "%22",     // "

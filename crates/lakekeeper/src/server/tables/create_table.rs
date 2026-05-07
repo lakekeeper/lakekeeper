@@ -261,7 +261,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &CompressionCodec::try_from_maybe_properties(request.properties.as_ref())?,
             metadata_id,
             0,
-        ))
+        )?)
     };
 
     let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
