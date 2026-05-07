@@ -320,7 +320,7 @@ impl LakekeeperStorage for AdlsStorage {
         let head_response = head(&client, &adls_location).await?;
         let size = head_response
             .content_length
-            .and_then(|cl| u64::try_from(cl).ok());
+            .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str()));
         let last_modified =
             DateTime::from_timestamp(head_response.last_modified.unix_timestamp(), 0);
         Ok(FileInfo::new(
@@ -514,7 +514,7 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
         let size = if path.is_directory {
             None
         } else {
-            crate::list_size_to_u64(path.content_length, &full_path)
+            crate::size_to_u64(path.content_length, &full_path)
         };
         Some(FileInfo::new(last_modified, location, size))
     }

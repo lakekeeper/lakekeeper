@@ -100,16 +100,16 @@ pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Resu
 /// Converts a backend-reported file size from `i64` to `u64` for use in
 /// [`FileInfo::size`]. Negative sizes are unexpected — they indicate a
 /// protocol or parser bug in the backend SDK — so we emit a warning and
-/// return `None` rather than failing the whole list page over a single
-/// malformed entry.
-pub(crate) fn list_size_to_u64(raw: i64, location: &str) -> Option<u64> {
+/// return `None` rather than propagating an error. This keeps a malformed
+/// entry from failing an entire list page or a single `metadata` call.
+pub(crate) fn size_to_u64(raw: i64, location: &str) -> Option<u64> {
     u64::try_from(raw)
         .inspect_err(|e| {
             tracing::warn!(
                 size = raw,
                 location,
                 error = %e,
-                "Storage backend reported invalid object size during list; \
+                "Storage backend reported invalid object size; \
                  size will be omitted from FileInfo"
             );
         })

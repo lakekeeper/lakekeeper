@@ -231,7 +231,7 @@ impl LakekeeperStorage for GcsStorage {
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
         let location = GcsLocation::try_from_str(path)?;
         let head_response = head(&self.client, &location).await?;
-        let size = u64::try_from(head_response.size).ok();
+        let size = crate::size_to_u64(head_response.size, location.as_str());
         let last_modified = parse_timestamp(&head_response);
         Ok(FileInfo::new(
             last_modified,
@@ -409,8 +409,9 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
         })?;
         let last_modified = object
             .updated
-            .and_then(|timestamp| DateTime::from_timestamp(timestamp.unix_timestamp(), 0));
-        let size = crate::list_size_to_u64(object.size, &gcs_path);
+            .as_ref()
+            .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond()));
+        let size = crate::size_to_u64(object.size, &gcs_path);
         Ok(FileInfo::new(last_modified, location, size))
     }
 }

@@ -275,9 +275,10 @@ impl LakekeeperStorage for S3Storage {
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
         let s3_location = S3Location::try_from_str(path, true)?;
         let head_response = head(&self.client, &s3_location).await?;
+        let location_str = s3_location.to_string();
         let size = head_response
             .content_length()
-            .and_then(|n| u64::try_from(n).ok());
+            .and_then(|n| crate::size_to_u64(n, &location_str));
         let last_modified = head_response.last_modified().and_then(parse_timestamp);
         Ok(FileInfo::new(
             last_modified,
@@ -384,7 +385,7 @@ fn try_parse_file_info(
         let location = Location::from_str(&full_path).ok()?;
         let size = object
             .size()
-            .and_then(|s| crate::list_size_to_u64(s, &full_path));
+            .and_then(|s| crate::size_to_u64(s, &full_path));
         Some(FileInfo::new(last_modified, location, size))
     }
 }
