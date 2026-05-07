@@ -150,50 +150,55 @@ impl LakekeeperStorage for GcsStorage {
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let location = GcsLocation::try_from_str(path)?;
 
-        if bytes.len() < MAX_BYTES_PER_REQUEST {
+        let total_bytes = bytes.len();
+        if total_bytes < MAX_BYTES_PER_REQUEST {
             return upload_simple(&self.client, &location, bytes).await;
         }
 
-        let total_size = safe_usize_to_i64(bytes.len(), location.as_str())?;
-        let upload_client = prepare_resumable(&self.client, &location, total_size).await?;
-        let total_bytes = bytes.len() as u64;
-
-        // GCS resumable upload sessions require chunks to be committed in
-        // strict offset order: the server tracks the last-committed offset
-        // and rejects PUTs that arrive ahead of it. We therefore upload
-        // chunks sequentially, not via `execute_with_parallelism`. Do not
-        // reintroduce concurrency on this loop without first switching the
-        // upload mechanism.
-        //
-        // If chunk-upload throughput on this path is ever shown by
-        // measurement to be a real bottleneck, the correct escape hatch is
-        // GCS *parallel composite uploads*: upload each chunk as an
-        // independent temporary object in parallel, then issue
-        // `compose_object` to concatenate them into the final object and
-        // delete the temporaries. That is a substantial redesign (cleanup
-        // semantics, KMS handling, bucket pollution, lifecycle rules) and
-        // should only be undertaken in response to measured numbers, not
-        // speculatively.
-        let total_chunks = bytes.len().div_ceil(DEFAULT_BYTES_PER_REQUEST);
+        let upload_client = prepare_resumable(
+            &self.client,
+            &location,
+            safe_usize_to_i64(total_bytes, location.as_str())?,
+        )
+        .await?;
+        // GCS resumable upload sessions require chunks to be committed in strict offset order: the server tracks the last-committed offset
+        // and rejects PUTs that arrive ahead of it.
+        // If chunk-upload throughput on this path is ever shown by measurement to be a real bottleneck, we should consider GCS parallel composite uploads:
+        // upload each chunk as a temporary object in parallel, then issue `compose_object` to concatenate them into the final object and
+        // delete the temporaries. That is a substantial redesign and should be carefully considered.
+        let total_chunks = total_bytes.div_ceil(DEFAULT_BYTES_PER_REQUEST);
+        let mut slice_begin = 0;
+        let mut chunk_index = 0;
         let mut first_error: Option<WriteError> = None;
-        for (chunk_index, chunk) in bytes.chunks(DEFAULT_BYTES_PER_REQUEST).enumerate() {
-            let offset = (chunk_index * DEFAULT_BYTES_PER_REQUEST) as u64;
-            let chunk = Bytes::copy_from_slice(chunk);
-            // GCS protocol: only the final chunk declares the total size.
-            let is_final = chunk_index + 1 == total_chunks;
-            let chunk_total = if is_final { Some(total_bytes) } else { None };
-            if let Err(e) = upload_chunk(&upload_client, &location, offset, chunk, chunk_total)
-                .await
-                .map_err(|e| match e {
-                    WriteError::IOError(io) => WriteError::IOError(
-                        io.with_context(format!("Multipart upload chunk {chunk_index}")),
-                    ),
-                    other @ WriteError::InvalidLocation(_) => other,
-                })
-            {
+        while slice_begin < total_bytes {
+            let slice_end = (slice_begin + DEFAULT_BYTES_PER_REQUEST).min(total_bytes);
+            let chunk = bytes.slice(slice_begin..slice_end);
+            // Per GCS protocol only last chunk writes total_size
+            let is_final_chunk = chunk_index + 1 == total_chunks;
+            let total_size = if is_final_chunk {
+                Some(total_bytes as u64)
+            } else {
+                None
+            };
+            if let Err(e) = upload_chunk(
+                &upload_client,
+                &location,
+                slice_begin as u64,
+                chunk,
+                total_size,
+            )
+            .await
+            .map_err(|e| match e {
+                WriteError::IOError(io) => WriteError::IOError(
+                    io.with_context(format!("Multipart upload chunk {chunk_index}")),
+                ),
+                other @ WriteError::InvalidLocation(_) => other,
+            }) {
                 first_error = Some(e);
                 break;
             }
+            slice_begin = slice_end;
+            chunk_index += 1;
         }
         if let Some(err) = first_error {
             try_cancel_resumable(
@@ -205,7 +210,7 @@ impl LakekeeperStorage for GcsStorage {
             return Err(err);
         }
 
-        match verify_resumable_complete(&upload_client, &location, total_bytes).await {
+        match verify_resumable_complete(&upload_client, &location, total_bytes as u64).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 try_cancel_resumable(
@@ -813,22 +818,40 @@ impl GcsFileWrite {
     /// resumable buffer can produce. Any tail remains buffered and is
     /// flushed by `close` as the finalising chunk.
     async fn flush_resumable_buffer(&mut self) -> Result<(), WriteError> {
-        let GcsWriterState::Resumable {
-            upload_client,
-            offset,
-            buffer,
-        } = &mut self.state
-        else {
-            return Ok(());
-        };
-
-        while buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
+        loop {
+            // Re-borrow each iteration so the error path can `mem::replace`
+            // `self.state` and consume the upload client for cancellation.
+            let GcsWriterState::Resumable {
+                upload_client,
+                offset,
+                buffer,
+            } = &mut self.state
+            else {
+                return Ok(());
+            };
+            if buffer.len() < DEFAULT_BYTES_PER_REQUEST {
+                return Ok(());
+            }
             let chunk = buffer.split_to(DEFAULT_BYTES_PER_REQUEST).freeze();
             let chunk_offset = *offset;
-            *offset += chunk.len() as u64;
-            upload_chunk(upload_client, &self.location, chunk_offset, chunk, None).await?;
+            let chunk_len = chunk.len() as u64;
+            match upload_chunk(upload_client, &self.location, chunk_offset, chunk, None).await {
+                Ok(()) => *offset += chunk_len,
+                Err(e) => {
+                    if let GcsWriterState::Resumable { upload_client, .. } =
+                        std::mem::replace(&mut self.state, GcsWriterState::Aborted)
+                    {
+                        try_cancel_resumable(
+                            upload_client,
+                            &self.location,
+                            "buffered chunk upload failed",
+                        )
+                        .await;
+                    }
+                    return Err(e);
+                }
+            }
         }
-        Ok(())
     }
 }
 
