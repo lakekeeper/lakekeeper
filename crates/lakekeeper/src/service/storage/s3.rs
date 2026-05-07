@@ -962,7 +962,16 @@ impl S3Profile {
             "arn:aws:s3:::{}",
             table_location.bucket_name().trim_end_matches('/')
         );
-        let key = escape_iam_glob_literal(&format!("{}/", table_location.key().join("/")));
+        // AWS IAM matches policy `Resource` / `s3:prefix` against the
+        // *decoded* request key (the server URL-decodes before the IAM
+        // check). The canonical Location's segments are URL-encoded —
+        // percent-decode here before glob-escaping so the pattern AWS
+        // sees matches the actual key bytes. (`escape_iam_glob_literal`
+        // then neutralises any literal `*`/`?`/`$` in the path so they're
+        // matched literally rather than as IAM glob metacharacters.)
+        let raw_key = format!("{}/", table_location.key().join("/"));
+        let decoded_key = percent_encoding::percent_decode_str(&raw_key).decode_utf8_lossy();
+        let key = escape_iam_glob_literal(&decoded_key);
         let key_wildcard = format!("{key}*");
 
         let actions = Self::permission_to_actions(storage_permissions);

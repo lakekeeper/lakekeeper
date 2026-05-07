@@ -1146,11 +1146,13 @@ mod tests {
 
     #[test]
     fn test_split_location() {
-        let location = Location::from_str("abfss://").unwrap();
+        // Note: a host-less `abfss://` is no longer valid — `Location` now
+        // requires a non-empty host post-canonicalisation.
+        let location = Location::from_str("abfss://foo").unwrap();
         let prefix = location.scheme();
         let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(full_path, "");
+        assert_eq!(full_path, "foo");
         assert_eq!(join_location(prefix, full_path).unwrap(), location);
 
         let location = Location::from_str("abfss://foo/bar").unwrap();
