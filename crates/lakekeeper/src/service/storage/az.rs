@@ -485,6 +485,12 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
+        // `sas` is a static function and can't read the profile's
+        // `allow_alternative_protocols` flag. Passing `true` here is safe:
+        // `stc_request.table_location` was already validated against the
+        // profile at table registration, so accepting both `abfss://` and
+        // `wasbs://` here only affects `AdlsLocation` construction for SAS
+        // signing — it does not re-grant access to alternative protocols.
         let adls_location = AdlsLocation::try_from_location(&stc_request.table_location, true)
             .map_err(|e| CredentialsError::ShortTermCredential {
                 reason: format!("Invalid ADLS location for SAS signing: {e}"),
@@ -493,7 +499,7 @@ impl AdlsProfile {
         let (canonical_resource, depth) = azure_sas_canonical_path(&adls_location);
 
         tracing::debug!(
-            "Generationg SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
+            "Generating SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
             stc_request.storage_permissions
         );
 

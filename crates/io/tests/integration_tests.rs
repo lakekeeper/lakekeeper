@@ -1062,9 +1062,7 @@ async fn test_special_characters_impl(
         storage
             .write(&raw_path, Bytes::from(format!("Content of {filename}")))
             .await?;
-        let canonical_path = Location::from_str(&raw_path)
-            .map(|l| l.to_string())
-            .unwrap_or(raw_path);
+        let canonical_path = Location::from_str(&raw_path)?.to_string();
         written_paths.push(canonical_path);
     }
 

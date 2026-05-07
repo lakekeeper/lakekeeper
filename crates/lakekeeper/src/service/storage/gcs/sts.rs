@@ -189,8 +189,20 @@ fn gcs_cel_object_prefix(
                 None,
             )
         })?;
-    let decoded_prefix =
-        percent_encoding::percent_decode_str(prefixless_location).decode_utf8_lossy();
+    // Fail loudly on non-UTF-8 bytes rather than silently substituting
+    // U+FFFD — a corrupted CEL prefix could match the wrong objects or
+    // none, both of which are wrong outcomes for an access-boundary
+    // policy.
+    let decoded_prefix = percent_encoding::percent_decode_str(prefixless_location)
+        .decode_utf8()
+        .map_err(|e| {
+            TableConfigError::Internal(
+                format!(
+                    "GCS access boundary prefix decode failed: invalid UTF-8 in `{prefixless_location}`: {e}"
+                ),
+                Some(Box::new(e)),
+            )
+        })?;
     escape_for_cel_single_quoted(&decoded_prefix)
 }
 
