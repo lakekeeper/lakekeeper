@@ -164,12 +164,12 @@ impl Options {
 /// trailing `/`. Used in the `startsWith(...)` checks of the GCS access
 /// boundary CEL expression.
 ///
-/// GCS's `resource.name` for an object is
-/// `projects/_/buckets/{bucket}/objects/{decoded_object_name}` — the
-/// object name is the **decoded** form. CEL `startsWith` is byte-string
-/// compare, so the prefix here must also be decoded, or no request will
-/// match (silent 403). We percent-decode the canonical-encoded path
-/// before escaping for CEL.
+/// Uses the canonical-encoded path (no decode). When a client writes to
+/// GCS, the SDK URL-encodes the key for the wire (so a `%` in the key
+/// becomes `%25`); the server URL-decodes once and stores at the
+/// canonical-encoded form. CEL `startsWith` against `resource.name` is
+/// byte-string compare, so the prefix must be the same bytes as the
+/// canonical Location.
 fn gcs_cel_object_prefix(
     bucket: &str,
     table_location: &Location,
@@ -189,21 +189,7 @@ fn gcs_cel_object_prefix(
                 None,
             )
         })?;
-    // Fail loudly on non-UTF-8 bytes rather than silently substituting
-    // U+FFFD — a corrupted CEL prefix could match the wrong objects or
-    // none, both of which are wrong outcomes for an access-boundary
-    // policy.
-    let decoded_prefix = percent_encoding::percent_decode_str(prefixless_location)
-        .decode_utf8()
-        .map_err(|e| {
-            TableConfigError::Internal(
-                format!(
-                    "GCS access boundary prefix decode failed: invalid UTF-8 in `{prefixless_location}`: {e}"
-                ),
-                Some(Box::new(e)),
-            )
-        })?;
-    escape_for_cel_single_quoted(&decoded_prefix)
+    escape_for_cel_single_quoted(prefixless_location)
 }
 
 /// Escape `value` for interpolation inside a CEL single-quoted literal.
@@ -306,17 +292,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gcs_cel_object_prefix_decodes_percent_encoded_path() {
-        // GCS `resource.name` for an object is the **decoded** object name.
-        // The CEL `startsWith` is byte-string compare, so the prefix here
-        // must also be decoded — encoded form would never match.
+    fn gcs_cel_object_prefix_uses_canonical_encoded_form() {
+        // GCS `resource.name` matches the bytes that GCS actually stores.
+        // Clients URL-encode `%` → `%25` for the wire and the server
+        // decodes once, so a path of `foo%20bar` ends up as the literal
+        // 7-char key `foo%20bar` (not `foo bar`). The CEL `startsWith`
+        // prefix must use the same canonical-encoded form.
         let loc = Location::from_str("gs://my-bucket/wh/foo%20bar/").unwrap();
         let prefix = gcs_cel_object_prefix("my-bucket", &loc).unwrap();
-        assert_eq!(prefix, "wh/foo bar/");
+        assert_eq!(prefix, "wh/foo%20bar/");
     }
 
     #[test]
     fn gcs_cel_object_prefix_collapses_mixed_hex_to_same_form() {
+        // `%2D` and `%2d` and literal `-` all canonicalise to literal `-`
+        // (unreserved char), so the CEL prefix is identical for all three
+        // input forms.
         let a = Location::from_str("gs://b/foo-bar/").unwrap();
         let b = Location::from_str("gs://b/foo%2Dbar/").unwrap();
         let c = Location::from_str("gs://b/foo%2dbar/").unwrap();
