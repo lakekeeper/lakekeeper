@@ -830,7 +830,7 @@ impl Drop for GcsFileWrite {
             self.state = GcsWriterState::AbortFailed;
             tracing::warn!(
                 location = %self.location,
-                "GcsFileWrite dropeed without closing outside runtime, upload session cannot be canceled. Incomplete file may exist in target location."
+                "GcsFileWrite dropped without closing outside runtime, upload session cannot be canceled. Incomplete file may exist in target location."
             );
             return;
         };

@@ -764,7 +764,7 @@ impl LakekeeperFileWrite for S3FileWrite {
 
     /// Closes the streaming write to S3.
     ///
-    /// If an error occured during closing, subsequent calls will only
+    /// If an error occurred during closing, subsequent calls will only
     /// return generic error. Callers need to inspect `write` errors
     /// or first `close` error, if required.
     async fn close(&mut self) -> Result<(), WriteError> {
@@ -816,7 +816,7 @@ impl LakekeeperFileWrite for S3FileWrite {
                         }
                     };
                     // Note: no need to increase next_part_number here,
-                    // because state is dropped after when `close` finisehes
+                    // because state is dropped after `close` finishes
                     // and we can no longer reach the `Multipart` state.
                     // We still need to record `completed_parts` to finish
                     // the the multipart upload.
@@ -906,7 +906,7 @@ impl Drop for S3FileWrite {
             self.state = S3WriterState::AbortFailed;
             tracing::warn!(
                 location = %self.location,
-                "S3FileWrite dropeed without closing outside runtime, cannot abort multipart upload. Incomplete file may exist in target location."
+                "S3FileWrite dropped without closing outside runtime, cannot abort multipart upload. Incomplete file may exist in target location."
             );
             return;
         };
