@@ -151,9 +151,7 @@ fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
         path.to_string()
     };
 
-    let key = canonical
-        .strip_prefix(MEMORY_PREFIX)
-        .unwrap_or(&canonical);
+    let key = canonical.strip_prefix(MEMORY_PREFIX).unwrap_or(&canonical);
 
     if key.is_empty() {
         return Err(InvalidLocationError::new(
