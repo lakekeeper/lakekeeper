@@ -201,7 +201,15 @@ impl LakekeeperStorage for AdlsStorage {
         create_file(&client, path).await?;
 
         if bytes.len() <= MAX_BYTES_PER_REQUEST {
-            append_chunk(&client, 0, bytes, path).await?;
+            if let Err(e) = append_chunk(&client, 0, bytes, path).await {
+                try_delete_file(
+                    &client,
+                    path,
+                    "single-chunk append failed during bulk write",
+                )
+                .await;
+                return Err(e);
+            }
         } else {
             let upload_futures: Vec<_> = bytes
                 .chunks(DEFAULT_BYTES_PER_REQUEST)
@@ -248,12 +256,32 @@ impl LakekeeperStorage for AdlsStorage {
                 })
             });
             tokio::pin!(upload_stream);
+
+            // Drain the result stream even after the first failure so that any
+            // already-spawned upload tasks finish (or fail) before we delete
+            // the partial file. Keep the earliest error to surface.
+            let mut first_error: Option<WriteError> = None;
             while let Some(result) = upload_stream.next().await {
-                let _ = result?;
+                match result {
+                    Err(write_err) | Ok(Err(write_err)) if first_error.is_none() => {
+                        first_error = Some(write_err);
+                    }
+                    _ => {
+                        // Already errored or success — drop result.
+                    }
+                }
+            }
+            if let Some(err) = first_error {
+                try_delete_file(&client, path, "parallel multipart write failed").await;
+                return Err(err);
             }
         }
 
-        flush_close(&client, file_length, path).await
+        if let Err(e) = flush_close(&client, file_length, path).await {
+            try_delete_file(&client, path, "flush_close failed after bulk write").await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -266,7 +294,7 @@ impl LakekeeperStorage for AdlsStorage {
             path: path.to_string(),
             offset: 0,
             buffer: BytesMut::new(),
-            closed: false,
+            state: AdlsWriterState::Active,
         }))
     }
 
@@ -634,6 +662,55 @@ async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Resul
         })
 }
 
+/// Delete the target file as part of cleanup after a failed write.
+///
+/// Note on Azure auto-cleanup: the underlying Block Blob layer documents that
+/// uncommitted blocks (and zero-byte blobs created only via uncommitted blocks)
+/// are discarded one week after the last successful block upload. The ADLS
+/// Gen2 (DFS) docs do not explicitly state the same guarantee for HNS path
+/// objects, but they do not contradict it either. So in our current usage —
+/// where `flush` is only ever issued at `close` time — a partial file would
+/// most likely be garbage-collected by the underlying layer regardless.
+///
+/// We still delete explicitly because:
+///   1. A 0-byte / unflushed file can linger for up to a week (Block Blob
+///      documented behaviour) — long enough to confuse list operations,
+///      monitoring, and any reader expecting only completed files.
+///   2. lakekeeper-io's contract is that callers only ever observe finished
+///      files; a partial file is never inspected or recovered.
+///   3. If the writer is ever changed to issue intermediate flushes between
+///      appends (e.g. for memory pressure or progress checkpointing), the
+///      Block-Blob uncommitted-block GC stops covering the leak — the bytes
+///      become *committed* and persist indefinitely. Cleaning up explicitly
+///      now avoids that future foot-gun.
+async fn delete_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
+    client.delete().await.map(|_| ()).map_err(|e| {
+        WriteError::IOError(
+            parse_error(e, path).with_context("Failed to delete partial ADLS file."),
+        )
+    })
+}
+
+/// Best-effort variant of [`delete_file`] that swallows the delete error after
+/// logging it.
+///
+/// Use on cleanup paths where the caller propagates a different (original)
+/// error and the delete failure is unactionable: `close`, bulk write, `Drop`.
+/// The `context` field is included in the warn log to disambiguate which
+/// cleanup site triggered the deletion.
+async fn try_delete_file(client: &FileClient, path: &str, context: &str) {
+    if let Err(e) = delete_file(client, path).await {
+        tracing::warn!(
+            path = %path,
+            error = ?e,
+            context = %context,
+            "Failed to delete partial ADLS file. The file may persist in target \
+             location until manually removed or until the underlying \
+             uncommitted-block GC runs.",
+        );
+    }
+}
+
 /// Groups paths by account and filesystem (container).
 ///
 ///
@@ -647,7 +724,14 @@ pub(crate) struct AdlsFileWrite {
     path: String,
     offset: i64,
     buffer: BytesMut,
-    closed: bool,
+    state: AdlsWriterState,
+}
+
+enum AdlsWriterState {
+    Active,
+    Closed,
+    Aborted,
+    AbortFailed,
 }
 
 impl std::fmt::Debug for AdlsFileWrite {
@@ -656,50 +740,134 @@ impl std::fmt::Debug for AdlsFileWrite {
             .field("path", &self.path)
             .field("offset", &self.offset)
             .field("buffered_bytes", &self.buffer.len())
-            .field("closed", &self.closed)
+            .field("state", &self.state)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for AdlsWriterState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => f.write_str("Active"),
+            Self::Closed => f.write_str("Closed"),
+            Self::Aborted => f.write_str("Aborted"),
+            Self::AbortFailed => f.write_str("AbortFailed"),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl LakekeeperFileWrite for AdlsFileWrite {
     async fn write(&mut self, bytes_in: Bytes) -> Result<(), WriteError> {
-        if self.closed {
-            return Err(WriteError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                "Cannot write to closed writer",
-                self.path.clone(),
-            )));
+        match self.state {
+            AdlsWriterState::Closed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to closed writer",
+                    self.path.clone(),
+                )));
+            }
+            AdlsWriterState::Aborted => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to aborted writer",
+                    self.path.clone(),
+                )));
+            }
+            AdlsWriterState::AbortFailed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Cannot write to writer that failed to abort",
+                    self.path.clone(),
+                )));
+            }
+            AdlsWriterState::Active => {}
         }
         self.buffer.extend_from_slice(&bytes_in);
         while self.buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
             let chunk = self.buffer.split_to(DEFAULT_BYTES_PER_REQUEST).freeze();
             let chunk_len =
                 safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
-            append_chunk(&self.client, self.offset, chunk, &self.path).await?;
+            if let Err(append_error) =
+                append_chunk(&self.client, self.offset, chunk, &self.path).await
+            {
+                if let Err(delete_error) = delete_file(&self.client, &self.path).await {
+                    self.state = AdlsWriterState::AbortFailed;
+                    return Err(delete_error);
+                }
+                self.state = AdlsWriterState::Aborted;
+                return Err(append_error);
+            }
             self.offset += chunk_len;
         }
         Ok(())
     }
 
     async fn close(&mut self) -> Result<(), WriteError> {
-        if self.closed {
-            return Err(WriteError::IOError(IOError::new(
-                ErrorKind::ConditionNotMatch,
-                "Writer already closed",
-                self.path.clone(),
-            )));
+        let prev_state = std::mem::replace(&mut self.state, AdlsWriterState::Closed);
+        match prev_state {
+            AdlsWriterState::Closed | AdlsWriterState::Aborted | AdlsWriterState::AbortFailed => {
+                return Err(WriteError::IOError(IOError::new(
+                    ErrorKind::ConditionNotMatch,
+                    "Writer already closed or aborted",
+                    self.path.clone(),
+                )));
+            }
+            AdlsWriterState::Active => {}
         }
-        self.closed = true;
-        // No abort for append upload, if final flush+close fails, incomplete
-        // file gets garbage collected
         if !self.buffer.is_empty() {
             let chunk = self.buffer.split().freeze();
-            let chunk_len =
-                safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
-            append_chunk(&self.client, self.offset, chunk, &self.path).await?;
+            let chunk_len = match safe_usize_to_i64(chunk.len(), self.path.clone()) {
+                Ok(v) => v,
+                Err(e) => {
+                    try_delete_file(
+                        &self.client,
+                        &self.path,
+                        "buffer-size conversion failed during close",
+                    )
+                    .await;
+                    return Err(WriteError::IOError(e));
+                }
+            };
+            if let Err(e) = append_chunk(&self.client, self.offset, chunk, &self.path).await {
+                try_delete_file(&self.client, &self.path, "tail append failed during close").await;
+                return Err(e);
+            }
             self.offset += chunk_len;
         }
-        flush_close(&self.client, self.offset, &self.path).await
+        if let Err(e) = flush_close(&self.client, self.offset, &self.path).await {
+            try_delete_file(&self.client, &self.path, "flush_close failed during close").await;
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for AdlsFileWrite {
+    fn drop(&mut self) {
+        let prev_state = std::mem::replace(&mut self.state, AdlsWriterState::Aborted);
+        if !matches!(prev_state, AdlsWriterState::Active) {
+            // Closed / Aborted / AbortFailed: terminal states, no action.
+            return;
+        }
+
+        // `Handle::current()` panics when called outside a tokio runtime
+        // (runtime already shut down) or racing with shutdown.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.state = AdlsWriterState::AbortFailed;
+            tracing::warn!(
+                path = %self.path,
+                "AdlsFileWrite dropped without closing outside runtime, partial file cannot be deleted. Incomplete file may exist in target location.",
+            );
+            return;
+        };
+
+        // Once stable `std::future::AsyncDrop` exists we could change this to
+        // `.delete_file(...).await` without `spawn`.
+        let client = self.client.clone();
+        let path = self.path.clone();
+        handle.spawn(async move {
+            try_delete_file(&client, &path, "writer dropped without closing").await;
+        });
     }
 }

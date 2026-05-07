@@ -158,44 +158,58 @@ impl LakekeeperStorage for GcsStorage {
         let upload_client = prepare_resumable(&self.client, &location, total_size).await?;
         let total_bytes = bytes.len() as u64;
 
-        let upload_futures: Vec<_> = bytes
-            .chunks(DEFAULT_BYTES_PER_REQUEST)
-            .enumerate()
-            .map(|(chunk_index, chunk)| {
-                let offset = (chunk_index * DEFAULT_BYTES_PER_REQUEST) as u64;
-                let chunk = Bytes::copy_from_slice(chunk);
-                let upload_client = upload_client.clone();
-                let location = location.clone();
-                async move {
-                    upload_chunk(&upload_client, &location, offset, chunk, Some(total_bytes))
-                        .await
-                        .map_err(|e| match e {
-                            WriteError::IOError(io) => WriteError::IOError(
-                                io.with_context(format!("Multipart upload chunk {chunk_index}")),
-                            ),
-                            other @ WriteError::InvalidLocation(_) => other,
-                        })
-                }
-            })
-            .collect();
-
-        let location_for_join_err = location.to_string();
-        let upload_stream = execute_with_parallelism(upload_futures, 1).map(move |result| {
-            let location_for_err = location_for_join_err.clone();
-            result.map_err(move |join_err| {
-                WriteError::IOError(IOError::new(
-                    ErrorKind::Unexpected,
-                    format!("Task join error during multipart upload: {join_err}"),
-                    location_for_err,
-                ))
-            })
-        });
-        tokio::pin!(upload_stream);
-        while let Some(result) = upload_stream.next().await {
-            let _ = result?;
+        // GCS resumable upload sessions require chunks to be committed in
+        // strict offset order: the server tracks the last-committed offset
+        // and rejects PUTs that arrive ahead of it. We therefore upload
+        // chunks sequentially, not via `execute_with_parallelism`. Do not
+        // reintroduce concurrency on this loop without first switching the
+        // upload mechanism.
+        //
+        // If chunk-upload throughput on this path is ever shown by
+        // measurement to be a real bottleneck, the correct escape hatch is
+        // GCS *parallel composite uploads*: upload each chunk as an
+        // independent temporary object in parallel, then issue
+        // `compose_object` to concatenate them into the final object and
+        // delete the temporaries. That is a substantial redesign (cleanup
+        // semantics, KMS handling, bucket pollution, lifecycle rules) and
+        // should only be undertaken in response to measured numbers, not
+        // speculatively.
+        let mut first_error: Option<WriteError> = None;
+        for (chunk_index, chunk) in bytes.chunks(DEFAULT_BYTES_PER_REQUEST).enumerate() {
+            let offset = (chunk_index * DEFAULT_BYTES_PER_REQUEST) as u64;
+            let chunk = Bytes::copy_from_slice(chunk);
+            if let Err(e) =
+                upload_chunk(&upload_client, &location, offset, chunk, Some(total_bytes))
+                    .await
+                    .map_err(|e| match e {
+                        WriteError::IOError(io) => WriteError::IOError(
+                            io.with_context(format!("Multipart upload chunk {chunk_index}")),
+                        ),
+                        other @ WriteError::InvalidLocation(_) => other,
+                    })
+            {
+                first_error = Some(e);
+                break;
+            }
+        }
+        if let Some(err) = first_error {
+            try_cancel_resumable(upload_client, &location, "sequential multipart write failed")
+                .await;
+            return Err(err);
         }
 
-        verify_resumable_complete(&upload_client, &location, total_bytes).await
+        match verify_resumable_complete(&upload_client, &location, total_bytes).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                try_cancel_resumable(
+                    upload_client,
+                    &location,
+                    "verify_resumable_complete failed after sequential write",
+                )
+                .await;
+                Err(e)
+            }
+        }
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -564,6 +578,30 @@ async fn upload_chunk(
         })
 }
 
+/// Best-effort resumable-upload cancel that swallows the cancel error after
+/// logging it.
+///
+/// Use on cleanup paths where the caller propagates a different (original)
+/// error and the cancel failure is unactionable: one-shot bulk write, a
+/// `verify_resumable_complete` failure, or `Drop`. The `context` field is
+/// included in the warn log to disambiguate which cancel site triggered the
+/// cleanup. Consumes the `upload_client` because `ResumableUploadClient::cancel`
+/// takes `self`.
+async fn try_cancel_resumable(
+    upload_client: ResumableUploadClient,
+    location: &GcsLocation,
+    context: &str,
+) {
+    if let Err(e) = upload_client.cancel().await {
+        tracing::warn!(
+            location = %location,
+            error = ?e,
+            context = %context,
+            "Failed to cancel GCS resumable upload session. Incomplete upload may exist in target location until the session expires.",
+        );
+    }
+}
+
 /// Issue a final status query against the resumable upload session and
 /// surface anything other than `UploadStatus::Ok` as an error.
 async fn verify_resumable_complete(
@@ -711,21 +749,42 @@ impl LakekeeperFileWrite for GcsFileWrite {
                 offset,
                 buffer,
             } => {
-                // Upload any remaining tail bytes, then finalize via the
+                // Upload any remaining tail bytes, then finalize via
                 // `verify_resumable_complete`. When the buffer is empty
-                // only the finalizing status query is needed.
+                // only the finalizing status query is needed. On any
+                // failure the resumable session is best-effort cancelled
+                // so it does not linger until the GCS-side expiry.
                 let total_bytes = offset + buffer.len() as u64;
-                if !buffer.is_empty() {
-                    upload_chunk(
+                if !buffer.is_empty()
+                    && let Err(upload_error) = upload_chunk(
                         &upload_client,
                         &self.location,
                         offset,
                         buffer.freeze(),
                         Some(total_bytes),
                     )
-                    .await?;
+                    .await
+                {
+                    try_cancel_resumable(
+                        upload_client,
+                        &self.location,
+                        "final chunk upload failed during close",
+                    )
+                    .await;
+                    return Err(upload_error);
                 }
-                verify_resumable_complete(&upload_client, &self.location, total_bytes).await
+                if let Err(verify_error) =
+                    verify_resumable_complete(&upload_client, &self.location, total_bytes).await
+                {
+                    try_cancel_resumable(
+                        upload_client,
+                        &self.location,
+                        "verify_resumable_complete failed during close",
+                    )
+                    .await;
+                    return Err(verify_error);
+                }
+                Ok(())
             }
         }
     }
@@ -780,15 +839,9 @@ impl Drop for GcsFileWrite {
         // (https://doc.rust-lang.org/std/future/trait.AsyncDrop.html —
         // currently nightly-only and experimental) exists, we can change this
         // to `.cancel().await` without `spawn`
-        let location = self.location.to_string();
+        let location = self.location.clone();
         handle.spawn(async move {
-            if let Err(e) = upload_client.cancel().await {
-                tracing::warn!(
-                    %location,
-                    error = ?e,
-                    "GcsFileWrite dropeed without closing and canceling upload session failed. Incomplete file may exist in target location."
-                );
-            }
+            try_cancel_resumable(upload_client, &location, "writer dropped without closing").await;
         });
     }
 }

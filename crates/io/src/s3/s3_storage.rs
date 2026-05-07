@@ -128,22 +128,61 @@ impl LakekeeperStorage for S3Storage {
         let upload_results = execute_with_parallelism(upload_futures, 10);
         tokio::pin!(upload_results);
 
-        let mut completed_parts = Vec::new();
+        // Drain the result stream even after the first failure so that any
+        // already-spawned upload tasks finish (or fail) before we abort the
+        // upload session. Keep the earliest error to surface to the caller.
+        let mut completed_parts: Vec<(i32, aws_sdk_s3::types::CompletedPart)> = Vec::new();
+        let mut first_error: Option<WriteError> = None;
         while let Some(result) = upload_results.next().await {
-            let join_result = result.map_err(|e| {
-                WriteError::IOError(IOError::new(
-                    ErrorKind::Unexpected,
-                    format!("Upload task panicked: {e}"),
-                    s3_location.to_string(),
-                ))
-            })?;
-            let (part_number, completed_part) = join_result?;
-            completed_parts.push((part_number, completed_part));
+            match result {
+                Err(join_err) if first_error.is_none() => {
+                    first_error = Some(WriteError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Upload task panicked: {join_err}"),
+                        s3_location.to_string(),
+                    )));
+                }
+                Ok(Err(write_err)) if first_error.is_none() => {
+                    first_error = Some(write_err);
+                }
+                Ok(Ok((part_number, completed_part))) if first_error.is_none() => {
+                    completed_parts.push((part_number, completed_part));
+                }
+                _ => {
+                    // Already errored — drop subsequent results, the upload
+                    // session is going to be aborted anyway.
+                }
+            }
+        }
+        if let Some(err) = first_error {
+            try_abort_multipart(
+                &self.client,
+                &s3_location,
+                &upload_id,
+                "parallel multipart write failed",
+            )
+            .await;
+            return Err(err);
         }
         completed_parts.sort_by_key(|(part_number, _)| *part_number);
-        let completed_parts: Vec<_> = completed_parts.into_iter().map(|(_, part)| part).collect();
+        let completed_parts: Vec<_> = completed_parts
+            .into_iter()
+            .map(|(_, completed_part)| completed_part)
+            .collect();
 
-        complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await
+        if let Err(e) =
+            complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await
+        {
+            try_abort_multipart(
+                &self.client,
+                &s3_location,
+                &upload_id,
+                "complete_multipart failed after parallel write",
+            )
+            .await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
@@ -590,6 +629,28 @@ async fn abort_multipart(
     Ok(())
 }
 
+/// Best-effort multipart abort that swallows the abort error after logging it.
+///
+/// Use on cleanup paths where the caller propagates a different (original)
+/// error and the abort failure is unactionable: one-shot bulk write, a
+/// `complete_multipart` failure, or `Drop`. The `context` field is included in
+/// the warn log to disambiguate which abort site triggered the cleanup.
+async fn try_abort_multipart(
+    client: &aws_sdk_s3::Client,
+    location: &S3Location,
+    upload_id: &str,
+    context: &str,
+) {
+    if let Err(e) = abort_multipart(client, location, upload_id).await {
+        tracing::warn!(
+            location = %location,
+            error = ?e,
+            context = %context,
+            "Failed to abort S3 multipart upload. Incomplete upload may exist in target location and incur storage cost until bucket lifecycle rules clean it up.",
+        );
+    }
+}
+
 /// Streaming writer for S3.
 ///
 /// Buffers bytes locally; falls back to `PutObject` for files that fit in
@@ -765,7 +826,13 @@ impl LakekeeperFileWrite for S3FileWrite {
                     complete_multipart(&self.client, &self.location, &upload_id, completed_parts)
                         .await
                 {
-                    let _ = abort_multipart(&self.client, &self.location, &upload_id).await;
+                    try_abort_multipart(
+                        &self.client,
+                        &self.location,
+                        &upload_id,
+                        "complete_multipart failed during close",
+                    )
+                    .await;
                     return Err(e);
                 }
                 Ok(())
@@ -847,17 +914,17 @@ impl Drop for S3FileWrite {
         // Once stable `std::future::AsyncDrop`
         // (https://doc.rust-lang.org/std/future/trait.AsyncDrop.html —
         // currently nightly-only and experimental) exists, we can change this
-        // to `.abort_multipart(...).await` without `spawn`
+        // to `abort_multipart.await` without `spawn`
         let client = self.client.clone();
         let location = self.location.clone();
         handle.spawn(async move {
-            if let Err(e) = abort_multipart(&client, &location, &upload_id).await {
-                tracing::warn!(
-                    location = %location,
-                    error = ?e,
-                    "S3FileWrite dropped without closing and abort multipart upload failed. Incopmplete file may exist in target location."
-                );
-            }
+            try_abort_multipart(
+                &client,
+                &location,
+                &upload_id,
+                "writer dropped without closing",
+            )
+            .await;
         });
     }
 }
