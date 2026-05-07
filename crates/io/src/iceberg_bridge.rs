@@ -61,6 +61,8 @@ impl IcebergStorageBridge {
     }
 }
 
+/// Intentional hard fail for Ser/Deser because `lakekeeper_io` cannot be ser/deser,
+/// but we need to implement Ser/Deser for `impl Storage`s' `typetag::serde` requirement.
 impl Serialize for IcebergStorageBridge {
     fn serialize<S: Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
         Err(serde::ser::Error::custom(
@@ -69,6 +71,8 @@ impl Serialize for IcebergStorageBridge {
     }
 }
 
+/// Intentional hard fail for Ser/Deser because `lakekeeper_io` cannot be ser/deser,
+/// but we need to implement Ser/Deser for `impl Storage`s' `typetag::serde` requirement.
 impl<'de> Deserialize<'de> for IcebergStorageBridge {
     fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         Err(serde::de::Error::custom(
@@ -204,6 +208,8 @@ impl StorageFactory for IcebergStorageBridgeFactory {
     }
 }
 
+/// Intentional hard fail for Ser/Deser because `brdige` cannot be ser/deser,
+/// but we need to implement Ser/Deser for `impl StorageFactory`s' `typetag::serde` requirement.
 impl Serialize for IcebergStorageBridgeFactory {
     fn serialize<S: Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
         Err(serde::ser::Error::custom(
@@ -212,6 +218,8 @@ impl Serialize for IcebergStorageBridgeFactory {
     }
 }
 
+/// Intentional hard fail for Ser/Deser because `bridge` cannot be ser/deser,
+/// but we need to implement Ser/Deser for `impl StorageFactory`s' `typetag::serde` requirement.
 impl<'de> Deserialize<'de> for IcebergStorageBridgeFactory {
     fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         Err(serde::de::Error::custom(

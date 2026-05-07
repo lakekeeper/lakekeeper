@@ -272,6 +272,7 @@ mod tests {
             "KMS.NotFoundException",
             "NoSuchBucket",
             "NoSuchKey",
+            "PreconditionFailed",
             "503 SlowDown",
             "TokenRefreshRequired",
             "UnauthorizedAccessError",

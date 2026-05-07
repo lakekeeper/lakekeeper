@@ -196,8 +196,12 @@ impl LakekeeperStorage for GcsStorage {
             }
         }
         if let Some(err) = first_error {
-            try_cancel_resumable(upload_client, &location, "sequential multipart write failed")
-                .await;
+            try_cancel_resumable(
+                upload_client,
+                &location,
+                "sequential multipart write failed",
+            )
+            .await;
             return Err(err);
         }
 
@@ -497,7 +501,7 @@ fn parse_timestamp(object: &Object) -> Option<DateTime<Utc>> {
     object
         .updated
         .as_ref()
-        .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), 0))
+        .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond()))
 }
 
 /// Upload a small object in a single request.
@@ -568,6 +572,14 @@ async fn upload_chunk(
     total_size: Option<u64>,
 ) -> Result<(), WriteError> {
     let chunk_len = chunk.len() as u64;
+    // This is a defensive check against future refactoring. Currently `chunk_length` cannot be 0.
+    if chunk_len == 0 {
+        return Err(WriteError::IOError(IOError::new(
+            ErrorKind::ConditionNotMatch,
+            "Internal invariant violated: calculated chunk length is 0",
+            location.to_string(),
+        )));
+    }
     let chunk_size = ChunkSize::new(offset, offset + chunk_len - 1, total_size);
     upload_client
         .upload_multiple_chunk(chunk, &chunk_size)
