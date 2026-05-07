@@ -275,10 +275,11 @@ where
     /// Write the provided data to the specified path.
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
 
-    /// This method exists to satisfy the iceberg-rust `iceberg::io::FileWrite`.
-    /// Unlike `reader`, `writer` needs an inner state and cannot simply deledgate
-    /// to a "plan" lakekeeer-io function. We return a trait for that inner state here
-    /// that needs to be implemented per backend.
+    /// Return a `LakekeeperFileWrite` that can be used to `write` a file chunk by chunk until
+    /// it is `closed`.
+    ///
+    /// `LakekeeperFileWrite` needs an inner state that depends on the backend, so it is
+    /// feature-gated for those backends that provide an implementation.
     #[cfg(any(
         feature = "storage-adls",
         feature = "storage-gcs",
@@ -417,6 +418,12 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
+    #[cfg(any(
+        feature = "storage-adls",
+        feature = "storage-gcs",
+        feature = "storage-in-memory",
+        feature = "storage-s3"
+    ))]
     async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
         match self {
             #[cfg(feature = "storage-s3")]
@@ -557,6 +564,12 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).write(path, bytes).await
                 }
 
+                #[cfg(any(
+                    feature = "storage-adls",
+                    feature = "storage-gcs",
+                    feature = "storage-in-memory",
+                    feature = "storage-s3"
+                ))]
                 async fn writer(
                     &self,
                     path: &str,
