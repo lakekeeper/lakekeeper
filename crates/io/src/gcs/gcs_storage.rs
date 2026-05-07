@@ -404,11 +404,13 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
             IOError::new(
                 ErrorKind::Unexpected,
                 format!("Failed to parse GCS object path returned from list: {e}"),
-                gcs_path,
+                gcs_path.clone(),
             )
         })?;
-        let last_modified = parse_timestamp(&object);
-        let size = u64::try_from(object.size).ok();
+        let last_modified = object
+            .updated
+            .and_then(|timestamp| DateTime::from_timestamp(timestamp.unix_timestamp(), 0));
+        let size = crate::list_size_to_u64(object.size, &gcs_path);
         Ok(FileInfo::new(last_modified, location, size))
     }
 }

@@ -287,7 +287,14 @@ impl FromStr for Location {
         if location.fragment().is_some() {
             return Err(LocationParseError {
                 value: value.to_string(),
-                reason: "URL has a fragment (#)".to_string(),
+                reason: "URL has a fragment (#) — encode `#` in object names as %23".to_string(),
+            });
+        }
+
+        if location.query().is_some() {
+            return Err(LocationParseError {
+                value: value.to_string(),
+                reason: "URL has a query (?) — encode `?` in object names as %3F".to_string(),
             });
         }
 
@@ -328,6 +335,20 @@ mod tests {
         assert_eq!(location.as_str(), "s3://bucket/foo /bar");
         let location = Location::from_str("s3://bucket/foo%20/bar").unwrap();
         assert_eq!(location.as_str(), "s3://bucket/foo%20/bar");
+    }
+
+    #[test]
+    fn test_rejects_query_and_fragment() {
+        // Literal `?` and `#` in URL paths get parsed as query/fragment by
+        // `url::Url`, which would diverge from our raw `authority_and_path`
+        // view. Reject up-front and require percent-encoded `%3F`/`%23`.
+        let frag = Location::from_str("s3://bucket/foo#bar").unwrap_err();
+        assert!(frag.reason.contains("fragment"), "{}", frag.reason);
+        let query = Location::from_str("s3://bucket/foo?bar").unwrap_err();
+        assert!(query.reason.contains("query"), "{}", query.reason);
+        // Encoded forms must still work.
+        Location::from_str("s3://bucket/foo%23bar").unwrap();
+        Location::from_str("s3://bucket/foo%3Fbar").unwrap();
     }
 
     #[test]

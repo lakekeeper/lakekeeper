@@ -22,6 +22,7 @@ use lakekeeper_io::{
     },
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use veil::Redact;
 
 use super::ShortTermCredentialsRequest;
@@ -925,17 +926,24 @@ impl S3Profile {
         Ok(identity)
     }
 
-    fn permission_to_actions(storage_permissions: StoragePermissions) -> &'static str {
+    fn permission_to_actions(storage_permissions: StoragePermissions) -> &'static [&'static str] {
         match storage_permissions {
-            StoragePermissions::Read => "\"s3:GetObject\"",
-            StoragePermissions::ReadWrite => concat!(
-                "\"s3:GetObject\", \"s3:PutObject\", ",
-                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\""
-            ),
-            StoragePermissions::ReadWriteDelete => concat!(
-                "\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\", ",
-                "\"s3:AbortMultipartUpload\", \"s3:ListMultipartUploadParts\""
-            ),
+            StoragePermissions::Read => &["s3:GetObject", "s3:GetObjectVersion"],
+            StoragePermissions::ReadWrite => &[
+                "s3:GetObject",
+                "s3:GetObjectVersion",
+                "s3:PutObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+            ],
+            StoragePermissions::ReadWriteDelete => &[
+                "s3:GetObject",
+                "s3:GetObjectVersion",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts",
+            ],
         }
     }
 
@@ -954,62 +962,60 @@ impl S3Profile {
             "arn:aws:s3:::{}",
             table_location.bucket_name().trim_end_matches('/')
         );
-        let key = format!("{}/", table_location.key().join("/"));
+        let key = escape_iam_glob_literal(&format!("{}/", table_location.key().join("/")));
+        let key_wildcard = format!("{key}*");
 
-        let mut statements = format!(
-            r#"
-            {{
+        let actions = Self::permission_to_actions(storage_permissions);
+        let mut statements = vec![
+            json!({
                 "Sid": "TableAccess",
                 "Effect": "Allow",
-                "Action": [
-                    {}
-                ],
+                "Action": actions,
                 "Resource": [
-                    "{bucket_arn}/{key}",
-                    "{bucket_arn}/{key}*"
-                ]
-            }},
-            {{
+                    format!("{bucket_arn}/{key}"),
+                    format!("{bucket_arn}/{key_wildcard}"),
+                ],
+            }),
+            json!({
                 "Sid": "ListBucketForFolder",
                 "Effect": "Allow",
                 "Action": "s3:ListBucket",
-                "Resource": "{bucket_arn}",
-                "Condition": {{
-                    "StringLike": {{
-                        "s3:prefix": "{key}*"
-                    }}
-                }}
-            }}
-        "#,
-            Self::permission_to_actions(storage_permissions),
-        )
-        .replace('\n', "");
+                "Resource": bucket_arn,
+                "Condition": {
+                    "StringLike": {
+                        "s3:prefix": key_wildcard,
+                    },
+                },
+            }),
+            // Some AWS clients call GetBucketLocation to discover the bucket's
+            // region before issuing data-plane requests. Without it, requests
+            // can fail with `IllegalLocationConstraintException`.
+            json!({
+                "Sid": "GetBucketLocation",
+                "Effect": "Allow",
+                "Action": "s3:GetBucketLocation",
+                "Resource": bucket_arn,
+            }),
+        ];
 
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
-            statements = format!(
-                r#"
-                {statements},
-                {{
-                    "Sid": "KmsAccess",
-                    "Effect": "Allow",
-                    "Action": [
-                        "kms:Decrypt",
-                        "kms:GenerateDataKey"
-                    ],
-                    "Resource": "{kms_key_arn}"
-                }}"#
-            );
+            statements.push(json!({
+                "Sid": "KmsAccess",
+                "Effect": "Allow",
+                "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+                "Resource": kms_key_arn,
+            }));
         }
 
-        Ok(format!(
-            r#"{{
-        "Version": "2012-10-17",
-        "Statement": [
-            {statements}
-        ]
-        }}"#
-        )
-        .replace('\n', ""))
+        let policy = json!({
+            "Version": "2012-10-17",
+            "Statement": statements,
+        });
+
+        serde_json::to_string(&policy).map_err(|e| CredentialsError::ShortTermCredential {
+            source: Some(Box::new(e)),
+            reason: "Failed to serialize STS downscoped policy".to_string(),
+        })
     }
 
     fn validate_session_tags(&self) -> Result<(), ValidationError> {
@@ -1170,6 +1176,22 @@ impl S3Profile {
 
         Ok(())
     }
+}
+
+/// Escape characters that IAM policy strings treat as pattern metacharacters
+/// so the input is matched literally inside `Resource` ARNs and `StringLike`
+/// condition values.
+fn escape_iam_glob_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '*' => out.push_str("${*}"),
+            '?' => out.push_str("${?}"),
+            '$' => out.push_str("${$}"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
@@ -2030,6 +2052,123 @@ pub(crate) mod test {
                 StoragePermissions::ReadWriteDelete,
             )
             .unwrap();
+        let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    #[test]
+    fn escape_iam_glob_literal_escapes_pattern_chars() {
+        assert_eq!(escape_iam_glob_literal("plain/key"), "plain/key");
+        assert_eq!(escape_iam_glob_literal("with*star"), "with${*}star");
+        assert_eq!(escape_iam_glob_literal("with?q"), "with${?}q");
+        assert_eq!(escape_iam_glob_literal("with$dollar"), "with${$}dollar");
+        // Adversarial: literal ${aws:username} must not become a live variable.
+        // After escape the `${` opener is broken into `${$}{`, so IAM sees the
+        // valid `${$}` escape (resolves to `$`) followed by literal `{aws:username}`.
+        assert_eq!(
+            escape_iam_glob_literal("${aws:username}"),
+            "${$}{aws:username}"
+        );
+        // Adversarial: combining all metacharacters.
+        assert_eq!(escape_iam_glob_literal("a*b?c$d"), "a${*}b${?}c${$}d");
+    }
+
+    #[test]
+    fn policy_string_neutralizes_wildcard_in_table_path() {
+        // A table location containing `*` must not turn into an IAM wildcard
+        // in the issued credentials — that would broaden the scope to every
+        // key matching the pattern, not just the one table.
+        let table_location = "s3://bucket-name/wh/evil*/table";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        // The user-supplied `*` must be escaped; only the trailing `*` we
+        // append ourselves may remain as a live wildcard.
+        assert!(
+            policy.contains("wh/evil${*}/table"),
+            "expected escaped key in policy, got: {policy}"
+        );
+        assert!(
+            !policy.contains("wh/evil*/table"),
+            "raw user-supplied `*` leaked into policy: {policy}"
+        );
+        // Policy must still be valid JSON.
+        let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    #[test]
+    fn policy_string_handles_json_special_chars_in_path() {
+        // url::Url::parse percent-encodes `"` and most JSON-breaking chars in
+        // the path, but `\` survives unchanged. With raw format!() this would
+        // produce invalid JSON or worse. With serde_json the value gets
+        // escaped automatically. This test pins that behavior.
+        let table_location = r"s3://bucket-name/wh/back\slash/table";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        // Must round-trip as valid JSON.
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        // The backslash must appear escaped in the serialized form.
+        assert!(
+            policy.contains(r"back\\slash"),
+            "expected `\\\\` in serialized policy, got: {policy}"
+        );
+        // And the parsed JSON must contain a single literal backslash.
+        let resources = parsed["Statement"][0]["Resource"].as_array().unwrap();
+        assert!(
+            resources
+                .iter()
+                .any(|r| r.as_str().unwrap().contains(r"back\slash")),
+            "expected literal backslash in parsed Resource, got: {resources:?}"
+        );
+    }
+
+    #[test]
+    fn policy_string_neutralizes_question_mark_in_table_path() {
+        // `Location::from_str` now rejects raw `?` at parse time, so this
+        // state can't be reached via REST anymore. Build via `extend()`
+        // (which doesn't re-parse) to defense-in-depth check that the
+        // escape is wired up in the policy path even if some future code
+        // bypasses the parser.
+        let mut table_location: Location = "s3://bucket-name/wh".parse().unwrap();
+        table_location.extend(["ev?l", "table"]);
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_sts_policy_string(&table_location, StoragePermissions::ReadWriteDelete)
+            .unwrap();
+        assert!(
+            policy.contains("wh/ev${?}l/table"),
+            "expected escaped `?` in policy, got: {policy}"
+        );
+        assert!(
+            !policy.contains("wh/ev?l/table"),
+            "raw `?` leaked into policy: {policy}"
+        );
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }
 

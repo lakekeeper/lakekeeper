@@ -379,10 +379,12 @@ fn try_parse_file_info(
     move |object| {
         let key = object.key()?;
         let last_modified = object.last_modified().and_then(parse_timestamp);
-        let size = object.size().and_then(|n| u64::try_from(n).ok());
         let scheme = base_location.scheme();
         let full_path = format!("{scheme}://{s3_bucket}/{key}");
         let location = Location::from_str(&full_path).ok()?;
+        let size = object
+            .size()
+            .and_then(|s| crate::list_size_to_u64(s, &full_path));
         Some(FileInfo::new(last_modified, location, size))
     }
 }

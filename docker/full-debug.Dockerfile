@@ -30,7 +30,7 @@ FROM chef AS builder
 
 COPY --from=planner /app/recipe.json recipe.json
 # Build dependencies - this is the caching Docker layer!
-RUN $NO_CHEF || cargo chef cook --recipe-path recipe.json
+RUN $NO_CHEF || cargo chef cook --all-features --locked --recipe-path recipe.json
 # Build application
 COPY . .
 

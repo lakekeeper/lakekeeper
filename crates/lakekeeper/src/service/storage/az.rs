@@ -486,15 +486,24 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(stc_request.table_location.as_ref());
+        let path = reduce_scheme_string(stc_request.table_location.as_ref()).map_err(|e| {
+            CredentialsError::ShortTermCredential {
+                reason: format!("Invalid ADLS location for SAS signing: {e}"),
+                source: Some(Box::new(e)),
+            }
+        })?;
         let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
         let depth = rootless_path.split('/').count();
 
+        // Azure recomputes the canonical-resource by URL-decoding the request
+        // URL path. Hand-rolling the canonical with the encoded form (e.g.
+        // literal `%3F` or `%20`) produces a signature mismatch.
+        let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
         let canonical_resource = format!(
             "/blob/{}/{}/{}",
             self.account_name.as_str(),
             self.filesystem.as_str(),
-            rootless_path
+            decoded_path
         );
 
         tracing::debug!(
@@ -593,11 +602,10 @@ impl AdlsProfile {
 
 /// Removes the hostname and user from the path.
 /// Keeps only the path and optionally the scheme.
-#[must_use]
-pub(crate) fn reduce_scheme_string(path: &str) -> String {
-    AdlsLocation::try_from_str(path, true)
-        .map(|l| format!("/{}", l.blob_name().clone().trim_start_matches('/')))
-        .unwrap_or(path.to_string())
+/// Reduce an ADLS URL to its rooted blob path (`/<blob_name>`).
+pub(crate) fn reduce_scheme_string(path: &str) -> Result<String, InvalidLocationError> {
+    let l = AdlsLocation::try_from_str(path, true)?;
+    Ok(format!("/{}", l.blob_name().trim_start_matches('/')))
 }
 
 #[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,19 +744,15 @@ pub(crate) mod test {
 
     #[test]
     fn test_reduce_scheme_string() {
-        // Test abfss protocol
         let path = "abfss://filesystem@dfs.windows.net/path/_test";
-        let reduced_path = reduce_scheme_string(path);
-        assert_eq!(reduced_path, "/path/_test");
+        assert_eq!(reduce_scheme_string(path).unwrap(), "/path/_test");
 
-        // Test wasbs protocol
         let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path);
-        assert_eq!(reduced_wasbs_path, "/path/to/data");
+        assert_eq!(reduce_scheme_string(wasbs_path).unwrap(), "/path/to/data");
 
-        // Test a non-matching path
+        // Non-ADLS scheme must error rather than silently pass through.
         let non_matching = "http://example.com/path";
-        assert_eq!(reduce_scheme_string(non_matching), non_matching);
+        assert!(reduce_scheme_string(non_matching).is_err());
     }
 
     pub(crate) mod azure_integration_tests {

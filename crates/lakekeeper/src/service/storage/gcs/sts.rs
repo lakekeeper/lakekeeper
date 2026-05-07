@@ -23,7 +23,7 @@ pub(crate) async fn downscope(
             bucket,
             &stc_request.table_location,
             stc_request.storage_permissions,
-        ),
+        )?,
     )?;
 
     let response = HTTP_CLIENT
@@ -117,13 +117,28 @@ impl Options {
         bucket: &str,
         table_location: &Location,
         storage_permissions: StoragePermissions,
-    ) -> Self {
+    ) -> Result<Self, TableConfigError> {
         let mut table_location = table_location.clone();
         table_location.with_trailing_slash();
+        let bucket_prefix = format!("gs://{bucket}/");
         let prefixless_location = table_location
             .as_str()
-            .replace(&format!("gs://{bucket}/"), "");
-        Options {
+            .strip_prefix(&bucket_prefix)
+            .ok_or_else(|| {
+                TableConfigError::Internal(
+                    format!(
+                        "Refusing to build GCS access boundary: table location `{}` is not under bucket `{bucket}`",
+                        table_location.as_str()
+                    ),
+                    None,
+                )
+            })?
+            .to_owned();
+
+        let bucket_cel = escape_for_cel_single_quoted(bucket)?;
+        let path_cel = escape_for_cel_single_quoted(&prefixless_location)?;
+
+        Ok(Options {
             access_boundary: AccessBoundary {
                 access_boundary_rules: vec![AccessBoundaryRule {
                     available_resource: format!(
@@ -143,15 +158,45 @@ impl Options {
                     },
                     availability_condition: AvailabilityCondition {
                         title: "obj-prefixes".to_string(),
-                        // need the getAttribute to allow Listing operations
+                        // getAttribute is needed for Listing operations.
                         expression: format!(
-                            "resource.name.startsWith('projects/_/buckets/{bucket}/objects/{prefixless_location}') || resource.name.startsWith('projects/_/buckets/{bucket}/folders/{prefixless_location}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{prefixless_location}')",
+                            "resource.name.startsWith('projects/_/buckets/{bucket_cel}/objects/{path_cel}') || resource.name.startsWith('projects/_/buckets/{bucket_cel}/folders/{path_cel}') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('{path_cel}')",
                         ),
                     }.into(),
                 }],
             },
+        })
+    }
+}
+
+/// Escape `value` for interpolation inside a CEL single-quoted literal.
+/// GCP's access-boundary CEL doesn't accept `r'...'` raw strings or `+`
+/// concat. Control chars without a CEL escape are rejected.
+fn escape_for_cel_single_quoted(value: &str) -> Result<String, TableConfigError> {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\'' => out.push_str("\\'"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                return Err(TableConfigError::Internal(
+                    format!(
+                        "Refusing to build GCS access boundary: input contains an unsupported control character (U+{:04X})",
+                        c as u32
+                    ),
+                    None,
+                ));
+            }
+            c => out.push(c),
         }
     }
+    Ok(out)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -214,5 +259,115 @@ impl From<&GcsServiceKey> for CredentialsFile {
             quota_project_id: None,
             workforce_pool_user_project: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_for_cel_single_quoted_passes_plain_value() {
+        assert_eq!(escape_for_cel_single_quoted("foo/bar").unwrap(), "foo/bar");
+        assert_eq!(
+            escape_for_cel_single_quoted("foo/bar/üñîçødé").unwrap(),
+            "foo/bar/üñîçødé",
+        );
+    }
+
+    #[test]
+    fn escape_for_cel_single_quoted_escapes_quote_backslash_and_double_quote() {
+        // Injection payload: closing the literal early. The `'` must be
+        // escaped to `\'` so the CEL parser keeps reading inside the literal.
+        assert_eq!(
+            escape_for_cel_single_quoted("') || true || x.startsWith('").unwrap(),
+            "\\') || true || x.startsWith(\\'",
+        );
+        assert_eq!(
+            escape_for_cel_single_quoted(r"foo\bar").unwrap(),
+            r"foo\\bar"
+        );
+        assert_eq!(
+            escape_for_cel_single_quoted(r#"foo"bar"#).unwrap(),
+            r#"foo\"bar"#
+        );
+    }
+
+    #[test]
+    fn escape_for_cel_single_quoted_escapes_handled_control_chars() {
+        assert_eq!(escape_for_cel_single_quoted("a\nb").unwrap(), "a\\nb");
+        assert_eq!(escape_for_cel_single_quoted("a\rb").unwrap(), "a\\rb");
+        assert_eq!(escape_for_cel_single_quoted("a\tb").unwrap(), "a\\tb");
+        assert_eq!(escape_for_cel_single_quoted("a\u{08}b").unwrap(), "a\\bb");
+        assert_eq!(escape_for_cel_single_quoted("a\u{0C}b").unwrap(), "a\\fb");
+    }
+
+    #[test]
+    fn escape_for_cel_single_quoted_rejects_unsupported_control_chars() {
+        // NUL and other unhandled control chars have no CEL escape.
+        for cp in [0x00u32, 0x01, 0x07, 0x0B, 0x1F, 0x7F] {
+            let input = format!("a{}b", char::from_u32(cp).unwrap());
+            let err = escape_for_cel_single_quoted(&input)
+                .expect_err(&format!("U+{cp:04X} must be rejected"));
+            assert!(matches!(err, TableConfigError::Internal(_, _)));
+        }
+    }
+
+    #[test]
+    fn options_neutralizes_cel_injection_in_path() {
+        let bucket = "my-bucket";
+        let location: Location = "gs://my-bucket/wh/safe-prefix/".parse().unwrap();
+        let opts =
+            Options::from_location_and_permissions(bucket, &location, StoragePermissions::Read)
+                .unwrap();
+        let expr = &opts.access_boundary.access_boundary_rules[0]
+            .availability_condition
+            .as_ref()
+            .unwrap()
+            .expression;
+        assert!(
+            expr.contains("/buckets/my-bucket/objects/wh/safe-prefix/"),
+            "expected inline path literal in expression, got: {expr}"
+        );
+        // Guard against regressing to forms GCP rejects.
+        assert!(!expr.contains("r'"), "raw-string literal in: {expr}");
+        assert!(!expr.contains(" + "), "string concat in: {expr}");
+    }
+
+    #[test]
+    fn options_escapes_quote_in_path_instead_of_rejecting() {
+        // A path containing `'` must produce a CEL expression where the quote
+        // is escaped (`\'`), not closed early. The location is accepted, not
+        // rejected.
+        let bucket = "my-bucket";
+        let location: Location = "gs://my-bucket/x'/data/"
+            .parse()
+            .expect("URL parse should accept ' (sub-delim)");
+        let opts =
+            Options::from_location_and_permissions(bucket, &location, StoragePermissions::Read)
+                .unwrap();
+        let expr = &opts.access_boundary.access_boundary_rules[0]
+            .availability_condition
+            .as_ref()
+            .unwrap()
+            .expression;
+        assert!(
+            expr.contains("/objects/x\\'/data/"),
+            "expected escaped `'` in expression, got: {expr}"
+        );
+    }
+
+    #[test]
+    fn options_rejects_cross_bucket_table_location() {
+        let location: Location = "gs://other-bucket/data/".parse().unwrap();
+        let result = Options::from_location_and_permissions(
+            "my-bucket",
+            &location,
+            StoragePermissions::Read,
+        );
+        let Err(err) = result else {
+            panic!("cross-bucket location must be rejected");
+        };
+        assert!(matches!(err, TableConfigError::Internal(_, _)));
     }
 }

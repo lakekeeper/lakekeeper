@@ -242,6 +242,10 @@ test_all_storages!(
 test_all_storages!(test_empty_files, test_empty_files_impl);
 test_all_storages!(test_large_files, test_large_files_impl);
 test_all_storages!(test_special_characters, test_special_characters_impl);
+test_all_storages!(
+    test_special_characters_in_url_segments,
+    test_special_characters_in_url_segments_impl
+);
 test_all_storages!(test_error_handling, test_error_handling_impl);
 test_all_storages!(
     test_delete_non_existent_files,
@@ -1060,11 +1064,14 @@ async fn test_special_characters_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // Names are path of URL string, which may contain urlencoded chars
+    // Sub-delims (`!`, `=`, `-`, `_`, `.`, `+`, `*`, `'`, `$`, `,`, `;`) and
+    // multibyte UTF-8 are accepted literally. Reserved chars `?` and `#`
+    // are rejected by `Location::from_str` and must be percent-encoded;
+    // their round-trip is covered by `test_special_characters_in_url_segments`.
     let special_files = vec![
         "file with spaces.txt",
         "file-with-dashes.txt",
-        "y fl !? -_ä oats=1.2.txt",
+        "y fl ! -_ä oats=1.2.txt",
         "file_with_underscores.txt",
         "file.with.dots.txt",
         "file-with-ue-ü.txt",
@@ -1132,6 +1139,96 @@ async fn test_special_characters_impl(
         );
     }
 
+    Ok(())
+}
+
+/// Like `test_special_characters_impl` but the special chars appear as
+/// pre-percent-encoded URL segments (e.g. `%3F`, `%20`) — what
+/// Lakekeeper REST receives when a client provides a URL-style location.
+async fn test_special_characters_in_url_segments_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    // Each entry: a URL-encoded path segment that should round-trip through
+    // write → read → list when used as a directory name in a URL location.
+    // Positive: segments that must round-trip end-to-end.
+    let positive_segments = vec![
+        "%3F",     // ?
+        "%22",     // "
+        "x%20y",   // space in the middle
+        "%20x",    // leading space
+        "x%20",    // trailing space
+        "x%20%20", // trailing double space
+        "%2A",     // *
+        "%24",     // $
+        "%27",     // '
+        "%2B",     // +
+        "üñîçødé",
+        "日本語",
+    ];
+    // Negative: segments that must be rejected up-front. The reasons differ
+    // (Azure InvalidUri for whitespace-only; `url::Url` normalises encoded
+    // dot-segments and encoded `/`) but the outcome is the same: silent
+    // path divergence that we surface as a clean parse-time error.
+    let negative_segments = vec![
+        "%20", "%09", "%20%20", // whitespace-only
+        "%2E", "%2e", "%2E%2E", "%2e%2e", // dot-segments
+        "%2F",    // encoded slash
+    ];
+
+    let base_dir = config.test_dir_path("special-chars-url-segments");
+    let mut written_paths = Vec::new();
+    let mut failures = Vec::new();
+
+    for seg in &positive_segments {
+        let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
+        match storage
+            .write(&path, Bytes::from(format!("Content for {seg}")))
+            .await
+        {
+            Ok(()) => written_paths.push((seg.to_string(), path)),
+            Err(e) => failures.push(format!("write({seg}): {e}")),
+        }
+    }
+
+    for (seg, path) in &written_paths {
+        match storage.read(path).await {
+            Ok(read) => {
+                let s = String::from_utf8(read.to_vec())?;
+                if s != format!("Content for {seg}") {
+                    failures.push(format!("read({seg}): mismatch (got {s:?})"));
+                }
+            }
+            Err(e) => failures.push(format!("read({seg}): {e}")),
+        }
+    }
+    for (_, path) in &written_paths {
+        let _ = storage.delete(path).await;
+    }
+
+    // The decoded-segment rejections live in `AdlsLocation` only — S3 keys
+    // and GCS object names accept these chars literally, so the test is
+    // ADLS-specific.
+    if matches!(storage, StorageBackend::Adls(_)) {
+        for seg in &negative_segments {
+            let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
+            match storage.write(&path, Bytes::from("x")).await {
+                Ok(()) => {
+                    failures.push(format!("write({seg}): expected reject, got Ok"));
+                    let _ = storage.delete(&path).await;
+                }
+                Err(_) => { /* expected */ }
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} segment(s) failed:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 

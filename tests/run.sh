@@ -8,19 +8,28 @@
 # CONTAINER mode (LAKEKEEPER_IN_CONTAINER=1): runs tox directly.
 #
 # Usage (host):
-#   cd tests && bash run.sh <tox-env>[-<iceberg-version>]
+#   cd tests && bash run.sh <tox-env>[-<iceberg-version>] [extra pytest args...]
 #   e.g.  bash run.sh spark_minio_sts-1.10.1
 #         bash run.sh pyiceberg
 #         bash run.sh trino_opa
+#         bash run.sh spark_minio_sts-1.10.1 -k test_special_char_in_location
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
-TOX_NAME="${1%%-*}"
-SPARK_VERSION="${1#*-}"
+SUITE="$1"
+if [ -z "$SUITE" ]; then
+    echo "usage: bash run.sh <tox-env>[-<iceberg-version>] [extra pytest args...]" >&2
+    echo "  e.g.  bash run.sh spark_minio_sts-1.10.1" >&2
+    exit 2
+fi
+TOX_NAME="${SUITE%%-*}"
+SPARK_VERSION="${SUITE#*-}"
 # No version suffix → SPARK_VERSION equals TOX_NAME; normalise to empty.
 [ "$SPARK_VERSION" = "$TOX_NAME" ] && SPARK_VERSION=""
+shift
+PYTEST_ARGS=("$@")
 
 # ── Container-side execution ──────────────────────────────────────────────────
 if [ "${LAKEKEEPER_IN_CONTAINER:-0}" = "1" ]; then
@@ -30,7 +39,7 @@ if [ "${LAKEKEEPER_IN_CONTAINER:-0}" = "1" ]; then
     fi
     echo "Running tests: $TOX_NAME  iceberg version: ${LAKEKEEPER_TEST__SPARK_ICEBERG_VERSION:-default}"
     cd "${SCRIPT_DIR}/python"
-    exec tox -qe "${TOX_NAME}"
+    exec tox -qe "${TOX_NAME}" -- "${PYTEST_ARGS[@]}"
 fi
 
 # ── Host-side execution ───────────────────────────────────────────────────────
@@ -43,23 +52,23 @@ echo "Iceberg version   : ${SPARK_VERSION:-default}" >&2
 # Build the docker compose -f arguments, mirroring overlay rules from CI.
 # The order of the elif chain matters: 'openfga' must be checked before 'opa'.
 COMPOSE_ARGS=("-f" "${SCRIPT_DIR}/docker-compose.yaml")
-if [[ "$1" == *"openfga"* ]]; then
+if [[ "$SUITE" == *"openfga"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-openfga-overlay.yaml")
-    elif [[ "$1" == *"kv2"* ]]; then
+    elif [[ "$SUITE" == *"kv2"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-vault-overlay.yaml")
-    elif [[ "$1" == *"opa"* ]]; then
+    elif [[ "$SUITE" == *"opa"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-openfga-overlay.yaml")
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-trino-opa-overlay.yaml")
-    elif [[ "$1" == *"starrocks"* ]]; then
+    elif [[ "$SUITE" == *"starrocks"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-starrocks-overlay.yaml")
-    elif [[ "$1" == *"aws_system_identity"* ]]; then
+    elif [[ "$SUITE" == *"aws_system_identity"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-s3-system-identity-overlay.yaml")
-    elif [[ "$1" == *"legacy_md5"* ]]; then
+    elif [[ "$SUITE" == *"legacy_md5"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-legacy-md5-overlay.yaml")
-    elif [[ "$1" == *"separate_endpoint"* ]]; then
+    elif [[ "$SUITE" == *"separate_endpoint"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-sts-endpoint-overlay.yaml")
 fi
 
 exec docker compose "${COMPOSE_ARGS[@]}" run --quiet-pull spark \
 /opt/entrypoint.sh bash -c \
-'cd /opt/tests && LAKEKEEPER_IN_CONTAINER=1 bash run.sh "$1"' -- "$1"
+'cd /opt/tests && LAKEKEEPER_IN_CONTAINER=1 bash run.sh "$@"' -- "$SUITE" "${PYTEST_ARGS[@]}"

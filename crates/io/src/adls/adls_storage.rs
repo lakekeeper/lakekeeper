@@ -509,8 +509,13 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
             path_name
         );
         let location = Location::from_str(&full_path).ok()?;
-        let last_modified = DateTime::from_timestamp(path.last_modified.unix_timestamp(), 0);
-        let size = u64::try_from(path.content_length).ok();
+        let last_modified = path.last_modified;
+        let last_modified = DateTime::from_timestamp(last_modified.unix_timestamp(), 0);
+        let size = if path.is_directory {
+            None
+        } else {
+            crate::list_size_to_u64(path.content_length, &full_path)
+        };
         Some(FileInfo::new(last_modified, location, size))
     }
 }
