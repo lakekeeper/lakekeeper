@@ -485,14 +485,11 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let adls_location = AdlsLocation::try_from_location(
-            &stc_request.table_location,
-            true,
-        )
-        .map_err(|e| CredentialsError::ShortTermCredential {
-            reason: format!("Invalid ADLS location for SAS signing: {e}"),
-            source: Some(Box::new(e)),
-        })?;
+        let adls_location = AdlsLocation::try_from_location(&stc_request.table_location, true)
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                reason: format!("Invalid ADLS location for SAS signing: {e}"),
+                source: Some(Box::new(e)),
+            })?;
         let (canonical_resource, depth) = azure_sas_canonical_path(&adls_location);
 
         tracing::debug!(
@@ -589,7 +586,6 @@ impl AdlsProfile {
     }
 }
 
-
 // --- Egress encoders ---------------------------------------------------
 //
 // Each encoder takes the `Location` (or its components) plus any
@@ -609,9 +605,7 @@ impl AdlsProfile {
 /// non-empty path segments — root locations have depth 0.
 fn azure_sas_canonical_path(loc: &AdlsLocation) -> (String, usize) {
     let blob_path = loc.blob_name();
-    let rootless_path = blob_path
-        .trim_start_matches('/')
-        .trim_end_matches('/');
+    let rootless_path = blob_path.trim_start_matches('/').trim_end_matches('/');
     let depth = if rootless_path.is_empty() {
         0
     } else {
@@ -870,10 +864,7 @@ pub(crate) mod test {
         )
         .unwrap();
         let (canonical, depth) = azure_sas_canonical_path(&loc);
-        assert_eq!(
-            canonical,
-            "/blob/account/filesystem/wh/foo bar/baz?qux"
-        );
+        assert_eq!(canonical, "/blob/account/filesystem/wh/foo bar/baz?qux");
         assert_eq!(depth, 3);
     }
 
@@ -881,11 +872,9 @@ pub(crate) mod test {
     fn azure_sas_canonical_path_root_has_depth_zero() {
         // Root location with no path segments must report depth 0
         // (not 1, which `"".split('/').count()` would give).
-        let loc = AdlsLocation::try_from_str(
-            "abfss://filesystem@account.dfs.core.windows.net/",
-            false,
-        )
-        .unwrap();
+        let loc =
+            AdlsLocation::try_from_str("abfss://filesystem@account.dfs.core.windows.net/", false)
+                .unwrap();
         let (canonical, depth) = azure_sas_canonical_path(&loc);
         assert_eq!(canonical, "/blob/account/filesystem/");
         assert_eq!(depth, 0);

@@ -1,10 +1,8 @@
 use core::panic;
-use std::{future::Future, sync::LazyLock};
+use std::{future::Future, str::FromStr, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use std::str::FromStr;
-
 use lakekeeper_io::{LakekeeperStorage, Location, StorageBackend, execute_with_parallelism};
 use tokio::{
     runtime::Runtime,
