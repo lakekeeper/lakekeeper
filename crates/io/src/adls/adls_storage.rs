@@ -525,6 +525,8 @@ fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError>
     Ok(())
 }
 
+/// Groups paths by account and filesystem (container).
+///
 /// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
 /// vectors of `(blob_path, original_path)` tuples.
 fn group_paths_by_container(
@@ -711,11 +713,9 @@ async fn try_delete_file(client: &FileClient, path: &str, context: &str) {
     }
 }
 
-/// Groups paths by account and filesystem (container).
-///
+/// Streaming writer for ADLS.
 ///
 /// The target file is created up-front by `writer`. Each `write` buffers
-/// Streaming writer for ADLS.
 /// locally and flushes append calls once `DEFAULT_BYTES_PER_REQUEST` bytes
 /// have accumulated. `close` flushes any remaining buffered bytes and
 /// finalises the file.
