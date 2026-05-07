@@ -3,7 +3,9 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use lakekeeper_io::{LakekeeperStorage, StorageBackend, execute_with_parallelism};
+use std::str::FromStr;
+
+use lakekeeper_io::{LakekeeperStorage, Location, StorageBackend, execute_with_parallelism};
 use tokio::{
     runtime::Runtime,
     time::{Duration, Instant, sleep},
@@ -1052,13 +1054,20 @@ async fn test_special_characters_impl(
     let base_dir = config.test_dir_path("special-chars-test");
     let mut written_paths = Vec::new();
 
-    // Write files with special characters
+    // Write files with special characters. Note: `Location::from_str`
+    // canonicalises filenames (literal space → `%20`, non-ASCII →
+    // percent-encoded UTF-8 bytes), so we record the canonical form to
+    // compare against the cloud's `list` output below — the cloud stores
+    // and returns the canonical bytes.
     for filename in &special_files {
-        let path = format!("{base_dir}{filename}");
+        let raw_path = format!("{base_dir}{filename}");
         storage
-            .write(&path, Bytes::from(format!("Content of {filename}")))
+            .write(&raw_path, Bytes::from(format!("Content of {filename}")))
             .await?;
-        written_paths.push(path);
+        let canonical_path = Location::from_str(&raw_path)
+            .map(|l| l.to_string())
+            .unwrap_or(raw_path);
+        written_paths.push(canonical_path);
     }
 
     // Read all files back

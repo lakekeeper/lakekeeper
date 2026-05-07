@@ -144,6 +144,15 @@ impl AdlsLocation {
         self.location.scheme()
     }
 
+    /// Egress encoder: the path string fed to the Azure SDK when
+    /// constructing request URLs.
+    ///
+    /// Returns the canonical path component, with literal `?` re-encoded
+    /// to `%3F`. The Azure SDK's URL construction uses `Url::join` which
+    /// truncates at the first `?` (treats it as the query separator);
+    /// our canonical Location keeps `%3F` encoded already, but defensive
+    /// re-encoding here ensures any future change that allows literal
+    /// `?` in the path still produces a safe SDK request URL.
     #[must_use]
     pub fn blob_name(&self) -> String {
         self.location

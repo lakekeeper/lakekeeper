@@ -958,21 +958,10 @@ impl S3Profile {
                 reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}").to_string(),
             }
         })?;
-        let bucket_arn = format!(
-            "arn:aws:s3:::{}",
-            table_location.bucket_name().trim_end_matches('/')
-        );
-        // AWS IAM matches policy `Resource` / `s3:prefix` against the
-        // *decoded* request key (the server URL-decodes before the IAM
-        // check). The canonical Location's segments are URL-encoded —
-        // percent-decode here before glob-escaping so the pattern AWS
-        // sees matches the actual key bytes. (`escape_iam_glob_literal`
-        // then neutralises any literal `*`/`?`/`$` in the path so they're
-        // matched literally rather than as IAM glob metacharacters.)
-        let raw_key = format!("{}/", table_location.key().join("/"));
-        let decoded_key = percent_encoding::percent_decode_str(&raw_key).decode_utf8_lossy();
-        let key = escape_iam_glob_literal(&decoded_key);
-        let key_wildcard = format!("{key}*");
+        let bucket_arn = s3_iam_bucket_arn(&table_location);
+        let key_exact = s3_iam_resource_arn_exact(&table_location);
+        let key_wildcard = s3_iam_resource_arn_wildcard(&table_location);
+        let key_prefix = s3_iam_listbucket_prefix(&table_location);
 
         let actions = Self::permission_to_actions(storage_permissions);
         let mut statements = vec![
@@ -980,19 +969,16 @@ impl S3Profile {
                 "Sid": "TableAccess",
                 "Effect": "Allow",
                 "Action": actions,
-                "Resource": [
-                    format!("{bucket_arn}/{key}"),
-                    format!("{bucket_arn}/{key_wildcard}"),
-                ],
+                "Resource": [key_exact, key_wildcard],
             }),
             json!({
                 "Sid": "ListBucketForFolder",
                 "Effect": "Allow",
                 "Action": "s3:ListBucket",
-                "Resource": bucket_arn,
+                "Resource": &bucket_arn,
                 "Condition": {
                     "StringLike": {
-                        "s3:prefix": key_wildcard,
+                        "s3:prefix": key_prefix,
                     },
                 },
             }),
@@ -1211,6 +1197,56 @@ fn escape_iam_glob_literal(value: &str) -> String {
         }
     }
     out
+}
+
+// --- Egress encoders ---------------------------------------------------
+//
+// Each function here produces the byte form a specific AWS-side consumer
+// expects from a `Location`. They live next to the IAM policy builder
+// so a reviewer can verify the canonical form matches what AWS does
+// server-side (URL-decode + glob-match for IAM `Resource` and `s3:prefix`).
+
+/// `arn:aws:s3:::{bucket}` — the bucket-level ARN, used as the resource
+/// for `s3:ListBucket` and as the prefix for object-level resource ARNs.
+fn s3_iam_bucket_arn(loc: &S3Location) -> String {
+    format!("arn:aws:s3:::{}", loc.bucket_name())
+}
+
+/// Decoded table-key path with a trailing `/` and IAM glob-meta chars
+/// (`*`/`?`/`$`) escaped. AWS IAM matches policy `Resource`/`s3:prefix`
+/// against the **decoded** key (the server URL-decodes the request before
+/// the IAM check), so we percent-decode the canonical-encoded segments
+/// here before emitting. Non-UTF-8 bytes fall back to lossy decode —
+/// IAM patterns are byte-strings, not UTF-8-strict.
+fn s3_iam_decoded_key_with_trailing_slash(loc: &S3Location) -> String {
+    let raw = format!("{}/", loc.key().join("/"));
+    let decoded = percent_encoding::percent_decode_str(&raw).decode_utf8_lossy();
+    escape_iam_glob_literal(&decoded)
+}
+
+/// `arn:aws:s3:::{bucket}/{decoded-prefix}/` — exact-prefix object ARN.
+fn s3_iam_resource_arn_exact(loc: &S3Location) -> String {
+    format!(
+        "{}/{}",
+        s3_iam_bucket_arn(loc),
+        s3_iam_decoded_key_with_trailing_slash(loc)
+    )
+}
+
+/// `arn:aws:s3:::{bucket}/{decoded-prefix}/*` — wildcard object ARN.
+fn s3_iam_resource_arn_wildcard(loc: &S3Location) -> String {
+    format!(
+        "{}/{}*",
+        s3_iam_bucket_arn(loc),
+        s3_iam_decoded_key_with_trailing_slash(loc)
+    )
+}
+
+/// `{decoded-prefix}/*` — value for `s3:prefix` in an `s3:ListBucket`
+/// condition. AWS decodes the request prefix server-side before glob-
+/// matching, so we feed the decoded form here.
+fn s3_iam_listbucket_prefix(loc: &S3Location) -> String {
+    format!("{}*", s3_iam_decoded_key_with_trailing_slash(loc))
 }
 
 fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
@@ -2080,6 +2116,40 @@ pub(crate) mod test {
             )
             .unwrap();
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    #[test]
+    fn s3_iam_encoders_decode_and_glob_escape() {
+        // AWS IAM compares policy `Resource` against the URL-decoded request
+        // key. The encoders decode the canonical-encoded key first, then
+        // escape glob meta-chars (`*`/`?`/`$`) so they match literally.
+        let loc: Location = "s3://my-bucket/wh/ev%3Fl/table".parse().unwrap();
+        let s3loc = S3Location::try_from_location(&loc, true).unwrap();
+        assert_eq!(s3_iam_bucket_arn(&s3loc), "arn:aws:s3:::my-bucket");
+        assert_eq!(
+            s3_iam_resource_arn_exact(&s3loc),
+            "arn:aws:s3:::my-bucket/wh/ev${?}l/table/"
+        );
+        assert_eq!(
+            s3_iam_resource_arn_wildcard(&s3loc),
+            "arn:aws:s3:::my-bucket/wh/ev${?}l/table/*"
+        );
+        assert_eq!(s3_iam_listbucket_prefix(&s3loc), "wh/ev${?}l/table/*");
+    }
+
+    #[test]
+    fn s3_iam_encoders_collapse_mixed_hex_to_same_form() {
+        // `%2D` and `%2d` and literal `-` all canonicalise to literal `-` —
+        // verify the encoder output is identical for all three forms.
+        let a: Location = "s3://my-bucket/foo-bar/x".parse().unwrap();
+        let b: Location = "s3://my-bucket/foo%2Dbar/x".parse().unwrap();
+        let c: Location = "s3://my-bucket/foo%2dbar/x".parse().unwrap();
+        let arn_a = s3_iam_resource_arn_exact(&S3Location::try_from_location(&a, false).unwrap());
+        let arn_b = s3_iam_resource_arn_exact(&S3Location::try_from_location(&b, false).unwrap());
+        let arn_c = s3_iam_resource_arn_exact(&S3Location::try_from_location(&c, false).unwrap());
+        assert_eq!(arn_a, arn_b);
+        assert_eq!(arn_a, arn_c);
+        assert_eq!(arn_a, "arn:aws:s3:::my-bucket/foo-bar/x/");
     }
 
     #[test]
