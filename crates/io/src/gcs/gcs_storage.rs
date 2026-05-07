@@ -174,19 +174,22 @@ impl LakekeeperStorage for GcsStorage {
         // semantics, KMS handling, bucket pollution, lifecycle rules) and
         // should only be undertaken in response to measured numbers, not
         // speculatively.
+        let total_chunks = bytes.len().div_ceil(DEFAULT_BYTES_PER_REQUEST);
         let mut first_error: Option<WriteError> = None;
         for (chunk_index, chunk) in bytes.chunks(DEFAULT_BYTES_PER_REQUEST).enumerate() {
             let offset = (chunk_index * DEFAULT_BYTES_PER_REQUEST) as u64;
             let chunk = Bytes::copy_from_slice(chunk);
-            if let Err(e) =
-                upload_chunk(&upload_client, &location, offset, chunk, Some(total_bytes))
-                    .await
-                    .map_err(|e| match e {
-                        WriteError::IOError(io) => WriteError::IOError(
-                            io.with_context(format!("Multipart upload chunk {chunk_index}")),
-                        ),
-                        other @ WriteError::InvalidLocation(_) => other,
-                    })
+            // GCS protocol: only the final chunk declares the total size.
+            let is_final = chunk_index + 1 == total_chunks;
+            let chunk_total = if is_final { Some(total_bytes) } else { None };
+            if let Err(e) = upload_chunk(&upload_client, &location, offset, chunk, chunk_total)
+                .await
+                .map_err(|e| match e {
+                    WriteError::IOError(io) => WriteError::IOError(
+                        io.with_context(format!("Multipart upload chunk {chunk_index}")),
+                    ),
+                    other @ WriteError::InvalidLocation(_) => other,
+                })
             {
                 first_error = Some(e);
                 break;
