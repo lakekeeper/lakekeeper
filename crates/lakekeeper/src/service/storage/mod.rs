@@ -609,10 +609,6 @@ impl StorageProfile {
         test_file_write
             .push("test")
             .map_err(|e| location_extend_err(e, "Failed to build access-test path"))?;
-        let mut test_file_write = test_file_write.parent();
-        test_file_write
-            .push("test")
-            .map_err(|e| location_extend_err(e, "Failed to build access-test path"))?;
         tracing::debug!("Validating access to: {}", test_file_write);
 
         // Test write
