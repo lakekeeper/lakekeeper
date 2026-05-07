@@ -44,11 +44,7 @@ _MINIO_NO_IAM_VARS = "MinIO does not resolve IAM policy variables (${*}/${?}/${$
 # not testable here.
 SPECIAL_CHARS = [
     SpecialChar("star", "*", expect_deny={("s3", "s3-compat"): _MINIO_NO_IAM_VARS}),
-    SpecialChar(
-        "question",
-        "%3F",
-        expect_deny={("s3", "s3-compat"): _MINIO_NO_IAM_VARS},
-    ),
+    SpecialChar("question", "%3F"),
     SpecialChar("dollar", "$", expect_deny={("s3", "s3-compat"): _MINIO_NO_IAM_VARS}),
     SpecialChar("squote", "'"),
     SpecialChar("plus", "+"),
