@@ -1034,11 +1034,14 @@ async fn test_special_characters_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // Names are path of URL string, which may contain urlencoded chars
+    // Sub-delims (`!`, `=`, `-`, `_`, `.`, `+`, `*`, `'`, `$`, `,`, `;`) and
+    // multibyte UTF-8 are accepted literally. Reserved chars `?` and `#`
+    // are rejected by `Location::from_str` and must be percent-encoded;
+    // their round-trip is covered by `test_special_characters_in_url_segments`.
     let special_files = vec![
         "file with spaces.txt",
         "file-with-dashes.txt",
-        "y fl !? -_ä oats=1.2.txt",
+        "y fl ! -_ä oats=1.2.txt",
         "file_with_underscores.txt",
         "file.with.dots.txt",
         "file-with-ue-ü.txt",
