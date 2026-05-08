@@ -27,7 +27,7 @@ use lakekeeper::{
 use openfga_client::{
     client::{
         BasicOpenFgaClient, BatchCheckItem, CheckRequestTupleKey, ConsistencyPreference,
-        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
+        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition, WriteOptions,
         batch_check_single_result::CheckResult,
     },
     tonic,
@@ -71,6 +71,14 @@ impl OpenFGAAuthorizer {
             health: Arc::new(RwLock::new(vec![])),
             server_id,
         }
+    }
+
+    /// Reference to the underlying OpenFGA store client. Exposed for
+    /// maintenance entry points (e.g. reconcile) that need to issue
+    /// store-level reads/writes alongside the authorizer.
+    #[must_use]
+    pub fn client(&self) -> &BasicOpenFgaClient {
+        &self.client
     }
 }
 
@@ -160,17 +168,24 @@ impl Authorizer for OpenFGAAuthorizer {
             ServerRelation::Admin
         };
 
-        self.write(
-            Some(vec![TupleKey {
-                user: user.to_openfga(),
-                relation: relation.to_string(),
-                object: self.openfga_server().clone(),
-                condition: None,
-            }]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)?;
+        // Idempotent: a re-bootstrap (after `lakekeeper reopen-bootstrap`)
+        // may run against an OpenFGA store that already holds the same
+        // admin/operator tuple — strict writes would fail in that case.
+        self.client
+            .write_with_options(
+                Some(vec![TupleKey {
+                    user: user.to_openfga(),
+                    relation: relation.to_string(),
+                    object: self.openfga_server().clone(),
+                    condition: None,
+                }]),
+                None,
+                WriteOptions::new_idempotent(),
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to write bootstrap tuple to OpenFGA: {e}"))
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)?;
 
         Ok(())
     }
@@ -716,28 +731,12 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(&role_id).await?;
-        let parent_id = parent_project_id.to_openfga();
-        let this_id = role_id.to_openfga();
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: RoleRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: RoleRelation::Project.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_role(&parent_project_id, role_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_role(actor, role_id));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_role(
@@ -756,34 +755,15 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(project_id).await?;
-        let server = self.openfga_server().clone();
-        let this_id = project_id.to_openfga();
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: ProjectRelation::ProjectAdmin.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: server.clone(),
-                    relation: ProjectRelation::Server.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id,
-                    relation: ServerRelation::Project.to_string(),
-                    object: server,
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let server = self.openfga_server();
+        let mut tuples = crate::tuples::hierarchy_tuples_for_project(&server, project_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_project(
+            actor, project_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_project(
@@ -803,34 +783,16 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(&warehouse_id).await?;
-        let project_id = parent_project_id.to_openfga();
-        let this_id = warehouse_id.to_openfga();
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: WarehouseRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: project_id.clone(),
-                    relation: WarehouseRelation::Project.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: ProjectRelation::Warehouse.to_string(),
-                    object: project_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples =
+            crate::tuples::hierarchy_tuples_for_warehouse(parent_project_id, warehouse_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_warehouse(
+            actor,
+            warehouse_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_warehouse(
@@ -851,44 +813,15 @@ impl Authorizer for OpenFGAAuthorizer {
 
         self.require_no_relations(&namespace_id).await?;
 
-        let (parent_id, parent_child_relation) = match parent {
-            NamespaceParent::Warehouse(warehouse_id) => (
-                warehouse_id.to_openfga(),
-                WarehouseRelation::Namespace.to_string(),
-            ),
-            NamespaceParent::Namespace(parent_namespace_id) => (
-                parent_namespace_id.to_openfga(),
-                NamespaceRelation::Child.to_string(),
-            ),
-        };
-        let this_id = namespace_id.to_openfga();
-
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: NamespaceRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: NamespaceRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: parent_child_relation,
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_namespace(
+            actor,
+            namespace_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_namespace(
@@ -907,39 +840,21 @@ impl Authorizer for OpenFGAAuthorizer {
         parent: NamespaceId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
-        let parent_id = parent.to_openfga();
-        let this_id = (warehouse_id, table_id).to_openfga();
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
         self.require_no_relations(&(warehouse_id, table_id)).await?;
 
-        self.write_higher_consistency(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: TableRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: TableRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: NamespaceRelation::Child.to_string(),
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_table(warehouse_id, table_id, parent);
+        tuples.extend(crate::tuples::ownership_tuples_for_table(
+            actor,
+            warehouse_id,
+            table_id,
+        ));
+        self.write_higher_consistency(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_table(
@@ -958,37 +873,19 @@ impl Authorizer for OpenFGAAuthorizer {
         parent: NamespaceId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
-        let parent_id = parent.to_openfga();
-        let this_id = (warehouse_id, view_id).to_openfga();
 
         self.require_no_relations(&(warehouse_id, view_id)).await?;
 
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: ViewRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: ViewRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: NamespaceRelation::Child.to_string(),
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_view(warehouse_id, view_id, parent);
+        tuples.extend(crate::tuples::ownership_tuples_for_view(
+            actor,
+            warehouse_id,
+            view_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_view(
@@ -1074,11 +971,14 @@ impl OpenFGAAuthorizer {
         Ok(())
     }
 
-    /// A convenience wrapper around read that handles error conversion
+    /// A convenience wrapper around read that handles error conversion.
+    ///
+    /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
+    /// [`openfga_client::client::OpenFgaClient::read`].
     pub(crate) async fn read(
         &self,
         page_size: i32,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: impl Into<Option<ReadRequestTupleKey>>,
         continuation_token: impl Into<Option<String>>,
     ) -> OpenFGAResult<ReadResponse> {
         self.client
@@ -1091,11 +991,14 @@ impl OpenFGAAuthorizer {
             .map_err(Into::into)
     }
 
-    /// A convenience wrapper around read that handles error conversion
+    /// A convenience wrapper around read that handles error conversion.
+    ///
+    /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
+    /// [`openfga_client::client::OpenFgaClient::read`].
     async fn read_higher_consistency(
         &self,
         page_size: i32,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: impl Into<Option<ReadRequestTupleKey>>,
         continuation_token: impl Into<Option<String>>,
     ) -> OpenFGAResult<ReadResponse> {
         self.client_higher_consistency

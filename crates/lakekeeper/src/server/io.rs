@@ -1,4 +1,4 @@
-use futures::{StreamExt, TryStreamExt, stream::BoxStream};
+use futures::{StreamExt, stream::BoxStream};
 use iceberg::spec::TableMetadata;
 use iceberg_ext::catalog::rest::IcebergErrorResponse;
 use lakekeeper_io::{
@@ -84,7 +84,7 @@ pub(crate) async fn list_location<'a>(
     page_size: Option<usize>,
 ) -> Result<BoxStream<'a, std::result::Result<Vec<Location>, IOError>>, InvalidLocationError> {
     tracing::debug!("Listing location: {}", location);
-    let entries = io.list(location, page_size).await?;
+    let entries = io.list(location.as_str(), page_size).await?;
     let entries = entries
         .map(|entry| {
             entry.map(|file_infos| {
@@ -94,7 +94,6 @@ pub(crate) async fn list_location<'a>(
                     .collect::<Vec<_>>()
             })
         })
-        .into_stream()
         .boxed();
     Ok(entries)
 }
@@ -201,10 +200,14 @@ mod tests {
         let mut location = profile.base_location().unwrap();
         location.without_trailing_slash();
 
-        let folder_1 = location.clone().push("folder").clone();
-        let file_1 = folder_1.clone().push("file1").clone();
-        let folder_2 = location.clone().push("folder-2").clone();
-        let file_2 = folder_2.clone().push("file2").clone();
+        let mut folder_1 = location.clone();
+        folder_1.push("folder").unwrap();
+        let mut file_1 = folder_1.clone();
+        file_1.push("file1").unwrap();
+        let mut folder_2 = location.clone();
+        folder_2.push("folder-2").unwrap();
+        let mut file_2 = folder_2.clone();
+        file_2.push("file2").unwrap();
 
         let data_1 = serde_json::json!({"file": "1"});
         let data_2 = serde_json::json!({"file": "2"});

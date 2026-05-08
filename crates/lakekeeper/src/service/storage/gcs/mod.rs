@@ -36,8 +36,8 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
             storage_layout::StorageLayout,
         },
@@ -285,17 +285,22 @@ impl GcsProfile {
             .as_ref()
             .map(|s| s.split('/').map(std::borrow::ToOwned::to_owned).collect())
             .unwrap_or_default();
-        Location::from_str(&format!("gs://{}/", self.bucket))
-            .map(|mut l| {
-                l.extend(prefix.iter());
-                l
-            })
-            .map_err(|e| {
-                InvalidLocationError::new(
-                    format!("gs://{}/", self.bucket),
-                    format!("Failed to create base location for GCS profile: {e}"),
-                )
-            })
+        let mut l = Location::from_str(&format!("gs://{}/", self.bucket)).map_err(|e| {
+            InvalidLocationError::new(
+                format!("gs://{}/", self.bucket),
+                format!("Failed to create base location for GCS profile: {e}"),
+            )
+        })?;
+        l.extend(prefix.iter()).map_err(|e| {
+            InvalidLocationError::new(
+                e.value,
+                format!(
+                    "Failed to apply key_prefix to GCS base location: {}",
+                    e.reason
+                ),
+            )
+        })?;
+        Ok(l)
     }
 
     async fn get_token_source(
@@ -537,12 +542,24 @@ impl GcsProfile {
     }
 }
 
-pub(super) fn get_file_io_from_table_config(
+/// Build a `GcsStorage` client from vended-credentials properties.
+///
+/// Reads the downscoped `OAuth2` access token from the iceberg-format
+/// `TableProperties` previously produced by `generate_table_config`.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("gcs")
-        .with_props(config.inner())
-        .build()?)
+) -> Result<GcsStorage, CredentialsError> {
+    let access_token = config.get_prop_opt::<gcs::Token>().ok_or_else(|| {
+        CredentialsError::ShortTermCredential {
+            reason: "GCS vended credentials are missing the OAuth2 access token.".to_string(),
+            source: None,
+        }
+    })?;
+    let auth = GcsAuth::BearerToken(lakekeeper_io::gcs::GcsBearerTokenAuth { access_token });
+    GCSSettings {}
+        .get_storage_client(&auth)
+        .await
+        .map_err(Into::into)
 }
 
 impl TryFrom<GcsCredential> for GcsAuth {

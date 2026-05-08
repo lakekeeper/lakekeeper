@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE server\n        SET open_for_bootstrap = true\n        WHERE server.open_for_bootstrap = false\n        RETURNING server_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "server_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "298c38a2042a2b7d19ec8b3ea880e71dfdc087eb0b298637578c141e738cf0d2"
+}

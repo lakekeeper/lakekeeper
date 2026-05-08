@@ -97,7 +97,7 @@ impl<A: Authorizer> TableCreationGuard<A> {
         }
 
         if let Some((io, metadata_location)) = self.metadata_location.take()
-            && let Err(e) = io.delete(&metadata_location).await
+            && let Err(e) = io.delete(metadata_location.as_str()).await
         {
             tracing::warn!(
                 "Failed to cleanup metadata file at {metadata_location} after failed transaction: {e}",
@@ -261,7 +261,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
             &CompressionCodec::try_from_maybe_properties(request.properties.as_ref())?,
             metadata_id,
             0,
-        ))
+        )?)
     };
 
     let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;

@@ -1,7 +1,8 @@
+#[cfg(test)]
+use std::sync::LazyLock;
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::LazyLock,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,6 @@ use azure_storage::{
     },
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use iceberg::io::ADLS_AUTHORITY_HOST;
 use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -44,8 +44,8 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
             storage_layout::StorageLayout,
         },
@@ -88,6 +88,7 @@ fn default_true() -> bool {
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
+#[cfg(test)]
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
@@ -309,7 +310,7 @@ impl AdlsProfile {
                     .await?
                 }
                 AzCredential::SharedAccessKey { key } => {
-                    let sas = self.sas(
+                    let sas = Self::sas(
                         &stc_request,
                         requested_sas_token_end,
                         azure_core::auth::Secret::new(key.clone()),
@@ -475,29 +476,30 @@ impl AdlsProfile {
 
         let key = delegation_key.user_deligation_key;
 
-        let sas = self.sas(stc_request, signed_expiry, key)?;
+        let sas = Self::sas(stc_request, signed_expiry, key)?;
         Ok((sas, signed_expiry))
     }
 
     fn sas(
-        &self,
         stc_request: &ShortTermCredentialsRequest,
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(stc_request.table_location.as_ref());
-        let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
-        let depth = rootless_path.split('/').count();
-
-        let canonical_resource = format!(
-            "/blob/{}/{}/{}",
-            self.account_name.as_str(),
-            self.filesystem.as_str(),
-            rootless_path
-        );
+        // `sas` is a static function and can't read the profile's
+        // `allow_alternative_protocols` flag. Passing `true` here is safe:
+        // `stc_request.table_location` was already validated against the
+        // profile at table registration, so accepting both `abfss://` and
+        // `wasbs://` here only affects `AdlsLocation` construction for SAS
+        // signing — it does not re-grant access to alternative protocols.
+        let adls_location = AdlsLocation::try_from_location(&stc_request.table_location, true)
+            .map_err(|e| CredentialsError::ShortTermCredential {
+                reason: format!("Invalid ADLS location for SAS signing: {e}"),
+                source: Some(Box::new(e)),
+            })?;
+        let (canonical_resource, depth) = azure_sas_canonical_path(&adls_location);
 
         tracing::debug!(
-            "Generationg SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
+            "Generating SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
             stc_request.storage_permissions
         );
 
@@ -590,13 +592,41 @@ impl AdlsProfile {
     }
 }
 
-/// Removes the hostname and user from the path.
-/// Keeps only the path and optionally the scheme.
-#[must_use]
-pub(crate) fn reduce_scheme_string(path: &str) -> String {
-    AdlsLocation::try_from_str(path, true)
-        .map(|l| format!("/{}", l.blob_name().clone().trim_start_matches('/')))
-        .unwrap_or(path.to_string())
+// --- Egress encoders ---------------------------------------------------
+//
+// Each encoder takes the `Location` (or its components) plus any
+// backend-specific context, and returns the exact byte form a downstream
+// consumer expects. They live next to their consumer so a reviewer can
+// verify the canonical form against the consumer's spec.
+
+/// Build the ADLS SAS canonical-resource string and its directory depth.
+///
+/// Form: `/blob/{account}/{filesystem}/{decoded_path}` where
+/// `decoded_path` is percent-decoded. Azure recomputes the canonical
+/// resource by URL-decoding the request URL path before HMAC; signing
+/// with the encoded form (e.g. literal `%3F` or `%20`) produces a
+/// signature mismatch and a silent 403.
+///
+/// Returns `(canonical_resource, signed_directory_depth)`. Depth counts
+/// non-empty path segments — root locations have depth 0.
+fn azure_sas_canonical_path(loc: &AdlsLocation) -> (String, usize) {
+    let blob_path = loc.blob_name();
+    let rootless_path = blob_path.trim_start_matches('/').trim_end_matches('/');
+    let depth = if rootless_path.is_empty() {
+        0
+    } else {
+        rootless_path.split('/').count()
+    };
+    let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
+    (
+        format!(
+            "/blob/{}/{}/{}",
+            loc.account_name(),
+            loc.filesystem(),
+            decoded_path
+        ),
+        depth,
+    )
 }
 
 #[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -661,36 +691,37 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
     format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
-pub(super) fn get_file_io_from_table_config(
+/// Build an `AdlsStorage` client from vended-credentials properties.
+///
+/// Reads the SAS token (under the profile's account/endpoint-specific key)
+/// from the iceberg-format `TableProperties` previously produced by
+/// `generate_table_config`.
+///
+/// `profile` is required because the SAS-token property key embeds the storage
+/// account name and endpoint host (`adls.sas-token.<account>.<endpoint>`); it
+/// cannot be derived from `TableProperties` alone. Do not "normalize" this
+/// signature with the S3/GCS counterparts — removing `profile` will break the
+/// key lookup.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
+    profile: &AdlsProfile,
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
-    // Add Authority host if not present
-    let mut config = config.inner().clone();
-
-    let sas_token_prefix = "adls.sas-token.";
-    // Iceberg Rust cannot parse tokens of form "<sas_token_prefix><storage_account_name>.<endpoint_suffix>=<sas_token>"
-    // https://github.com/apache/iceberg-rust/issues/1442
-    let mut sas_token = None;
-    for (key, value) in &config {
-        if key.starts_with(sas_token_prefix) {
-            sas_token = Some(value.clone());
-            break;
-        }
-    }
-    if let Some(sas_token) = sas_token {
-        config.remove(sas_token_prefix);
-        config.insert("adls.sas-token".to_string(), sas_token);
-    }
-
-    if !config.contains_key(ADLS_AUTHORITY_HOST) {
-        config.insert(
-            ADLS_AUTHORITY_HOST.to_string(),
-            DEFAULT_AUTHORITY_HOST.to_string(),
-        );
-    }
-    Ok(iceberg::io::FileIOBuilder::new("abfss")
-        .with_props(config)
-        .build()?)
+) -> Result<AdlsStorage, CredentialsError> {
+    let sas_key = profile.iceberg_sas_property_key();
+    let sas_token =
+        config
+            .get_custom_prop(&sas_key)
+            .ok_or_else(|| CredentialsError::ShortTermCredential {
+                reason: format!(
+                    "ADLS vended credentials are missing SAS token at key '{sas_key}'."
+                ),
+                source: None,
+            })?;
+    let auth = AzureAuth::Sas(lakekeeper_io::adls::AzureSasAuth { sas_token });
+    profile
+        .azure_settings()
+        .get_storage_client(&auth)
+        .await
+        .map_err(Into::into)
 }
 
 impl TryFrom<AzCredential> for AzureAuth {
@@ -731,23 +762,6 @@ pub(crate) mod test {
         az::DEFAULT_AUTHORITY_HOST,
         storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
-
-    #[test]
-    fn test_reduce_scheme_string() {
-        // Test abfss protocol
-        let path = "abfss://filesystem@dfs.windows.net/path/_test";
-        let reduced_path = reduce_scheme_string(path);
-        assert_eq!(reduced_path, "/path/_test");
-
-        // Test wasbs protocol
-        let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path);
-        assert_eq!(reduced_wasbs_path, "/path/to/data");
-
-        // Test a non-matching path
-        let non_matching = "http://example.com/path";
-        assert_eq!(reduce_scheme_string(non_matching), non_matching);
-    }
 
     pub(crate) mod azure_integration_tests {
         use crate::{
@@ -847,6 +861,44 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn azure_sas_canonical_path_decodes_percent_encoded_path() {
+        // Azure HMAC's canonical resource is computed against the URL-decoded
+        // request path; the encoded form (`%3F`/`%20`) would mismatch.
+        let loc = AdlsLocation::try_from_str(
+            "abfss://filesystem@account.dfs.core.windows.net/wh/foo%20bar/baz%3Fqux",
+            false,
+        )
+        .unwrap();
+        let (canonical, depth) = azure_sas_canonical_path(&loc);
+        assert_eq!(canonical, "/blob/account/filesystem/wh/foo bar/baz?qux");
+        assert_eq!(depth, 3);
+    }
+
+    #[test]
+    fn azure_sas_canonical_path_root_has_depth_zero() {
+        // Root location with no path segments must report depth 0
+        // (not 1, which `"".split('/').count()` would give).
+        let loc =
+            AdlsLocation::try_from_str("abfss://filesystem@account.dfs.core.windows.net/", false)
+                .unwrap();
+        let (canonical, depth) = azure_sas_canonical_path(&loc);
+        assert_eq!(canonical, "/blob/account/filesystem/");
+        assert_eq!(depth, 0);
+    }
+
+    #[test]
+    fn azure_sas_canonical_path_strips_trailing_slash() {
+        let loc = AdlsLocation::try_from_str(
+            "abfss://filesystem@account.dfs.core.windows.net/wh/table/",
+            false,
+        )
+        .unwrap();
+        let (canonical, depth) = azure_sas_canonical_path(&loc);
+        assert_eq!(canonical, "/blob/account/filesystem/wh/table");
+        assert_eq!(depth, 2);
+    }
+
+    #[test]
     fn test_default_adls_locations() {
         let profile = AdlsProfile {
             filesystem: "filesystem".to_string(),
@@ -874,7 +926,9 @@ pub(crate) mod test {
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!(
@@ -888,7 +942,9 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")

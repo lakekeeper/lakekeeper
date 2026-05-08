@@ -3,7 +3,7 @@
 # ========================
 CLUSTER         ?= demo-cluster
 NAMESPACE       := kafka
-STRIMZI_VERSION := 0.45.2
+STRIMZI_VERSION := 1.0.0
 
 # ========================
 # TOP-LEVEL TARGETS
@@ -70,6 +70,13 @@ install-kafka:
 		| kubectl create -n $(NAMESPACE) -f -
 	@echo "⏳ Waiting for Strimzi Operator to be ready..."
 	kubectl rollout status deployment/strimzi-cluster-operator -n $(NAMESPACE)
+	kubectl wait --for=condition=Established \
+		crd/kafkas.kafka.strimzi.io \
+		crd/kafkanodepools.kafka.strimzi.io \
+		crd/kafkatopics.kafka.strimzi.io \
+		crd/kafkaconnects.kafka.strimzi.io \
+		crd/kafkaconnectors.kafka.strimzi.io \
+		--timeout=120s
 	kubectl apply -f kafka/cluster.yaml
 	kubectl apply -f kafka/schema-registry.yaml
 	kubectl apply -f kafka/topics.yaml

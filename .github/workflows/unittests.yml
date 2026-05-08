@@ -307,7 +307,9 @@ jobs:
           vault write -address "${VAULT_ADDR}" auth/userpass/users/test password=test policies=app
 
       - name: Setup openfga
-        run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
+        # v1.11+ required: reconcile/rebuild calls write_with_options(idempotent),
+        # which relies on the on_duplicate/on_missing fields added in v1.11.
+        run: docker run -d -p 35081:8081 openfga/openfga:v1.14 run
 
       - name: Test
         uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3

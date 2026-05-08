@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.12.0"
+version = "0.12.1"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
 rust-version = "1.92"
@@ -98,11 +98,7 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "a4e9f0bbe1a8a47f360811219c6add2c710f871a", features = [
-    "storage-gcs",
-    "storage-azdls",
-    "storage-s3",
-] }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
@@ -140,6 +136,8 @@ reqwest = { version = "0.12.23", default-features = false, features = [
     "rustls-tls-native-roots",
     "rustls-tls-webpki-roots",
 ] }
+reqwest-middleware = "0.4"
+reqwest-retry = "0.8"
 semver = "1.0.27"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
@@ -160,6 +158,7 @@ sqlx = { version = "0.8.6", default-features = false, features = [
 ] }
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
+tempfile = "3.20"
 thiserror = "2.0.0"
 tikv-jemallocator = { version = "0.6" }
 time = "0.3.36"

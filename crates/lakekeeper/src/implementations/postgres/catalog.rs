@@ -7,7 +7,7 @@ use lakekeeper_io::Location;
 
 use super::{
     CatalogState, PostgresTransaction,
-    bootstrap::{bootstrap, get_validation_data},
+    bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
@@ -64,24 +64,21 @@ use crate::{
         CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
         CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
         ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
-        CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
-        DropTabularError, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListGenericTablesError, ListNamespacesQuery,
-        ListRoleMembersResult, ListRolesError, ListRolesResponse, ListTabularsError,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
-        NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
-        WarehouseStatus,
+        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
+        CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRoleMembersResult,
+        ListRolesError, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
+        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
+        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
+        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -110,6 +107,10 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool> {
         bootstrap(terms_accepted, &mut **transaction).await
+    }
+
+    async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId> {
+        reopen_for_bootstrap(&catalog_state.write_pool()).await
     }
 
     async fn get_warehouse_by_name_impl(

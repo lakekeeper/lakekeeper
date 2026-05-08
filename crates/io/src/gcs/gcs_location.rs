@@ -39,7 +39,15 @@ impl GcsLocation {
             )
         })?;
         if !key.is_empty() {
-            location.without_trailing_slash().extend(key.iter());
+            location
+                .without_trailing_slash()
+                .extend(key.iter())
+                .map_err(|e| {
+                    InvalidLocationError::new(
+                        e.value,
+                        format!("Failed to extend location with key segments - {}", e.reason),
+                    )
+                })?;
         }
 
         Ok(GcsLocation { location })
@@ -48,7 +56,7 @@ impl GcsLocation {
     /// Get the bucket name.
     #[must_use]
     pub fn bucket_name(&self) -> &str {
-        (self.location.host_str()).unwrap_or_default()
+        self.location.host_str()
     }
 
     #[must_use]
@@ -80,14 +88,7 @@ impl GcsLocation {
             return Err(InvalidLocationError::new(location.to_string(), reason));
         }
 
-        let bucket_name = location.host_str().ok_or_else(|| {
-            InvalidLocationError::new(
-                location.to_string(),
-                "GCS location does not have a bucket name.".to_string(),
-            )
-        })?;
-
-        GcsLocation::new(bucket_name, &location.path_segments())
+        GcsLocation::new(location.host_str(), &location.path_segments())
     }
 
     /// Create a new GCS location from a string.
