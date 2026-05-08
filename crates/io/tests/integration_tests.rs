@@ -277,6 +277,7 @@ test_all_storages!(
     test_writer_write_after_close_errors,
     test_writer_write_after_close_errors_impl
 );
+test_all_storages!(test_writer_drop_cleanup, test_writer_drop_cleanup_impl);
 test_all_storages!(test_read_range_basic, test_read_range_basic_impl);
 test_all_storages!(test_read_range_large, test_read_range_large_impl);
 test_all_storages!(test_metadata_basic, test_metadata_basic_impl);
@@ -1651,6 +1652,43 @@ async fn test_writer_write_after_close_errors_impl(
 
     storage.delete(&path).await?;
     Ok(())
+}
+
+/// Dropping a streaming writer without `close` should(!) not leave a file at the
+/// target path (best-effort `Drop` impl may fail for other reasons).
+/// Writes 30 MiB to force backend-side state (S3 multipart, GCS
+/// resumable session, ADLS up-front file create), then drops the writer and
+/// polls every 20 ms for absence with a 10s budget — matching the
+/// `DROP_CANCEL_DURATION` upper bound on the spawned cleanup task. Memory
+/// backend never persists buffered bytes, so absence is immediate.
+/// Unfortunately this test is flaky by its' design, so a failure is not
+/// indicative for a broken `Drop` impl.
+async fn test_writer_drop_cleanup_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-drop-cleanup.bin");
+    let data = generate_test_data(30);
+
+    {
+        let mut writer = storage.writer(&path).await?;
+        writer.write(data).await?;
+        // Drop without close — Drop impl spawns best-effort cleanup.
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let poll_interval = Duration::from_millis(20);
+    loop {
+        if !storage.exists(&path).await? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "file {path} still exists 10s after writer Drop; cleanup task did not succeed within its' budget"
+            ));
+        }
+        sleep(poll_interval).await;
+    }
 }
 
 /// `read_range` returns exactly the requested slice on a small file, including

@@ -1,6 +1,7 @@
 use std::{
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -30,6 +31,10 @@ use crate::{
 
 const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 16 * 1024 * 1024;
+/// Upper bound on best-effort cleanup work spawned from `Drop`. The cancel
+/// future is dropped on elapse; we still log the timeout so an orphaned
+/// resumable session is observable.
+const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct GcsStorage {
@@ -876,10 +881,31 @@ impl Drop for GcsFileWrite {
         // Once stable `std::future::AsyncDrop`
         // (https://doc.rust-lang.org/std/future/trait.AsyncDrop.html —
         // currently nightly-only and experimental) exists, we can change this
-        // to `.cancel().await` without `spawn`
+        // to `.cancel().await` without `spawn`. The bounded `DROP_CANCEL_DURATION`
+        // protects against a stuck cancel call holding the spawned task on a
+        // shutting-down runtime; the elapse path is logged so an orphaned
+        // resumable session is observable.
         let location = self.location.clone();
         handle.spawn(async move {
-            try_cancel_resumable(upload_client, &location, "writer dropped without closing").await;
+            // `Box::pin` keeps the GCS SDK cancel state machine on the heap.
+            // When inlined inside `tokio::time::timeout` and `tokio::spawn`, the
+            // composed future can grow large enough to overflow tokio worker
+            // stacks under load.
+            let cleanup = Box::pin(try_cancel_resumable(
+                upload_client,
+                &location,
+                "writer dropped without closing",
+            ));
+            if tokio::time::timeout(DROP_CANCEL_DURATION, cleanup)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    location = %location,
+                    timeout = ?DROP_CANCEL_DURATION,
+                    "Best-effort cancel of un-closed GCS resumable upload timed out. Incomplete upload may exist in target location until session expiry.",
+                );
+            }
         });
     }
 }

@@ -3,6 +3,7 @@ use std::{
     num::NonZeroU32,
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use azure_storage::CloudLocation;
@@ -29,6 +30,10 @@ pub struct AdlsStorage {
 
 const MAX_BYTES_PER_REQUEST: usize = 7 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
+/// Upper bound on best-effort cleanup work spawned from `Drop`. The delete
+/// future is dropped on elapse; we still log the timeout so a partial file
+/// left behind is observable.
+const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
 
 impl AdlsStorage {
     /// Returns a [`FileSystemClient`] for the Azure Storage account.
@@ -909,12 +914,32 @@ impl Drop for AdlsFileWrite {
         };
 
         // Once stable `std::future::AsyncDrop` exists we could change this to
-        // `.delete_file(...).await` without `spawn`.
+        // `.delete_file(...).await` without `spawn`. The bounded
+        // `DROP_CANCEL_DURATION` protects against a stuck delete call holding
+        // the spawned task on a shutting-down runtime; the elapse path is
+        // logged so a partial file left behind is observable.
         let client = self.client.clone();
         let path = self.path.clone();
         handle.spawn(async move {
-            delete_partial_file_logged_infallible(&client, &path, "writer dropped without closing")
-                .await;
+            // `Box::pin` keeps the Azure SDK delete state machine on the heap.
+            // When inlined inside `tokio::time::timeout` and `tokio::spawn`, the
+            // composed future grew large enough to overflow tokio worker
+            // stacks under load.
+            let cleanup = Box::pin(delete_partial_file_logged_infallible(
+                &client,
+                &path,
+                "writer dropped without closing",
+            ));
+            if tokio::time::timeout(DROP_CANCEL_DURATION, cleanup)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    path = %path,
+                    timeout = ?DROP_CANCEL_DURATION,
+                    "Best-effort delete of partial ADLS file timed out. Partial file may persist until manually removed or until uncommitted-block GC runs.",
+                );
+            }
         });
     }
 }

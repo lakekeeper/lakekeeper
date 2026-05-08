@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Range, str::FromStr};
+use std::{collections::HashMap, ops::Range, str::FromStr, time::Duration};
 
 use aws_sdk_s3::{
     operation::head_object::HeadObjectOutput,
@@ -29,6 +29,11 @@ const MAX_BYTES_PER_REQUEST: usize = 25 * 1024 * 1024;
 const DEFAULT_BYTES_PER_REQUEST: usize = 16 * 1024 * 1024;
 const MAX_PARTS_PER_UPLOAD: usize = 10_000; // S3 limit for multipart uploads
 const MAX_DELETE_BATCH_SIZE: usize = 1000;
+/// Upper bound on best-effort cleanup work spawned from `Drop`. The abort
+/// future is dropped on elapse; we still log the timeout so an orphaned
+/// multipart upload is observable (S3 lifecycle rules eventually GC it,
+/// but storage cost accrues until then).
+const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct S3Storage {
@@ -937,17 +942,33 @@ impl Drop for S3FileWrite {
         // Once stable `std::future::AsyncDrop`
         // (https://doc.rust-lang.org/std/future/trait.AsyncDrop.html —
         // currently nightly-only and experimental) exists, we can change this
-        // to `abort_multipart.await` without `spawn`
+        // to `abort_multipart.await` without `spawn`. The bounded
+        // `DROP_CANCEL_DURATION` protects against a stuck abort call holding
+        // the spawned task on a shutting-down runtime; the elapse path is
+        // logged so an orphaned multipart upload is observable.
         let client = self.client.clone();
         let location = self.location.clone();
         handle.spawn(async move {
-            try_abort_multipart(
+            // `Box::pin` keeps the AWS SDK abort state machine on the heap.
+            // When inlined inside `tokio::time::timeout` and `tokio::spawn`, the
+            // composed future can grow large enough to overflow tokio worker
+            // stacks under load.
+            let cleanup = Box::pin(try_abort_multipart(
                 &client,
                 &location,
                 &upload_id,
                 "writer dropped without closing",
-            )
-            .await;
+            ));
+            if tokio::time::timeout(DROP_CANCEL_DURATION, cleanup)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    location = %location,
+                    timeout = ?DROP_CANCEL_DURATION,
+                    "Best-effort abort of un-closed S3 multipart upload timed out. Incomplete upload may exist until S3 lifecycle GC.",
+                );
+            }
         });
     }
 }
