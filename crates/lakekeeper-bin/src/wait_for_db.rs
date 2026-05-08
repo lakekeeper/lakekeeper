@@ -36,11 +36,7 @@ pub(crate) async fn wait_for_db(
     if check_migrations {
         let mut counter = 0;
         loop {
-            let opts = CONFIG
-                .to_pool_opts()
-                .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout));
-
-            let read_pool = get_reader_pool(opts).await?;
+            let read_pool = get_reader_pool(CONFIG.to_pool_opts()).await?;
             let migrations =
                 lakekeeper::implementations::postgres::migrations::check_migration_status(
                     &read_pool,

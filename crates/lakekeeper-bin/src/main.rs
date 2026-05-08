@@ -290,12 +290,8 @@ async fn reopen_bootstrap(yes: bool) -> anyhow::Result<()> {
         );
     }
 
-    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-        CONFIG
-            .to_pool_opts()
-            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
-    )
-    .await?;
+    let write_pool =
+        lakekeeper::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
 
     let server_id =
@@ -393,12 +389,8 @@ async fn openfga_reconcile(
 
 async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Migrating database...");
-    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-        CONFIG
-            .to_pool_opts()
-            .acquire_timeout(std::time::Duration::from_secs(CONFIG.pg_acquire_timeout)),
-    )
-    .await?;
+    let write_pool =
+        lakekeeper::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
 
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup

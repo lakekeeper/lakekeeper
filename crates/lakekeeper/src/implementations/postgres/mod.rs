@@ -242,6 +242,7 @@ impl DynAppConfig {
     pub fn to_pool_opts(&self) -> PgPoolOptions {
         sqlx::pool::PoolOptions::default()
             .test_before_acquire(self.pg_test_before_acquire)
+            .acquire_timeout(core::time::Duration::from_secs(self.pg_acquire_timeout))
             .max_lifetime(
                 self.pg_connection_max_lifetime
                     .map(core::time::Duration::from_secs),
