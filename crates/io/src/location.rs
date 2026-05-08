@@ -186,6 +186,7 @@ impl Location {
     /// In debug builds we sanity-check the scheme shape; the path is
     /// treated as opaque so this constructor preserves whatever bytes the
     /// caller hands over.
+    #[cfg(feature = "storage-s3")]
     #[must_use]
     pub(crate) fn from_url_decoded_unchecked(scheme: &str, authority_and_path: &str) -> Self {
         debug_assert!(
@@ -945,6 +946,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "storage-s3")]
     #[test]
     fn test_from_url_decoded_unchecked_preserves_bytes() {
         // The signer's wire-URL path: after urldecode-once, segments are
@@ -980,6 +982,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "storage-s3")]
     #[test]
     fn test_from_url_decoded_unchecked_byte_prefix_match_against_canonical() {
         // The signer relies on this: a wire URL (post-urldecode-once) for
