@@ -710,11 +710,22 @@ async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Resul
 ///      become *committed* and persist indefinitely. Cleaning up explicitly
 ///      now avoids that future foot-gun.
 async fn delete_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
-    client.delete().await.map(|_| ()).map_err(|e| {
-        WriteError::IOError(
-            parse_error(e, path).with_context("Failed to delete partial ADLS file."),
-        )
-    })
+    // The Azure SDK's `IntoFuture` impl for `DeletePathBuilder` is broken: the
+    // generated `fn into_future(self) { Self::into_future(self) }` recurses
+    // into itself because no inherent `into_future` body is provided by
+    // `operations/path_delete.rs`. Awaiting `client.delete()` directly blows
+    // the stack during `IntoFuture::into_future`. The `into_stream()` API is
+    // unaffected; consume its single page here to match the rest of this
+    // module's delete usage.
+    let mut delete_stream = client.delete().into_stream();
+    while let Some(result) = delete_stream.next().await {
+        result.map(|_| ()).map_err(|e| {
+            WriteError::IOError(
+                parse_error(e, path).with_context("Failed to delete partial ADLS file."),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Best-effort variant of [`delete_file`] that swallows the delete error after
@@ -921,18 +932,16 @@ impl Drop for AdlsFileWrite {
         let client = self.client.clone();
         let path = self.path.clone();
         handle.spawn(async move {
-            // `Box::pin` keeps the Azure SDK delete state machine on the heap.
-            // When inlined inside `tokio::time::timeout` and `tokio::spawn`, the
-            // composed future grew large enough to overflow tokio worker
-            // stacks under load.
-            let cleanup = Box::pin(delete_partial_file_logged_infallible(
-                &client,
-                &path,
-                "writer dropped without closing",
-            ));
-            if tokio::time::timeout(DROP_CANCEL_DURATION, cleanup)
-                .await
-                .is_err()
+            if tokio::time::timeout(
+                DROP_CANCEL_DURATION,
+                delete_partial_file_logged_infallible(
+                    &client,
+                    &path,
+                    "writer dropped without closing",
+                ),
+            )
+            .await
+            .is_err()
             {
                 tracing::warn!(
                     path = %path,

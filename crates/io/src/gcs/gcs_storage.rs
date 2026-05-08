@@ -887,18 +887,12 @@ impl Drop for GcsFileWrite {
         // resumable session is observable.
         let location = self.location.clone();
         handle.spawn(async move {
-            // `Box::pin` keeps the GCS SDK cancel state machine on the heap.
-            // When inlined inside `tokio::time::timeout` and `tokio::spawn`, the
-            // composed future can grow large enough to overflow tokio worker
-            // stacks under load.
-            let cleanup = Box::pin(try_cancel_resumable(
-                upload_client,
-                &location,
-                "writer dropped without closing",
-            ));
-            if tokio::time::timeout(DROP_CANCEL_DURATION, cleanup)
-                .await
-                .is_err()
+            if tokio::time::timeout(
+                DROP_CANCEL_DURATION,
+                try_cancel_resumable(upload_client, &location, "writer dropped without closing"),
+            )
+            .await
+            .is_err()
             {
                 tracing::warn!(
                     location = %location,
