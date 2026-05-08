@@ -958,12 +958,10 @@ impl S3Profile {
                 reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}").to_string(),
             }
         })?;
-        let bucket_arn = format!(
-            "arn:aws:s3:::{}",
-            table_location.bucket_name().trim_end_matches('/')
-        );
-        let key = escape_iam_glob_literal(&format!("{}/", table_location.key().join("/")));
-        let key_wildcard = format!("{key}*");
+        let bucket_arn = s3_iam_bucket_arn(&table_location);
+        let key_exact = s3_iam_resource_arn_exact(&table_location);
+        let key_wildcard = s3_iam_resource_arn_wildcard(&table_location);
+        let key_prefix = s3_iam_listbucket_prefix(&table_location);
 
         let actions = Self::permission_to_actions(storage_permissions);
         let mut statements = vec![
@@ -971,19 +969,16 @@ impl S3Profile {
                 "Sid": "TableAccess",
                 "Effect": "Allow",
                 "Action": actions,
-                "Resource": [
-                    format!("{bucket_arn}/{key}"),
-                    format!("{bucket_arn}/{key_wildcard}"),
-                ],
+                "Resource": [key_exact, key_wildcard],
             }),
             json!({
                 "Sid": "ListBucketForFolder",
                 "Effect": "Allow",
                 "Action": "s3:ListBucket",
-                "Resource": bucket_arn,
+                "Resource": &bucket_arn,
                 "Condition": {
                     "StringLike": {
-                        "s3:prefix": key_wildcard,
+                        "s3:prefix": key_prefix,
                     },
                 },
             }),
@@ -999,10 +994,20 @@ impl S3Profile {
         ];
 
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            // Read-only creds only need to decrypt existing data keys.
+            // GenerateDataKey is a write-side action (creates new data
+            // keys to encrypt new objects); granting it on a Read-only
+            // role broadens KMS access beyond the table access mode.
+            let kms_actions: &[&str] = match storage_permissions {
+                StoragePermissions::Read => &["kms:Decrypt"],
+                StoragePermissions::ReadWrite | StoragePermissions::ReadWriteDelete => {
+                    &["kms:Decrypt", "kms:GenerateDataKey"]
+                }
+            };
             statements.push(json!({
                 "Sid": "KmsAccess",
                 "Effect": "Allow",
-                "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+                "Action": kms_actions,
                 "Resource": kms_key_arn,
             }));
         }
@@ -1192,6 +1197,62 @@ fn escape_iam_glob_literal(value: &str) -> String {
         }
     }
     out
+}
+
+// --- Egress encoders ---------------------------------------------------
+//
+// Each function here produces the byte form a specific AWS-side consumer
+// expects from a `Location`. They live next to the IAM policy builder
+// so a reviewer can verify the canonical form matches what AWS does
+// server-side.
+//
+// IMPORTANT: encoders use the canonical-encoded path (not decoded). When
+// a client writes to S3, the SDK URL-encodes the key for the wire (so a
+// `%` in the key becomes `%25`); the server URL-decodes once and stores
+// at the canonical-encoded form. IAM matches the policy `Resource`
+// against that stored key, so the policy must contain the same bytes as
+// the canonical Location.
+//
+// Glob meta-chars (`*`/`?`/`$`) that appear *literally* in the canonical
+// path (only `*` and `$` can — `?` is rejected at parse) are escaped via
+// `escape_iam_glob_literal` so AWS treats them as literal characters
+// rather than wildcards.
+
+/// `arn:aws:s3:::{bucket}` — the bucket-level ARN, used as the resource
+/// for `s3:ListBucket` and as the prefix for object-level resource ARNs.
+fn s3_iam_bucket_arn(loc: &S3Location) -> String {
+    format!("arn:aws:s3:::{}", loc.bucket_name())
+}
+
+/// Canonical-encoded table-key path with a trailing `/` and IAM glob-meta
+/// chars (`*`/`?`/`$`) escaped. The path bytes match the canonical
+/// `Location` form, which is also what S3 stores (clients URL-encode `%`
+/// for the wire so the server stores the percent-encoded form back).
+fn s3_iam_key_with_trailing_slash(loc: &S3Location) -> String {
+    escape_iam_glob_literal(&format!("{}/", loc.key().join("/")))
+}
+
+/// `arn:aws:s3:::{bucket}/{prefix}/` — exact-prefix object ARN.
+fn s3_iam_resource_arn_exact(loc: &S3Location) -> String {
+    format!(
+        "{}/{}",
+        s3_iam_bucket_arn(loc),
+        s3_iam_key_with_trailing_slash(loc)
+    )
+}
+
+/// `arn:aws:s3:::{bucket}/{prefix}/*` — wildcard object ARN.
+fn s3_iam_resource_arn_wildcard(loc: &S3Location) -> String {
+    format!(
+        "{}/{}*",
+        s3_iam_bucket_arn(loc),
+        s3_iam_key_with_trailing_slash(loc)
+    )
+}
+
+/// `{prefix}/*` — value for `s3:prefix` in an `s3:ListBucket` condition.
+fn s3_iam_listbucket_prefix(loc: &S3Location) -> String {
+    format!("{}*", s3_iam_key_with_trailing_slash(loc))
 }
 
 fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
@@ -1579,7 +1640,9 @@ pub(crate) mod test {
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!("s3://test-bucket/test_prefix/{namespace_uuid}/{tabular_uuid}")
@@ -1590,7 +1653,9 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = sp
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(
             location.to_string(),
             format!("s3://test-bucket/{namespace_uuid}/{tabular_uuid}")
@@ -1625,12 +1690,16 @@ pub(crate) mod test {
         // Tabular locations should not have a trailing slash, otherwise pyiceberg fails.
         let expected = format!("s3://test-bucket/foo/{tabular_uuid}");
 
-        let location = profile.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = profile
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
 
         assert_eq!(location.to_string(), expected);
 
         let namespace_location = Location::from_str("s3://test-bucket/foo").unwrap();
-        let location = profile.default_tabular_location(&namespace_location, &tabular_name_context);
+        let location = profile
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(location.to_string(), expected);
     }
 
@@ -2056,6 +2125,57 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn s3_iam_encoders_use_canonical_encoded_form() {
+        // The canonical Location keeps `?` percent-encoded as `%3F`. The
+        // S3 IAM Resource ARN must match the bytes that S3 actually stores
+        // — clients URL-encode `%` for the wire (`%3F` → `%253F`), the
+        // server URL-decodes once → `%3F` literal in the key. So the
+        // policy contains `%3F` literal, NOT a decoded `?` (which would
+        // never match).
+        let loc: Location = "s3://my-bucket/wh/ev%3Fl/table".parse().unwrap();
+        let s3loc = S3Location::try_from_location(&loc, true).unwrap();
+        assert_eq!(s3_iam_bucket_arn(&s3loc), "arn:aws:s3:::my-bucket");
+        assert_eq!(
+            s3_iam_resource_arn_exact(&s3loc),
+            "arn:aws:s3:::my-bucket/wh/ev%3Fl/table/"
+        );
+        assert_eq!(
+            s3_iam_resource_arn_wildcard(&s3loc),
+            "arn:aws:s3:::my-bucket/wh/ev%3Fl/table/*"
+        );
+        assert_eq!(s3_iam_listbucket_prefix(&s3loc), "wh/ev%3Fl/table/*");
+    }
+
+    #[test]
+    fn s3_iam_encoders_collapse_mixed_hex_to_same_form() {
+        // `%2D` and `%2d` and literal `-` all canonicalise to literal `-`
+        // (unreserved char) — verify the encoder output is identical for
+        // all three forms.
+        let a: Location = "s3://my-bucket/foo-bar/x".parse().unwrap();
+        let b: Location = "s3://my-bucket/foo%2Dbar/x".parse().unwrap();
+        let c: Location = "s3://my-bucket/foo%2dbar/x".parse().unwrap();
+        let arn_a = s3_iam_resource_arn_exact(&S3Location::try_from_location(&a, false).unwrap());
+        let arn_b = s3_iam_resource_arn_exact(&S3Location::try_from_location(&b, false).unwrap());
+        let arn_c = s3_iam_resource_arn_exact(&S3Location::try_from_location(&c, false).unwrap());
+        assert_eq!(arn_a, arn_b);
+        assert_eq!(arn_a, arn_c);
+        assert_eq!(arn_a, "arn:aws:s3:::my-bucket/foo-bar/x/");
+    }
+
+    #[test]
+    fn s3_iam_encoders_glob_escape_literal_star_and_dollar() {
+        // `*` and `$` ARE canonical literals (sub-delims, decoded by
+        // canonicalisation). They must be glob-escaped so AWS IAM treats
+        // them as literal characters, not wildcards / variable markers.
+        let loc: Location = "s3://my-bucket/path*with$meta/x".parse().unwrap();
+        let s3loc = S3Location::try_from_location(&loc, false).unwrap();
+        assert_eq!(
+            s3_iam_resource_arn_exact(&s3loc),
+            "arn:aws:s3:::my-bucket/path${*}with${$}meta/x/"
+        );
+    }
+
+    #[test]
     fn escape_iam_glob_literal_escapes_pattern_chars() {
         assert_eq!(escape_iam_glob_literal("plain/key"), "plain/key");
         assert_eq!(escape_iam_glob_literal("with*star"), "with${*}star");
@@ -2107,10 +2227,12 @@ pub(crate) mod test {
 
     #[test]
     fn policy_string_handles_json_special_chars_in_path() {
-        // url::Url::parse percent-encodes `"` and most JSON-breaking chars in
-        // the path, but `\` survives unchanged. With raw format!() this would
-        // produce invalid JSON or worse. With serde_json the value gets
-        // escaped automatically. This test pins that behavior.
+        // `\` is not in RFC 3986 unreserved or sub-delims, so canonicalisation
+        // percent-encodes it to `%5C`. The IAM Resource matches the
+        // canonical-encoded form (which is what S3 actually stores after the
+        // client URL-encodes `%` → `%25` for the wire and the server decodes
+        // once). The `%5C` sequence has no JSON-special chars, so the
+        // serialised policy contains plain `back%5Cslash`.
         let table_location = r"s3://bucket-name/wh/back\slash/table";
         let profile = S3Profile::builder()
             .bucket("bucket-name".to_string())
@@ -2127,30 +2249,29 @@ pub(crate) mod test {
             .unwrap();
         // Must round-trip as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
-        // The backslash must appear escaped in the serialized form.
         assert!(
-            policy.contains(r"back\\slash"),
-            "expected `\\\\` in serialized policy, got: {policy}"
+            policy.contains("back%5Cslash"),
+            "expected percent-encoded `\\` in policy, got: {policy}"
         );
-        // And the parsed JSON must contain a single literal backslash.
+        // The parsed JSON must contain the canonical-encoded form (no
+        // raw backslash decoded back).
         let resources = parsed["Statement"][0]["Resource"].as_array().unwrap();
         assert!(
             resources
                 .iter()
-                .any(|r| r.as_str().unwrap().contains(r"back\slash")),
-            "expected literal backslash in parsed Resource, got: {resources:?}"
+                .any(|r| r.as_str().unwrap().contains("back%5Cslash")),
+            "expected `back%5Cslash` in parsed Resource, got: {resources:?}"
         );
     }
 
     #[test]
-    fn policy_string_neutralizes_question_mark_in_table_path() {
-        // `Location::from_str` now rejects raw `?` at parse time, so this
-        // state can't be reached via REST anymore. Build via `extend()`
-        // (which doesn't re-parse) to defense-in-depth check that the
-        // escape is wired up in the policy path even if some future code
-        // bypasses the parser.
-        let mut table_location: Location = "s3://bucket-name/wh".parse().unwrap();
-        table_location.extend(["ev?l", "table"]);
+    fn policy_string_keeps_question_mark_encoded_in_table_path() {
+        // `Location::from_str` rejects raw `?` at parse time; the canonical
+        // form keeps it as `%3F`. The IAM Resource must also contain
+        // `%3F` literal — that's what S3 stores (clients URL-encode `%`
+        // → `%25` on the wire, server decodes once → `%3F` literal in the
+        // key). Decoding to `?` here would never match the actual key.
+        let table_location: Location = "s3://bucket-name/wh/ev%3Fl/table".parse().unwrap();
         let profile = S3Profile::builder()
             .bucket("bucket-name".to_string())
             .key_prefix("wh".to_string())
@@ -2162,12 +2283,16 @@ pub(crate) mod test {
             .get_sts_policy_string(&table_location, StoragePermissions::ReadWriteDelete)
             .unwrap();
         assert!(
-            policy.contains("wh/ev${?}l/table"),
-            "expected escaped `?` in policy, got: {policy}"
+            policy.contains("wh/ev%3Fl/table"),
+            "expected canonical `%3F` in policy, got: {policy}"
         );
         assert!(
             !policy.contains("wh/ev?l/table"),
-            "raw `?` leaked into policy: {policy}"
+            "decoded `?` leaked into policy: {policy}"
+        );
+        assert!(
+            !policy.contains("${?}"),
+            "should not glob-escape `%3F` (it's not a literal `?`): {policy}"
         );
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }

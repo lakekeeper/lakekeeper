@@ -46,6 +46,17 @@ use crate::{
     },
 };
 
+/// Wrap a [`LocationParseError`] from `Location::extend`/`push` as a
+/// [`ValidationError::InvalidLocation`] with a callsite-supplied
+/// context string. Centralised so all `extend`/`push` failures format
+/// identically.
+fn location_extend_err(e: LocationParseError, context: &str) -> ValidationError {
+    ValidationError::InvalidLocation(Box::new(InvalidLocationError::new(
+        e.value,
+        format!("{context}: {}", e.reason),
+    )))
+}
+
 /// Storage profile for a warehouse.
 #[derive(Debug, Hash, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -251,7 +262,9 @@ impl StorageProfile {
         let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
 
         let segments = layout.render_namespace_path(namespace_path);
-        base_location.extend(segments);
+        base_location
+            .extend(segments)
+            .map_err(|e| location_extend_err(e, "Failed to extend with namespace path segments"))?;
         Ok(base_location)
     }
 
@@ -361,7 +374,7 @@ impl StorageProfile {
             name: "test_tabular".to_string(),
             uuid: Uuid::now_v7(),
         };
-        let _ = self.default_tabular_location(&ns_location, &tabular_name_context);
+        let _ = self.default_tabular_location(&ns_location, &tabular_name_context)?;
 
         // ------------- Profile specific validations -------------
         match self {
@@ -407,10 +420,10 @@ impl StorageProfile {
             uuid: Uuid::now_v7(),
         };
         let ns_location = self.default_namespace_location(&namespace_path)?;
-        let test_location = location.map_or_else(
-            || self.default_tabular_location(&ns_location, &tabular_name_context),
-            std::borrow::ToOwned::to_owned,
-        );
+        let test_location = match location {
+            Some(l) => l.clone(),
+            None => self.default_tabular_location(&ns_location, &tabular_name_context)?,
+        };
         tracing::debug!("Validating direct read/write access to {test_location}");
 
         // Test vended-credentials access
@@ -488,7 +501,10 @@ impl StorageProfile {
 
         // Create a sub-location for testing vended credentials access
         let mut sub_location = test_location.clone();
-        sub_location.without_trailing_slash().push("vended-test");
+        sub_location
+            .without_trailing_slash()
+            .push("vended-test")
+            .map_err(|e| location_extend_err(e, "Failed to build vended-test sub-location"))?;
 
         let tabular_info = TabularInfo {
             warehouse_id: WarehouseId::new_random(),
@@ -588,11 +604,11 @@ impl StorageProfile {
             &compression_codec,
             uuid::Uuid::now_v7(),
             0,
-        );
+        )?;
         let mut test_file_write = metadata_location.parent();
-        test_file_write.push("test");
-        let mut test_file_write = test_file_write.parent();
-        test_file_write.push("test");
+        test_file_write
+            .push("test")
+            .map_err(|e| location_extend_err(e, "Failed to build access-test path"))?;
         tracing::debug!("Validating access to: {}", test_file_write);
 
         // Test write
@@ -643,8 +659,11 @@ impl StorageProfile {
             &compression_codec,
             uuid::Uuid::now_v7(),
             0,
-        );
-        test_file_write.pop().push("forbidden-write-test");
+        )?;
+        test_file_write
+            .pop()
+            .push("forbidden-write-test")
+            .map_err(|e| location_extend_err(e, "Failed to build forbidden-write-test path"))?;
 
         tracing::debug!(
             "Validating that write access is denied to: {}",
@@ -792,39 +811,54 @@ impl StorageProfile {
         Ok(())
     }
 
-    #[must_use]
     /// Get the default metadata location for the storage profile.
+    ///
+    /// # Errors
+    /// Fails if the assembled location violates URL canonicalisation
+    /// rules. In practice the inputs (UUID, count, literal `metadata`)
+    /// are statically canonical-safe, but we propagate rather than panic
+    /// to maintain the no-panics invariant.
     pub fn default_metadata_location(
         &self,
         table_location: &Location,
         compression_codec: &CompressionCodec,
         metadata_id: uuid::Uuid,
         metadata_count: usize,
-    ) -> Location {
+    ) -> Result<Location, ValidationError> {
         let filename_extension_compression = compression_codec.as_file_extension();
         let filename = format!(
             "{metadata_count:05}-{metadata_id}{filename_extension_compression}.metadata.json",
         );
         let mut l = table_location.clone();
 
-        l.without_trailing_slash().extend(&["metadata", &filename]);
-        l
+        l.without_trailing_slash()
+            .extend(&["metadata", &filename])
+            .map_err(|e| location_extend_err(e, "Failed to build metadata location"))?;
+        Ok(l)
     }
 
     /// Get the default tabular location for the storage profile.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Fails if the layout-rendered tabular segment violates URL
+    /// canonicalisation rules (e.g. contains `..` or decoded `/`). In
+    /// practice templates produce safe segments, but we propagate rather
+    /// than panic to maintain the no-panics invariant.
     pub fn default_tabular_location(
         &self,
         namespace_location: &Location,
         tabular_name_context: &TabularNameContext,
-    ) -> Location {
+    ) -> Result<Location, ValidationError> {
         let mut location = namespace_location.clone();
 
         let layout = self.layout().unwrap_or_else(|| &DEFAULT_LAYOUT);
 
         let segment = layout.render_tabular_segment(tabular_name_context);
-        location.without_trailing_slash().push(&segment);
         location
+            .without_trailing_slash()
+            .push(&segment)
+            .map_err(|e| location_extend_err(e, "Failed to build tabular location"))?;
+        Ok(location)
     }
 
     #[must_use]
@@ -1108,11 +1142,13 @@ mod tests {
 
     #[test]
     fn test_split_location() {
-        let location = Location::from_str("abfss://").unwrap();
+        // Note: a host-less `abfss://` is no longer valid — `Location` now
+        // requires a non-empty host post-canonicalisation.
+        let location = Location::from_str("abfss://foo").unwrap();
         let prefix = location.scheme();
         let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(full_path, "");
+        assert_eq!(full_path, "foo");
         assert_eq!(join_location(prefix, full_path).unwrap(), location);
 
         let location = Location::from_str("abfss://foo/bar").unwrap();
@@ -1153,14 +1189,16 @@ mod tests {
         let target_location = format!("s3://my-bucket/subfolder/{ns_uuid}/{tabular_uuid}");
 
         let namespace_location = profile.default_namespace_location(&namespace_path).unwrap();
-        let tabular_location =
-            profile.default_tabular_location(&namespace_location, &tabular_name_context);
+        let tabular_location = profile
+            .default_tabular_location(&namespace_location, &tabular_name_context)
+            .unwrap();
         assert_eq!(tabular_location.to_string(), target_location);
 
         let mut namespace_location_without_slash = namespace_location.clone();
         namespace_location_without_slash.without_trailing_slash();
         let tabular_location_trailing = profile
-            .default_tabular_location(&namespace_location_without_slash, &tabular_name_context);
+            .default_tabular_location(&namespace_location_without_slash, &tabular_name_context)
+            .unwrap();
         assert!(!namespace_location_without_slash.to_string().ends_with('/'));
         assert_eq!(tabular_location_trailing.to_string(), target_location);
     }
@@ -1483,7 +1521,8 @@ mod tests {
         let mut metadata_location = table_location.clone();
         metadata_location
             .without_trailing_slash()
-            .push("test.gz.metadata.json");
+            .push("test.gz.metadata.json")
+            .unwrap();
 
         let io = profile.file_io(Some(cred)).await.unwrap();
 
@@ -1515,9 +1554,15 @@ mod tests {
             .base_location()
             .expect("Failed to get base location");
         let mut table_location1 = base_location.clone();
-        table_location1.without_trailing_slash().push("test");
+        table_location1
+            .without_trailing_slash()
+            .push("test")
+            .unwrap();
         let mut table_location2 = base_location.clone();
-        table_location2.without_trailing_slash().push("test2");
+        table_location2
+            .without_trailing_slash()
+            .push("test2")
+            .unwrap();
 
         let config1 = profile
             .generate_table_config(
@@ -1586,8 +1631,10 @@ mod tests {
             }
         };
         // can read & write in own locations
-        let test_file1 = table_location1.cloning_push("test.txt");
-        let test_file2 = table_location2.cloning_push("test.txt");
+        let mut test_file1 = table_location1.clone();
+        test_file1.push("test.txt").unwrap();
+        let mut test_file2 = table_location2.clone();
+        test_file2.push("test.txt").unwrap();
 
         downscoped1
             .write(

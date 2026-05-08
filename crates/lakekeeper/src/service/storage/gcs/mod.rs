@@ -285,17 +285,22 @@ impl GcsProfile {
             .as_ref()
             .map(|s| s.split('/').map(std::borrow::ToOwned::to_owned).collect())
             .unwrap_or_default();
-        Location::from_str(&format!("gs://{}/", self.bucket))
-            .map(|mut l| {
-                l.extend(prefix.iter());
-                l
-            })
-            .map_err(|e| {
-                InvalidLocationError::new(
-                    format!("gs://{}/", self.bucket),
-                    format!("Failed to create base location for GCS profile: {e}"),
-                )
-            })
+        let mut l = Location::from_str(&format!("gs://{}/", self.bucket)).map_err(|e| {
+            InvalidLocationError::new(
+                format!("gs://{}/", self.bucket),
+                format!("Failed to create base location for GCS profile: {e}"),
+            )
+        })?;
+        l.extend(prefix.iter()).map_err(|e| {
+            InvalidLocationError::new(
+                e.value,
+                format!(
+                    "Failed to apply key_prefix to GCS base location: {}",
+                    e.reason
+                ),
+            )
+        })?;
+        Ok(l)
     }
 
     async fn get_token_source(

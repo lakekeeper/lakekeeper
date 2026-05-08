@@ -136,11 +136,22 @@ const MEMORY_PREFIX: &str = "memory://";
 /// Normalizes a memory path by stripping the optional "memory://" prefix
 /// and returning the key for storage.
 fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
-    let key = if let Some(stripped) = path.strip_prefix(MEMORY_PREFIX) {
-        stripped
+    // Canonicalise via `Location` so equivalent inputs (literal vs `%XX`,
+    // mixed-hex, etc.) collide on the same in-memory key — matching how
+    // cloud backends behave (the SDK URL-encodes the wire request and the
+    // server stores at canonical bytes).
+    use std::str::FromStr as _;
+    let canonical = if path.contains("://") {
+        Location::from_str(path)
+            .map_err(|e| InvalidLocationError::new(path.to_string(), e.reason))?
+            .to_string()
     } else {
-        path
+        // Relative paths (no scheme) — treat as already-canonical key bytes.
+        // Test helpers occasionally pass these directly.
+        path.to_string()
     };
+
+    let key = canonical.strip_prefix(MEMORY_PREFIX).unwrap_or(&canonical);
 
     if key.is_empty() {
         return Err(InvalidLocationError::new(
