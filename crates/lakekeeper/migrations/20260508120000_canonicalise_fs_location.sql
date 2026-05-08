@@ -13,5 +13,5 @@
 
 DROP INDEX IF EXISTS tabular_warehouse_id_location_idx;
 
-CREATE UNIQUE INDEX tabular_warehouse_canonical_uq
+CREATE UNIQUE INDEX IF NOT EXISTS tabular_warehouse_canonical_uq
     ON tabular (warehouse_id, fs_location text_pattern_ops);
