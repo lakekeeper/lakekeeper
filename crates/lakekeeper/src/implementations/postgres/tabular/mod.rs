@@ -505,6 +505,11 @@ pub(crate) async fn create_tabular(
             {
                 CreateTabularError::from(TabularAlreadyExists::new())
             }
+            sqlx::Error::Database(ref db_err)
+                if db_err.constraint() == Some("tabular_warehouse_canonical_uq") =>
+            {
+                CreateTabularError::from(LocationAlreadyTaken::new(location.clone()))
+            }
             _ => e.into_catalog_backend_error().into(),
         }
     })?;

@@ -151,6 +151,54 @@ impl Location {
         self
     }
 
+    /// Construct a `Location` from already-URL-decoded `authority_and_path`
+    /// bytes, **without** running per-segment canonicalisation.
+    ///
+    /// Intended for the S3 signer's wire-URL lookup path: the wire URL is
+    /// URL-decoded once to bring it to the same byte level as stored
+    /// `fs_location` (the canonical-of-input form, which matches what
+    /// cloud servers store as the actual key). On that level we want
+    /// byte-prefix matching against the stored form, *not* another
+    /// decode-reencode pass — `canonicalize_segment` would reject
+    /// legitimately-occurring bytes like `%2F` (Iceberg partition-path
+    /// encoding for `/` in a partition value, which arrives as `%2F` after
+    /// one URL-decode of the wire's `%252F`).
+    ///
+    /// The caller MUST ensure:
+    /// - `scheme` is a canonical scheme (lowercase ASCII, letter-start).
+    /// - `authority_and_path` is the literal-key-bytes form
+    ///   (post-URL-decode-once), i.e. `host[:port][/path]` with all
+    ///   percent-encoding normalised by the URL parser already; no
+    ///   smuggling/control bytes; no scheme/`://`.
+    /// - No invariants of the canonical form are violated downstream
+    ///   (this `Location` is not safe to compare against canonical
+    ///   `Location`s via byte equality — only via prefix matching where
+    ///   both sides agree on the representation level).
+    ///
+    /// In debug builds we sanity-check the scheme shape; the path is
+    /// treated as opaque so this constructor preserves whatever bytes the
+    /// caller hands over.
+    #[must_use]
+    pub fn from_url_decoded_unchecked(scheme: &str, authority_and_path: &str) -> Self {
+        debug_assert!(
+            !scheme.is_empty()
+                && scheme.bytes().all(|b| b.is_ascii_lowercase()
+                    || b.is_ascii_digit()
+                    || matches!(b, b'+' | b'-' | b'.'))
+                && scheme.as_bytes()[0].is_ascii_lowercase(),
+            "from_url_decoded_unchecked called with non-canonical scheme `{scheme}` — see doc",
+        );
+        let mut full_location = String::with_capacity(scheme.len() + 3 + authority_and_path.len());
+        full_location.push_str(scheme);
+        full_location.push_str("://");
+        full_location.push_str(authority_and_path);
+        Self {
+            full_location,
+            scheme: scheme.to_string(),
+            authority_and_path: authority_and_path.to_string(),
+        }
+    }
+
     /// Append path segments. Each non-empty segment is canonicalised
     /// (decoded unreserved/sub-delim, percent-encoded reserved/space/
     /// non-ASCII).
@@ -887,6 +935,65 @@ mod tests {
             let twice = Location::from_str(once.as_str()).unwrap();
             assert_eq!(once.as_str(), twice.as_str(), "non-idempotent: {input}");
         }
+    }
+
+    #[test]
+    fn test_from_url_decoded_unchecked_preserves_bytes() {
+        // The signer's wire-URL path: after urldecode-once, segments are
+        // at literal-key-bytes level. The non-canonicalising constructor
+        // must store those bytes verbatim — *not* decode-reencode them
+        // (which would either change the bytes or reject `%2F`).
+        //
+        // Locations built this way are NOT byte-equal to their canonical
+        // counterparts (different representation level) — that's the
+        // whole point: keep them at the level the signer can byte-prefix
+        // match against stored `fs_location`.
+        let cases = [
+            // Literal `%22` after one urldecode: must stay 3 bytes.
+            ("s3", "bucket/foo/%22/data", "s3://bucket/foo/%22/data"),
+            // Literal `%2F` after one urldecode (Iceberg partition value):
+            // canonical-form's `canonicalize_segment` would *reject* this
+            // because the second decode produces `/` — the unchecked
+            // constructor preserves it unchanged.
+            (
+                "s3",
+                "bucket/data/m%2Fy=foo/00001.parquet",
+                "s3://bucket/data/m%2Fy=foo/00001.parquet",
+            ),
+            // Mixed-hex `%2d` is preserved as `%2d` (not normalised to
+            // `%2D`) — caller is responsible for the byte level it wants.
+            ("s3a", "bucket/foo%2dbar", "s3a://bucket/foo%2dbar"),
+        ];
+        for (scheme, authority_and_path, expected) in cases {
+            let loc = Location::from_url_decoded_unchecked(scheme, authority_and_path);
+            assert_eq!(loc.as_str(), expected, "unchecked must preserve bytes");
+            assert_eq!(loc.scheme(), scheme);
+            assert_eq!(loc.authority_and_path(), authority_and_path);
+        }
+    }
+
+    #[test]
+    fn test_from_url_decoded_unchecked_byte_prefix_match_against_canonical() {
+        // The signer relies on this: a wire URL (post-urldecode-once) for
+        // a parquet file under a special-char table prefix must
+        // byte-prefix match the stored canonical `fs_location`.
+        //
+        //   stored canonical  : `s3://b/wh/%22`            (from input `%22`)
+        //   wire URL (decoded): `s3://b/wh/%22/data/00001.parquet`
+        //
+        // Both sides have literal `%22` (3 bytes). `is_sublocation_of`
+        // is byte-prefix; this lets the signer skip canonicalize_segment
+        // (which would otherwise re-encode `"` → `%22` on the parsed wire
+        // and shift the byte level).
+        let stored = Location::from_str("s3://b/wh/%22").unwrap();
+        let wire_decoded =
+            Location::from_url_decoded_unchecked("s3", "b/wh/%22/data/00001.parquet");
+        assert!(
+            wire_decoded.is_sublocation_of(&stored),
+            "wire-decoded `{}` must be sublocation of stored `{}`",
+            wire_decoded.as_str(),
+            stored.as_str()
+        );
     }
 
     #[test]

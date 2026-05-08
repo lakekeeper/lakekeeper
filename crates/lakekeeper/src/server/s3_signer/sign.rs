@@ -111,8 +111,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             body: request_body,
         } = request.clone();
 
+        // The wire URL Spark/Iceberg sends has every `%` encoded as `%25`
+        // for HTTP transport (see RFC 3986 §2.1). Stored `fs_location`
+        // sits at the canonical-of-input level — what cloud servers
+        // actually treat as the storage key after one URL-decode pass.
+        // Bring the wire URL down to that level *before* parse_s3_url so
+        // byte-prefix matching against `fs_location` works for both:
+        // - partition paths with `%252F` on the wire → `%2F` (literal) at
+        //   key level, byte-matches stored `fs_location` prefix;
+        // - special-char table LOCATIONs (`%22` in user input) where the
+        //   wire has `%2522` → after decode `%22` (literal), byte-matches
+        //   stored `fs_location` (`%22`).
+        let decoded_url = urldecode_uri_path_segments(&request_url)?;
         let (parsed_url, operation) = s3_utils::parse_s3_url(
-            &request_url,
+            &decoded_url,
             s3_url_style_detection(&warehouse)?,
             &request_method,
             request_body.as_deref(),
@@ -378,6 +390,45 @@ async fn sign(
     };
 
     Ok(sign_response)
+}
+
+/// URL-decode every path segment of a wire URL once, leaving the rest
+/// (scheme, host, port, query, fragment) untouched. The output's path
+/// segments are at the **literal-key-bytes** level — i.e. the same byte
+/// view a cloud server would arrive at after its single URL-decode pass.
+///
+/// Used by the signer so that downstream byte-prefix matching against
+/// stored `fs_location` (which is at the same canonical-of-input level)
+/// works regardless of whether the table prefix has special chars (e.g.
+/// `%22` in user input → `%2522` on wire → `%22` after this decode →
+/// matches stored `%22`) or whether the request is for a partition file
+/// (`%252F` on wire → `%2F` literal after this decode → matches the
+/// table prefix without falsely decoding `%2F` to `/`).
+///
+/// The downstream `parse_s3_url` MUST then build `S3Location` via
+/// `S3Location::from_url_decoded_unchecked` (NOT `S3Location::new`).
+/// `S3Location::new` would re-canonicalise the segments and reject
+/// legitimate post-decode bytes like `%2F`.
+fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
+    let mut new_uri = uri.clone();
+    let segments = new_uri
+        .path_segments()
+        .map(std::iter::Iterator::collect::<Vec<_>>)
+        .unwrap_or_default();
+
+    let mut decoded = Vec::with_capacity(segments.len());
+    for segment in segments {
+        decoded.push(urlencoding::decode(segment).map_err(|e| {
+            ErrorModel::bad_request(
+                "Failed to URL-decode path segment of sign request URI",
+                "FailedToDecodeURISegment",
+                Some(Box::new(e)),
+            )
+        })?);
+    }
+
+    new_uri.set_path(&decoded.join("/"));
+    Ok(new_uri)
 }
 
 fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
@@ -660,12 +711,19 @@ pub(super) mod s3_utils {
                 let keys = parse_s3_delete_xml(xml_body)
                     .map_err(|e| err("InvalidDeleteBody", &format!("{e}")))?;
 
-                // Create S3 locations for each key
+                // Create S3 locations for each key. DeleteObjects XML
+                // bodies carry literal S3 key bytes (not URL-encoded), so
+                // they're at the same byte level as the post-urldecode
+                // wire URL — use the non-canonicalising constructor for
+                // the same reason as the path/virtual-host parsers below.
                 let mut locations = Vec::with_capacity(keys.len());
                 for key in keys {
-                    let location =
-                        S3Location::new(&bucket, &key.split('/').collect::<Vec<_>>(), None)
-                            .map_err(ValidationError::from)?;
+                    let location = S3Location::from_url_decoded_unchecked(
+                        &bucket,
+                        &key.split('/').collect::<Vec<_>>(),
+                        None,
+                    )
+                    .map_err(ValidationError::from)?;
                     locations.push(location);
                 }
 
@@ -716,7 +774,7 @@ pub(super) mod s3_utils {
         Ok(ParsedSignRequest {
             url: uri.clone(),
             locations: vec![
-                S3Location::new(
+                S3Location::from_url_decoded_unchecked(
                     bucket,
                     &path_segments.iter().map(String::as_str).collect::<Vec<_>>(),
                     None,
@@ -759,7 +817,7 @@ pub(super) mod s3_utils {
         Ok(ParsedSignRequest {
             url: uri.clone(),
             locations: vec![
-                S3Location::new(
+                S3Location::from_url_decoded_unchecked(
                     path_segments_borrowed[0],
                     if path_segments_borrowed.len() > 1 {
                         &(path_segments_borrowed[1..])
@@ -1121,6 +1179,12 @@ mod test {
     /// bytes). The wire URL then encodes that segment a second time, so the
     /// HTTP request path contains `m%252Fy`. The signer must accept this
     /// and treat it as a sublocation of the table.
+    ///
+    /// After re-introducing `urldecode_uri_path_segments` (which the
+    /// production `sign` function calls before `parse_s3_url`), this
+    /// test exercises **only** `parse_s3_url` on the un-decoded wire URL
+    /// — the production flow is covered by
+    /// `test_parse_s3_url_partition_path_after_urldecode` below.
     #[test]
     fn test_parse_s3_url_iceberg_partition_path() {
         let table_location =
@@ -1136,6 +1200,60 @@ mod test {
         .expect("partition-encoded URL must parse");
         assert_eq!(operation, Operation::Write);
         validate_uri(&parsed, &table_location).expect("parsed URL must be sublocation of table");
+    }
+
+    /// Production flow regression: when a table's LOCATION itself
+    /// contains a special char (here `%22`), Spark's wire URL has the
+    /// `%` further encoded to `%25`, so the segment arrives as `%2522`.
+    /// The signer urldecodes-once before `parse_s3_url`, bringing the
+    /// segment to `%22` (literal 3 bytes) — matching the stored
+    /// `fs_location` byte level. This is the regression that broke the
+    /// `test_spark_round_trip_special_char_location` integration tests.
+    #[test]
+    fn test_parse_s3_url_special_char_table_location_after_urldecode() {
+        let table_location =
+            Location::from_str("s3://tests/wh/aaaa-aaaa-aaaa/bbbb-bbbb-bbbb/parent/%22").unwrap();
+        let wire = "http://minio:9000/tests/wh/aaaa-aaaa-aaaa/bbbb-bbbb-bbbb/parent/%2522/data/00000-data.parquet";
+        let uri = url::Url::parse(wire).unwrap();
+        let decoded =
+            super::urldecode_uri_path_segments(&uri).expect("wire URL urldecode must succeed");
+        let (parsed, operation) = parse_s3_url(
+            &decoded,
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::PUT,
+            None,
+        )
+        .expect("post-decode special-char wire URL must parse");
+        assert_eq!(operation, Operation::Write);
+        validate_uri(&parsed, &table_location)
+            .expect("post-decode wire URL must byte-prefix-match stored canonical fs_location");
+    }
+
+    /// Production flow regression: partition-path wire URL still works
+    /// end-to-end after `urldecode_uri_path_segments` is re-introduced.
+    /// `%252F` on the wire becomes `%2F` (literal 3 bytes) after one
+    /// urldecode — which `S3Location::from_url_decoded_unchecked`
+    /// preserves verbatim, *unlike* `S3Location::new`'s
+    /// `canonicalize_segment` path which would reject `%2F` (it decodes
+    /// to `/`).
+    #[test]
+    fn test_parse_s3_url_partition_path_after_urldecode() {
+        let table_location =
+            Location::from_str("s3://tests/wh/aaaa-aaaa-aaaa/bbbb-bbbb-bbbb").unwrap();
+        let wire = "http://minio:9000/tests/wh/aaaa-aaaa-aaaa/bbbb-bbbb-bbbb/data/m%252Fy%2Bfl%2B%2521%253F%2B-_%25C3%25A4%2Boats%3D2.2/00000-data.parquet";
+        let uri = url::Url::parse(wire).unwrap();
+        let decoded =
+            super::urldecode_uri_path_segments(&uri).expect("wire URL urldecode must succeed");
+        let (parsed, operation) = parse_s3_url(
+            &decoded,
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::PUT,
+            None,
+        )
+        .expect("post-decode partition wire URL must parse");
+        assert_eq!(operation, Operation::Write);
+        validate_uri(&parsed, &table_location)
+            .expect("post-decode partition wire URL must be sublocation of table");
     }
 
     #[test]

@@ -71,6 +71,52 @@ impl S3Location {
         self
     }
 
+    /// Construct an `S3Location` from already-URL-decoded path segments,
+    /// **without** running per-segment canonicalisation.
+    ///
+    /// Used by the S3 signer's wire-URL lookup path. The wire URL has
+    /// been URL-decoded once to bring it to the same byte level as
+    /// stored `fs_location`; here we want a byte-faithful `S3Location`
+    /// for byte-prefix matching, not another decode-reencode pass.
+    /// `Location::from_url_decoded_unchecked` is the single-segment
+    /// counterpart — see its docstring for the layered-encoding rationale.
+    ///
+    /// # Errors
+    /// - Invalid bucket name.
+    /// - Any key segment contains a literal `/`.
+    /// - Scheme isn't `s3`/`s3a`/`s3n`.
+    pub fn from_url_decoded_unchecked(
+        bucket_name: &str,
+        key_segments: &[&str],
+        scheme: Option<String>,
+    ) -> Result<Self, InvalidLocationError> {
+        validate_bucket_name(bucket_name)
+            .map_err(|e| InvalidLocationError::new(format!("s3://{bucket_name}"), e.to_string()))?;
+        if key_segments.iter().any(|k| k.contains('/')) {
+            return Err(InvalidLocationError::new(
+                format!("{key_segments:?}"),
+                "S3 key contains unescaped slashes (/)".to_string(),
+            ));
+        }
+        let scheme = scheme.unwrap_or_else(|| "s3".to_string());
+        if !S3_CUSTOM_SCHEMES.contains(&scheme.as_str()) && scheme != "s3" {
+            return Err(InvalidLocationError::new(
+                format!("s3://{bucket_name}"),
+                format!("S3 location must use s3, s3a or s3n protocol. Found: {scheme}"),
+            ));
+        }
+        // Build authority_and_path from the literal segments.
+        let mut authority_and_path = String::with_capacity(bucket_name.len() + 1);
+        authority_and_path.push_str(bucket_name);
+        for seg in key_segments {
+            authority_and_path.push('/');
+            authority_and_path.push_str(seg);
+        }
+        Ok(S3Location {
+            location: Location::from_url_decoded_unchecked(&scheme, &authority_and_path),
+        })
+    }
+
     #[must_use]
     pub fn scheme(&self) -> &str {
         self.location.scheme()
@@ -230,6 +276,64 @@ impl std::ops::Deref for S3Location {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_from_url_decoded_unchecked_preserves_bytes() {
+        // The signer feeds segments at literal-key-bytes level (post
+        // urldecode-once). The non-canonicalising constructor must
+        // accept legitimate bytes that `S3Location::new` would reject:
+        // - `%2F` literal in a segment (Iceberg partition value).
+        // - `%22` literal in a segment (special-char table prefix
+        //   that arrives at the signer after decoding wire `%2522`).
+        let cases = [
+            (
+                "test-bucket",
+                &["foo", "%22", "data"][..],
+                "s3://test-bucket/foo/%22/data",
+            ),
+            (
+                "test-bucket",
+                &["data", "m%2Fy=foo", "00001.parquet"][..],
+                "s3://test-bucket/data/m%2Fy=foo/00001.parquet",
+            ),
+            (
+                "test-bucket",
+                &["foo", "%2522", "data"][..],
+                // `%2522` (literal 5 bytes) preserved — different
+                // physical S3 key from `%22` per the alias-distinct
+                // pair test.
+                "s3://test-bucket/foo/%2522/data",
+            ),
+        ];
+        for (bucket, segments, expected) in cases {
+            let loc = S3Location::from_url_decoded_unchecked(bucket, segments, None).unwrap();
+            assert_eq!(loc.as_str(), expected);
+            assert_eq!(loc.bucket_name(), bucket);
+        }
+    }
+
+    #[test]
+    fn test_from_url_decoded_unchecked_validates_bucket_and_segments() {
+        // Bucket validation still runs.
+        let bad_bucket = S3Location::from_url_decoded_unchecked("Bad_Bucket", &["k"], None);
+        assert!(
+            bad_bucket.is_err(),
+            "bucket validation must not be bypassed"
+        );
+
+        // Literal `/` in a key segment is still rejected (segments
+        // arrive pre-split; an embedded `/` is a structural error).
+        let slashy = S3Location::from_url_decoded_unchecked("test-bucket", &["a/b"], None);
+        assert!(
+            slashy.is_err(),
+            "embedded `/` in a key segment must be rejected"
+        );
+
+        // Bad scheme rejected.
+        let bad_scheme =
+            S3Location::from_url_decoded_unchecked("test-bucket", &["k"], Some("ftp".to_string()));
+        assert!(bad_scheme.is_err(), "non-s3 scheme must be rejected");
+    }
 
     #[test]
     fn test_validate_bucket_name() {
