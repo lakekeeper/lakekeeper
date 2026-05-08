@@ -353,6 +353,7 @@ impl CatalogIndex {
                     TabularId::View(v) => {
                         idx.views.insert(v, (warehouse_id, ns_id));
                     }
+                    TabularId::GenericTable(_) => todo!("openfga reconcile for generic tables"),
                 }
             }
             match last_token {
@@ -480,6 +481,7 @@ impl CatalogIndex {
                     .map(|v| self.views.contains_key(&v))
             }
             FgaType::User | FgaType::ModelVersion | FgaType::AuthModelId => None,
+            FgaType::GenericTable => todo!("openfga reconcile for generic tables"),
         }
     }
 }
