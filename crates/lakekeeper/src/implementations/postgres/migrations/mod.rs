@@ -12,12 +12,17 @@ use sqlx::{
 
 use crate::{
     implementations::postgres::{
-        CatalogState, PostgresTransaction, bootstrap::get_or_set_server_id,
-        migrations::split_table_metadata::SplitTableMetadataHook,
+        CatalogState, PostgresTransaction,
+        bootstrap::get_or_set_server_id,
+        migrations::{
+            canonicalise_fs_location::CanonicaliseFsLocationHook,
+            split_table_metadata::SplitTableMetadataHook,
+        },
     },
     service::{ServerId, Transaction},
 };
 
+mod canonicalise_fs_location;
 mod patch_migration_hash;
 mod split_table_metadata;
 
@@ -207,10 +212,16 @@ fn get_changed_migration_ids() -> HashSet<i64> {
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
-    HashMap::from([(
-        SplitTableMetadataHook::version(),
-        Box::new(SplitTableMetadataHook) as Box<_>,
-    )])
+    HashMap::from([
+        (
+            SplitTableMetadataHook::version(),
+            Box::new(SplitTableMetadataHook) as Box<_>,
+        ),
+        (
+            CanonicaliseFsLocationHook::version(),
+            Box::new(CanonicaliseFsLocationHook) as Box<_>,
+        ),
+    ])
 }
 
 fn validate_applied_migrations(

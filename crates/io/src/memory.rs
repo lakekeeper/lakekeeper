@@ -288,7 +288,7 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
 
-    use crate::{LakekeeperStorage, memory::MemoryStorage};
+    use crate::{LakekeeperStorage, ReadError, memory::MemoryStorage};
 
     #[tokio::test]
     async fn test_memory_storage_basic_operations() {
@@ -322,6 +322,94 @@ mod tests {
         storage.write(test_path, test_data.clone()).await.unwrap();
         let read_data = storage.read(test_path).await.unwrap();
         assert_eq!(test_data, read_data);
+    }
+
+    /// `normalize_memory_path` canonicalises via `Location` so equivalent
+    /// inputs collapse onto the same key — matching how cloud backends store
+    /// objects at the canonical-encoded byte sequence. Aliases that must
+    /// collide:
+    /// - `%20` ↔ literal space (space is encoded by canonicalisation)
+    /// - `%2D` / `%2d` / literal `-` (`-` is unreserved → all decode to `-`)
+    /// - `memory://` prefixed input ↔ relative input with same suffix
+    #[tokio::test]
+    async fn test_memory_storage_canonical_aliasing() {
+        let storage = MemoryStorage::with_global_store(false);
+
+        // Space ↔ %20: write encoded, read decoded.
+        let payload = Bytes::from("space-alias");
+        storage
+            .write("memory://host/path%20file.txt", payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.read("memory://host/path file.txt").await.unwrap(),
+            payload,
+            "literal space must alias %20"
+        );
+        assert_eq!(
+            storage.read("memory://host/path%20file.txt").await.unwrap(),
+            payload,
+            "round-trip on encoded form"
+        );
+
+        // %2D / %2d / literal `-`: hyphen is unreserved, all decode to `-`.
+        let payload = Bytes::from("dash-alias");
+        storage
+            .write("memory://host/path%2Dfile.txt", payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.read("memory://host/path-file.txt").await.unwrap(),
+            payload,
+            "literal `-` must alias %2D"
+        );
+        assert_eq!(
+            storage.read("memory://host/path%2dfile.txt").await.unwrap(),
+            payload,
+            "lowercase %2d must alias uppercase %2D"
+        );
+
+        // Prefixed (canonicalised) ↔ unprefixed (raw): both yield key
+        // `host/no-prefix.txt` after `strip_prefix(MEMORY_PREFIX)`.
+        let payload = Bytes::from("prefix-alias");
+        storage
+            .write("memory://host/no-prefix.txt", payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            storage.read("host/no-prefix.txt").await.unwrap(),
+            payload,
+            "unprefixed read must hit same key as prefixed write"
+        );
+    }
+
+    /// `normalize_memory_path` rejects inputs that fail canonicalisation:
+    /// empty paths, ambiguous `%2F`-as-slash, and missing host.
+    #[tokio::test]
+    async fn test_memory_storage_invalid_paths() {
+        let storage = MemoryStorage::with_global_store(false);
+
+        // Empty unprefixed path.
+        let err = storage.read("").await.unwrap_err();
+        assert!(
+            matches!(err, ReadError::InvalidLocation(_)),
+            "empty path must yield InvalidLocation, got {err:?}"
+        );
+
+        // `memory://` with no host fails URL parsing.
+        let err = storage.read("memory://").await.unwrap_err();
+        assert!(
+            matches!(err, ReadError::InvalidLocation(_)),
+            "missing host must yield InvalidLocation, got {err:?}"
+        );
+
+        // `%2F` inside a segment is rejected — it would alias with a literal
+        // path separator and create a cred-sharing hazard.
+        let err = storage.read("memory://host/foo%2Fbar").await.unwrap_err();
+        assert!(
+            matches!(err, ReadError::InvalidLocation(_)),
+            "%2F-as-slash must yield InvalidLocation, got {err:?}"
+        );
     }
 
     #[tokio::test]
