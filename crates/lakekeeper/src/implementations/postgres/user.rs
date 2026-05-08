@@ -135,7 +135,16 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             updated_at
         FROM users u
         where (deleted_at is null)
-            AND ($1 OR name ILIKE ('%' || $2 || '%'))
+            -- LIKE/ILIKE has exactly three metacharacters: `%`, `_`, and the
+            -- escape (default `\`) — see Postgres docs `functions-matching`
+            -- and `src/backend/utils/adt/like_match.c`. POSIX/SIMILAR TO
+            -- specials (`[]`, `*`, `+`, `.`, etc.) are not LIKE specials.
+            -- Multibyte UTF-8 cannot accidentally form a wildcard byte
+            -- (lead/continuation bytes are 0x80+, wildcards are ASCII).
+            -- regexp_replace escapes the three metacharacters so $2 matches
+            -- literally; ILIKE is kept (over `strpos`) so the gist_trgm_ops
+            -- index on `name` still serves the query.
+            AND ($1 OR name ILIKE ('%' || regexp_replace($2, '([\\%_])', '\\\1', 'g') || '%') ESCAPE '\')
             AND ($3 OR id = any($4))
             --- PAGINATION
             AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))
@@ -515,5 +524,83 @@ mod test {
         .unwrap();
         assert_eq!(users.users.len(), 0);
         assert!(users.next_page_token.is_none());
+    }
+
+    #[sqlx::test]
+    async fn test_list_users_name_filter_escapes_like_wildcards(pool: sqlx::PgPool) {
+        // Regression: `name ILIKE ('%' || $2 || '%')` previously interpreted
+        // `_`, `%`, `\` in the user-supplied filter as LIKE metacharacters,
+        // letting `_` match any single char and `%` match anything. The fix
+        // escapes the filter and adds `ESCAPE '\'`. Each special char must now
+        // match only itself.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let alice = UserId::new_unchecked("oidc", "alice");
+        let bob = UserId::new_unchecked("oidc", "bob");
+        let underscore_user = UserId::new_unchecked("oidc", "u_score");
+        let percent_user = UserId::new_unchecked("oidc", "u_pct");
+        let backslash_user = UserId::new_unchecked("oidc", "u_bs");
+
+        for (id, name) in [
+            (&alice, "alice"),
+            (&bob, "bob"),
+            (&underscore_user, "weird_name"), // contains literal `_`
+            (&percent_user, "100% sure"),     // contains literal `%`
+            (&backslash_user, "back\\slash"), // contains literal `\`
+        ] {
+            create_or_update_user(
+                id,
+                name,
+                None,
+                UserLastUpdatedWith::CreateEndpoint,
+                UserType::Human,
+                &state.read_write.write_pool,
+            )
+            .await
+            .unwrap();
+        }
+
+        let list = |filter: &str| {
+            let state = state.clone();
+            let filter = filter.to_string();
+            async move {
+                list_users(
+                    None,
+                    Some(filter),
+                    PaginationQuery {
+                        page_token: PageToken::NotSpecified,
+                        page_size: Some(50),
+                    },
+                    &state.read_write.read_pool,
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        // `_` previously matched any single char; now it's literal.
+        let res = list("weird_name").await;
+        assert_eq!(res.users.len(), 1);
+        assert_eq!(res.users[0].id, underscore_user);
+
+        // `_` standalone in the filter must NOT broaden matches to every name.
+        // Only the user whose name actually contains `_` should match.
+        let res = list("_").await;
+        assert_eq!(res.users.len(), 1);
+        assert_eq!(res.users[0].id, underscore_user);
+
+        // `%` standalone must NOT match every name.
+        let res = list("%").await;
+        assert_eq!(res.users.len(), 1);
+        assert_eq!(res.users[0].id, percent_user);
+
+        // `\` is the escape char in SQL; must be searchable literally.
+        let res = list("\\").await;
+        assert_eq!(res.users.len(), 1);
+        assert_eq!(res.users[0].id, backslash_user);
+
+        // Empty filter still returns everyone (the `$1` empty branch).
+        let res = list("").await;
+        assert_eq!(res.users.len(), 5);
     }
 }

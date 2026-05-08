@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\",\n            user_type as \"user_type: DbUserType\",\n            email,\n            created_at,\n            updated_at\n        FROM users u\n        where (deleted_at is null)\n            AND ($1 OR name ILIKE ('%' || $2 || '%'))\n            AND ($3 OR id = any($4))\n            --- PAGINATION\n            AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))\n        ORDER BY u.created_at, u.id ASC\n        LIMIT $7\n        ",
+  "query": "\n        SELECT\n            id,\n            name,\n            last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\",\n            user_type as \"user_type: DbUserType\",\n            email,\n            created_at,\n            updated_at\n        FROM users u\n        where (deleted_at is null)\n            -- LIKE/ILIKE has exactly three metacharacters: `%`, `_`, and the\n            -- escape (default `\\`) — see Postgres docs `functions-matching`\n            -- and `src/backend/utils/adt/like_match.c`. POSIX/SIMILAR TO\n            -- specials (`[]`, `*`, `+`, `.`, etc.) are not LIKE specials.\n            -- Multibyte UTF-8 cannot accidentally form a wildcard byte\n            -- (lead/continuation bytes are 0x80+, wildcards are ASCII).\n            -- regexp_replace escapes the three metacharacters so $2 matches\n            -- literally; ILIKE is kept (over `strpos`) so the gist_trgm_ops\n            -- index on `name` still serves the query.\n            AND ($1 OR name ILIKE ('%' || regexp_replace($2, '([\\\\%_])', '\\\\\\1', 'g') || '%') ESCAPE '\\')\n            AND ($3 OR id = any($4))\n            --- PAGINATION\n            AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))\n        ORDER BY u.created_at, u.id ASC\n        LIMIT $7\n        ",
   "describe": {
     "columns": [
       {
@@ -82,5 +82,5 @@
       true
     ]
   },
-  "hash": "5a450894a677d31c8a80122908dbf49ad77d804682936d96a9142028ce5372f7"
+  "hash": "638a08b2463cf86af0c488f4532581d6d259152c4711715f356714f1d1b8fe9a"
 }

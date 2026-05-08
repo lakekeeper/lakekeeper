@@ -519,7 +519,7 @@ pub(crate) async fn create_tabular(
                SELECT 1
                FROM tabular ta
                WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
-                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
+                      (fs_location ~>=~ ($4 || '/') AND fs_location ~<~ ($4 || '0'))
                ) AND tabular_id != $3
            ) as "exists!""#,
         warehouse_id,
@@ -530,7 +530,8 @@ pub(crate) async fn create_tabular(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|e| {
-        e.into_catalog_backend_error().append_detail("Error checking for conflicting locations")
+        e.into_catalog_backend_error()
+            .append_detail("Error checking for conflicting locations")
     })?;
 
     if location_is_taken {
@@ -2078,5 +2079,143 @@ mod tests {
             vec!["hr_ns".to_string()]
         );
         assert_eq!(res.tabular.tabular_ident().name, "test_region_42");
+    }
+
+    /// Try to create a table at the given location. Commits on success, rolls
+    /// back the started transaction on error so subsequent calls in the same
+    /// test see a clean state.
+    async fn try_create_table_at(
+        pool: &sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        namespace_id: Uuid,
+        name: &str,
+        location_str: &str,
+    ) -> Result<ViewOrTableInfo, CreateTabularError> {
+        let location = Location::from_str(location_str).unwrap();
+        let metadata_location =
+            Location::from_str(&format!("{location_str}/metadata/v1.json")).unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        let result = create_tabular(
+            CreateTabular {
+                id: Uuid::now_v7(),
+                name,
+                namespace_id,
+                warehouse_id: *warehouse_id,
+                typ: TabularType::Table,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await;
+        if result.is_ok() {
+            transaction.commit().await.unwrap();
+        } else {
+            transaction.rollback().await.unwrap();
+        }
+        result
+    }
+
+    #[sqlx::test]
+    async fn test_create_tabular_subpath_collision_is_denied(pool: sqlx::PgPool) {
+        // A new table whose location lies strictly under an existing table's
+        // location must be rejected. This exercises the secondary
+        // location-conflict check (`fs_location ~>=~ … AND ~<~ …`) — the
+        // primary unique index only catches exact-location duplicates.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        try_create_table_at(&pool, warehouse_id, namespace_id, "parent", "s3://b/parent")
+            .await
+            .unwrap();
+
+        let err = try_create_table_at(
+            &pool,
+            warehouse_id,
+            namespace_id,
+            "child",
+            "s3://b/parent/child",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, CreateTabularError::LocationAlreadyTaken(_)));
+    }
+
+    #[sqlx::test]
+    async fn test_create_tabular_sibling_at_zero_byte_boundary_is_allowed(pool: sqlx::PgPool) {
+        // Boundary regression: the upper bound of the byte-range collision
+        // check is `$4 || '0'` (where '0' = 0x30, exactly one byte after
+        // '/' = 0x2F). A sibling whose path differs from the existing path
+        // by exactly the `0` byte at that position must NOT be flagged as a
+        // collision — any off-by-one would catch it as a false positive.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        try_create_table_at(&pool, warehouse_id, namespace_id, "foo", "s3://b/foo")
+            .await
+            .unwrap();
+        try_create_table_at(&pool, warehouse_id, namespace_id, "foo0", "s3://b/foo0")
+            .await
+            .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_create_tabular_sibling_with_underscore_is_allowed(pool: sqlx::PgPool) {
+        // Regression for the LIKE-wildcard-injection bug fixed by switching
+        // to byte-range comparison: under the old `LIKE $4 || '/%'` form, a
+        // stored fs_location containing `_` (a single-char LIKE wildcard)
+        // could falsely match an unrelated sibling. e.g. with $4=`s3://b/foo`
+        // and an existing `s3://b/foo_bar` the old check would have flagged a
+        // collision. The byte-range form treats `_` as a literal byte.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        try_create_table_at(&pool, warehouse_id, namespace_id, "foo", "s3://b/foo")
+            .await
+            .unwrap();
+        try_create_table_at(
+            &pool,
+            warehouse_id,
+            namespace_id,
+            "foo_bar",
+            "s3://b/foo_bar",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_create_tabular_exact_location_duplicate_is_denied(pool: sqlx::PgPool) {
+        // Exact-location duplicates are caught by the unique index
+        // `tabular_warehouse_canonical_uq` (NOT by the byte-range check, which
+        // excludes equal-length matches). Both rejections surface as
+        // LocationAlreadyTaken; this test pins that path.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = iceberg_ext::NamespaceIdent::from_vec(vec!["ns".to_string()]).unwrap();
+        let namespace_id = *initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        try_create_table_at(&pool, warehouse_id, namespace_id, "first", "s3://b/dup")
+            .await
+            .unwrap();
+
+        let err = try_create_table_at(&pool, warehouse_id, namespace_id, "second", "s3://b/dup")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CreateTabularError::LocationAlreadyTaken(_)));
     }
 }

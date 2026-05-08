@@ -66,6 +66,7 @@ SPECIAL_CHARS = [
 def _lookup(table: dict, provider: str, flavor: Optional[str]) -> Optional[str]:
     return table.get((provider, flavor or "")) or table.get((provider, "*"))
 
+
 # Per-request timeout (seconds). Prevents CI hangs on a stalled cloud
 # endpoint or slow Lakekeeper. Generous enough for cold cloud calls.
 HTTP_TIMEOUT = 30
@@ -91,9 +92,7 @@ def _vending_enabled(storage_config: dict) -> bool:
 
 
 def _wh_url(warehouse: conftest.Warehouse) -> str:
-    return (
-        warehouse.server.catalog_url.rstrip("/") + f"/v1/{warehouse.warehouse_id}"
-    )
+    return warehouse.server.catalog_url.rstrip("/") + f"/v1/{warehouse.warehouse_id}"
 
 
 def _auth(warehouse: conftest.Warehouse) -> dict:
@@ -110,9 +109,7 @@ def _create_namespace(warehouse: conftest.Warehouse, namespace: str) -> None:
     r.raise_for_status()
 
 
-def _load_namespace_location(
-    warehouse: conftest.Warehouse, namespace: str
-) -> str:
+def _load_namespace_location(warehouse: conftest.Warehouse, namespace: str) -> str:
     r = requests.get(
         f"{_wh_url(warehouse)}/namespaces/{quote(namespace, safe='')}",
         headers=_auth(warehouse),
@@ -187,8 +184,15 @@ def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
         # Vended SAS is a Blob Service SAS — use the blob endpoint (single
         # PUT) rather than DFS (which would need 3-step create/append/flush).
         host = (parsed.hostname or "").replace(".dfs.", ".blob.")
-        path = parsed.path
-        https_url = f"https://{host}/{fs}{path}?{sas}"
+        # `parsed.path` carries the storage key bytes verbatim
+        # (e.g. `%3F` literal 3 chars). To put that key on the HTTP wire
+        # so Azure URL-decodes it back to those exact bytes, we
+        # URL-encode `%` once — the same single pass Iceberg-Java's
+        # AbfsClient applies. Without this the wire URL's `%3F` would
+        # decode to literal `?` (1 char), which is a different storage
+        # key from what Lakekeeper signed the SAS for.
+        encoded_path = parsed.path.replace("%", "%25")
+        https_url = f"https://{host}/{fs}{encoded_path}?{sas}"
         r = requests.put(
             https_url,
             headers={"x-ms-blob-type": "BlockBlob"},
@@ -321,14 +325,12 @@ ALIAS_DISTINCT_PAIRS = [
         "dquote_pct22_vs_pct2522",
         "%22",
         "%2522",
-        "encoded `\"` vs literal-`%22` in key bytes",
+        'encoded `"` vs literal-`%22` in key bytes',
     ),
 ]
 
 
-@pytest.mark.parametrize(
-    "pair", ALIAS_DISTINCT_PAIRS, ids=lambda p: p.id
-)
+@pytest.mark.parametrize("pair", ALIAS_DISTINCT_PAIRS, ids=lambda p: p.id)
 def test_alias_distinct_pair_credential_isolation(
     warehouse: conftest.Warehouse, storage_config, pair: AliasPair
 ):

@@ -4,12 +4,7 @@
 -- which runs after this file inside the same transaction. A
 -- duplicate-canonical collision rolls back the upgrade with a
 -- unique-violation naming the conflicting rows.
---
--- The unique index uses the `text_pattern_ops` opclass so prefix LIKE
--- queries (the overlap check in `tabular/mod.rs::create_tabular`) use
--- it directly without depending on the database collation. The
--- constraint spans live AND soft-deleted rows: tables own their
--- canonical location until purge.
+
 
 DROP INDEX IF EXISTS tabular_warehouse_id_location_idx;
 
