@@ -901,6 +901,64 @@ def test_cannot_create_table_at_sub_location(
     assert loaded_table.metadata_location.startswith(custom_location)
 
 
+@pytest.mark.parametrize(
+    "location_segment, written_values",
+    [
+        pytest.param('"', [1, 2], id="literal_dquote"),
+        pytest.param("%22", [10, 20], id="pct22"),
+        pytest.param("%2522", [100, 200], id="pct2522"),
+    ],
+)
+def test_spark_round_trip_special_char_location(
+    spark,
+    namespace,
+    warehouse: conftest.Warehouse,
+    location_segment,
+    written_values,
+):
+    """For each LOCATION segment, INSERT must write parquet files and a
+    subsequent SELECT must read them back unchanged. Whatever physical S3
+    path Spark+Iceberg picks for the segment is the truth — Lakekeeper
+    must accept that path and not break the data path.
+
+    CREATE TABLE on its own writes only metadata; the INSERT below is
+    what materialises parquet files at the table's LOCATION. A
+    path-mangling bug would surface as a SELECT mismatch.
+
+    Each parametrise case uses a fresh `parent_<uuid>` directory so
+    successive cases cannot accidentally share or clobber a prefix.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    bootstrap_name = f"sc_bootstrap_{suffix}"
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.{bootstrap_name} (v INT) USING iceberg"
+    )
+    default_location = warehouse.pyiceberg_catalog.load_table(
+        (*namespace.name, bootstrap_name)
+    ).location()
+    base = default_location.rsplit("/", 1)[0]
+
+    table_name = f"sc_{suffix}"
+    location = f"{base}/parent_{suffix}/{location_segment}"
+
+    spark.sql(
+        f"CREATE TABLE {namespace.spark_name}.{table_name} (v INT) USING iceberg "
+        f"LOCATION '{location}'"
+    )
+    values_clause = ", ".join(f"({v})" for v in written_values)
+    spark.sql(
+        f"INSERT INTO {namespace.spark_name}.{table_name} VALUES {values_clause}"
+    )
+    pdf = spark.sql(
+        f"SELECT v FROM {namespace.spark_name}.{table_name} ORDER BY v"
+    ).toPandas()
+    assert pdf["v"].tolist() == sorted(written_values), (
+        f"Spark+Lakekeeper failed to round-trip {sorted(written_values)} for "
+        f"segment {location_segment!r} at {location!r}: got "
+        f"{pdf['v'].tolist()}"
+    )
+
+
 @pytest.mark.parametrize("enable_cleanup", [False, True])
 def test_old_metadata_files_are_deleted(
     spark,

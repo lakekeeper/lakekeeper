@@ -79,16 +79,19 @@ async fn canonicalise_fs_location(
     let mut total_scanned = 0usize;
     let mut total_updates = 0usize;
 
+    // PostgreSQL's `FETCH` does not accept bind parameters for the row
+    // count — the count must be inlined into the SQL. `UPDATE_CHUNK` is a
+    // compile-time constant, so the inlined literal is safe.
+    let fetch_sql = format!("FETCH FORWARD {UPDATE_CHUNK} FROM canonicalise_fs_location_cur");
+
     loop {
-        // FETCH FORWARD $1 — `query_as` (runtime FromRow) rather than
-        // `query_as!` because the cursor isn't declared at macro-compile
-        // time, so the macro can't see the row shape.
-        let chunk: Vec<ScannedRow> =
-            sqlx::query_as("FETCH FORWARD $1 FROM canonicalise_fs_location_cur")
-                .bind(i64::try_from(UPDATE_CHUNK).expect("UPDATE_CHUNK fits in i64"))
-                .fetch_all(&mut **transaction)
-                .await
-                .context("failed to fetch chunk from canonicalisation cursor")?;
+        // `query_as` (runtime FromRow) rather than `query_as!` because the
+        // cursor isn't declared at macro-compile time, so the macro can't
+        // see the row shape.
+        let chunk: Vec<ScannedRow> = sqlx::query_as(&fetch_sql)
+            .fetch_all(&mut **transaction)
+            .await
+            .context("failed to fetch chunk from canonicalisation cursor")?;
 
         if chunk.is_empty() {
             break;

@@ -630,6 +630,40 @@ mod tests {
     }
 
     #[test]
+    fn test_location_with_double_quote_canonicalises_to_percent_encoded() {
+        // S3 keys are arbitrary UTF-8 byte sequences; `"` is a valid key
+        // character. RFC 3986 doesn't list `"` as `pchar`, so canonical
+        // form encodes it as `%22`. Two distinct hazards to defend:
+        //
+        // 1. **Alias collapse**: `pol"2` (literal `"`) and `pol%222`
+        //    (encoded form) MUST canonicalise to the same Location — both
+        //    address the *same* S3 key (`pol"2`, 4 bytes) under AWS's
+        //    URL→key one-decode rule. If they didn't collapse, two
+        //    warehouse rows could write to the same physical object
+        //    (cred-sharing alias hazard).
+        //
+        // 2. **Distinct-key preservation**: a Location addressing the
+        //    *literal-`%22`* key (`pol%22`, 5 bytes — what the AWS console
+        //    creates when you type `pol%22` as a folder name) is a
+        //    *different* canonical form (`pol%2522`). It must NOT collapse
+        //    with the alias above, otherwise we'd lose the ability to
+        //    address such keys at all.
+        let with_literal = Location::from_str("s3://example-bucket-42/pol\"2/").unwrap();
+        let with_pct22 = Location::from_str("s3://example-bucket-42/pol%222/").unwrap();
+        let with_pct2522 = Location::from_str("s3://example-bucket-42/pol%25222/").unwrap();
+
+        // (1) literal `"` and `%22` collapse — same S3 key (`pol"2`).
+        assert_eq!(with_literal.as_str(), "s3://example-bucket-42/pol%222/");
+        assert_eq!(with_pct22.as_str(), "s3://example-bucket-42/pol%222/");
+        assert_eq!(with_literal, with_pct22);
+
+        // (2) `%2522` is a distinct canonical form — addresses the
+        // different S3 key `pol%22` (literal `%`, `2`, `2` bytes).
+        assert_eq!(with_pct2522.as_str(), "s3://example-bucket-42/pol%25222/");
+        assert_ne!(with_pct22, with_pct2522);
+    }
+
+    #[test]
     fn test_rejects_query_and_fragment() {
         // Literal `?` and `#` in URL paths get parsed as query/fragment by
         // `url::Url`, which would diverge from our raw `authority_and_path`

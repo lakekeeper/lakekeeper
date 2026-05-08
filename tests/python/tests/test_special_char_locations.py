@@ -48,7 +48,11 @@ SPECIAL_CHARS = [
     SpecialChar("dollar", "$", expect_deny={("s3", "s3-compat"): _MINIO_NO_IAM_VARS}),
     SpecialChar("squote", "'"),
     SpecialChar("plus", "+"),
-    SpecialChar("dquote", "%22"),
+    # Both literal `"` and pre-encoded `%22` must round-trip independently.
+    # Whether they alias on the wire is what Spark/Iceberg decides — this
+    # test is per-form scope tightness only.
+    SpecialChar("dquote_pct22", "%22"),
+    SpecialChar("dquote_literal", '"'),
     SpecialChar(
         "space",
         "%20",
@@ -283,5 +287,120 @@ def test_special_char_in_location(
     assert err is not None, (
         f"vended credentials for {table_location} unexpectedly allowed write "
         f"to {sibling_location} (provider={provider}, char={char.id}). "
+        f"Credential scope is too broad."
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class AliasPair:
+    """Two `url_segment`s that produce *distinct* canonical Locations and
+    therefore address two different physical S3 keys.
+
+    Pairs the canonicalisation rule keeps separate (vs. the alias classes
+    in `SPECIAL_CHARS`, which collapse to one canonical form). The pair
+    test asserts:
+      1. Both tables can be created in the same warehouse — Lakekeeper's
+         UNIQUE INDEX must see the canonical forms as different.
+      2. Writes with each table's vended creds land at its own prefix.
+      3. Vended creds for one table cannot write into the other table's
+         prefix — credential scoping must respect the canonical-distinct
+         boundary.
+    """
+
+    id: str
+    inner_a: str  # e.g. `%22`   (canonical Location addresses key bytes `%22`)
+    inner_b: str  # e.g. `%2522` (canonical Location addresses key bytes `%2522`)
+    note: str
+
+
+# `%22` and `%2522` look related but produce distinct canonical Locations:
+# - `.../t/%22/...`   stays canonical → S3 key bytes `.../t/%22/...`
+# - `.../t/%2522/...` stays canonical → S3 key bytes `.../t/%2522/...`
+ALIAS_DISTINCT_PAIRS = [
+    AliasPair(
+        "dquote_pct22_vs_pct2522",
+        "%22",
+        "%2522",
+        "encoded `\"` vs literal-`%22` in key bytes",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "pair", ALIAS_DISTINCT_PAIRS, ids=lambda p: p.id
+)
+def test_alias_distinct_pair_credential_isolation(
+    warehouse: conftest.Warehouse, storage_config, pair: AliasPair
+):
+    if not _vending_enabled(storage_config):
+        pytest.skip("requires vended credentials")
+    provider = _provider(storage_config)
+
+    ns_name = f"ap_{pair.id}_{uuid.uuid4().hex[:8]}"
+    _create_namespace(warehouse, ns_name)
+    ns_location = _load_namespace_location(warehouse, ns_name)
+
+    loc_a = f"{ns_location}/t_a/{pair.inner_a}/data/"
+    loc_b = f"{ns_location}/t_b/{pair.inner_b}/data/"
+
+    # (1) Both tables creatable — proves canonical forms differ.
+    _create_table(warehouse, ns_name, "table_a", loc_a)
+    _create_table(warehouse, ns_name, "table_b", loc_b)
+
+    loaded_a = _load_table_with_creds(warehouse, ns_name, "table_a")
+    loaded_b = _load_table_with_creds(warehouse, ns_name, "table_b")
+    config_a = loaded_a.get("config", {})
+    config_b = loaded_b.get("config", {})
+    stored_a = loaded_a["metadata"]["location"].rstrip("/")
+    stored_b = loaded_b["metadata"]["location"].rstrip("/")
+    assert stored_a != stored_b, (
+        f"{pair.id}: both tables canonicalised to the same location "
+        f"({stored_a!r}). Pair is not actually distinct under the canonical "
+        f"rule — review SPECIAL_CHARS / ALIAS_DISTINCT_PAIRS."
+    )
+
+    target_a = f"{stored_a}/canary.txt"
+    target_b = f"{stored_b}/canary.txt"
+
+    # (2) Each cred set writes within its own prefix.
+    err = _try_write(provider, config_a, target_a)
+    assert err is None, (
+        f"vended creds for table_a failed to write at its own prefix "
+        f"{target_a}: {err}"
+    )
+    err = _try_write(provider, config_b, target_b)
+    assert err is None, (
+        f"vended creds for table_b failed to write at its own prefix "
+        f"{target_b}: {err}"
+    )
+
+    # (3) Vended creds for one table must NOT write into the other's prefix.
+    # If they could, the canonical-distinct boundary leaks at the cred
+    # layer — same hazard class as the alias-collapse case, just with the
+    # roles reversed.
+    err = _try_write(provider, config_a, target_b)
+    assert err is not None, (
+        f"vended creds for table_a unexpectedly wrote into table_b's prefix "
+        f"({target_b}). {pair.note}: cross-cred scope leak."
+    )
+    err = _try_write(provider, config_b, target_a)
+    assert err is not None, (
+        f"vended creds for table_b unexpectedly wrote into table_a's prefix "
+        f"({target_a}). {pair.note}: cross-cred scope leak."
+    )
+
+    # (4) Vended creds must also be denied at a totally unrelated sibling
+    # under the namespace — proves the scope is tight beyond just the
+    # alias-pair pattern. Mirrors the sibling check in
+    # `test_special_char_in_location`.
+    sibling_location = f"{ns_location}/ap_{pair.id}_sibling/canary"
+    err = _try_write(provider, config_a, sibling_location)
+    assert err is not None, (
+        f"vended creds for table_a unexpectedly wrote at {sibling_location}. "
+        f"Credential scope is too broad."
+    )
+    err = _try_write(provider, config_b, sibling_location)
+    assert err is not None, (
+        f"vended creds for table_b unexpectedly wrote at {sibling_location}. "
         f"Credential scope is too broad."
     )
