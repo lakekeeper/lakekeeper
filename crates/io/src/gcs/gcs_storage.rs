@@ -4,7 +4,6 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use chrono::{DateTime, Utc};
 use futures::{StreamExt as _, stream};
 use google_cloud_storage::{
     client::Client,
@@ -166,13 +165,11 @@ impl LakekeeperStorage for GcsStorage {
         // If chunk-upload throughput on this path is ever shown by measurement to be a real bottleneck, we should consider GCS parallel composite uploads:
         // upload each chunk as a temporary object in parallel, then issue `compose_object` to concatenate them into the final object and
         // delete the temporaries. That is a substantial redesign and should be carefully considered.
+        // Zero-copy chunking: `bytes.slice(range)` produces an owned
+        // refcounted view handed off to each `upload_chunk` call.
         let total_chunks = total_bytes.div_ceil(DEFAULT_BYTES_PER_REQUEST);
-        let mut slice_begin = 0;
-        let mut chunk_index = 0;
         let mut first_error: Option<WriteError> = None;
-        while slice_begin < total_bytes {
-            let slice_end = (slice_begin + DEFAULT_BYTES_PER_REQUEST).min(total_bytes);
-            let chunk = bytes.slice(slice_begin..slice_end);
+        for (chunk_index, range) in crate::chunk_ranges(total_bytes, DEFAULT_BYTES_PER_REQUEST) {
             // Per GCS protocol only last chunk writes total_size
             let is_final_chunk = chunk_index + 1 == total_chunks;
             let total_size = if is_final_chunk {
@@ -180,25 +177,20 @@ impl LakekeeperStorage for GcsStorage {
             } else {
                 None
             };
-            if let Err(e) = upload_chunk(
-                &upload_client,
-                &location,
-                slice_begin as u64,
-                chunk,
-                total_size,
-            )
-            .await
-            .map_err(|e| match e {
-                WriteError::IOError(io) => WriteError::IOError(
-                    io.with_context(format!("Multipart upload chunk {chunk_index}")),
-                ),
-                other @ WriteError::InvalidLocation(_) => other,
-            }) {
+            let offset = range.start as u64;
+            let chunk = bytes.slice(range);
+            if let Err(e) = upload_chunk(&upload_client, &location, offset, chunk, total_size)
+                .await
+                .map_err(|e| match e {
+                    WriteError::IOError(io) => WriteError::IOError(
+                        io.with_context(format!("Multipart upload chunk {chunk_index}")),
+                    ),
+                    other @ WriteError::InvalidLocation(_) => other,
+                })
+            {
                 first_error = Some(e);
                 break;
             }
-            slice_begin = slice_end;
-            chunk_index += 1;
         }
         if let Some(err) = first_error {
             try_cancel_resumable(
@@ -237,7 +229,11 @@ impl LakekeeperStorage for GcsStorage {
         let location = GcsLocation::try_from_str(path)?;
         let head_response = head(&self.client, &location).await?;
         let size = crate::size_to_u64(head_response.size, location.as_str());
-        let last_modified = parse_timestamp(&head_response);
+        let last_modified = head_response
+            .updated
+            .as_ref()
+            .and_then(parse_offsetdatetime);
+
         Ok(FileInfo::new(
             last_modified,
             location.location().clone(),
@@ -402,6 +398,12 @@ impl LakekeeperStorage for GcsStorage {
     }
 }
 
+/// Convert a `time::OffsetDateTime` to a `chrono::DateTime<Utc>`, preserving
+/// nanosecond precision. Returns `None` if the seconds are out of range.
+fn parse_offsetdatetime(t: &time::OffsetDateTime) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond())
+}
+
 fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileInfo, IOError> {
     move |object| {
         let gcs_path = format!("gs://{}/{}", bucket_name, object.name);
@@ -412,10 +414,7 @@ fn try_parse_file_info(bucket_name: &str) -> impl FnMut(Object) -> Result<FileIn
                 gcs_path.clone(),
             )
         })?;
-        let last_modified = object
-            .updated
-            .as_ref()
-            .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond()));
+        let last_modified = object.updated.as_ref().and_then(parse_offsetdatetime);
         let size = crate::size_to_u64(object.size, &gcs_path);
         Ok(FileInfo::new(last_modified, location, size))
     }
@@ -503,13 +502,6 @@ async fn parallel_chunked_read_with_fixed_generation(
         },
     )
     .await
-}
-
-fn parse_timestamp(object: &Object) -> Option<DateTime<Utc>> {
-    object
-        .updated
-        .as_ref()
-        .and_then(|t| DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond()))
 }
 
 /// Upload a small object in a single request.
@@ -661,6 +653,11 @@ async fn verify_resumable_complete(
 /// `MAX_BYTES_PER_REQUEST` has accumulated. Each chunk flush uses
 /// `DEFAULT_BYTES_PER_REQUEST` (a multiple of 256 `KiB` as required by the
 /// GCS resumable protocol; the final chunk has no minimum).
+///
+/// Zero-copy invariant: incoming `Bytes` are appended into a local
+/// `BytesMut` (one copy, unavoidable to span multiple `write` calls);
+/// each chunk is then handed off to `upload_chunk` zero-copy via
+/// `BytesMut::split_to(N).freeze()`.
 pub(crate) struct GcsFileWrite {
     client: Client,
     location: GcsLocation,

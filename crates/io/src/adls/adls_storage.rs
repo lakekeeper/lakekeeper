@@ -202,7 +202,7 @@ impl LakekeeperStorage for AdlsStorage {
 
         if bytes.len() <= MAX_BYTES_PER_REQUEST {
             if let Err(e) = append_chunk(&client, 0, bytes, path).await {
-                try_delete_file(
+                delete_partial_file_logged_infallible(
                     &client,
                     path,
                     "single-chunk append failed during bulk write",
@@ -211,11 +211,11 @@ impl LakekeeperStorage for AdlsStorage {
                 return Err(e);
             }
         } else {
-            let upload_futures: Vec<_> = bytes
-                .chunks(DEFAULT_BYTES_PER_REQUEST)
-                .enumerate()
-                .map(|(chunk_index, chunk)| {
-                    let raw_offset = chunk_index * DEFAULT_BYTES_PER_REQUEST;
+            // Zero-copy chunking: `bytes.slice(range)` produces an owned
+            // refcounted view that can be moved into per-chunk futures.
+            let upload_futures = crate::chunk_ranges(bytes.len(), DEFAULT_BYTES_PER_REQUEST)
+                .map(|(chunk_index, range)| {
+                    let raw_offset = range.start;
                     let offset = i64::try_from(raw_offset).map_err(|_| {
                         WriteError::IOError(IOError::new(
                             ErrorKind::ConditionNotMatch,
@@ -226,7 +226,7 @@ impl LakekeeperStorage for AdlsStorage {
                             path.to_string(),
                         ))
                     })?;
-                    let chunk = Bytes::copy_from_slice(chunk);
+                    let chunk = bytes.slice(range);
                     let client = client.clone();
                     let path = path.to_string();
                     Ok(async move {
@@ -272,13 +272,23 @@ impl LakekeeperStorage for AdlsStorage {
                 }
             }
             if let Some(err) = first_error {
-                try_delete_file(&client, path, "parallel multipart write failed").await;
+                delete_partial_file_logged_infallible(
+                    &client,
+                    path,
+                    "parallel multipart write failed",
+                )
+                .await;
                 return Err(err);
             }
         }
 
         if let Err(e) = flush_close(&client, file_length, path).await {
-            try_delete_file(&client, path, "flush_close failed after bulk write").await;
+            delete_partial_file_logged_infallible(
+                &client,
+                path,
+                "flush_close failed after bulk write",
+            )
+            .await;
             return Err(e);
         }
         Ok(())
@@ -321,8 +331,7 @@ impl LakekeeperStorage for AdlsStorage {
         let size = head_response
             .content_length
             .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str()));
-        let last_modified =
-            DateTime::from_timestamp(head_response.last_modified.unix_timestamp(), 0);
+        let last_modified = parse_offsetdatetime(&head_response.last_modified);
         Ok(FileInfo::new(
             last_modified,
             adls_location.location().clone(),
@@ -494,6 +503,12 @@ impl LakekeeperStorage for AdlsStorage {
     }
 }
 
+/// Convert a `time::OffsetDateTime` to a `chrono::DateTime<Utc>`, preserving
+/// nanosecond precision. Returns `None` if the seconds are out of range.
+fn parse_offsetdatetime(t: &time::OffsetDateTime) -> Option<DateTime<chrono::Utc>> {
+    DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond())
+}
+
 fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<FileInfo> {
     |path| {
         // Create a location from account, filesystem and blob name
@@ -509,8 +524,7 @@ fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<
             path_name
         );
         let location = Location::from_str(&full_path).ok()?;
-        let last_modified = path.last_modified;
-        let last_modified = DateTime::from_timestamp(last_modified.unix_timestamp(), 0);
+        let last_modified = parse_offsetdatetime(&path.last_modified);
         let size = if path.is_directory {
             None
         } else {
@@ -705,7 +719,7 @@ async fn delete_file(client: &FileClient, path: &str) -> Result<(), WriteError> 
 /// error and the delete failure is unactionable: `close`, bulk write, `Drop`.
 /// The `context` field is included in the warn log to disambiguate which
 /// cleanup site triggered the deletion.
-async fn try_delete_file(client: &FileClient, path: &str, context: &str) {
+async fn delete_partial_file_logged_infallible(client: &FileClient, path: &str, context: &str) {
     if let Err(e) = delete_file(client, path).await {
         tracing::warn!(
             path = %path,
@@ -724,6 +738,11 @@ async fn try_delete_file(client: &FileClient, path: &str, context: &str) {
 /// locally and flushes append calls once `DEFAULT_BYTES_PER_REQUEST` bytes
 /// have accumulated. `close` flushes any remaining buffered bytes and
 /// finalises the file.
+///
+/// Zero-copy invariant: incoming `Bytes` are appended into a local
+/// `BytesMut` (one copy, unavoidable to span multiple `write` calls);
+/// each chunk is then handed off to `append_chunk` zero-copy via
+/// `BytesMut::split_to(N).freeze()`.
 pub(crate) struct AdlsFileWrite {
     client: FileClient,
     path: String,
@@ -796,11 +815,23 @@ impl LakekeeperFileWrite for AdlsFileWrite {
             if let Err(append_error) =
                 append_chunk(&self.client, self.offset, chunk, &self.path).await
             {
-                if let Err(delete_error) = delete_file(&self.client, &self.path).await {
-                    self.state = AdlsWriterState::AbortFailed;
-                    return Err(delete_error);
+                // Always surface the original append error. The cleanup
+                // delete is best-effort; its failure is logged and
+                // reflected in `state` for `Drop`, but never masks
+                // `append_error`.
+                match delete_file(&self.client, &self.path).await {
+                    Ok(()) => self.state = AdlsWriterState::Aborted,
+                    Err(delete_error) => {
+                        self.state = AdlsWriterState::AbortFailed;
+                        tracing::warn!(
+                            path = %self.path,
+                            error = ?delete_error,
+                            "Failed to delete partial ADLS file after streaming append error; \
+                             partial file may exist at target location. \
+                             Original append error is being returned.",
+                        );
+                    }
                 }
-                self.state = AdlsWriterState::Aborted;
                 return Err(append_error);
             }
             self.offset += chunk_len;
@@ -825,7 +856,7 @@ impl LakekeeperFileWrite for AdlsFileWrite {
             let chunk_len = match safe_usize_to_i64(chunk.len(), self.path.clone()) {
                 Ok(v) => v,
                 Err(e) => {
-                    try_delete_file(
+                    delete_partial_file_logged_infallible(
                         &self.client,
                         &self.path,
                         "buffer-size conversion failed during close",
@@ -835,13 +866,23 @@ impl LakekeeperFileWrite for AdlsFileWrite {
                 }
             };
             if let Err(e) = append_chunk(&self.client, self.offset, chunk, &self.path).await {
-                try_delete_file(&self.client, &self.path, "tail append failed during close").await;
+                delete_partial_file_logged_infallible(
+                    &self.client,
+                    &self.path,
+                    "tail append failed during close",
+                )
+                .await;
                 return Err(e);
             }
             self.offset += chunk_len;
         }
         if let Err(e) = flush_close(&self.client, self.offset, &self.path).await {
-            try_delete_file(&self.client, &self.path, "flush_close failed during close").await;
+            delete_partial_file_logged_infallible(
+                &self.client,
+                &self.path,
+                "flush_close failed during close",
+            )
+            .await;
             return Err(e);
         }
         Ok(())
@@ -872,7 +913,8 @@ impl Drop for AdlsFileWrite {
         let client = self.client.clone();
         let path = self.path.clone();
         handle.spawn(async move {
-            try_delete_file(&client, &path, "writer dropped without closing").await;
+            delete_partial_file_logged_infallible(&client, &path, "writer dropped without closing")
+                .await;
         });
     }
 }

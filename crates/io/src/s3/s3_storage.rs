@@ -105,15 +105,11 @@ impl LakekeeperStorage for S3Storage {
         let upload_id =
             start_multipart(&self.client, &s3_location, self.aws_kms_key_arn.as_deref()).await?;
 
-        // Materialise chunks into owned `Bytes` so the per-part futures do
-        // not borrow from `bytes` and can be moved into `execute_with_parallelism`.
-        let chunks: Vec<(usize, Bytes)> = bytes
-            .chunks(chunk_size)
-            .enumerate()
-            .map(|(i, chunk)| (i + 1, Bytes::copy_from_slice(chunk)))
-            .collect();
-
-        let upload_futures = chunks.into_iter().map(|(part_number, chunk)| {
+        // Zero-copy chunking: `bytes.slice(range)` produces an owned
+        // refcounted view that can be moved into per-part futures.
+        let upload_futures = crate::chunk_ranges(file_size, chunk_size).map(|(idx, range)| {
+            let part_number = idx + 1;
+            let chunk = bytes.slice(range);
             let client = self.client.clone();
             let location = s3_location.clone();
             let upload_id = upload_id.clone();
@@ -661,6 +657,11 @@ async fn try_abort_multipart(
 /// more than that has been written. Each part flush uses
 /// `DEFAULT_BYTES_PER_REQUEST` (≥ S3's 5 `MiB` minimum, except the final
 /// part which has no minimum).
+///
+/// Zero-copy invariant: incoming `Bytes` are appended into a local
+/// `BytesMut` (one copy, unavoidable to span multiple `write` calls);
+/// each part is then handed off to `upload_part` zero-copy via
+/// `BytesMut::split_to(N).freeze()`.
 pub(crate) struct S3FileWrite {
     client: aws_sdk_s3::Client,
     location: S3Location,
@@ -807,14 +808,23 @@ impl LakekeeperFileWrite for S3FileWrite {
                     {
                         Ok(part) => part,
                         Err(upload_error) => {
-                            if let Err(abort_error) =
-                                abort_multipart(&self.client, &self.location, &upload_id).await
-                            {
-                                let _ =
-                                    std::mem::replace(&mut self.state, S3WriterState::AbortFailed);
-                                return Err(abort_error);
+                            // Always surface the original upload error. The
+                            // abort attempt is best-effort; its failure is
+                            // logged and reflected in `state` for `Drop`,
+                            // but never masks `upload_error`.
+                            match abort_multipart(&self.client, &self.location, &upload_id).await {
+                                Ok(()) => self.state = S3WriterState::Aborted,
+                                Err(abort_error) => {
+                                    self.state = S3WriterState::AbortFailed;
+                                    tracing::warn!(
+                                        location = %self.location,
+                                        error = ?abort_error,
+                                        "Failed to abort S3 multipart upload after tail upload error during close; \
+                                         incomplete upload may exist until S3-side expiry. \
+                                         Original upload error is being returned.",
+                                    );
+                                }
                             }
-                            let _ = std::mem::replace(&mut self.state, S3WriterState::Aborted);
                             return Err(upload_error);
                         }
                     };
@@ -878,13 +888,23 @@ impl S3FileWrite {
                 }
                 Err(upload_error) => {
                     let upload_id = upload_id.clone();
-                    if let Err(abort_error) =
-                        abort_multipart(&self.client, &self.location, &upload_id).await
-                    {
-                        self.state = S3WriterState::AbortFailed;
-                        return Err(abort_error);
+                    // Always surface the original upload error. The abort
+                    // attempt is best-effort; its failure is logged and
+                    // reflected in `state` for `Drop`, but never masks
+                    // `upload_error`.
+                    match abort_multipart(&self.client, &self.location, &upload_id).await {
+                        Ok(()) => self.state = S3WriterState::Aborted,
+                        Err(abort_error) => {
+                            self.state = S3WriterState::AbortFailed;
+                            tracing::warn!(
+                                location = %self.location,
+                                error = ?abort_error,
+                                "Failed to abort S3 multipart upload after part upload error; \
+                                 incomplete upload may exist until S3-side expiry. \
+                                 Original upload error is being returned.",
+                            );
+                        }
                     }
-                    self.state = S3WriterState::Aborted;
                     return Err(upload_error);
                 }
             }

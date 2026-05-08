@@ -97,6 +97,31 @@ pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Resu
     feature = "storage-gcs",
     feature = "storage-s3"
 ))]
+/// Iterator over `(chunk_index, byte_range)` pairs that partition `[0, total)`
+/// into windows of at most `chunk_size`. The last range may be shorter when
+/// `total` is not a multiple of `chunk_size`. Returns an empty iterator when
+/// `total == 0`.
+///
+/// Pair with `Bytes::slice(range)` for zero-copy chunking of a one-shot
+/// write input. Used by all backends to converge on one chunk-iteration
+/// shape across S3 multipart, GCS resumable, and ADLS append.
+pub(crate) fn chunk_ranges(
+    total: usize,
+    chunk_size: usize,
+) -> impl Iterator<Item = (usize, std::ops::Range<usize>)> {
+    let total_chunks = total.div_ceil(chunk_size);
+    (0..total_chunks).map(move |i| {
+        let start = i * chunk_size;
+        let end = (start + chunk_size).min(total);
+        (i, start..end)
+    })
+}
+
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-s3"
+))]
 /// Converts a backend-reported file size from `i64` to `u64` for use in
 /// [`FileInfo::size`]. Negative sizes are unexpected — they indicate a
 /// protocol or parser bug in the backend SDK — so we emit a warning and

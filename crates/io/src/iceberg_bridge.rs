@@ -141,6 +141,8 @@ impl Storage for IcebergStorageBridge {
         Ok(())
     }
 
+    // possible to hold `Weak<Self>` in `LakekeeperStorageBridge`, but would imply `new() -> Arc<Self>`
+    // and _might_ imply that `Clone` has to be dropped, forcing caller to share via `Arc`
     fn new_input(&self, path: &str) -> iceberg::Result<iceberg::io::InputFile> {
         Ok(iceberg::io::InputFile::new(
             Arc::new(self.clone()),
@@ -148,6 +150,8 @@ impl Storage for IcebergStorageBridge {
         ))
     }
 
+    // possible to hold `Weak<Self>` in `LakekeeperStorageBridge`, but would imply `new() -> Arc<Self>`
+    // and _might_ imply that `Clone` has to be dropped, forcing caller to share via `Arc`
     fn new_output(&self, path: &str) -> iceberg::Result<iceberg::io::OutputFile> {
         Ok(iceberg::io::OutputFile::new(
             Arc::new(self.clone()),
@@ -208,7 +212,7 @@ impl StorageFactory for IcebergStorageBridgeFactory {
     }
 }
 
-/// Intentional hard fail for Ser/Deser because `brdige` cannot be ser/deser,
+/// Intentional hard fail for Ser/Deser because `bridge` cannot be ser/deser,
 /// but we need to implement Ser/Deser for `impl StorageFactory`s' `typetag::serde` requirement.
 impl Serialize for IcebergStorageBridgeFactory {
     fn serialize<S: Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {

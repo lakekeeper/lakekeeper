@@ -47,6 +47,7 @@ storage-gcs = [
     "dep:reqwest-retry",
     "dep:google-cloud-auth",
     "dep:google-cloud-token",
+    "dep:time",
 ]
 storage-in-memory = ["dep:iceberg"]
 default = ["storage-s3", "storage-adls", "storage-gcs"]
