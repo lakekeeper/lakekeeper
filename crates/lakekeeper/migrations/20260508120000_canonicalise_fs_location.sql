@@ -11,7 +11,7 @@
 -- constraint spans live AND soft-deleted rows: tables own their
 -- canonical location until purge.
 
-DROP INDEX tabular_warehouse_id_location_idx;
+DROP INDEX IF EXISTS tabular_warehouse_id_location_idx;
 
 CREATE UNIQUE INDEX tabular_warehouse_canonical_uq
     ON tabular (warehouse_id, fs_location text_pattern_ops);

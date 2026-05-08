@@ -164,22 +164,30 @@ impl Location {
     /// encoding for `/` in a partition value, which arrives as `%2F` after
     /// one URL-decode of the wire's `%252F`).
     ///
+    /// **Crate-private** so the broader API only exposes canonical
+    /// `Location`s — `Eq`/`Hash` are byte-equality on the canonical
+    /// string, and a `Location` produced here is at a *different*
+    /// representation level than one produced by [`Location::from_str`].
+    /// Mixing the two in a hash set, equality check, or anything that
+    /// expects `Location::from_str(self.as_str()) == self` will silently
+    /// give wrong answers. External wire-URL callers go through
+    /// [`crate::s3::S3Location::from_url_decoded_unchecked`], which
+    /// validates bucket/scheme on top.
+    ///
     /// The caller MUST ensure:
     /// - `scheme` is a canonical scheme (lowercase ASCII, letter-start).
     /// - `authority_and_path` is the literal-key-bytes form
     ///   (post-URL-decode-once), i.e. `host[:port][/path]` with all
     ///   percent-encoding normalised by the URL parser already; no
     ///   smuggling/control bytes; no scheme/`://`.
-    /// - No invariants of the canonical form are violated downstream
-    ///   (this `Location` is not safe to compare against canonical
-    ///   `Location`s via byte equality — only via prefix matching where
-    ///   both sides agree on the representation level).
+    /// - The result is only used for byte-prefix matching against another
+    ///   `Location` known to be at the same representation level.
     ///
     /// In debug builds we sanity-check the scheme shape; the path is
     /// treated as opaque so this constructor preserves whatever bytes the
     /// caller hands over.
     #[must_use]
-    pub fn from_url_decoded_unchecked(scheme: &str, authority_and_path: &str) -> Self {
+    pub(crate) fn from_url_decoded_unchecked(scheme: &str, authority_and_path: &str) -> Self {
         debug_assert!(
             !scheme.is_empty()
                 && scheme.bytes().all(|b| b.is_ascii_lowercase()
