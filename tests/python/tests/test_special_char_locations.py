@@ -340,8 +340,14 @@ def test_alias_distinct_pair_credential_isolation(
     _create_namespace(warehouse, ns_name)
     ns_location = _load_namespace_location(warehouse, ns_name)
 
-    loc_a = f"{ns_location}/t_a/{pair.inner_a}/data/"
-    loc_b = f"{ns_location}/t_b/{pair.inner_b}/data/"
+    # Shared parent so the only point of variation is the inner segment.
+    # If the pair is mis-classified (i.e. `inner_a` and `inner_b` actually
+    # collapse to the same canonical form), the second `_create_table`
+    # will fail with `LocationAlreadyTaken` against the first — surfacing
+    # the regression earlier than the `stored_a != stored_b` defence below.
+    shared_parent = f"{ns_location}/shared"
+    loc_a = f"{shared_parent}/{pair.inner_a}/data/"
+    loc_b = f"{shared_parent}/{pair.inner_b}/data/"
 
     # (1) Both tables creatable — proves canonical forms differ.
     _create_table(warehouse, ns_name, "table_a", loc_a)
