@@ -601,11 +601,15 @@ impl AdlsProfile {
 
 /// Build the ADLS SAS canonical-resource string and its directory depth.
 ///
-/// Form: `/blob/{account}/{filesystem}/{decoded_path}` where
-/// `decoded_path` is percent-decoded. Azure recomputes the canonical
-/// resource by URL-decoding the request URL path before HMAC; signing
-/// with the encoded form (e.g. literal `%3F` or `%20`) produces a
-/// signature mismatch and a silent 403.
+/// Form: `/blob/{account}/{filesystem}/{stored_path}` — the stored path
+/// bytes are used **verbatim**, no percent-decoding applied. Azure's
+/// SAS verification recomputes the canonical resource against the path
+/// it sees *after* its single URL-decode of the wire request; that
+/// matches our stored `fs_location` byte-for-byte (the wire URL has one
+/// extra encoding layer added by the client SDK, which Azure strips).
+/// Decoding here would over-decode by one level — e.g. stored `%22`
+/// would be turned into `"` while Azure verifies against literal `%22`,
+/// producing a silent 403 ("Signature did not match").
 ///
 /// Returns `(canonical_resource, signed_directory_depth)`. Depth counts
 /// non-empty path segments — root locations have depth 0.
@@ -617,13 +621,12 @@ fn azure_sas_canonical_path(loc: &AdlsLocation) -> (String, usize) {
     } else {
         rootless_path.split('/').count()
     };
-    let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
     (
         format!(
             "/blob/{}/{}/{}",
             loc.account_name(),
             loc.filesystem(),
-            decoded_path
+            rootless_path
         ),
         depth,
     )
@@ -861,16 +864,21 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn azure_sas_canonical_path_decodes_percent_encoded_path() {
-        // Azure HMAC's canonical resource is computed against the URL-decoded
-        // request path; the encoded form (`%3F`/`%20`) would mismatch.
+    fn azure_sas_canonical_path_preserves_stored_bytes_verbatim() {
+        // Azure's SAS verification recomputes the canonical resource
+        // against the path it sees *after* its one URL-decode of the wire
+        // request. The wire URL has one extra encoding layer added by the
+        // client SDK; Azure strips that. Our stored `fs_location` is at
+        // the post-Azure-decode level already, so we sign against the
+        // bytes verbatim. Decoding `%XX` here would over-decode by one
+        // level and produce a 403 "Signature did not match".
         let loc = AdlsLocation::try_from_str(
             "abfss://filesystem@account.dfs.core.windows.net/wh/foo%20bar/baz%3Fqux",
             false,
         )
         .unwrap();
         let (canonical, depth) = azure_sas_canonical_path(&loc);
-        assert_eq!(canonical, "/blob/account/filesystem/wh/foo bar/baz?qux");
+        assert_eq!(canonical, "/blob/account/filesystem/wh/foo%20bar/baz%3Fqux");
         assert_eq!(depth, 3);
     }
 
