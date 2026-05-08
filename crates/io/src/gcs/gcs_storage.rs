@@ -198,7 +198,7 @@ impl LakekeeperStorage for GcsStorage {
             }
         }
         if let Some(err) = first_error {
-            try_cancel_resumable(
+            cancel_resumable_logged_infallible(
                 upload_client,
                 &location,
                 "sequential multipart write failed",
@@ -210,7 +210,7 @@ impl LakekeeperStorage for GcsStorage {
         match verify_resumable_complete(&upload_client, &location, total_bytes as u64).await {
             Ok(()) => Ok(()),
             Err(e) => {
-                try_cancel_resumable(
+                cancel_resumable_logged_infallible(
                     upload_client,
                     &location,
                     "verify_resumable_complete failed after sequential write",
@@ -607,7 +607,7 @@ async fn upload_chunk(
 /// included in the warn log to disambiguate which cancel site triggered the
 /// cleanup. Consumes the `upload_client` because `ResumableUploadClient::cancel`
 /// takes `self`.
-async fn try_cancel_resumable(
+async fn cancel_resumable_logged_infallible(
     upload_client: ResumableUploadClient,
     location: &GcsLocation,
     context: &str,
@@ -790,7 +790,7 @@ impl LakekeeperFileWrite for GcsFileWrite {
                     )
                     .await
                 {
-                    try_cancel_resumable(
+                    cancel_resumable_logged_infallible(
                         upload_client,
                         &self.location,
                         "final chunk upload failed during close",
@@ -801,7 +801,7 @@ impl LakekeeperFileWrite for GcsFileWrite {
                 if let Err(verify_error) =
                     verify_resumable_complete(&upload_client, &self.location, total_bytes).await
                 {
-                    try_cancel_resumable(
+                    cancel_resumable_logged_infallible(
                         upload_client,
                         &self.location,
                         "verify_resumable_complete failed during close",
@@ -843,7 +843,7 @@ impl GcsFileWrite {
                     if let GcsWriterState::Resumable { upload_client, .. } =
                         std::mem::replace(&mut self.state, GcsWriterState::Aborted)
                     {
-                        try_cancel_resumable(
+                        cancel_resumable_logged_infallible(
                             upload_client,
                             &self.location,
                             "buffered chunk upload failed",
@@ -889,7 +889,7 @@ impl Drop for GcsFileWrite {
         handle.spawn(async move {
             if tokio::time::timeout(
                 DROP_CANCEL_DURATION,
-                try_cancel_resumable(upload_client, &location, "writer dropped without closing"),
+                cancel_resumable_logged_infallible(upload_client, &location, "writer dropped without closing"),
             )
             .await
             .is_err()

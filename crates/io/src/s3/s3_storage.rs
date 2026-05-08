@@ -156,7 +156,7 @@ impl LakekeeperStorage for S3Storage {
             }
         }
         if let Some(err) = first_error {
-            try_abort_multipart(
+            abort_multipart_logged_infallible(
                 &self.client,
                 &s3_location,
                 &upload_id,
@@ -174,7 +174,7 @@ impl LakekeeperStorage for S3Storage {
         if let Err(e) =
             complete_multipart(&self.client, &s3_location, &upload_id, completed_parts).await
         {
-            try_abort_multipart(
+            abort_multipart_logged_infallible(
                 &self.client,
                 &s3_location,
                 &upload_id,
@@ -639,7 +639,7 @@ async fn abort_multipart(
 /// error and the abort failure is unactionable: one-shot bulk write, a
 /// `complete_multipart` failure, or `Drop`. The `context` field is included in
 /// the warn log to disambiguate which abort site triggered the cleanup.
-async fn try_abort_multipart(
+async fn abort_multipart_logged_infallible(
     client: &aws_sdk_s3::Client,
     location: &S3Location,
     upload_id: &str,
@@ -844,7 +844,7 @@ impl LakekeeperFileWrite for S3FileWrite {
                     complete_multipart(&self.client, &self.location, &upload_id, completed_parts)
                         .await
                 {
-                    try_abort_multipart(
+                    abort_multipart_logged_infallible(
                         &self.client,
                         &self.location,
                         &upload_id,
@@ -951,7 +951,7 @@ impl Drop for S3FileWrite {
         handle.spawn(async move {
             if tokio::time::timeout(
                 DROP_CANCEL_DURATION,
-                try_abort_multipart(
+                abort_multipart_logged_infallible(
                     &client,
                     &location,
                     &upload_id,
