@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tabular (\n                tabular_id, name, namespace_id, tabular_namespace_name,\n                warehouse_id, typ, metadata_location, fs_protocol, fs_location\n            )\n            SELECT u.id, u.name, $1, $2, $3, 'table', u.metadata_location, 's3', u.fs_location\n            FROM unnest($4::uuid[], $5::text[], $6::text[], $7::text[])\n                 AS u(id, name, metadata_location, fs_location)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8486bece2a8ab7c98073f724762358cebe0cd04adf4abd8b4e92f464c7443fa5"
+}

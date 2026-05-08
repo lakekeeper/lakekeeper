@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tabular (\n                tabular_id, name, namespace_id, tabular_namespace_name,\n                warehouse_id, typ, metadata_location, fs_protocol, fs_location\n            ) VALUES ($1, $2, $3, $4, $5, 'table', $6, $7, $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "TextArray",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2e43a1de25cb709fa37515579748932bfce09fa35bc6fbabb62e0ab7f1f9ddd8"
+}

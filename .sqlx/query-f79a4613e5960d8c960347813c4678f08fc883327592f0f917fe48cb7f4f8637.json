@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT fs_protocol, fs_location FROM tabular WHERE tabular_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "fs_location",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f79a4613e5960d8c960347813c4678f08fc883327592f0f917fe48cb7f4f8637"
+}
