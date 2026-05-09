@@ -411,12 +411,16 @@ mod test {
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
+        let generic_table_yaml =
+            include_str!("../../../../docs/docs/api/generic-table-open-api.yaml");
 
         // Parse YAML files
         let management: Value =
             serde_norway::from_str(management_yaml).expect("Failed to parse management YAML");
         let catalog: Value =
             serde_norway::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
+        let generic_table: Value =
+            serde_norway::from_str(generic_table_yaml).expect("Failed to parse generic-table YAML");
 
         // Extract endpoints from management YAML
         let mut expected_endpoints = HashSet::new();
@@ -456,14 +460,28 @@ mod test {
             }
         }
 
+        // Process generic-table YAML paths (already prefixed with /lakekeeper/v1)
+        if let Value::Mapping(paths) = &generic_table["paths"] {
+            for (path, methods) in paths {
+                let path_str = path.as_str().expect("Path is not a string");
+                if let Value::Mapping(methods_map) = methods {
+                    for (method, _) in methods_map {
+                        let method_str = method.as_str().expect("Method is not a string");
+                        if method_str != "parameters" {
+                            let normalized_path = path_str.trim_start_matches('/');
+                            expected_endpoints
+                                .insert((method_str.to_uppercase(), normalized_path.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
         // Extract endpoints from Endpoints enum
         let mut actual_endpoints = HashSet::new();
         for endpoint in Endpoint::iter() {
-            // Only catalog and management endpoints are relevant for this test
-            // TODO: Add generic-tables-api OpenAPI spec and remove this skip
             if matches!(endpoint, Endpoint::PermissionV1(_))
                 || matches!(endpoint, Endpoint::Sign(_))
-                || matches!(endpoint, Endpoint::GenericTableV1(_))
             {
                 continue;
             }

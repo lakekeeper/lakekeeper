@@ -7,6 +7,7 @@ nav:
     - Concepts: concepts.md
     - API:
           - Catalog: api/catalog.md
+          - Generic Tables: api/generic-table.md
           - Management (Core): api/management.md
           - Management <span class="lkp"></span>: api/management-plus.md
     - Query Engines: engines.md

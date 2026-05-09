@@ -234,9 +234,12 @@ CREATE INDEX task_warehouse_entity_id_queue_idx
     ON task (warehouse_id, entity_id, queue_name)
     WHERE entity_type IN ('table', 'view', 'generic-table');
 
--- Generic tables have no iceberg metadata file; only views require metadata_location.
+-- Views require metadata_location; tables and generic tables don't.
 ALTER TABLE tabular ADD CONSTRAINT tabular_metadata_location_check
-    CHECK (typ <> 'view' OR metadata_location IS NOT NULL);
+    CHECK (
+        (typ = 'view' AND metadata_location IS NOT NULL)
+        OR typ IN ('table', 'generic-table')
+    );
 
 ALTER TABLE task
     ADD CONSTRAINT task_warehouse_id_check CHECK (
