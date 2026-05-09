@@ -151,9 +151,13 @@ def _load_table_with_creds(
     return r.json()
 
 
-def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
+def _try_write_payload(
+    provider: str, config: dict, target_url: str, payload: bytes
+) -> Optional[str]:
     """Attempt a small object PUT at `target_url` using vended creds.
-    Returns None on SUCCESS, or a short description of the failure."""
+    Returns None on SUCCESS, or a short description of the failure.
+    Caller-supplied payload lets a test write a distinguishing value per
+    table and detect cross-reads."""
     if provider == "s3":
         import boto3
         import botocore.exceptions
@@ -170,7 +174,7 @@ def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
             region_name=config.get("s3.region") or None,
         )
         try:
-            s3.put_object(Bucket=bucket, Key=key, Body=b"canary")
+            s3.put_object(Bucket=bucket, Key=key, Body=payload)
         except botocore.exceptions.ClientError as e:
             return f"s3 ClientError: {e.response.get('Error', {}).get('Code', '?')}"
         return None
@@ -183,12 +187,16 @@ def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
         # Vended SAS is a Blob Service SAS — use the blob endpoint (single
         # PUT) rather than DFS (which would need 3-step create/append/flush).
         host = (parsed.hostname or "").replace(".dfs.", ".blob.")
-        path = parsed.path
+        # Pre-encode `%` → `%25` so that any literal `%XX` in the catalog's
+        # raw fs_location reaches Azure as bytes (server URL-decodes once).
+        # Without this, `Abc` and `%41bc` would alias on the wire — the same
+        # bug we fixed in `AdlsLocation::blob_name` on the Rust side.
+        path = parsed.path.replace("%", "%25")
         https_url = f"https://{host}/{fs}{path}?{sas}"
         r = requests.put(
             https_url,
             headers={"x-ms-blob-type": "BlockBlob"},
-            data=b"canary",
+            data=payload,
             timeout=HTTP_TIMEOUT,
         )
         if 200 <= r.status_code < 300:
@@ -204,13 +212,20 @@ def _try_write(provider: str, config: dict, target_url: str) -> Optional[str]:
         r = requests.put(
             https_url,
             headers={"Authorization": f"Bearer {token}"},
-            data=b"canary",
+            data=payload,
             timeout=HTTP_TIMEOUT,
         )
         if 200 <= r.status_code < 300:
             return None
         return f"gcs HTTP {r.status_code}: {r.text[:200]}"
     raise AssertionError(f"unknown provider: {provider}")
+
+
+def _safe_url(url: str) -> str:
+    """Strip query and fragment from a URL so it can be safely embedded in
+    error messages without leaking SAS tokens or other auth material."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 @pytest.mark.parametrize("char", SPECIAL_CHARS, ids=lambda c: c.id)
@@ -256,7 +271,7 @@ def test_special_char_in_location(
 
     # Positive: write at the table prefix.
     target = f"{stored_location}/canary.txt"
-    err = _try_write(provider, config, target)
+    err = _try_write_payload(provider, config, target, b"canary")
     if expect_deny:
         # Cloud-side limitation (not a Lakekeeper bug). Pin the *safe*
         # outcome: must deny, not allow. A regression to over-permit would
@@ -279,7 +294,7 @@ def test_special_char_in_location(
     )
 
     # Negative: vended creds for the table must NOT allow a sibling write.
-    err = _try_write(provider, config, sibling_location)
+    err = _try_write_payload(provider, config, sibling_location, b"canary")
     assert err is not None, (
         f"vended credentials for {table_location} unexpectedly allowed write "
         f"to {sibling_location} (provider={provider}, char={char.id}). "
@@ -360,7 +375,10 @@ def _try_read(provider: str, config: dict, target_url: str) -> Optional[bytes]:
             return r.content
         if r.status_code in (403, 404):
             return None
-        raise AssertionError(f"adls GET {https_url} HTTP {r.status_code}: {r.text[:200]}")
+        raise AssertionError(
+            f"adls GET {_safe_url(https_url)} HTTP {r.status_code} "
+            f"({r.reason}): {r.text[:200]}"
+        )
     if provider == "gcs":
         token = config.get("gcs.oauth2.token")
         assert token, f"no gcs.oauth2.token in config: {list(config)}"
@@ -377,7 +395,10 @@ def _try_read(provider: str, config: dict, target_url: str) -> Optional[bytes]:
             return r.content
         if r.status_code in (403, 404):
             return None
-        raise AssertionError(f"gcs GET {https_url} HTTP {r.status_code}: {r.text[:200]}")
+        raise AssertionError(
+            f"gcs GET {_safe_url(https_url)} HTTP {r.status_code} "
+            f"({r.reason}): {r.text[:200]}"
+        )
     raise AssertionError(f"unknown provider: {provider}")
 
 
@@ -478,66 +499,3 @@ def test_alias_distinct_pair_credential_isolation(
         f"B's creds at B's path returned wrong bytes: got {body_b!r}, "
         f"expected {payload_b!r}"
     )
-
-
-def _try_write_payload(
-    provider: str, config: dict, target_url: str, payload: bytes
-) -> Optional[str]:
-    """Like `_try_write` but with a caller-supplied payload, so the alias
-    test can write a distinguishing value per table and detect cross-reads."""
-    if provider == "s3":
-        import boto3
-        import botocore.exceptions
-
-        parsed = urlparse(target_url)
-        bucket = parsed.netloc
-        key = parsed.path.lstrip("/")
-        s3 = boto3.client(
-            "s3",
-            aws_access_key_id=config.get("s3.access-key-id"),
-            aws_secret_access_key=config.get("s3.secret-access-key"),
-            aws_session_token=config.get("s3.session-token"),
-            endpoint_url=config.get("s3.endpoint") or None,
-            region_name=config.get("s3.region") or None,
-        )
-        try:
-            s3.put_object(Bucket=bucket, Key=key, Body=payload)
-        except botocore.exceptions.ClientError as e:
-            return f"s3 ClientError: {e.response.get('Error', {}).get('Code', '?')}"
-        return None
-    if provider == "adls":
-        sas_key = next((k for k in config if k.startswith("adls.sas-token.")), None)
-        assert sas_key, f"no adls.sas-token.* in config: {list(config)}"
-        sas = config[sas_key].lstrip("?")
-        parsed = urlparse(target_url)
-        fs = parsed.username
-        host = (parsed.hostname or "").replace(".dfs.", ".blob.")
-        # See `_try_read` for why `%` must be wire-encoded.
-        path = parsed.path.replace("%", "%25")
-        https_url = f"https://{host}/{fs}{path}?{sas}"
-        r = requests.put(
-            https_url,
-            headers={"x-ms-blob-type": "BlockBlob"},
-            data=payload,
-            timeout=HTTP_TIMEOUT,
-        )
-        if 200 <= r.status_code < 300:
-            return None
-        return f"adls HTTP {r.status_code}: {r.text[:200]}"
-    if provider == "gcs":
-        token = config.get("gcs.oauth2.token")
-        assert token, f"no gcs.oauth2.token in config: {list(config)}"
-        parsed = urlparse(target_url)
-        bucket = parsed.netloc
-        key = parsed.path.lstrip("/")
-        https_url = f"https://storage.googleapis.com/{bucket}/{quote(key, safe='/')}"
-        r = requests.put(
-            https_url,
-            headers={"Authorization": f"Bearer {token}"},
-            data=payload,
-            timeout=HTTP_TIMEOUT,
-        )
-        if 200 <= r.status_code < 300:
-            return None
-        return f"gcs HTTP {r.status_code}: {r.text[:200]}"
-    raise AssertionError(f"unknown provider: {provider}")

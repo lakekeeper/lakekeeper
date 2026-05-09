@@ -527,6 +527,10 @@ mod test {
 
     #[test]
     fn test_invalid_adls_location() {
+        // Each input must be rejected SOMEWHERE in the parse chain — either
+        // by `Location::from_str` (e.g. host trailing dot is now globally
+        // rejected for backend-aliasing safety) or by ADLS-specific
+        // validation. The original test asserted only the latter.
         let cases = vec![
             "abfss://filesystem@account_name",
             "abfss://filesystem@account_name.example.com./foo",
@@ -534,10 +538,17 @@ mod test {
             "abfss://account_name.dfs.core.windows/foo",
         ];
 
-        for location in cases {
-            let location = Location::from_str(location).unwrap();
-            let parsed_location = AdlsLocation::try_from_location(&location, false);
-            assert!(parsed_location.is_err(), "{parsed_location:?}");
+        for input in cases {
+            let result = Location::from_str(input)
+                .and_then(|loc| {
+                    AdlsLocation::try_from_location(&loc, false).map_err(|e| {
+                        crate::location::LocationParseError {
+                            value: input.to_string(),
+                            reason: e.to_string(),
+                        }
+                    })
+                });
+            assert!(result.is_err(), "{input:?} unexpectedly accepted: {result:?}");
         }
     }
 

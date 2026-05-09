@@ -192,6 +192,7 @@ tracing-test = "0.2.5"
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.23.0"
 unicase = "2.8.1"
+unicode-general-category = "1.1.0"
 
 url = { version = "^2.5", features = ["serde"] }
 urlencoding = "^2.1"
