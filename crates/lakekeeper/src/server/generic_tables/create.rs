@@ -29,6 +29,9 @@ use crate::{
     },
 };
 
+const MAX_FORMAT_LEN: usize = 64;
+const MAX_BLOB_BYTES: usize = 1024 * 1024;
+
 fn validate_create_request(request: &CreateGenericTableRequest) -> Result<()> {
     if request.name.is_empty() {
         return Err(ErrorModel::bad_request(
@@ -46,10 +49,40 @@ fn validate_create_request(request: &CreateGenericTableRequest) -> Result<()> {
         )
         .into());
     }
-    if request.format.as_str().is_empty() {
+    validate_format(request.format.as_str())?;
+    validate_blob_size("schema", request.schema.as_ref())?;
+    validate_blob_size("statistics", request.statistics.as_ref())?;
+    Ok(())
+}
+
+fn validate_format(format: &str) -> Result<()> {
+    let mut chars = format.chars();
+    let first_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase());
+    let rest_ok =
+        chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if !first_ok || !rest_ok || format.len() > MAX_FORMAT_LEN {
         return Err(ErrorModel::bad_request(
-            "Generic table format cannot be empty",
+            format!(
+                "Generic table format must start with a lowercase letter, contain only lowercase \
+                 letters, digits, '_' or '-', and be at most {MAX_FORMAT_LEN} characters."
+            ),
             "InvalidFormat",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_blob_size(field: &str, value: Option<&serde_json::Value>) -> Result<()> {
+    let Some(value) = value else { return Ok(()) };
+    let len = serde_json::to_string(value).map_or(usize::MAX, |s| s.len());
+    if len > MAX_BLOB_BYTES {
+        return Err(ErrorModel::bad_request(
+            format!(
+                "Generic table {field} payload of {len} bytes exceeds the {MAX_BLOB_BYTES}-byte limit."
+            ),
+            "PayloadTooLarge",
             None,
         )
         .into());

@@ -10,7 +10,7 @@ use crate::{
     api::{ApiContext, RequestMetadata, Result},
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        ResolvedWarehouse, SecretStore, State, TabularId, ViewOrTableInfo,
+        ResolvedWarehouse, SecretStore, State, TabularId,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
@@ -70,15 +70,10 @@ where
         if search.chars().count() > 64 {
             search = search.chars().take(64).collect();
         }
-        // Generic tables have their own dedicated list endpoint and are excluded
-        // from the mixed tabular search. Filter them out before authz checks.
         let all_matches: Vec<_> =
             C::search_tabular(warehouse_id, &search, context.v1_state.catalog.clone())
                 .await?
-                .search_results
-                .into_iter()
-                .filter(|t| !matches!(t.tabular, ViewOrTableInfo::GenericTable(_)))
-                .collect();
+                .search_results;
         let namespace_ids = all_matches
             .iter()
             .map(|t| t.tabular.namespace_id())

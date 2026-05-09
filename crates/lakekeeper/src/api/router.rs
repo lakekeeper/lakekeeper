@@ -132,7 +132,7 @@ pub async fn new_full_router<
     let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
-        .nest("/v1", generic_table_routes)
+        .nest("/lakekeeper/v1", generic_table_routes)
         .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body

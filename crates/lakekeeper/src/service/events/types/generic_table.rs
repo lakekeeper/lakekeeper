@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use iceberg_ext::catalog::rest::RenameTableRequest;
-
 use crate::{
     api::{
         RequestMetadata,
         iceberg::{types::DropParams, v1::DataAccessMode},
-        v1::generic_tables::CreateGenericTableRequest,
+        v1::generic_tables::{CreateGenericTableRequest, RenameGenericTableRequest},
     },
     service::{
         GenericTableInfo, NamespaceWithParent, ResolvedWarehouse,
@@ -56,7 +54,7 @@ pub struct LoadGenericTableEvent {
 pub struct RenameGenericTableEvent {
     pub source_generic_table: ResolvedGenericTable,
     pub destination_namespace: NamespaceWithParent,
-    pub request: Arc<RenameTableRequest>,
+    pub request: Arc<RenameGenericTableRequest>,
     pub request_metadata: Arc<RequestMetadata>,
 }
 
@@ -133,7 +131,7 @@ impl
     pub(crate) fn emit_generic_table_renamed_async(
         self,
         destination_namespace: NamespaceWithParent,
-        request: Arc<RenameTableRequest>,
+        request: Arc<RenameGenericTableRequest>,
     ) {
         let event = RenameGenericTableEvent {
             source_generic_table: self.resolved_entity.data,

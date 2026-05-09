@@ -42,7 +42,7 @@ services:
         echo 'Bucket lance-test created'
 
   lakekeeper-migrate:
-    image: lakekeeper-generic-table-poc
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-lakekeeper-generic-table-poc}
     command: migrate
     environment:
       LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@postgres:5432/lakekeeper
@@ -52,7 +52,7 @@ services:
         condition: service_healthy
 
   lakekeeper:
-    image: lakekeeper-generic-table-poc
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-lakekeeper-generic-table-poc}
     command: serve
     environment:
       LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@postgres:5432/lakekeeper

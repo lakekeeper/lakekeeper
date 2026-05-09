@@ -13,7 +13,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     api::{
-        ApiContext, RenameTableRequest,
+        ApiContext,
         iceberg::{
             types::{DropParams, Prefix},
             v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
@@ -22,6 +22,7 @@ use crate::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService,
             ListGenericTablesQuery, ListGenericTablesResponse, LoadGenericTableCredentialsRequest,
             LoadGenericTableCredentialsResponse, LoadGenericTableResponse,
+            RenameGenericTableRequest,
         },
     },
     request_metadata::RequestMetadata,
@@ -170,7 +171,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
 
     async fn rename_generic_table(
         prefix: Option<Prefix>,
-        request: RenameTableRequest,
+        request: RenameGenericTableRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
@@ -183,19 +184,19 @@ pub(crate) mod test {
     use std::collections::HashMap;
 
     use http::StatusCode;
-    use iceberg::{NamespaceIdent, TableIdent};
+    use iceberg::NamespaceIdent;
     use sqlx::PgPool;
 
     use crate::{
         api::{
-            ApiContext, RenameTableRequest,
+            ApiContext,
             iceberg::{
                 types::DropParams,
                 v1::{DataAccessMode, namespace::NamespaceParameters},
             },
             v1::generic_tables::{
                 CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
-                ListGenericTablesQuery,
+                ListGenericTablesQuery, RenameGenericTableRequest, RenameGenericTableTarget,
             },
         },
         implementations::postgres::{
@@ -239,6 +240,13 @@ pub(crate) mod test {
         (api_context, namespace, warehouse_id)
     }
 
+    fn rename_target(namespace: &NamespaceIdent, name: &str) -> RenameGenericTableTarget {
+        RenameGenericTableTarget {
+            namespace: namespace.clone().inner(),
+            name: name.to_string(),
+        }
+    }
+
     fn create_request(name: &str) -> CreateGenericTableRequest {
         CreateGenericTableRequest {
             name: name.to_string(),
@@ -249,6 +257,63 @@ pub(crate) mod test {
             schema: None,
             statistics: None,
         }
+    }
+
+    #[sqlx::test]
+    async fn test_create_invalid_format_fails(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let params = NamespaceParameters {
+            prefix: Some(whi.to_string().into()),
+            namespace,
+        };
+        for bad in [
+            "",
+            "LANCE",
+            "1lance",
+            "lance!",
+            "lance space",
+            &"a".repeat(65),
+        ] {
+            let mut req = create_request("gt");
+            req.format = GenericTableFormat::Unknown(bad.to_string());
+            let err = CatalogServer::create_generic_table(
+                params.clone(),
+                req,
+                ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .expect_err(&format!("format `{bad}` should be rejected"));
+            assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_create_oversized_blob_fails(pool: PgPool) {
+        let (ctx, namespace, whi) = setup(pool).await;
+        let params = NamespaceParameters {
+            prefix: Some(whi.to_string().into()),
+            namespace,
+        };
+        let big = serde_json::Value::String("x".repeat(1024 * 1024 + 1));
+        let mut req = create_request("gt-schema");
+        req.schema = Some(big.clone());
+        let err = CatalogServer::create_generic_table(
+            params.clone(),
+            req,
+            ctx.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .expect_err("oversized schema must fail");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
+
+        let mut req = create_request("gt-stats");
+        req.statistics = Some(big);
+        let err = CatalogServer::create_generic_table(params, req, ctx, random_request_metadata())
+            .await
+            .expect_err("oversized statistics must fail");
+        assert_eq!(err.error.code, StatusCode::BAD_REQUEST);
     }
 
     #[sqlx::test]
@@ -666,9 +731,9 @@ pub(crate) mod test {
 
         CatalogServer::rename_generic_table(
             Some(prefix.clone().into()),
-            RenameTableRequest {
-                source: TableIdent::new(namespace.clone(), "orig".to_string()),
-                destination: TableIdent::new(namespace.clone(), "renamed".to_string()),
+            RenameGenericTableRequest {
+                source: rename_target(&namespace, "orig"),
+                destination: rename_target(&namespace, "renamed"),
             },
             ctx.clone(),
             random_request_metadata(),
@@ -733,9 +798,9 @@ pub(crate) mod test {
 
         CatalogServer::rename_generic_table(
             Some(prefix.clone().into()),
-            RenameTableRequest {
-                source: TableIdent::new(source_ns, "movable".to_string()),
-                destination: TableIdent::new(dest_ns.clone(), "movable".to_string()),
+            RenameGenericTableRequest {
+                source: rename_target(&source_ns, "movable"),
+                destination: rename_target(&dest_ns, "movable"),
             },
             ctx.clone(),
             random_request_metadata(),
@@ -764,9 +829,9 @@ pub(crate) mod test {
 
         let err = CatalogServer::rename_generic_table(
             Some(whi.to_string().into()),
-            RenameTableRequest {
-                source: TableIdent::new(namespace.clone(), "ghost".to_string()),
-                destination: TableIdent::new(namespace, "renamed".to_string()),
+            RenameGenericTableRequest {
+                source: rename_target(&namespace, "ghost"),
+                destination: rename_target(&namespace, "renamed"),
             },
             ctx,
             random_request_metadata(),
@@ -797,9 +862,9 @@ pub(crate) mod test {
         let mut metadata = random_request_metadata();
         metadata.with_idempotency_key(key);
 
-        let req = RenameTableRequest {
-            source: TableIdent::new(namespace.clone(), "idem-src".to_string()),
-            destination: TableIdent::new(namespace.clone(), "idem-dst".to_string()),
+        let req = RenameGenericTableRequest {
+            source: rename_target(&namespace, "idem-src"),
+            destination: rename_target(&namespace, "idem-dst"),
         };
 
         CatalogServer::rename_generic_table(

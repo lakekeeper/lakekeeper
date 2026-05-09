@@ -4,7 +4,7 @@ type namespace
   relations
     # ------------------ Relation Hierarchies ------------------
     define parent: [namespace, warehouse]
-    define child: [namespace, lakekeeper_table, lakekeeper_view]
+    define child: [namespace, lakekeeper_table, lakekeeper_view, lakekeeper_generic_table]
 
     # ------------------ Special roles ------------------
     define ownership: [user, role#assignee]
@@ -22,12 +22,14 @@ type namespace
     # ------------------ Actions ------------------
     define can_create_table: create
     define can_create_view: create
+    define can_create_generic_table: create
     define can_create_namespace: create
     define can_delete: modify
     define can_update_properties: modify
     define can_get_metadata: describe or can_get_metadata from child
     define can_list_tables: can_get_metadata
     define can_list_views: can_get_metadata
+    define can_list_generic_tables: can_get_metadata
     define can_list_namespaces: can_get_metadata
     define can_list_everything: describe
     define can_include_in_list: can_get_metadata

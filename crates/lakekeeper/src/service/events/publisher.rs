@@ -495,8 +495,11 @@ impl EventListener for CloudEventsPublisher {
                     source_generic_table.generic_table.generic_table_id,
                 ),
                 warehouse_id: source_generic_table.warehouse.warehouse_id,
-                name: request.source.name.clone(),
-                namespace: request.source.namespace.to_url_string(),
+                name: source_generic_table.generic_table.name.clone(),
+                namespace: source_generic_table
+                    .generic_table
+                    .namespace_ident
+                    .to_url_string(),
                 prefix: source_generic_table.warehouse.warehouse_id.to_string(),
                 num_events: 1,
                 sequence_number: 0,

@@ -6,7 +6,8 @@ use crate::{
     WarehouseId,
     api::{
         endpoints::EndpointFlat,
-        iceberg::v1::{ApiContext, ErrorModel, Prefix, RenameTableRequest, Result, TableIdent},
+        iceberg::v1::{ApiContext, ErrorModel, Prefix, Result, TableIdent},
+        v1::generic_tables::{RenameGenericTableRequest, RenameGenericTableTarget},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
@@ -27,13 +28,18 @@ use crate::{
 
 pub(super) async fn rename_generic_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     prefix: Option<Prefix>,
-    request: RenameTableRequest,
+    request: RenameGenericTableRequest,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<()> {
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let source = request.source.clone();
-    let destination = request.destination.clone();
+    let to_table_ident = |t: RenameGenericTableTarget, code: &'static str| -> Result<TableIdent> {
+        t.try_into().map_err(|e: iceberg::Error| {
+            ErrorModel::bad_request(format!("Invalid {code}: {e}"), code, None).into()
+        })
+    };
+    let source = to_table_ident(request.source.clone(), "InvalidSourceIdent")?;
+    let destination = to_table_ident(request.destination.clone(), "InvalidDestinationIdent")?;
     validate_table_or_view_ident(&source)?;
     validate_table_or_view_ident(&destination)?;
 

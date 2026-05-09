@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, sync::LazyLock};
 
 use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
@@ -175,7 +175,6 @@ pub struct GenericTableListEntry {
     pub format: GenericTableFormat,
     pub namespace_ident: NamespaceIdent,
     pub protected: bool,
-    pub properties: HashMap<String, String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -200,8 +199,10 @@ impl AuthZGenericTableInfo for GenericTableListEntry {
         self.protected
     }
 
+    // List entries don't load properties; IncludeInList authz doesn't read them.
     fn properties(&self) -> &HashMap<String, String> {
-        &self.properties
+        static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+        &EMPTY
     }
 }
 

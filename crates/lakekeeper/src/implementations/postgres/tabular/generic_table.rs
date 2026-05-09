@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use iceberg::TableIdent;
 use uuid::Uuid;
 
@@ -321,7 +319,6 @@ pub(crate) async fn list_generic_tables(
             format: GenericTableFormat::from(row.format.clone()),
             namespace_ident: namespace_ident.clone(),
             protected: row.protected,
-            properties: HashMap::new(),
             created_at: row.created_at,
         });
     }

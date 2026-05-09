@@ -129,7 +129,7 @@ pub(super) async fn load_generic_table_credentials<
     })
 }
 
-async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer + Clone>(
+pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: iceberg::TableIdent,
     warehouse_id: WarehouseId,

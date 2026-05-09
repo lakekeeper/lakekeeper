@@ -33,7 +33,7 @@ pip install -q -r requirements.txt
 
 echo ">>> Running integration tests..."
 test_exit=0
-pytest test_lance_lakekeeper.py -v || test_exit=$?
+pytest test_lance.py -v || test_exit=$?
 
 echo ">>> Tearing down Docker infrastructure..."
 docker compose down -v

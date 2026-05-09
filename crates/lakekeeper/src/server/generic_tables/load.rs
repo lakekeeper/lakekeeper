@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use iceberg::TableIdent;
 use iceberg_ext::catalog::rest::StorageCredential;
 
 use crate::{
@@ -11,10 +12,10 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{maybe_get_secret, require_warehouse_id},
     service::{
-        CatalogStore, Result, SecretStore, State,
-        authz::{AuthZGenericTableOps, Authorizer, CatalogGenericTableAction},
-        events::{APIEventContext, AuthorizationFailureSource, context::ResolvedGenericTable},
-        storage::StoragePermissions,
+        CatalogGenericTableOps, CatalogStore, Result, SecretStore, State, TabularListFlags,
+        Transaction,
+        authz::{Authorizer, CatalogGenericTableAction},
+        events::{APIEventContext, context::ResolvedGenericTable},
     },
 };
 
@@ -32,54 +33,41 @@ pub(super) async fn load_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         table_name,
     } = parameters;
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
-    let authorizer = &state.v1_state.authz;
 
-    // ------------------- AUTHZ: GetMetadata -------------------
+    let table_ident = TableIdent::new(namespace.clone(), table_name.clone());
+
     let event_ctx = APIEventContext::for_generic_table(
         Arc::new(request_metadata.clone()),
         state.v1_state.events.clone(),
         warehouse_id,
-        iceberg::TableIdent::new(namespace.clone(), table_name.clone()),
+        table_ident.clone(),
         CatalogGenericTableAction::GetMetadata,
     );
 
-    let (event_ctx, (warehouse, ns_hierarchy, info)) = event_ctx.emit_authz(
-        super::load_and_authorize_generic_table_operation::<C, A>(
-            authorizer,
+    // load() doesn't yet expose `referenced_by`; reuse the chain-aware helper with None
+    // so the topology matches credentials and the three actions batch into one round-trip.
+    let (event_ctx, (warehouse, _ns, gt_tabular, storage_permissions)) = event_ctx.emit_authz(
+        super::credentials::authorize_load_generic_table::<C, A>(
             &request_metadata,
+            table_ident.clone(),
             warehouse_id,
-            namespace.clone(),
-            &table_name,
-            CatalogGenericTableAction::GetMetadata,
+            TabularListFlags::active(),
+            state.v1_state.authz.clone(),
             state.v1_state.catalog.clone(),
+            None,
         )
         .await,
     )?;
 
-    // ------------------- Check ReadData + WriteData for storage permissions -------------------
-    let [can_read, can_write] = authorizer
-        .are_allowed_generic_table_actions_arr(
-            &request_metadata,
-            None,
-            &warehouse,
-            &ns_hierarchy,
-            &info,
-            &[
-                CatalogGenericTableAction::ReadData,
-                CatalogGenericTableAction::WriteData,
-            ],
-        )
-        .await
-        .map_err(AuthorizationFailureSource::into_error_model)?
-        .into_inner();
-
-    let storage_permissions = if can_write {
-        Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read {
-        Some(StoragePermissions::Read)
-    } else {
-        None
-    };
+    let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
+    let info = C::load_generic_table(
+        warehouse_id,
+        gt_tabular.namespace_id,
+        &table_name,
+        t.transaction(),
+    )
+    .await?;
+    t.commit().await?;
 
     let (config, storage_credentials) = if let Some(storage_permissions) = storage_permissions {
         let storage_secret =
