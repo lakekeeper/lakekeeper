@@ -539,16 +539,18 @@ mod test {
         ];
 
         for input in cases {
-            let result = Location::from_str(input)
-                .and_then(|loc| {
-                    AdlsLocation::try_from_location(&loc, false).map_err(|e| {
-                        crate::location::LocationParseError {
-                            value: input.to_string(),
-                            reason: e.to_string(),
-                        }
-                    })
-                });
-            assert!(result.is_err(), "{input:?} unexpectedly accepted: {result:?}");
+            let result = Location::from_str(input).and_then(|loc| {
+                AdlsLocation::try_from_location(&loc, false).map_err(|e| {
+                    crate::location::LocationParseError {
+                        value: input.to_string(),
+                        reason: e.to_string(),
+                    }
+                })
+            });
+            assert!(
+                result.is_err(),
+                "{input:?} unexpectedly accepted: {result:?}"
+            );
         }
     }
 

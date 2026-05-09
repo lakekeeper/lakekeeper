@@ -553,7 +553,12 @@ mod tests {
                 }
             }
         }
-        assert!(failures.is_empty(), "{} failure(s):\n  {}", failures.len(), failures.join("\n  "));
+        assert!(
+            failures.is_empty(),
+            "{} failure(s):\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
     }
 
     /// Inputs whose chars LOOK suspicious but are legitimately representable
@@ -563,20 +568,20 @@ mod tests {
     fn test_accepts_percent_encoded_forms_of_rejected_chars() {
         // Each input must round-trip byte-for-byte.
         let cases = [
-            "s3://bucket/foo%09bar",   // %09 = tab
-            "s3://bucket/foo%0Abar",   // %0A = LF
-            "s3://bucket/foo%7Fbar",   // %7F = DEL
-            "s3://bucket/foo%2Ebar",   // %2E = '.'
+            "s3://bucket/foo%09bar", // %09 = tab
+            "s3://bucket/foo%0Abar", // %0A = LF
+            "s3://bucket/foo%7Fbar", // %7F = DEL
+            "s3://bucket/foo%2Ebar", // %2E = '.'
             "s3://bucket/foo+bar",
             "s3://bucket/foo~bar",
             "s3://bucket/foo!bar",
             "s3://bucket/foo'bar",
             "s3://bucket/foo*bar",
             "s3://bucket/foo$bar",
-            "s3://bucket/%41bc",       // alphanumeric encoded
-            "s3://bucket/Abc",         // alphanumeric literal — distinct from above
+            "s3://bucket/%41bc", // alphanumeric encoded
+            "s3://bucket/Abc",   // alphanumeric literal — distinct from above
             "s3://bucket/%3F",
-            "s3://bucket/%3f",         // hex case kept distinct
+            "s3://bucket/%3f", // hex case kept distinct
         ];
         for input in cases {
             let loc = Location::from_str(input)
@@ -596,7 +601,10 @@ mod tests {
         let err = Location::from_str(&oversized).unwrap_err();
         assert!(err.reason.contains("limit"), "{}", err.reason);
         // Error must NOT echo the megabyte input — keeps logs/db rows bounded.
-        assert!(!err.value.contains("aaaa"), "value should be truncated marker");
+        assert!(
+            !err.value.contains("aaaa"),
+            "value should be truncated marker"
+        );
         // At-cap is fine.
         let pad = "a".repeat(MAX_LOCATION_LEN - prefix.len());
         let at_cap = format!("{prefix}{pad}");
