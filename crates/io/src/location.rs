@@ -4,8 +4,8 @@ use unicode_general_category::{GeneralCategory, get_general_category};
 
 /// Hard cap on accepted Location length. S3 keys are spec'd at 1024 chars,
 /// ADLS path components total under 1KB; multiplying by ~4 for UTF-8 worst
-/// case plus scheme/authority overhead lands at 4 KiB. Cap up-front so error
-/// paths can't allocate megabytes from a pathological input.
+/// case plus scheme/authority overhead lands at 4 `KiB`. Cap up-front so
+/// error paths can't allocate megabytes from a pathological input.
 const MAX_LOCATION_LEN: usize = 4096;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -329,9 +329,8 @@ fn is_format_or_invisible(c: char) -> bool {
 /// audited without a per-scheme matrix; matches the same trade-off made
 /// for `check_host` on Azure trailing-dot.
 fn check_path_segments(authority_and_path: &str) -> Result<(), String> {
-    let path = match authority_and_path.split_once('/') {
-        Some((_authority, p)) => p,
-        None => return Ok(()), // No path — just authority.
+    let Some((_authority, path)) = authority_and_path.split_once('/') else {
+        return Ok(()); // No path — just authority.
     };
     if path.is_empty() {
         return Ok(());
