@@ -159,11 +159,18 @@ impl AdlsLocation {
 
     #[must_use]
     pub fn blob_name(&self) -> String {
-        self.location
-            .path()
-            .unwrap_or_default()
-            .to_string()
-            .replace('?', "%3F")
+        // The azure_storage_datalake SDK constructs the wire URL via
+        // `Url::join`, which interprets `%XX` triplets in the blob name as
+        // already percent-encoded — so a stored blob name `%41bc` would go
+        // out on the wire as `%41bc` and the server would URL-decode it to
+        // `Abc`, aliasing two distinct keys. To keep the byte-literal model,
+        // pre-encode `%` (and the other URL-syntactic chars `?`/`#`) here so
+        // the SDK's join produces the right wire bytes for one server-side
+        // decode pass to land on our intended key.
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        const SDK_ESCAPE: &AsciiSet = &CONTROLS.add(b'%').add(b'?').add(b'#');
+        let path = self.location.path().unwrap_or_default();
+        utf8_percent_encode(path, SDK_ESCAPE).to_string()
     }
 
     /// Create a new `AdlsLocation` from a Location.
