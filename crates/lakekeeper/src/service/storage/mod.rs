@@ -1108,11 +1108,14 @@ mod tests {
 
     #[test]
     fn test_split_location() {
-        let location = Location::from_str("abfss://").unwrap();
+        // Minimal authority-only Location — `abfss://` (no host) is now
+        // rejected by the validator since an empty host is never useful and
+        // backend-aliasing safety requires a non-empty authority.
+        let location = Location::from_str("abfss://host").unwrap();
         let prefix = location.scheme();
         let full_path = location.authority_and_path();
         assert_eq!(prefix, "abfss");
-        assert_eq!(full_path, "");
+        assert_eq!(full_path, "host");
         assert_eq!(join_location(prefix, full_path).unwrap(), location);
 
         let location = Location::from_str("abfss://foo/bar").unwrap();
