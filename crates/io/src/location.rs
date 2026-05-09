@@ -42,20 +42,19 @@ impl Location {
 
     #[must_use]
     pub fn host_str(&self) -> Option<&str> {
-        // RFC 3986: the LAST `@` separates userinfo from host. Aligned
-        // with `check_host` so accessor and validator agree on what the
-        // host is for inputs like `s3://x@y@bucket/path` (legitimate or
-        // not, both must read the same host).
-        let host_part = self
+        // First isolate the authority (everything before the first `/`),
+        // then split userinfo off the authority via the LAST `@` (RFC 3986).
+        // Splitting on `@` before isolating the authority is wrong — a
+        // literal `@` in the path (e.g. `fs@host/foo@bar`) would otherwise
+        // be picked up as the userinfo separator.
+        let authority = self
             .authority_and_path
+            .split_once('/')
+            .map_or(self.authority_and_path.as_str(), |(a, _)| a);
+        let host_part = authority
             .rsplit_once('@')
-            .map_or(self.authority_and_path.as_str(), |(_userinfo, h)| h);
-
-        // Now find the first slash and return everything before it
-        match host_part.find('/') {
-            Some(slash_pos) => Some(&host_part[..slash_pos]),
-            None => Some(host_part), // No slash found, return the whole host part
-        }
+            .map_or(authority, |(_userinfo, h)| h);
+        Some(host_part)
     }
 
     #[must_use]
@@ -284,10 +283,11 @@ impl std::fmt::Display for Location {
 /// - C0/C1 controls and DEL (Unicode `Cc` general category) — `\t\n\r` are
 ///   the most dangerous since `url::Url` strips them silently
 /// - Bidi/format/zero-width chars (Unicode `Cf` general category) —
-///   visual-spoofing AND `url::Url` percent-encodes them silently. We
-///   enumerate the well-known dangerous ranges; this is not a full Cf
-///   table but covers every char the reviewer specified plus the common
-///   ZWSP/RLO/BOM/LRM cluster.
+///   visual-spoofing AND `url::Url` percent-encodes them silently.
+///   `is_format_or_invisible` defers to the `unicode-general-category`
+///   crate's table, so this covers the entire Cf category (including
+///   the Tag block `U+E0000..U+E007F`, the canonical ASCII-smuggling
+///   vehicle that hand-rolled subsets historically miss).
 fn check_unsafe_chars(s: &str) -> Result<(), String> {
     for (idx, c) in s.char_indices() {
         if c.is_control() {
@@ -362,14 +362,19 @@ fn check_path_segments(authority_and_path: &str) -> Result<(), String> {
 /// but globally rejecting is simpler than gating per-scheme and the
 /// trailing-dot form is never useful in object-storage URIs.
 fn check_host(authority_and_path: &str) -> Result<(), String> {
-    let after_userinfo = match authority_and_path.rsplit_once('@') {
-        Some((_userinfo, rest)) => rest,
-        None => authority_and_path,
-    };
-    let host = after_userinfo
+    // Isolate the authority FIRST (everything before the first `/`), then
+    // split userinfo off the authority via the LAST `@`. Doing it in the
+    // other order would let a literal `@` in the path get picked up as
+    // the userinfo separator and produce a phantom "host".
+    let authority = authority_and_path
         .split_once('/')
+        .map_or(authority_and_path, |(a, _)| a);
+    let after_userinfo = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_userinfo, rest)| rest);
+    let host = after_userinfo
+        .split_once(':')
         .map_or(after_userinfo, |(h, _)| h);
-    let host = host.split_once(':').map_or(host, |(h, _)| h);
     if host.ends_with('.') {
         return Err(
             "host has a trailing `.` — Azure Blob aliases `host.` to `host`, \
@@ -612,16 +617,22 @@ mod tests {
     }
 
     #[test]
-    fn test_host_str_uses_last_at() {
-        // For a path containing literal `@` after the authority — `host_str`
-        // must agree with `check_host` on which `@` separates userinfo
-        // from host (the LAST one before the path), so accessor and
-        // validator can't drift.
+    fn test_host_str_isolates_authority_before_at_split() {
+        // Baseline: simple userinfo@host.
         let loc = Location::from_str("abfss://user@account.dfs.core.windows.net/foo").unwrap();
         assert_eq!(loc.host_str(), Some("account.dfs.core.windows.net"));
-        // Note: `s3://x@y@bucket/...` — pre-validator currently allows it
-        // (`@` isn't a control or Cf char). What matters is that accessor
-        // and validator both pick the LAST `@` so they see the same host.
+
+        // Regression: a literal `@` in the PATH must not be picked up as
+        // the userinfo separator. Earlier versions did `rsplit_once('@')`
+        // on the entire authority_and_path — for this input that took the
+        // path's `@` and yielded host=`bar`. Fix isolates the authority
+        // (first split on `/`) before splitting userinfo.
+        let loc = Location::from_str("abfss://fs@account.dfs.core.windows.net/foo@bar").unwrap();
+        assert_eq!(loc.host_str(), Some("account.dfs.core.windows.net"));
+
+        // Multiple `@` in the authority itself — RFC says the last one
+        // is the userinfo separator. Both accessor and `check_host` use
+        // `rsplit_once`, so they agree.
         let loc = Location::from_str("s3://x@y@bucket/path").unwrap();
         assert_eq!(loc.host_str(), Some("bucket"));
     }
