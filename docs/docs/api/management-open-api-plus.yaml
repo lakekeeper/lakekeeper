@@ -3336,6 +3336,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/remove_orphaned_files/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_remove_orphaned_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRemoveOrphanedFilesQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_remove_orphaned_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetRemoveOrphanedFilesQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
     get:
       tags:
@@ -4370,6 +4431,27 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
+    ConsoleInfo:
+      type: object
+      description: Information about the UI (console) shipped with this binary.
+      required:
+        - edition
+        - version
+      properties:
+        commit-sha:
+          type:
+            - string
+            - 'null'
+          description: Git commit SHA of the console source, if known.
+        edition:
+          type: string
+          description: |-
+            Edition / crate name of the bundled console.
+            e.g. `lakekeeper-console` for the OSS console or
+            `lakekeeper-console-plus` for the enterprise console.
+        version:
+          type: string
+          description: SemVer of the console crate.
     ControlTaskAction:
       oneOf:
         - type: object
@@ -5219,6 +5301,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
+    GetRemoveOrphanedFilesQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/RemoveOrphanedFilesQueueConfig'
     GetRoleAccessResponse:
       type: object
       required:
@@ -6900,6 +6994,29 @@ components:
           properties:
             queue-name:
               type: string
+    RemoveOrphanedFilesQueueConfig:
+      type: object
+      properties:
+        default-older-than-ms:
+          type: integer
+          format: int64
+          description: |-
+            Only remove files older than this duration (in milliseconds).
+            Defaults to 259200000 (3 days). Must be at least 86400000 (1 day).
+          default: 259200000
+          minimum: 86400000
+        max-run-time-seconds:
+          type: integer
+          format: int64
+          description: |-
+            Maximum wall-clock duration of a single task attempt, in seconds.
+            On timeout the task is marked failed and is retried at most once
+            before being recorded as a terminal failure. Operators with very
+            large tables can raise this; in exchange a single attempt may hold
+            a worker slot for the configured duration. Defaults to 3600 (60
+            minutes). Must be at least 60.
+          default: 3600
+          minimum: 60
     RenameProjectRequest:
       type: object
       required:
@@ -7472,6 +7589,7 @@ components:
       type: object
       required:
         - version
+        - lakekeeper-version
         - bootstrapped
         - server-id
         - authz-backend
@@ -7493,6 +7611,11 @@ components:
         bootstrapped:
           type: boolean
           description: Whether the catalog has been bootstrapped.
+        console:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ConsoleInfo'
+              description: Information about the bundled console (UI), if any.
         default-project-id:
           type:
             - string
@@ -7501,6 +7624,30 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        lakekeeper-commit-sha:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Git commit SHA of the upstream `lakekeeper` crate, if the binary
+            reported it at build time.
+        lakekeeper-enterprise-commit-sha:
+          type:
+            - string
+            - 'null'
+          description: Git commit SHA of the enterprise binary, if known.
+        lakekeeper-enterprise-version:
+          type:
+            - string
+            - 'null'
+          description: |-
+            SemVer of the enterprise binary (e.g. `lakekeeper-plus`) when this
+            server is an enterprise build. `None` on OSS builds.
+        lakekeeper-version:
+          type: string
+          description: |-
+            SemVer of the upstream `lakekeeper` crate the server was built
+            against.
         license-status:
           $ref: '#/components/schemas/LicenseStatus'
           description: License status information
@@ -7517,7 +7664,11 @@ components:
             Returns null if the catalog has not been bootstrapped.
         version:
           type: string
-          description: Version of the server.
+          description: |-
+            Deprecated alias of `lakekeeper-version`. Always equal to it; kept
+            for clients that read the plain `version` field. New clients should
+            read `lakekeeper-version` and/or `lakekeeper-enterprise-version`.
+          deprecated: true
     ServerRelation:
       type: string
       enum:
@@ -7562,6 +7713,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
+    SetRemoveOrphanedFilesQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/RemoveOrphanedFilesQueueConfig'
     SetTabularExpirationQueueConfig:
       type: object
       required:
@@ -7600,8 +7763,8 @@ components:
                 let cred: StorageCredential = serde_json::from_str(r#"{
                     "type": "s3",
                     "credential-type": "access-key",
-                    "aws-access-key-id": "minio-root-user",
-                    "aws-secret-access-key": "minio-root-password"
+                    "access-key-id": "minio-root-user",
+                    "secret-access-key": "minio-root-password"
                   }"#).unwrap();
                 ```
             - type: object
@@ -7623,8 +7786,8 @@ components:
             let cred: StorageCredential = serde_json::from_str(r#"{
                 "type": "s3",
                 "credential-type": "access-key",
-                "aws-access-key-id": "minio-root-user",
-                "aws-secret-access-key": "minio-root-password"
+                "access-key-id": "minio-root-user",
+                "secret-access-key": "minio-root-password"
               }"#).unwrap();
             ```
         - allOf:
@@ -8370,7 +8533,9 @@ components:
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
             to avoid data loss. For S3 this means that you may not change the
-            bucket or key prefix. The region may only be changed if an endpoint is set.
+            bucket or key prefix. The region may only be changed if an `endpoint`
+            is set on the new profile (so the endpoint, not the region, determines
+            where S3 requests are routed).
     User:
       type: object
       description: User of the catalog
