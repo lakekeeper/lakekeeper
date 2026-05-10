@@ -319,7 +319,7 @@ mod tests {
 
         for case in cases {
             let result = S3Location::try_from_str(case, false);
-            assert!(result.is_err());
+            assert!(result.is_err(), "expected error for `{case}`");
         }
     }
 

@@ -65,6 +65,7 @@ google-cloud-storage = { workspace = true, features = [], optional = true }
 jsonwebtoken = { workspace = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
+percent-encoding = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { version = "0.4", optional = true }
 reqwest-retry = { version = "0.7", optional = true }
@@ -76,6 +77,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
+unicode-general-category = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 veil = { workspace = true }
