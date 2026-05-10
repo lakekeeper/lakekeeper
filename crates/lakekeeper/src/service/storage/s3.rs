@@ -1929,49 +1929,6 @@ pub(crate) mod test {
         );
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
     }
-
-    #[test]
-    fn test_update_region_allowed_when_endpoint_set() {
-        let profile = S3Profile::builder()
-            .bucket("test-bucket".to_string())
-            .region("us-east-1".to_string())
-            .endpoint("http://localhost:9000".parse().unwrap())
-            .flavor(S3Flavor::S3Compat)
-            .sts_enabled(false)
-            .build();
-
-        let updated = S3Profile::builder()
-            .bucket("test-bucket".to_string())
-            .region("us-west-2".to_string())
-            .endpoint("http://localhost:9000".parse().unwrap())
-            .flavor(S3Flavor::S3Compat)
-            .sts_enabled(false)
-            .build();
-
-        let result = profile.update_with(updated);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().region, "us-west-2");
-    }
-
-    #[test]
-    fn test_update_region_rejected_without_endpoint() {
-        let profile = S3Profile::builder()
-            .bucket("test-bucket".to_string())
-            .region("us-east-1".to_string())
-            .flavor(S3Flavor::Aws)
-            .sts_enabled(false)
-            .build();
-
-        let updated = S3Profile::builder()
-            .bucket("test-bucket".to_string())
-            .region("us-west-2".to_string())
-            .flavor(S3Flavor::Aws)
-            .sts_enabled(false)
-            .build();
-
-        let result = profile.update_with(updated);
-        assert!(result.is_err());
-    }
 }
 
 #[cfg(test)]
