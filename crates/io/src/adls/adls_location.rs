@@ -1,5 +1,6 @@
 use std::str::FromStr as _;
 
+use percent_encoding::percent_decode_str;
 use url::Host;
 
 use crate::{
@@ -82,6 +83,29 @@ impl AdlsLocation {
                     format!("ADLS path segment `{path_segment}` must not contain slashes."),
                 ));
             }
+            // Reject segments whose decoded form would create silent
+            // path-divergence bugs. Our `Location` stores the raw URL input,
+            // but `url::Url::parse` (used by the SDK during request-URL
+            // construction) normalises encoded dot-segments and may decode
+            // `%2F`. The result is a Lakekeeper-side path that disagrees with
+            // what Azure actually receives. Reject up-front rather than let
+            // it surface as InvalidUri / silent 403 / wrong-path writes.
+            //   - `%20` (and other whitespace) → Azure rejects InvalidUri
+            //   - `%2E` / `%2E%2E` → `url::Url` strips, path silently shrinks
+            //   - `%2F` (or any encoded slash) → ambiguous nesting
+            let decoded = percent_decode_str(path_segment).decode_utf8_lossy();
+            let invalid = decoded.contains('/')
+                || decoded == "."
+                || decoded == ".."
+                || (!decoded.is_empty() && decoded.trim().is_empty());
+            if invalid {
+                return Err(InvalidLocationError::new(
+                    location_dbg.clone(),
+                    format!(
+                        "ADLS path segment `{path_segment}` decodes to a value that is normalised or rejected by URL/Azure handling."
+                    ),
+                ));
+            }
         }
 
         let endpoint_suffix = normalize_host(host)
@@ -135,11 +159,18 @@ impl AdlsLocation {
 
     #[must_use]
     pub fn blob_name(&self) -> String {
-        self.location
-            .path()
-            .unwrap_or_default()
-            .to_string()
-            .replace('?', "%3F")
+        // The azure_storage_datalake SDK constructs the wire URL via
+        // `Url::join`, which interprets `%XX` triplets in the blob name as
+        // already percent-encoded — so a stored blob name `%41bc` would go
+        // out on the wire as `%41bc` and the server would URL-decode it to
+        // `Abc`, aliasing two distinct keys. To keep the byte-literal model,
+        // pre-encode `%` (and the other URL-syntactic chars `?`/`#`) here so
+        // the SDK's join produces the right wire bytes for one server-side
+        // decode pass to land on our intended key.
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        const SDK_ESCAPE: &AsciiSet = &CONTROLS.add(b'%').add(b'?').add(b'#');
+        let path = self.location.path().unwrap_or_default();
+        utf8_percent_encode(path, SDK_ESCAPE).to_string()
     }
 
     /// Create a new `AdlsLocation` from a Location.
@@ -496,6 +527,10 @@ mod test {
 
     #[test]
     fn test_invalid_adls_location() {
+        // Each input must be rejected SOMEWHERE in the parse chain — either
+        // by `Location::from_str` (e.g. host trailing dot is now globally
+        // rejected for backend-aliasing safety) or by ADLS-specific
+        // validation. The original test asserted only the latter.
         let cases = vec![
             "abfss://filesystem@account_name",
             "abfss://filesystem@account_name.example.com./foo",
@@ -503,10 +538,49 @@ mod test {
             "abfss://account_name.dfs.core.windows/foo",
         ];
 
-        for location in cases {
-            let location = Location::from_str(location).unwrap();
-            let parsed_location = AdlsLocation::try_from_location(&location, false);
-            assert!(parsed_location.is_err(), "{parsed_location:?}");
+        for input in cases {
+            let result = Location::from_str(input).and_then(|loc| {
+                AdlsLocation::try_from_location(&loc, false).map_err(|e| {
+                    crate::location::LocationParseError {
+                        value: input.to_string(),
+                        reason: e.to_string(),
+                    }
+                })
+            });
+            assert!(
+                result.is_err(),
+                "{input:?} unexpectedly accepted: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rejects_problematic_decoded_segments() {
+        for bad in [
+            // whitespace-only — Azure rejects InvalidUri
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%20/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%09/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%20%20/bar",
+            // dot-segments — `url::Url` normalises these, path silently shrinks
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%2E/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%2e%2e/bar",
+            // encoded slash — ambiguous nesting once decoded
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/%2F/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%2Fy/bar",
+        ] {
+            let loc = Location::from_str(bad).unwrap();
+            let res = AdlsLocation::try_from_location(&loc, false);
+            assert!(res.is_err(), "expected reject for `{bad}`");
+        }
+        // Non-empty segments that include but do not decode-to one of the
+        // forbidden values are fine.
+        for ok in [
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%20y/bar",
+            "abfss://filesystem@account0name.dfs.core.windows.net/foo/x%2Ey/bar",
+        ] {
+            let loc = Location::from_str(ok).unwrap();
+            AdlsLocation::try_from_location(&loc, false)
+                .unwrap_or_else(|e| panic!("expected accept for `{ok}`: {e}"));
         }
     }
 
