@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.6](https://github.com/lakekeeper/lakekeeper/compare/v0.11.5...v0.11.6) (2026-05-10)
+
+
+### Bug Fixes
+
+* **deps:** bump rustls-webpki & aws sdk, async-nats for RUSTSEC-2026-0049/0098/0099/0104 ([3b3ff4d](https://github.com/lakekeeper/lakekeeper/commit/3b3ff4d5de4195b907e820e0170e577592803df1))
+* **storage:** harden STS/CEL credential policies against path injection ([3b3ff4d](https://github.com/lakekeeper/lakekeeper/commit/3b3ff4d5de4195b907e820e0170e577592803df1))
+
 ## [0.11.5](https://github.com/lakekeeper/lakekeeper/compare/v0.11.4...v0.11.5) (2026-04-01)
 
 
