@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.12.2](https://github.com/lakekeeper/lakekeeper/compare/v0.12.1...v0.12.2) (2026-05-10)
+
+
+### Features
+
+* **io:** canonicalise Location at parse time to avoid aliases ([#1743](https://github.com/lakekeeper/lakekeeper/issues/1743)) ([7e6f257](https://github.com/lakekeeper/lakekeeper/commit/7e6f257cacf1fb95a9f89bc04b6bd0b3ff1f85ed))
+* **io:** expose object size on FileInfo ([#1741](https://github.com/lakekeeper/lakekeeper/issues/1741)) ([3ec87dd](https://github.com/lakekeeper/lakekeeper/commit/3ec87dd56f707aadd7f1ae26e8a22aa23dfd1343))
+
+
+### Bug Fixes
+
+* **adls:** pre-encode `%` in blob name to defeat SDK alias collapse ([#1746](https://github.com/lakekeeper/lakekeeper/issues/1746)) ([2e8aea5](https://github.com/lakekeeper/lakekeeper/commit/2e8aea51a438b38c7369d21f35279bd8ccdb9ea8))
+* **postgres:** apply pg_acquire_timeout to all pool initializations ([#1744](https://github.com/lakekeeper/lakekeeper/issues/1744)) ([3af2055](https://github.com/lakekeeper/lakekeeper/commit/3af2055c19f4e54db4bd90ec852dcef27d63eb64))
+* **storage:** harden STS/CEL credential policies against path injection ([#1740](https://github.com/lakekeeper/lakekeeper/issues/1740)) ([8531e7b](https://github.com/lakekeeper/lakekeeper/commit/8531e7b210a7e953749ff180f780a767efba6fbb))
+
+
+### Miscellaneous Chores
+
+* **docs:** Update Cedarschema ([cf796f6](https://github.com/lakekeeper/lakekeeper/commit/cf796f6de006fcd2f110b5bc384befa6e27f0a93))
+* **main:** release 0.12.1 ([#1742](https://github.com/lakekeeper/lakekeeper/issues/1742)) ([b5c98a3](https://github.com/lakekeeper/lakekeeper/commit/b5c98a3de56396c51d81590f92e957fec27f48d3))
+* Release-as 0.12.2 ([db043b3](https://github.com/lakekeeper/lakekeeper/commit/db043b3e089f11324a8fac1a5c3bfba475497bc6))
+
 ## [0.12.1](https://github.com/lakekeeper/lakekeeper/compare/v0.12.1...v0.12.1) (2026-05-09)
 
 
