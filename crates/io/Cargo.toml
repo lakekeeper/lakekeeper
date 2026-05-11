@@ -27,6 +27,7 @@ storage-s3 = [
     "dep:aws-credential-types",
     "dep:aws-smithy-async",
     "dep:aws-smithy-http-client",
+    "dep:iceberg",
     "dep:webpki-root-certs",
 ]
 storage-adls = [
@@ -35,16 +36,20 @@ storage-adls = [
     "dep:azure_identity",
     "dep:azure_storage",
     "dep:azure_storage_datalake",
+    "dep:iceberg",
     "dep:moka",
+    "dep:time",
 ]
 storage-gcs = [
     "dep:google-cloud-storage",
+    "dep:iceberg",
     "dep:reqwest-middleware",
     "dep:reqwest-retry",
     "dep:google-cloud-auth",
     "dep:google-cloud-token",
+    "dep:time",
 ]
-storage-in-memory = []
+storage-in-memory = ["dep:iceberg"]
 default = ["storage-s3", "storage-adls", "storage-gcs"]
 
 [dependencies]
@@ -72,19 +77,23 @@ futures = { workspace = true }
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-storage = { workspace = true, features = [], optional = true }
 google-cloud-token = { workspace = true, optional = true }
+iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true, optional = true }
 reqwest-retry = { workspace = true, optional = true }
+serde = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true, optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
+typetag = { workspace = true }
 unicode-general-category = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }

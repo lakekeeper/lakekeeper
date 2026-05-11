@@ -6,8 +6,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    DeleteBatchError, DeleteError, FileInfo, IOError, InvalidLocationError, LakekeeperStorage,
-    Location, ReadError, WriteError, error::ErrorKind,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
 };
 
 type MemoryFile = (Bytes, DateTime<Utc>);
@@ -178,6 +178,16 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(())
     }
 
+    async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
+        let key = normalize_memory_path(path)?;
+        Ok(Box::new(MemoryFileWrite {
+            data: self.data.clone(),
+            key,
+            buffer: Vec::new(),
+            closed: false,
+        }))
+    }
+
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let key = normalize_memory_path(path)?;
 
@@ -194,6 +204,90 @@ impl LakekeeperStorage for MemoryStorage {
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         self.read(path).await
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        if range.end < range.start {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "Invalid range: start ({}) > end ({})",
+                    range.start, range.end
+                ),
+                path.to_string(),
+            )));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let key = normalize_memory_path(path)?;
+        let data = self.data.read().await;
+        let (bytes, _) = data.get(&key).ok_or_else(|| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::NotFound,
+                "Object not found in memory storage",
+                key.clone(),
+            ))
+        })?;
+
+        let start = usize::try_from(range.start).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range start {} too large for this platform", range.start),
+                key.clone(),
+            ))
+        })?;
+        let end = usize::try_from(range.end).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range end {} too large for this platform", range.end),
+                key.clone(),
+            ))
+        })?;
+        if end > bytes.len() {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range end {end} exceeds file size {}", bytes.len()),
+                key.clone(),
+            )));
+        }
+        Ok(bytes.slice(start..end))
+    }
+
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        let key = normalize_memory_path(path)?;
+
+        let data = self.data.read().await;
+        let (bytes, last_modified) = data.get(&key).ok_or_else(|| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::NotFound,
+                "Object not found in memory storage",
+                key.clone(),
+            ))
+        })?;
+
+        let location_str = format!("{MEMORY_PREFIX}{key}");
+        let location = location_str.parse::<Location>().map_err(|e| {
+            ReadError::IOError(
+                IOError::new(
+                    ErrorKind::Unexpected,
+                    format!("Failed to parse location: {e}"),
+                    location_str.clone(),
+                )
+                .set_source(anyhow::anyhow!(e)),
+            )
+        })?;
+
+        Ok(FileInfo::new(
+            Some(*last_modified),
+            location,
+            Some(bytes.len() as u64),
+        ))
     }
 
     async fn list(
@@ -270,6 +364,48 @@ impl LakekeeperStorage for MemoryStorage {
     }
 }
 
+/// Streaming writer for the in-memory backend.
+///
+/// Buffers all written bytes locally and inserts them into the shared
+/// store on `close`. Calling `write` after `close` returns an error.
+#[derive(Debug)]
+pub(crate) struct MemoryFileWrite {
+    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
+    key: String,
+    buffer: Vec<u8>,
+    closed: bool,
+}
+
+#[async_trait::async_trait]
+impl LakekeeperFileWrite for MemoryFileWrite {
+    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Cannot write to closed writer",
+                self.key.clone(),
+            )));
+        }
+        self.buffer.extend_from_slice(&bytes);
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Writer already closed",
+                self.key.clone(),
+            )));
+        }
+        let bytes = Bytes::from(std::mem::take(&mut self.buffer));
+        let mut data = self.data.write().await;
+        data.insert(self.key.clone(), (bytes, Utc::now()));
+        self.closed = true;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -298,6 +434,40 @@ mod tests {
 
         // Verify delete doesn't fail for non-existent paths
         storage.delete(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_round_trip() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/streaming.bin";
+        {
+            let mut writer = storage.writer(path).await.unwrap();
+            writer.write(Bytes::from("hello, ")).await.unwrap();
+            writer.write(Bytes::from("world!")).await.unwrap();
+            writer.close().await.unwrap();
+        }
+        let data = storage.read(path).await.unwrap();
+        assert_eq!(data, Bytes::from("hello, world!"));
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_close_twice_errors() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/twice.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("data")).await.unwrap();
+        writer.close().await.unwrap();
+        assert!(writer.close().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_write_after_close_errors() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/after_close.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("data")).await.unwrap();
+        writer.close().await.unwrap();
+        assert!(writer.write(Bytes::from("more")).await.is_err());
     }
 
     #[tokio::test]

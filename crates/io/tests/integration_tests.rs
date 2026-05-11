@@ -3,7 +3,9 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use lakekeeper_io::{LakekeeperStorage, StorageBackend, execute_with_parallelism};
+use lakekeeper_io::{
+    ErrorKind, LakekeeperStorage, ReadError, StorageBackend, execute_with_parallelism,
+};
 use tokio::{
     runtime::Runtime,
     time::{Duration, Instant, sleep},
@@ -264,6 +266,35 @@ test_all_storages!(
 test_all_storages!(
     test_list_non_existent_directory,
     test_list_non_existent_directory_impl
+);
+test_all_storages!(test_writer_basic, test_writer_basic_impl);
+test_all_storages!(test_writer_multi_chunks, test_writer_multi_chunks_impl);
+test_all_storages!(
+    test_writer_large_streaming,
+    test_writer_large_streaming_impl
+);
+test_all_storages!(
+    test_writer_close_twice_errors,
+    test_writer_close_twice_errors_impl
+);
+test_all_storages!(
+    test_writer_write_after_close_errors,
+    test_writer_write_after_close_errors_impl
+);
+test_all_storages!(test_writer_drop_cleanup, test_writer_drop_cleanup_impl);
+test_all_storages!(test_read_range_basic, test_read_range_basic_impl);
+test_all_storages!(test_read_range_large, test_read_range_large_impl);
+test_all_storages!(test_metadata_basic, test_metadata_basic_impl);
+test_all_storages!(test_metadata_not_found, test_metadata_not_found_impl);
+test_all_storages!(test_exists, test_exists_impl);
+test_all_storages!(
+    test_writer_then_read_range,
+    test_writer_then_read_range_impl
+);
+test_all_storages!(test_writer_then_metadata, test_writer_then_metadata_impl);
+test_all_storages!(
+    test_write_then_read_single_and_read,
+    test_write_then_read_single_and_read_impl
 );
 
 // // Performance tests for storage backend initialization
@@ -1495,6 +1526,342 @@ async fn test_list_prefix_boundaries_impl(
         let _ = storage.delete(&path).await; // Ignore errors during cleanup
     }
 
+    Ok(())
+}
+
+/// Write `data` through the streaming `writer` API in fixed-size slices.
+async fn writer_write_in_chunks(
+    storage: &StorageBackend,
+    path: &str,
+    data: &Bytes,
+    chunk_size: usize,
+) -> anyhow::Result<()> {
+    let mut writer = storage.writer(path).await?;
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let end = (offset + chunk_size).min(data.len());
+        writer.write(data.slice(offset..end)).await?;
+        offset = end;
+    }
+    writer.close().await?;
+    Ok(())
+}
+
+/// Streaming writer: single write call then close, content survives round-trip.
+async fn test_writer_basic_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-basic.bin");
+    let data = Bytes::from_static(b"streaming writer payload");
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(data.clone()).await?;
+    writer.close().await?;
+
+    let read_back = storage.read(&path).await?;
+    assert_eq!(read_back, data);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Streaming writer: many small write calls accumulate correctly across close.
+async fn test_writer_multi_chunks_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-multi-chunks.bin");
+
+    let chunks: Vec<Bytes> = (0..16u8).map(|i| Bytes::from(vec![i; 1024])).collect();
+    let mut expected = bytes::BytesMut::new();
+    for chunk in &chunks {
+        expected.extend_from_slice(chunk);
+    }
+    let expected = expected.freeze();
+
+    let mut writer = storage.writer(&path).await?;
+    for chunk in chunks {
+        writer.write(chunk).await?;
+    }
+    writer.close().await?;
+
+    let read_back = storage.read(&path).await?;
+    assert_eq!(read_back, expected);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Streaming writer with payload large enough to trigger backend-specific
+/// multipart promotion (S3/GCS at 25 MiB, ADLS at 7 MiB; 30 MiB triggers all).
+async fn test_writer_large_streaming_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-large.bin");
+    let data = generate_test_data(30);
+
+    writer_write_in_chunks(storage, &path, &data, 8 * 1024 * 1024).await?;
+
+    let read_back = storage.read(&path).await?;
+    assert_eq!(read_back.len(), data.len());
+    assert!(
+        read_back == data,
+        "streaming-written large file content mismatch"
+    );
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Closing an already-closed writer must fail.
+async fn test_writer_close_twice_errors_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-close-twice.bin");
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(Bytes::from_static(b"hi")).await?;
+    writer.close().await?;
+
+    let second = writer.close().await;
+    assert!(second.is_err(), "second close() should fail");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Writing after `close` must fail.
+async fn test_writer_write_after_close_errors_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-write-after-close.bin");
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(Bytes::from_static(b"hi")).await?;
+    writer.close().await?;
+
+    let after = writer.write(Bytes::from_static(b"more")).await;
+    assert!(after.is_err(), "write() after close() should fail");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Dropping a streaming writer without `close` should(!) not leave a file at the
+/// target path (best-effort `Drop` impl may fail for other reasons).
+/// Writes 30 MiB to force backend-side state (S3 multipart, GCS
+/// resumable session, ADLS up-front file create), then drops the writer and
+/// polls every 20 ms for absence with a 10s budget — matching the
+/// `DROP_CANCEL_DURATION` upper bound on the spawned cleanup task. Memory
+/// backend never persists buffered bytes, so absence is immediate.
+/// Unfortunately this test is flaky by its' design, so a failure is not
+/// indicative for a broken `Drop` impl.
+async fn test_writer_drop_cleanup_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-drop-cleanup.bin");
+    let data = generate_test_data(30);
+
+    {
+        let mut writer = storage.writer(&path).await?;
+        writer.write(data).await?;
+        // Drop without close — Drop impl spawns best-effort cleanup.
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let poll_interval = Duration::from_millis(20);
+    loop {
+        if !storage.exists(&path).await? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "file {path} still exists 10s after writer Drop; cleanup task did not succeed within its' budget"
+            ));
+        }
+        sleep(poll_interval).await;
+    }
+}
+
+/// `read_range` returns exactly the requested slice on a small file, including
+/// tail-aligned, interior, and empty ranges.
+async fn test_read_range_basic_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("range-basic.bin");
+    let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+    let data = Bytes::from(data);
+    storage.write(&path, data.clone()).await?;
+
+    // Full range
+    let full = storage.read_range(&path, 0..4096).await?;
+    assert_eq!(full, data);
+
+    // Tail-aligned
+    let tail = storage.read_range(&path, 4000..4096).await?;
+    assert_eq!(tail, data.slice(4000..4096));
+
+    // Interior
+    let mid = storage.read_range(&path, 100..200).await?;
+    assert_eq!(mid, data.slice(100..200));
+
+    // Empty (start == end) must yield empty bytes without backend round-trip
+    let empty = storage.read_range(&path, 50..50).await?;
+    assert_eq!(empty.len(), 0);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `read_range` over a large file: small interior range and a >25 MiB span
+/// that forces the parallel-chunked download path on every cloud backend.
+async fn test_read_range_large_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("range-large.bin");
+    let data = generate_test_data(30);
+    storage.write(&path, data.clone()).await?;
+
+    // Small range near start (single fetch path)
+    let head = storage.read_range(&path, 0..1024).await?;
+    assert_eq!(head, data.slice(0..1024));
+
+    // Large interior range (>25 MiB) forces parallel chunked read
+    let big_range = 1024usize..(29 * 1024 * 1024);
+    let big = storage
+        .read_range(&path, big_range.start as u64..big_range.end as u64)
+        .await?;
+    let expected = data.slice(big_range.clone());
+    assert_eq!(big.len(), expected.len());
+    assert!(big == expected, "chunked range-read content mismatch");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `metadata` returns size matching the bytes written and a location ending
+/// with the requested suffix.
+async fn test_metadata_basic_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("metadata-basic.bin");
+    let data = Bytes::from(vec![0xab; 4096]);
+    storage.write(&path, data.clone()).await?;
+
+    let info = storage.metadata(&path).await?;
+    assert_eq!(info.size(), Some(data.len() as u64));
+    // Backends may canonicalize the URL; assert the suffix matches.
+    assert!(
+        info.location().to_string().ends_with("metadata-basic.bin"),
+        "metadata location {} does not end with expected suffix",
+        info.location()
+    );
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `metadata` on a missing path surfaces `ErrorKind::NotFound`.
+async fn test_metadata_not_found_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("metadata-missing.bin");
+    let result = storage.metadata(&path).await;
+    match result {
+        Err(ReadError::IOError(e)) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(other) => Err(anyhow::anyhow!("expected NotFound IOError, got {other:?}")),
+        Ok(_) => Err(anyhow::anyhow!("expected metadata to fail on missing file")),
+    }
+}
+
+/// `exists` flips false → true → false across the file lifecycle.
+async fn test_exists_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow::Result<()> {
+    let path = config.test_path("exists.bin");
+
+    assert!(
+        !storage.exists(&path).await?,
+        "file must not exist before write"
+    );
+
+    storage.write(&path, Bytes::from_static(b"hi")).await?;
+    assert!(storage.exists(&path).await?, "file must exist after write");
+
+    storage.delete(&path).await?;
+    assert!(
+        !storage.exists(&path).await?,
+        "file must not exist after delete"
+    );
+
+    Ok(())
+}
+
+/// Mixed flow: write via streaming `writer`, then `read_range` interior bytes.
+async fn test_writer_then_read_range_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-then-range.bin");
+    let data: Vec<u8> = (0..=255u8).cycle().take(8192).collect();
+    let data = Bytes::from(data);
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(data.slice(0..4096)).await?;
+    writer.write(data.slice(4096..8192)).await?;
+    writer.close().await?;
+
+    let middle = storage.read_range(&path, 4000..4200).await?;
+    assert_eq!(middle, data.slice(4000..4200));
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Mixed flow: write via streaming `writer` with multipart payload, then
+/// `metadata` reports the correct size.
+async fn test_writer_then_metadata_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-then-metadata.bin");
+    let data = generate_test_data(30);
+
+    writer_write_in_chunks(storage, &path, &data, 8 * 1024 * 1024).await?;
+
+    let info = storage.metadata(&path).await?;
+    assert_eq!(info.size(), Some(data.len() as u64));
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Mixed flow: bulk `write`, then read with both `read_single` and `read`
+/// on a payload large enough to exercise the multipart download path.
+async fn test_write_then_read_single_and_read_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("write-then-reads.bin");
+    let data = generate_test_data(30);
+    storage.write(&path, data.clone()).await?;
+
+    let read_single = storage.read_single(&path).await?;
+    let read_multi = storage.read(&path).await?;
+
+    assert_eq!(read_single.len(), data.len());
+    assert_eq!(read_multi.len(), data.len());
+    assert!(read_single == data, "read_single content mismatch");
+    assert!(read_multi == data, "read content mismatch");
+
+    storage.delete(&path).await?;
     Ok(())
 }
 

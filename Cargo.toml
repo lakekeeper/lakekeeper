@@ -191,6 +191,7 @@ tracing-subscriber = { version = "0.3.18", features = [
 tracing-test = "0.2.5"
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.23.0"
+typetag = "0.2.21"
 unicase = "2.8.1"
 unicode-general-category = "1.1.0"
 

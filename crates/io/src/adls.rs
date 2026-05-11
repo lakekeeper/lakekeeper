@@ -24,7 +24,7 @@ pub use adls_location::{
 };
 pub use adls_storage::AdlsStorage;
 
-use crate::error::InitializeClientError;
+use crate::InitializeClientError;
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
@@ -187,10 +187,10 @@ impl AzureSettings {
     async fn get_system_identity(
         &self,
     ) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
-        let authority_host_str = self.authority_host.as_ref().map_or(
-            DEFAULT_AUTHORITY_HOST.as_str().to_string(),
-            ToString::to_string,
-        );
+        let authority_host_str = self
+            .authority_host
+            .as_ref()
+            .map_or(DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string);
         let cache_key = format!("{}::{}", authority_host_str, self.cloud_location.account());
 
         SYSTEM_IDENTITY_CACHE
