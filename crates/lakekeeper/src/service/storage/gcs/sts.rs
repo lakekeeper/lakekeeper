@@ -118,8 +118,25 @@ impl Options {
         table_location: &Location,
         storage_permissions: StoragePermissions,
     ) -> Result<Self, TableConfigError> {
+        let mut table_location = table_location.clone();
+        table_location.with_trailing_slash();
+        let bucket_prefix = format!("gs://{bucket}/");
+        let prefixless_location = table_location
+            .as_str()
+            .strip_prefix(&bucket_prefix)
+            .ok_or_else(|| {
+                TableConfigError::Internal(
+                    format!(
+                        "Refusing to build GCS access boundary: table location `{}` is not under bucket `{bucket}`",
+                        table_location.as_str()
+                    ),
+                    None,
+                )
+            })?
+            .to_owned();
+
         let bucket_cel = escape_for_cel_single_quoted(bucket)?;
-        let path_cel = gcs_cel_object_prefix(bucket, table_location)?;
+        let path_cel = escape_for_cel_single_quoted(&prefixless_location)?;
 
         Ok(Options {
             access_boundary: AccessBoundary {
@@ -150,46 +167,6 @@ impl Options {
             },
         })
     }
-}
-
-// --- Egress encoders ---------------------------------------------------
-//
-// Each function here produces the byte form a GCP-side consumer expects
-// from a `Location`. They live next to the CEL access-boundary builder
-// so a reviewer can verify the canonical form matches what GCS does
-// server-side when evaluating the access boundary against
-// `resource.name`.
-
-/// CEL-escaped object-name prefix relative to the bucket root, with a
-/// trailing `/`. Used in the `startsWith(...)` checks of the GCS access
-/// boundary CEL expression.
-///
-/// Uses the canonical-encoded path (no decode). When a client writes to
-/// GCS, the SDK URL-encodes the key for the wire (so a `%` in the key
-/// becomes `%25`); the server URL-decodes once and stores at the
-/// canonical-encoded form. CEL `startsWith` against `resource.name` is
-/// byte-string compare, so the prefix must be the same bytes as the
-/// canonical Location.
-fn gcs_cel_object_prefix(
-    bucket: &str,
-    table_location: &Location,
-) -> Result<String, TableConfigError> {
-    let mut table_location = table_location.clone();
-    table_location.with_trailing_slash();
-    let bucket_prefix = format!("gs://{bucket}/");
-    let prefixless_location = table_location
-        .as_str()
-        .strip_prefix(&bucket_prefix)
-        .ok_or_else(|| {
-            TableConfigError::Internal(
-                format!(
-                    "Refusing to build GCS access boundary: table location `{}` is not under bucket `{bucket}`",
-                    table_location.as_str()
-                ),
-                None,
-            )
-        })?;
-    escape_for_cel_single_quoted(prefixless_location)
 }
 
 /// Escape `value` for interpolation inside a CEL single-quoted literal.
@@ -287,49 +264,7 @@ impl From<&GcsServiceKey> for CredentialsFile {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
-
-    #[test]
-    fn gcs_cel_object_prefix_uses_canonical_encoded_form() {
-        // GCS `resource.name` matches the bytes that GCS actually stores.
-        // Clients URL-encode `%` → `%25` for the wire and the server
-        // decodes once, so a path of `foo%20bar` ends up as the literal
-        // 7-char key `foo%20bar` (not `foo bar`). The CEL `startsWith`
-        // prefix must use the same canonical-encoded form.
-        let loc = Location::from_str("gs://my-bucket/wh/foo%20bar/").unwrap();
-        let prefix = gcs_cel_object_prefix("my-bucket", &loc).unwrap();
-        assert_eq!(prefix, "wh/foo%20bar/");
-    }
-
-    #[test]
-    fn gcs_cel_object_prefix_collapses_mixed_hex_to_same_form() {
-        // `%2D` and `%2d` and literal `-` all canonicalise to literal `-`
-        // (unreserved char), so the CEL prefix is identical for all three
-        // input forms.
-        let a = Location::from_str("gs://b/foo-bar/").unwrap();
-        let b = Location::from_str("gs://b/foo%2Dbar/").unwrap();
-        let c = Location::from_str("gs://b/foo%2dbar/").unwrap();
-        let pa = gcs_cel_object_prefix("b", &a).unwrap();
-        let pb = gcs_cel_object_prefix("b", &b).unwrap();
-        let pc = gcs_cel_object_prefix("b", &c).unwrap();
-        assert_eq!(pa, pb);
-        assert_eq!(pa, pc);
-        assert_eq!(pa, "foo-bar/");
-    }
-
-    #[test]
-    fn gcs_cel_object_prefix_rejects_location_outside_bucket() {
-        let loc = Location::from_str("gs://other-bucket/wh/").unwrap();
-        let err = gcs_cel_object_prefix("my-bucket", &loc).unwrap_err();
-        match err {
-            TableConfigError::Internal(msg, _) => {
-                assert!(msg.contains("not under bucket"), "{msg}");
-            }
-            other => panic!("expected Internal, got {other:?}"),
-        }
-    }
 
     #[test]
     fn escape_for_cel_single_quoted_passes_plain_value() {

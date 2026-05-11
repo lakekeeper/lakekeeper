@@ -54,15 +54,7 @@ pub(super) fn determine_tabular_location(
             uuid: *table_id,
         };
 
-        storage_profile
-            .default_tabular_location(&namespace_location, &table_name_context)
-            .map_err(|e| {
-                ErrorModel::internal(
-                    "Failed to generate default tabular location",
-                    "InvalidDefaultTabularLocation",
-                    Some(Box::new(e)),
-                )
-            })?
+        storage_profile.default_tabular_location(&namespace_location, &table_name_context)
     };
     // all locations are without a trailing slash
     location.without_trailing_slash();

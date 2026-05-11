@@ -1738,7 +1738,7 @@ pub(crate) mod tests {
         pretty_assertions::assert_eq!(table_info, &table_info_by_location);
 
         let mut subpath = table_info.metadata_location().unwrap().clone();
-        subpath.extend(["data", "foo.parquet"]).unwrap();
+        subpath.push("data/foo.parquet");
         // Subpath works
         let table_info_by_location = get_tabular_infos_by_s3_location(
             warehouse_id,

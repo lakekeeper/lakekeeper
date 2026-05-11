@@ -94,6 +94,7 @@ tracing = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 typetag = { workspace = true }
+unicode-general-category = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 veil = { workspace = true }

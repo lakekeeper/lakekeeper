@@ -232,7 +232,7 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         &CompressionCodec::try_from_properties(new_metadata.properties())?,
         Uuid::now_v7(),
         extract_count_from_metadata_location(&previous_metadata_location).map_or(0, |v| v + 1),
-    )?;
+    );
 
     if delete_old_location.is_some() {
         ctx.storage_profile

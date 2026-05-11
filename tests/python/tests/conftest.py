@@ -171,10 +171,7 @@ def storage_config(request) -> dict:
                 "path-style-access": path_style_access,
                 "endpoint": settings.s3_endpoint,
                 "key-prefix": test_id,
-                # `s3-compat` is the canonical S3Flavor enum name; `minio`
-                # is a backward-compat serde alias. Use the canonical form
-                # so what tests read from `storage_config` matches.
-                "flavor": "s3-compat",
+                "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
                 "legacy-md5-behavior": legacy_md5_behavior,
                 "layout": layout,

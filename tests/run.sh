@@ -54,18 +54,18 @@ echo "Iceberg version   : ${SPARK_VERSION:-default}" >&2
 COMPOSE_ARGS=("-f" "${SCRIPT_DIR}/docker-compose.yaml")
 if [[ "$SUITE" == *"openfga"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-openfga-overlay.yaml")
-elif [[ "$SUITE" == *"kv2"* ]]; then
+    elif [[ "$SUITE" == *"kv2"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-vault-overlay.yaml")
-elif [[ "$SUITE" == *"opa"* ]]; then
+    elif [[ "$SUITE" == *"opa"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-openfga-overlay.yaml")
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-trino-opa-overlay.yaml")
-elif [[ "$SUITE" == *"starrocks"* ]]; then
+    elif [[ "$SUITE" == *"starrocks"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-starrocks-overlay.yaml")
-elif [[ "$SUITE" == *"aws_system_identity"* ]]; then
+    elif [[ "$SUITE" == *"aws_system_identity"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-s3-system-identity-overlay.yaml")
-elif [[ "$SUITE" == *"legacy_md5"* ]]; then
+    elif [[ "$SUITE" == *"legacy_md5"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-legacy-md5-overlay.yaml")
-elif [[ "$SUITE" == *"separate_endpoint"* ]]; then
+    elif [[ "$SUITE" == *"separate_endpoint"* ]]; then
     COMPOSE_ARGS+=("-f" "${SCRIPT_DIR}/docker-compose-sts-endpoint-overlay.yaml")
 fi
 

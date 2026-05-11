@@ -1,5 +1,5 @@
 use core::panic;
-use std::{future::Future, str::FromStr, sync::LazyLock};
+use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -258,6 +258,10 @@ test_all_storages!(
 test_all_storages!(
     test_batch_delete_many_items_some_nonexistant,
     test_batch_delete_many_items_some_nonexistant_impl
+);
+test_all_storages!(
+    test_percent_encoding_does_not_alias,
+    test_percent_encoding_does_not_alias_impl
 );
 test_all_storages!(
     test_list_non_existent_directory,
@@ -1083,18 +1087,13 @@ async fn test_special_characters_impl(
     let base_dir = config.test_dir_path("special-chars-test");
     let mut written_paths = Vec::new();
 
-    // Write files with special characters. Note: `Location::from_str`
-    // canonicalises filenames (literal space → `%20`, non-ASCII →
-    // percent-encoded UTF-8 bytes), so we record the canonical form to
-    // compare against the cloud's `list` output below — the cloud stores
-    // and returns the canonical bytes.
+    // Write files with special characters
     for filename in &special_files {
-        let raw_path = format!("{base_dir}{filename}");
+        let path = format!("{base_dir}{filename}");
         storage
-            .write(&raw_path, Bytes::from(format!("Content of {filename}")))
+            .write(&path, Bytes::from(format!("Content of {filename}")))
             .await?;
-        let canonical_path = Location::from_str(&raw_path)?.to_string();
-        written_paths.push(canonical_path);
+        written_paths.push(path);
     }
 
     // Read all files back
@@ -1149,17 +1148,15 @@ async fn test_special_characters_impl(
 }
 
 /// Like `test_special_characters_impl` but the special chars appear as
-/// path segments inside URL-style locations — covering both
-/// pre-percent-encoded segments (e.g. `%3F`, `%20`) and raw non-ASCII
-/// Unicode (e.g. `üñîçødé`, `日本語`). Both forms must round-trip
-/// write → read → list when used as a directory name. This is what
+/// pre-percent-encoded URL segments (e.g. `%3F`, `%20`) — what
 /// Lakekeeper REST receives when a client provides a URL-style location.
 async fn test_special_characters_in_url_segments_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // Positive: percent-encoded *and* raw-Unicode segments that must
-    // round-trip end-to-end through write → read → list.
+    // Each entry: a URL-encoded path segment that should round-trip through
+    // write → read → list when used as a directory name in a URL location.
+    // Positive: segments that must round-trip end-to-end.
     let positive_segments = vec![
         "%3F",     // ?
         "%22",     // "
@@ -1865,6 +1862,111 @@ async fn test_write_then_read_single_and_read_impl(
     assert!(read_multi == data, "read content mismatch");
 
     storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Pin the byte-literal storage-key model: two paths that differ only by
+/// percent-encoding of an unreserved/sub-delim character must address two
+/// physically distinct objects. If any backend silently aliases them, the
+/// catalog cannot rely on raw `fs_location` bytes for uniqueness — and
+/// canonicalisation (or backend-specific rejection) becomes mandatory.
+///
+/// This is the empirical premise behind dropping `Location::from_str`
+/// canonicalisation. A failure here is the signal that the byte-literal
+/// model does NOT hold for the failing backend, and policy-level mitigation
+/// is required for that backend specifically.
+async fn test_percent_encoding_does_not_alias_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    // Pairs of paths that share the same URI-decoded form but differ
+    // byte-for-byte. Under the byte-literal model each pair produces two
+    // distinct storage objects.
+    //
+    // Each entry: (decoded form, percent-encoded form, label).
+    // - "Abc" vs "%41bc": alphanumeric — pchar unreserved
+    // - "foo-bar" vs "foo%2Dbar": `-` — pchar unreserved
+    // - "foo+bar" vs "foo%2Bbar": `+` — pchar sub-delim
+    // - "%3F" vs "%3f": hex case in surviving %XX
+    let pairs: &[(&str, &str, &str)] = &[
+        ("Abc", "%41bc", "alpha-A"),
+        ("foo-bar", "foo%2Dbar", "dash"),
+        ("foo+bar", "foo%2Bbar", "plus"),
+        ("%3F", "%3f", "hex-case-Q"),
+    ];
+
+    let base_dir = config.test_dir_path("percent-alias-test");
+    let mut failures = Vec::new();
+    let mut to_cleanup = Vec::new();
+
+    for (decoded, encoded, label) in pairs {
+        let path_decoded = format!("{base_dir}{decoded}/data.bin");
+        let path_encoded = format!("{base_dir}{encoded}/data.bin");
+
+        // Distinct payloads so we can detect aliasing by content swap.
+        let payload_decoded = Bytes::from(format!("DECODED:{label}"));
+        let payload_encoded = Bytes::from(format!("ENCODED:{label}"));
+
+        // Write the decoded path first, then the encoded path. If the
+        // backend aliases, the second write overwrites the first.
+        if let Err(e) = storage.write(&path_decoded, payload_decoded.clone()).await {
+            failures.push(format!("{label}: write decoded `{decoded}` failed: {e}"));
+            continue;
+        }
+        to_cleanup.push(path_decoded.clone());
+
+        if let Err(e) = storage.write(&path_encoded, payload_encoded.clone()).await {
+            failures.push(format!("{label}: write encoded `{encoded}` failed: {e}"));
+            continue;
+        }
+        to_cleanup.push(path_encoded.clone());
+
+        // Read back from the originally-written paths. If the backend
+        // aliases the two, the decoded-path read returns the encoded-path
+        // payload (or vice versa, depending on which write "won").
+        match storage.read(&path_decoded).await {
+            Ok(got) if got == payload_decoded => {} // expected — distinct
+            Ok(got) if got == payload_encoded => {
+                failures.push(format!(
+                    "{label}: ALIAS DETECTED — decoded path `{decoded}` returned encoded payload (write to `{encoded}` overwrote it)"
+                ));
+            }
+            Ok(got) => {
+                failures.push(format!(
+                    "{label}: decoded path returned unexpected payload: {got:?}"
+                ));
+            }
+            Err(e) => failures.push(format!("{label}: read decoded `{decoded}` failed: {e}")),
+        }
+
+        match storage.read(&path_encoded).await {
+            Ok(got) if got == payload_encoded => {} // expected — distinct
+            Ok(got) if got == payload_decoded => {
+                failures.push(format!(
+                    "{label}: ALIAS DETECTED — encoded path `{encoded}` returned decoded payload"
+                ));
+            }
+            Ok(got) => {
+                failures.push(format!(
+                    "{label}: encoded path returned unexpected payload: {got:?}"
+                ));
+            }
+            Err(e) => failures.push(format!("{label}: read encoded `{encoded}` failed: {e}")),
+        }
+    }
+
+    // Cleanup regardless of outcome.
+    for path in to_cleanup {
+        let _ = storage.delete(&path).await;
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} percent-encoding alias check(s) failed:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 

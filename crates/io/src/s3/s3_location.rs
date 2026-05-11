@@ -51,18 +51,14 @@ impl S3Location {
             )
         })?;
         if !key.is_empty() {
-            location
-                .without_trailing_slash()
-                .extend(key.iter())
-                .map_err(|e| {
-                    InvalidLocationError::new(
-                        e.value,
-                        format!("Failed to extend location with key segments - {}", e.reason),
-                    )
-                })?;
+            location.without_trailing_slash().extend(key.iter());
         }
 
-        Ok(S3Location { location })
+        Ok(S3Location {
+            // bucket_name,
+            // key,
+            location,
+        })
     }
 
     #[must_use]
@@ -78,7 +74,7 @@ impl S3Location {
 
     #[must_use]
     pub fn bucket_name(&self) -> &str {
-        self.location.host_str()
+        (self.location.host_str()).unwrap_or_default()
     }
 
     #[must_use]
@@ -118,7 +114,12 @@ impl S3Location {
             return Err(InvalidLocationError::new(location.to_string(), reason));
         }
 
-        let bucket_name = location.host_str();
+        let bucket_name = location.host_str().ok_or_else(|| {
+            InvalidLocationError::new(
+                location.to_string(),
+                "S3 location does not have a bucket name.".to_string(),
+            )
+        })?;
 
         if is_custom_variant {
             S3Location::new(

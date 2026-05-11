@@ -111,8 +111,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             body: request_body,
         } = request.clone();
 
+        let decoded_url = urldecode_uri_path_segments(&request_url)?;
         let (parsed_url, operation) = s3_utils::parse_s3_url(
-            &request_url,
+            &decoded_url,
             s3_url_style_detection(&warehouse)?,
             &request_method,
             request_body.as_deref(),
@@ -378,6 +379,29 @@ async fn sign(
     };
 
     Ok(sign_response)
+}
+
+fn urldecode_uri_path_segments(uri: &url::Url) -> Result<url::Url> {
+    // We only modify path segments. Iterate over all path segments and unr urlencoding::decode them.
+    let mut new_uri = uri.clone();
+    let path_segments = new_uri
+        .path_segments()
+        .map(std::iter::Iterator::collect::<Vec<_>>)
+        .unwrap_or_default();
+
+    let mut new_path_segments = Vec::new();
+    for segment in path_segments {
+        new_path_segments.push(urlencoding::decode(segment).map_err(|e| {
+            ErrorModel::bad_request(
+                "Failed to decode URI segment",
+                "FailedToDecodeURISegment",
+                Some(Box::new(e)),
+            )
+        })?);
+    }
+
+    new_uri.set_path(&new_path_segments.join("/"));
+    Ok(new_uri)
 }
 
 fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
@@ -1114,28 +1138,6 @@ mod test {
             assert_eq!(result, expected);
             assert_eq!(operation, Operation::Delete);
         }
-    }
-
-    /// Iceberg URL-encodes partition values inside a single path segment
-    /// (e.g. partition value `m/y` → segment `m%2Fy` as part of the S3 key
-    /// bytes). The wire URL then encodes that segment a second time, so the
-    /// HTTP request path contains `m%252Fy`. The signer must accept this
-    /// and treat it as a sublocation of the table.
-    #[test]
-    fn test_parse_s3_url_iceberg_partition_path() {
-        let table_location =
-            Location::from_str("s3://tests/wh/aaaa-aaaa-aaaa/bbbb-bbbb-bbbb").unwrap();
-        let wire = "http://minio:9000/tests/wh/aaaa-aaaa-aaaa/bbbb-bbbb-bbbb/data/m%252Fy%2Bfl%2B%2521%253F%2B-_%25C3%25A4%2Boats%3D2.2/00000-data.parquet";
-        let uri = url::Url::parse(wire).unwrap();
-        let (parsed, operation) = parse_s3_url(
-            &uri,
-            S3UrlStyleDetectionMode::Auto,
-            &http::Method::PUT,
-            None,
-        )
-        .expect("partition-encoded URL must parse");
-        assert_eq!(operation, Operation::Write);
-        validate_uri(&parsed, &table_location).expect("parsed URL must be sublocation of table");
     }
 
     #[test]

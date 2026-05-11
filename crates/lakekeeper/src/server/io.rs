@@ -200,14 +200,10 @@ mod tests {
         let mut location = profile.base_location().unwrap();
         location.without_trailing_slash();
 
-        let mut folder_1 = location.clone();
-        folder_1.push("folder").unwrap();
-        let mut file_1 = folder_1.clone();
-        file_1.push("file1").unwrap();
-        let mut folder_2 = location.clone();
-        folder_2.push("folder-2").unwrap();
-        let mut file_2 = folder_2.clone();
-        file_2.push("file2").unwrap();
+        let folder_1 = location.clone().push("folder").clone();
+        let file_1 = folder_1.clone().push("file1").clone();
+        let folder_2 = location.clone().push("folder-2").clone();
+        let file_2 = folder_2.clone().push("file2").clone();
 
         let data_1 = serde_json::json!({"file": "1"});
         let data_2 = serde_json::json!({"file": "2"});
