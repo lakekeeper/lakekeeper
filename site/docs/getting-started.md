@@ -94,10 +94,10 @@ export LAKEKEEPER__PG_ENCRYPTION_KEY="MySecretEncryptionKeyThatIBetterNotLoose"
 To expose Lakekeeper behind a reverse proxy, most deployments also set:
 
 ```bash
-export LAKEKEEPER__BASE_URI=<https://<Url-where-Lakekeeper-is-externally-reachable>
+export LAKEKEEPER__BASE_URI="http://<Url-where-Lakekeeper-is-externally-reachable>"
 ```
 
-The default `LAKEKEEPER__BASE_URI` is `https://localhost:8181`.
+The default `LAKEKEEPER__BASE_URI` is `http://localhost:8181`.
 
 ### Option 5: 👨‍💻 Build from Sources
 
