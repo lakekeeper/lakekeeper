@@ -101,10 +101,6 @@ http-body-util = "^0.1"
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
-jwks_client_rs = { version = "0.5.1", default-features = false, features = [
-    "rustls-tls",
-] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
 limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = [
