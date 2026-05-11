@@ -4,7 +4,7 @@ use std::{future::Future, sync::LazyLock};
 use bytes::Bytes;
 use futures::StreamExt;
 use lakekeeper_io::{
-    ErrorKind, LakekeeperStorage, Location, ReadError, StorageBackend, execute_with_parallelism,
+    ErrorKind, LakekeeperStorage, ReadError, StorageBackend, execute_with_parallelism,
 };
 use tokio::{
     runtime::Runtime,
