@@ -342,6 +342,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         metadata: table_metadata.clone(),
         config: Some(config.config.into()),
         storage_credentials,
+        labels: None,
     };
 
     // Create table in authorizer
