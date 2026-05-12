@@ -10,7 +10,7 @@ use aws_sdk_s3::{
     },
 };
 
-use crate::{IOError, error::ErrorKind};
+use crate::{ErrorKind, IOError};
 
 pub(crate) fn parse_delete_error(err: SdkError<DeleteObjectError>, location: &str) -> IOError {
     let e = err.into_service_error();
@@ -133,11 +133,14 @@ pub(crate) fn parse_get_object_error(
 ) -> IOError {
     let e = err.into_service_error();
 
-    let lakekeeper_kind = e
-        .meta()
-        .code()
-        .and_then(|s| S3ErrorCode::from_str(s).ok())
-        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+    let lakekeeper_kind = match &e {
+        aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_) => ErrorKind::NotFound,
+        _ => e
+            .meta()
+            .code()
+            .and_then(|s| S3ErrorCode::from_str(s).ok())
+            .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind()),
+    };
 
     let msg = e.meta().message().map_or_else(
         || format!("Unknown S3 error during read: {e}"),
@@ -153,11 +156,17 @@ pub(crate) fn parse_head_object_error(
 ) -> IOError {
     let e = err.into_service_error();
 
-    let lakekeeper_kind = e
-        .meta()
-        .code()
-        .and_then(|s| S3ErrorCode::from_str(s).ok())
-        .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind());
+    // `HeadObjectError::NotFound` is a typed variant. S3 HEAD responses
+    // carry no body, so `e.meta().code()` is empty for 404s — fall through
+    // to the typed variant before consulting the error code map.
+    let lakekeeper_kind = match &e {
+        aws_sdk_s3::operation::head_object::HeadObjectError::NotFound(_) => ErrorKind::NotFound,
+        _ => e
+            .meta()
+            .code()
+            .and_then(|s| S3ErrorCode::from_str(s).ok())
+            .map_or(ErrorKind::Unexpected, |kind| kind.as_lakekeeper_kind()),
+    };
 
     let msg = e.meta().message().map_or_else(
         || format!("Unknown S3 error during head operation: {e}"),
@@ -214,6 +223,7 @@ enum S3ErrorCode {
     KMSNotFoundException,
     NoSuchBucket,
     NoSuchKey,
+    PreconditionFailed,
     #[strum(serialize = "503 SlowDown")]
     SlowDown503,
     TokenRefreshRequired,
@@ -235,6 +245,7 @@ impl S3ErrorCode {
             | S3ErrorCode::KMSDisabledException
             | S3ErrorCode::KMSNotFoundException => ErrorKind::ConfigInvalid,
             S3ErrorCode::NoSuchBucket | S3ErrorCode::NoSuchKey => ErrorKind::NotFound,
+            S3ErrorCode::PreconditionFailed => ErrorKind::ConditionNotMatch,
             S3ErrorCode::TokenRefreshRequired => ErrorKind::CredentialsExpired,
             S3ErrorCode::RequestTimeout => ErrorKind::RequestTimeout,
             S3ErrorCode::ServiceUnavailable => ErrorKind::ServiceUnavailable,
@@ -261,6 +272,7 @@ mod tests {
             "KMS.NotFoundException",
             "NoSuchBucket",
             "NoSuchKey",
+            "PreconditionFailed",
             "503 SlowDown",
             "TokenRefreshRequired",
             "UnauthorizedAccessError",

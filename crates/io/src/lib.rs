@@ -33,6 +33,14 @@ pub mod memory;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
 
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-in-memory",
+    feature = "storage-s3"
+))]
+pub mod iceberg_bridge;
+
 #[cfg(any(feature = "storage-s3", feature = "storage-gcs"))]
 /// Fallible usize→i32 conversion with additional context for diagnostics.
 pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Result<i32, IOError> {
@@ -89,19 +97,44 @@ pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Resu
     feature = "storage-gcs",
     feature = "storage-s3"
 ))]
+/// Iterator over `(chunk_index, byte_range)` pairs that partition `[0, total)`
+/// into windows of at most `chunk_size`. The last range may be shorter when
+/// `total` is not a multiple of `chunk_size`. Returns an empty iterator when
+/// `total == 0`.
+///
+/// Pair with `Bytes::slice(range)` for zero-copy chunking of a one-shot
+/// write input. Used by all backends to converge on one chunk-iteration
+/// shape across S3 multipart, GCS resumable, and ADLS append.
+pub(crate) fn chunk_ranges(
+    total: usize,
+    chunk_size: usize,
+) -> impl Iterator<Item = (usize, std::ops::Range<usize>)> {
+    let total_chunks = total.div_ceil(chunk_size);
+    (0..total_chunks).map(move |i| {
+        let start = i * chunk_size;
+        let end = (start + chunk_size).min(total);
+        (i, start..end)
+    })
+}
+
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-s3"
+))]
 /// Converts a backend-reported file size from `i64` to `u64` for use in
 /// [`FileInfo::size`]. Negative sizes are unexpected — they indicate a
 /// protocol or parser bug in the backend SDK — so we emit a warning and
-/// return `None` rather than failing the whole list page over a single
-/// malformed entry.
-pub(crate) fn list_size_to_u64(raw: i64, location: &str) -> Option<u64> {
+/// return `None` rather than propagating an error. This keeps a malformed
+/// entry from failing an entire list page or a single `metadata` call.
+pub(crate) fn size_to_u64(raw: i64, location: &str) -> Option<u64> {
     u64::try_from(raw)
         .inspect_err(|e| {
             tracing::warn!(
                 size = raw,
                 location,
                 error = %e,
-                "Storage backend reported invalid object size during list; \
+                "Storage backend reported invalid object size; \
                  size will be omitted from FileInfo"
             );
         })
@@ -216,6 +249,30 @@ impl FileInfo {
     }
 }
 
+/// Streaming file writer.
+///
+/// Always call `close().await` for deterministic finalization and cleanup.
+///
+/// Implementations may provide `Drop`, but this should be considered
+/// a best-effort cancel/abort of upload, not `close` (finalization) of upload.
+/// Note that `Drop` may fail in a shutdown race situation with Tokio Runtime.
+#[cfg(any(
+    feature = "storage-adls",
+    feature = "storage-gcs",
+    feature = "storage-in-memory",
+    feature = "storage-s3"
+))]
+#[async_trait::async_trait]
+pub trait LakekeeperFileWrite: std::fmt::Debug + Send + Sync + 'static {
+    /// Append bytes to the file. Implementations may buffer locally and
+    /// only contact the backend once an internal threshold is reached.
+    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError>;
+
+    /// Finalise the file. Calling `close` on an already-closed writer
+    /// returns an error.
+    async fn close(&mut self) -> Result<(), WriteError>;
+}
+
 #[async_trait::async_trait]
 pub trait LakekeeperStorage
 where
@@ -243,6 +300,19 @@ where
     /// Write the provided data to the specified path.
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError>;
 
+    /// Return a `LakekeeperFileWrite` that can be used to `write` a file chunk by chunk until
+    /// it is `closed`.
+    ///
+    /// `LakekeeperFileWrite` needs an inner state that depends on the backend, so it is
+    /// feature-gated for those backends that provide an implementation.
+    #[cfg(any(
+        feature = "storage-adls",
+        feature = "storage-gcs",
+        feature = "storage-in-memory",
+        feature = "storage-s3"
+    ))]
+    async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError>;
+
     /// Read a file from the specified path, possibly in chunks
     ///
     /// # Arguments
@@ -254,6 +324,36 @@ where
     /// # Arguments
     /// path: It should be an absolute path starting with scheme string.
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError>;
+
+    /// Read a contiguous byte range from the specified path.
+    ///
+    /// # Arguments
+    /// path: It should be an absolute path starting with scheme string.
+    /// range: Half-open `[start, end)` interval over the file's bytes.
+    async fn read_range(&self, path: &str, range: std::ops::Range<u64>)
+    -> Result<Bytes, ReadError>;
+
+    /// Retrieve metadata about a file at the given path.
+    ///
+    /// Returns a [`FileInfo`] populated with the fields the backend exposes
+    /// (e.g. `size`, `last_modified`).
+    ///
+    /// # Arguments
+    /// path: It should be an absolute path starting with scheme string.
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError>;
+
+    /// Check whether a file exists at the given path.
+    ///
+    /// Default implementation calls [`LakekeeperStorage::metadata`] and maps
+    /// `ErrorKind::NotFound` to `Ok(false)`. Backends with a cheaper
+    /// existence check should override this method.
+    async fn exists(&self, path: &str) -> Result<bool, ReadError> {
+        match self.metadata(path).await {
+            Ok(_) => Ok(true),
+            Err(ReadError::IOError(e)) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
 
     /// List files for this prefix.
     /// If the provided location does not end with a slash, the slash will be added automatically.
@@ -343,6 +443,25 @@ impl LakekeeperStorage for StorageBackend {
         }
     }
 
+    #[cfg(any(
+        feature = "storage-adls",
+        feature = "storage-gcs",
+        feature = "storage-in-memory",
+        feature = "storage-s3"
+    ))]
+    async fn writer(&self, path: &str) -> Result<Box<dyn crate::LakekeeperFileWrite>, WriteError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.writer(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.writer(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.writer(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.writer(path).await,
+        }
+    }
+
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         match self {
             #[cfg(feature = "storage-s3")]
@@ -366,6 +485,36 @@ impl LakekeeperStorage for StorageBackend {
             StorageBackend::Adls(adls_storage) => adls_storage.read_single(path).await,
             #[cfg(feature = "storage-gcs")]
             StorageBackend::Gcs(gcs_storage) => gcs_storage.read_single(path).await,
+        }
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.read_range(path, range).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.read_range(path, range).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.read_range(path, range).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.read_range(path, range).await,
+        }
+    }
+
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        match self {
+            #[cfg(feature = "storage-s3")]
+            StorageBackend::S3(s3_storage) => s3_storage.metadata(path).await,
+            #[cfg(feature = "storage-in-memory")]
+            StorageBackend::Memory(memory_storage) => memory_storage.metadata(path).await,
+            #[cfg(feature = "storage-adls")]
+            StorageBackend::Adls(adls_storage) => adls_storage.metadata(path).await,
+            #[cfg(feature = "storage-gcs")]
+            StorageBackend::Gcs(gcs_storage) => gcs_storage.metadata(path).await,
         }
     }
 
@@ -440,12 +589,37 @@ macro_rules! impl_lakekeeper_storage_delegating {
                     (**self).write(path, bytes).await
                 }
 
+                #[cfg(any(
+                    feature = "storage-adls",
+                    feature = "storage-gcs",
+                    feature = "storage-in-memory",
+                    feature = "storage-s3"
+                ))]
+                async fn writer(
+                    &self,
+                    path: &str,
+                ) -> Result<Box<dyn $crate::LakekeeperFileWrite>, WriteError> {
+                    (**self).writer(path).await
+                }
+
                 async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
                     (**self).read(path).await
                 }
 
                 async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
                     (**self).read_single(path).await
+                }
+
+                async fn read_range(
+                    &self,
+                    path: &str,
+                    range: std::ops::Range<u64>,
+                ) -> Result<Bytes, ReadError> {
+                    (**self).read_range(path, range).await
+                }
+
+                async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+                    (**self).metadata(path).await
                 }
 
                 async fn list(
@@ -523,6 +697,51 @@ where
 
     let bytes = bytes::Bytes::from(combined_data);
     Ok(bytes)
+}
+
+#[cfg(any(
+    feature = "storage-s3",
+    feature = "storage-gcs",
+    feature = "storage-adls"
+))]
+pub(crate) async fn parallel_chunked_read<F, Fut>(
+    range_size: usize,
+    chunk_size: usize,
+    parallelism: usize,
+    error_context: &str,
+    fetch_chunk: F,
+) -> Result<bytes::Bytes, ReadError>
+where
+    F: Fn(usize, usize, usize) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<(usize, bytes::Bytes), ReadError>> + Send + 'static,
+{
+    use futures::StreamExt as _;
+
+    let chunks = calculate_ranges(range_size, chunk_size);
+    let download_futures =
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(move |(chunk_index, (start, end))| {
+                let fetch_chunk = fetch_chunk.clone();
+                async move { fetch_chunk(start, end, chunk_index).await }
+            });
+
+    let context = error_context.to_string();
+    let download_stream =
+        execute_with_parallelism(download_futures, parallelism).map(move |result| {
+            result
+                .map_err(|join_err| {
+                    ReadError::IOError(IOError::new(
+                        ErrorKind::Unexpected,
+                        format!("Task join error during parallel download: {join_err}"),
+                        context.clone(),
+                    ))
+                })
+                .and_then(|inner| inner)
+        });
+    tokio::pin!(download_stream);
+    assemble_chunks(download_stream, range_size, chunk_size).await
 }
 
 #[cfg(any(feature = "storage-gcs", feature = "storage-adls"))]
