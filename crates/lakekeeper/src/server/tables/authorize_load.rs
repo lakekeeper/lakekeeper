@@ -12,13 +12,15 @@ use crate::{
     service::{
         Actor, AuthZTabularInfo as _, CatalogBackendError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, GetTabularInfoError, NamespaceHierarchy, NamespaceId,
-        NamespaceWithParent, ResolveTasksError, ResolvedWarehouse, TabularIdentBorrowed,
-        TabularIdentOwned, TabularInfo, TabularListFlags, UserId, ViewInfo, ViewOrTableInfo,
+        CatalogWarehouseOps, GenericTabularInfo, GetTabularInfoError, NamespaceHierarchy,
+        NamespaceId, NamespaceWithParent, ResolveTasksError, ResolvedWarehouse,
+        TabularIdentBorrowed, TabularIdentOwned, TabularInfo, TabularListFlags, UserId, ViewInfo,
+        ViewOrTableInfo,
         authz::{
-            ActionOnTable, ActionOnTableOrView, ActionOnView, AuthZCannotSeeNamespace, AuthZError,
-            AuthZTableOps, AuthZViewOps, Authorizer, AuthzBadRequest, CatalogTableAction,
-            CatalogViewAction, RequireTableActionError, RequireViewActionError, UserOrRole,
+            ActionOnGenericTable, ActionOnTable, ActionOnTableOrView, ActionOnView,
+            AuthZCannotSeeNamespace, AuthZError, AuthZTableOps, AuthZViewOps, Authorizer,
+            AuthzBadRequest, CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            RequireTableActionError, RequireViewActionError, UserOrRole,
         },
     },
 };
@@ -32,6 +34,8 @@ pub(crate) type TabularAuthzAction<'a> = (
         ViewInfo,
         CatalogTableAction,
         CatalogViewAction,
+        GenericTabularInfo,
+        CatalogGenericTableAction,
     >,
 );
 
@@ -137,6 +141,9 @@ pub(crate) fn check_required_tabulars<A: Authorizer>(
                     view_ident,
                     Ok::<_, RequireViewActionError>(view),
                 )?;
+            }
+            TabularIdentOwned::GenericTable(_) => {
+                // Generic tables are handled via dedicated endpoints.
             }
         }
     }
@@ -376,6 +383,24 @@ pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
                         })
                         .collect::<Vec<_>>()
                 }
+                ViewOrTableInfo::GenericTable(info) => vec![
+                    CatalogGenericTableAction::GetMetadata,
+                    CatalogGenericTableAction::ReadData,
+                    CatalogGenericTableAction::WriteData,
+                ]
+                .into_iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                            info,
+                            action,
+                            user,
+                            is_delegated_execution,
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>(),
             }
         })
         .collect()
@@ -926,7 +951,7 @@ mod tests {
             .iter()
             .filter_map(|(_, a)| match a {
                 ActionOnTableOrView::View(v) => Some(v.action.clone()),
-                ActionOnTableOrView::Table(_) => None,
+                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => None,
             })
             .collect();
         assert!(emitted.contains(&CatalogViewAction::GetMetadata));
@@ -956,7 +981,9 @@ mod tests {
         for (_, a) in &actions {
             match a {
                 ActionOnTableOrView::View(v) => assert!(v.is_delegated_execution),
-                ActionOnTableOrView::Table(_) => panic!("expected view action"),
+                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => {
+                    panic!("expected view action")
+                }
             }
         }
     }
@@ -982,7 +1009,9 @@ mod tests {
         for (_, a) in &actions {
             match a {
                 ActionOnTableOrView::View(v) => assert!(!v.is_delegated_execution),
-                ActionOnTableOrView::Table(_) => panic!("expected view action"),
+                ActionOnTableOrView::Table(_) | ActionOnTableOrView::GenericTable(_) => {
+                    panic!("expected view action")
+                }
             }
         }
     }

@@ -82,6 +82,7 @@ use crate::{
         super::get_user_actions,
         super::get_user,
         super::get_view_actions,
+        super::get_generic_table_actions,
         super::get_view_protection,
         super::get_warehouse_actions,
         super::get_warehouse_statistics,

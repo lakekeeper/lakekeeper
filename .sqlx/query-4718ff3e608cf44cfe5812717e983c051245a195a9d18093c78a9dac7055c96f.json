@@ -1,0 +1,108 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            t.tabular_id as generic_table_id,\n            w.version as \"warehouse_version!\",\n            t.namespace_id,\n            n.version as \"namespace_version!\",\n            t.tabular_namespace_name as \"namespace_name!\",\n            t.name,\n            gt.format,\n            t.fs_location,\n            t.fs_protocol,\n            t.protected,\n            gt.doc,\n            gt.schema_info,\n            gt.statistics,\n            gtp.keys as property_keys,\n            gtp.values as property_values\n        FROM tabular t\n        INNER JOIN generic_table gt ON gt.warehouse_id = t.warehouse_id AND gt.generic_table_id = t.tabular_id\n        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'\n        INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id\n        LEFT JOIN (\n            SELECT generic_table_id,\n                   ARRAY_AGG(key) as keys,\n                   ARRAY_AGG(value) as values\n            FROM generic_table_properties\n            WHERE warehouse_id = $1\n            GROUP BY generic_table_id\n        ) gtp ON t.tabular_id = gtp.generic_table_id\n        WHERE t.warehouse_id = $1\n          AND t.namespace_id = $2\n          AND t.name = $3\n          AND t.typ = 'generic-table'\n          AND t.deleted_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "generic_table_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_version!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_version!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "namespace_name!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "fs_location",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "fs_protocol",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "protected",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "schema_info",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "statistics",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "property_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 14,
+        "name": "property_values",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "4718ff3e608cf44cfe5812717e983c051245a195a9d18093c78a9dac7055c96f"
+}

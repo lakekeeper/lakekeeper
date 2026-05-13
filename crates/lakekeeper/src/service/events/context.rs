@@ -18,8 +18,9 @@ use crate::{
         },
     },
     service::{
-        ArcRoleIdent, NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse,
-        RoleId, ServerId, TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
+        ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
+        NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
+        TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
             ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction, UserOrRoleId,
@@ -49,6 +50,8 @@ pub const FIELD_NAME_ROLE_ID: &str = "role-id";
 pub const FIELD_NAME_ROLE_SOURCE_ID: &str = "role-source-id";
 pub const FIELD_NAME_ROLE_PROVIDER_ID: &str = "role-provider-id";
 pub const FIELD_NAME_USER_ID: &str = "user-id";
+pub const FIELD_NAME_GENERIC_TABLE: &str = "generic-table";
+pub const FIELD_NAME_GENERIC_TABLE_ID: &str = "generic-table-id";
 
 pub const ENTITY_TYPE_SERVER: &str = "server";
 pub const ENTITY_TYPE_PROJECT: &str = "project";
@@ -59,6 +62,7 @@ pub const ENTITY_TYPE_VIEW: &str = "view";
 pub const ENTITY_TYPE_TASK: &str = "task";
 pub const ENTITY_TYPE_ROLE: &str = "role";
 pub const ENTITY_TYPE_USER: &str = "user";
+pub const ENTITY_TYPE_GENERIC_TABLE: &str = "generic-table";
 
 // ── Traits ──────────────────────────────────────────────────────────────────
 
@@ -184,6 +188,13 @@ pub struct ResolvedView {
     pub view: Arc<ViewInfo>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResolvedGenericTable {
+    pub warehouse: Arc<ResolvedWarehouse>,
+    pub generic_table: Arc<GenericTableInfo>,
+    pub storage_permissions: Option<StoragePermissions>,
+}
+
 // ── User-provided entity types ──────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -302,6 +313,11 @@ impl UserProvidedEntity for UserProvidedTabularsIDs {
                 TabularId::View(view_id) => EntityDescriptor::new(ENTITY_TYPE_VIEW)
                     .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
                     .field(FIELD_NAME_VIEW_ID, view_id),
+                TabularId::GenericTable(generic_table_id) => {
+                    EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                        .field(FIELD_NAME_GENERIC_TABLE_ID, generic_table_id)
+                }
             }
         }))
     }
@@ -339,6 +355,35 @@ impl UserProvidedEntity for UserProvidedView {
                 .field(FIELD_NAME_NAMESPACE, &ident.namespace)
                 .field(FIELD_NAME_VIEW, &ident.name),
             ViewIdentOrId::Id(id) => desc.field(FIELD_NAME_VIEW_ID, id),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UserProvidedGenericTable {
+    pub warehouse_id: WarehouseId,
+    pub generic_table: GenericTableIdentOrId,
+}
+
+impl UserProvidedGenericTable {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId, generic_table: impl Into<GenericTableIdentOrId>) -> Self {
+        Self {
+            warehouse_id,
+            generic_table: generic_table.into(),
+        }
+    }
+}
+
+impl UserProvidedEntity for UserProvidedGenericTable {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+            .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id);
+        EventEntities::one(match &self.generic_table {
+            GenericTableIdentOrId::Ident(ident) => desc
+                .field(FIELD_NAME_NAMESPACE, &ident.namespace)
+                .field(FIELD_NAME_GENERIC_TABLE, &ident.name),
+            GenericTableIdentOrId::Id(id) => desc.field(FIELD_NAME_GENERIC_TABLE_ID, id),
         })
     }
 }
@@ -422,6 +467,24 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                         .field(FIELD_NAME_NAMESPACE, namespace)
                         .field(FIELD_NAME_VIEW, table),
                 },
+                CatalogActionCheckOperation::GenericTable { generic_table, .. } => {
+                    match generic_table {
+                        TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id,
+                            table_id,
+                        } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                            .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                            .field(FIELD_NAME_GENERIC_TABLE_ID, table_id),
+                        TabularIdentOrUuid::Name {
+                            namespace,
+                            table,
+                            warehouse_id,
+                        } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                            .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                            .field(FIELD_NAME_NAMESPACE, namespace)
+                            .field(FIELD_NAME_GENERIC_TABLE, table),
+                    }
+                }
             }
         }))
     }
@@ -867,6 +930,27 @@ impl<A: APIEventActions> APIEventContext<UserProvidedView, Unresolved, A> {
             UserProvidedView {
                 warehouse_id,
                 view: view.into(),
+            },
+            action,
+        )
+    }
+}
+
+impl<A: APIEventActions> APIEventContext<UserProvidedGenericTable, Unresolved, A> {
+    #[must_use]
+    pub fn for_generic_table(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        warehouse_id: WarehouseId,
+        generic_table: impl Into<GenericTableIdentOrId>,
+        action: A,
+    ) -> Self {
+        Self::new(
+            request_metadata,
+            dispatcher,
+            UserProvidedGenericTable {
+                warehouse_id,
+                generic_table: generic_table.into(),
             },
             action,
         )

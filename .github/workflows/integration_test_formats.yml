@@ -1,0 +1,56 @@
+name: integration tests (formats)
+
+on:
+  push:
+    branches:
+      - main
+      - "manual-release-*"
+      - "rel-*"
+  pull_request:
+    branches:
+      - main
+      - "manual-release-*"
+      - "rel-*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    uses: ./.github/workflows/docker_build.yml
+    with:
+      platform: "amd64"
+      dockerfile: "docker/full-debug.Dockerfile"
+      image_name: "lakekeeper-local"
+  lance:
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Restore binary
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: lakekeeper-image
+          path: artifacts
+      - name: Restore Docker image
+        run: docker load -i artifacts/lakekeeper-local-amd64.tar
+      - name: Test Lance Generic Table API
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        with:
+          max_attempts: 2
+          timeout_minutes: 15
+          command: cd tests/integration-tests/lance && bash run.sh
+        env:
+          LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+      - name: Dump docker logs on failure
+        if: failure()
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2

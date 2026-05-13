@@ -1,4 +1,5 @@
 pub mod authorization;
+pub mod generic_table;
 pub mod namespace;
 pub mod project;
 pub mod role;
@@ -10,6 +11,7 @@ pub mod warehouse;
 
 // Re-export all event types for convenience
 pub use authorization::*;
+pub use generic_table::*;
 pub use namespace::*;
 pub use project::*;
 pub use role::*;

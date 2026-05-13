@@ -31,10 +31,11 @@ pub mod v1 {
     #[cfg(feature = "open-api")]
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use lakekeeper_actions::{
-        GetLakekeeperNamespaceActionsResponse, GetLakekeeperProjectActionsResponse,
-        GetLakekeeperRoleActionsResponse, GetLakekeeperServerActionsResponse,
-        GetLakekeeperTableActionsResponse, GetLakekeeperUserActionsResponse,
-        GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+        GetLakekeeperGenericTableActionsResponse, GetLakekeeperNamespaceActionsResponse,
+        GetLakekeeperProjectActionsResponse, GetLakekeeperRoleActionsResponse,
+        GetLakekeeperServerActionsResponse, GetLakekeeperTableActionsResponse,
+        GetLakekeeperUserActionsResponse, GetLakekeeperViewActionsResponse,
+        GetLakekeeperWarehouseActionsResponse, get_allowed_generic_table_actions,
         get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
         get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
         get_allowed_view_actions, get_allowed_warehouse_actions,
@@ -131,8 +132,8 @@ pub mod v1 {
         },
         request_metadata::RequestMetadata,
         service::{
-            Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
-            State, TableId, TabularId, ViewId,
+            Actor, CatalogStore, CreateOrUpdateUserResponse, GenericTableId, NamespaceId, RoleId,
+            SecretStore, State, TableId, TabularId, ViewId,
             authn::UserId,
             authz::Authorizer,
             tasks::{TaskId, TaskQueueName},
@@ -1539,6 +1540,40 @@ pub mod v1 {
         ))
     }
 
+    /// Get allowed actions for a generic table
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetGenericTableActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("generic_table_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperGenericTableActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_generic_table_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperGenericTableActionsResponse>)> {
+        let relations = get_allowed_generic_table_actions::<A, C, S>(
+            api_context,
+            metadata,
+            query,
+            warehouse_id,
+            generic_table_id,
+        )
+        .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperGenericTableActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
+    }
+
     /// Get Namespace Protection
     ///
     /// Retrieves whether a namespace is protected from deletion.
@@ -1988,6 +2023,7 @@ pub mod v1 {
             match ident {
                 TabularId::Table(_) => TabularType::Table,
                 TabularId::View(_) => TabularType::View,
+                TabularId::GenericTable(_) => TabularType::GenericTable,
             }
         }
     }
@@ -1999,6 +2035,7 @@ pub mod v1 {
     pub enum TabularType {
         Table,
         View,
+        GenericTable,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]
@@ -2142,6 +2179,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetViewActions.path_in_management_v1(),
                     get(get_view_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetGenericTableActions.path_in_management_v1(),
+                    get(get_generic_table_actions),
                 )
                 .route(
                     ManagementV1Endpoint::GetNamespaceProtection.path_in_management_v1(),

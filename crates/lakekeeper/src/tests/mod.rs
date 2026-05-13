@@ -36,6 +36,8 @@ mod namespace_ops;
 #[cfg(test)]
 mod referenced_by;
 #[cfg(test)]
+mod referenced_by_generic_table;
+#[cfg(test)]
 mod role_ops;
 #[cfg(test)]
 mod soft_deletion;

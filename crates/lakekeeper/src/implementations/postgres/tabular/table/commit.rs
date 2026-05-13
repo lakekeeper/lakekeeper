@@ -141,9 +141,12 @@ pub(crate) async fn commit_table_transaction(
                 ViewOrTableInfo::Table(table_info) => {
                     table_info.properties = properties;
                 }
-               ViewOrTableInfo::View(_view_info) => {
+                ViewOrTableInfo::View(_view_info) => {
                     // This commit is for tables only
                     debug_assert!(false, "Commit should not return views");
+                }
+                ViewOrTableInfo::GenericTable(_) => {
+                    debug_assert!(false, "Commit should not return generic tables");
                 }
             }
 
@@ -315,7 +318,9 @@ fn build_table_and_tabular_update_queries(
             NULL::text[] as view_properties_keys,
             NULL::text[] as view_properties_values,
             NULL::text[] as table_properties_keys,
-            NULL::text[] as table_properties_values
+            NULL::text[] as table_properties_values,
+            NULL::text[] as generic_table_properties_keys,
+            NULL::text[] as generic_table_properties_values
         FROM updated u
         INNER JOIN warehouse w ON u.warehouse_id = w.warehouse_id
         INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = u.warehouse_id

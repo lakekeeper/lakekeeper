@@ -44,6 +44,7 @@ pub(crate) struct InsertResult {
 enum TaskEntityTypeDB {
     Table,
     View,
+    GenericTable,
     Project,
     Warehouse,
 }
@@ -53,6 +54,7 @@ impl From<WarehouseTaskEntityId> for TaskEntityTypeDB {
         match entity_id {
             WarehouseTaskEntityId::Table { .. } => Self::Table,
             WarehouseTaskEntityId::View { .. } => Self::View,
+            WarehouseTaskEntityId::GenericTable { .. } => Self::GenericTable,
         }
     }
 }
@@ -80,17 +82,15 @@ fn task_entity_from_db(
     entity_name: Option<Vec<String>>,
 ) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
-        TaskEntityTypeDB::View | TaskEntityTypeDB::Table => {
+        TaskEntityTypeDB::View | TaskEntityTypeDB::Table | TaskEntityTypeDB::GenericTable => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    DatabaseIntegrityError::new(
-                        "WarehouseId is missing for table or view scoped task.",
-                    )
+                    DatabaseIntegrityError::new("WarehouseId is missing for tabular scoped task.")
                 })
                 .map(WarehouseId::from)?;
 
             let entity_id = entity_id.ok_or_else(|| {
-                DatabaseIntegrityError::new("EntityId is missing for table or view scoped task.")
+                DatabaseIntegrityError::new("EntityId is missing for tabular scoped task.")
             })?;
 
             let entity_id = match entity_type {
@@ -100,11 +100,14 @@ fn task_entity_from_db(
                 TaskEntityTypeDB::Table => WarehouseTaskEntityId::Table {
                     table_id: TableId::from(entity_id),
                 },
+                TaskEntityTypeDB::GenericTable => WarehouseTaskEntityId::GenericTable {
+                    generic_table_id: crate::service::GenericTableId::from(entity_id),
+                },
                 _ => unreachable!(),
             };
 
             let entity_name = entity_name.ok_or_else(|| {
-                DatabaseIntegrityError::new("Entity name is missing for table or view scoped task.")
+                DatabaseIntegrityError::new("Entity name is missing for tabular scoped task.")
             })?;
 
             Ok(TaskEntity::EntityInWarehouse {
@@ -288,6 +291,9 @@ pub(crate) async fn queue_task_batch(
                     }),
                     TaskEntityTypeDB::Table => Some(WarehouseTaskEntityId::Table {
                         table_id: record.entity_id.unwrap().into(),
+                    }),
+                    TaskEntityTypeDB::GenericTable => Some(WarehouseTaskEntityId::GenericTable {
+                        generic_table_id: record.entity_id.unwrap().into(),
                     }),
                     TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => None,
                 },

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT t.tabular_id as generic_table_id\n        FROM tabular t\n        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'\n        WHERE t.warehouse_id = $1\n          AND t.namespace_id = $2\n          AND t.name = $3\n          AND t.typ = 'generic-table'\n          AND t.deleted_at IS NULL\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "generic_table_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0ff45358c8989838c7a9ede50a93682c00c36e700d810d1f01d56174bcaac277"
+}

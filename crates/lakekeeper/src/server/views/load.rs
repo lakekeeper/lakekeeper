@@ -282,6 +282,13 @@ fn interpret_authz_results_for_load_view(
                 // so the DB type filter prevents tables from appearing here.
                 debug_assert!(false, "Table action in loadView authorization chain");
             }
+            ActionOnTableOrView::GenericTable(_) => {
+                // Unreachable: loadView authz chain only resolves views.
+                debug_assert!(
+                    false,
+                    "Generic table action in loadView authorization chain"
+                );
+            }
         }
     }
 

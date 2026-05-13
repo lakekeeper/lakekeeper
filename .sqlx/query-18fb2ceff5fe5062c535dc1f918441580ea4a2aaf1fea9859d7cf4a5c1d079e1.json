@@ -43,7 +43,8 @@
                 "namespace",
                 "role",
                 "user",
-                "server"
+                "server",
+                "generic-table"
               ]
             }
           }
