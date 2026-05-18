@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.12.3](https://github.com/lakekeeper/lakekeeper/compare/v0.12.2...v0.12.3) (2026-05-18)
+
+
+### Features
+
+* RoleIdent cheap cloning / inner Arc for provider ([#1757](https://github.com/lakekeeper/lakekeeper/issues/1757)) ([78b3009](https://github.com/lakekeeper/lakekeeper/commit/78b3009fefab629d151c0ffd25a5baa5275fcd31))
+* **users:** drop unique-email constraint ([#1755](https://github.com/lakekeeper/lakekeeper/issues/1755)) ([bfd2812](https://github.com/lakekeeper/lakekeeper/commit/bfd2812fa3b9f8ec30824340d465a15c9f5cc546))
+
+
+### Bug Fixes
+
+* inconsistency between link text and target ([#1753](https://github.com/lakekeeper/lakekeeper/issues/1753)) ([d01dd94](https://github.com/lakekeeper/lakekeeper/commit/d01dd94720fe6bff9ac73efba763896dab710be5))
+
+
+### Miscellaneous Chores
+
+* Bridge lakekeeper-io to Iceberg Storage trait ([#1734](https://github.com/lakekeeper/lakekeeper/issues/1734)) ([a152365](https://github.com/lakekeeper/lakekeeper/commit/a15236583a61f0ef50ccb0228d0b3b7833df3ab9))
+* Update dependencies ([#1754](https://github.com/lakekeeper/lakekeeper/issues/1754)) ([bd2c57c](https://github.com/lakekeeper/lakekeeper/commit/bd2c57cac9b36ff6f036c590c5a7e39197ec966d))
+
 ## [0.12.2](https://github.com/lakekeeper/lakekeeper/compare/v0.12.1...v0.12.2) (2026-05-10)
 
 
