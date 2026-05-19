@@ -71,6 +71,40 @@ duckdb.sql(f"""
 duckdb.sql("SELECT * FROM my_datalake.my_namespace.my_table").show()
 ```
 
+## <img src="/assets/firebolt.svg" width="30" alt="Firebolt"> Firebolt
+
+[Firebolt](https://www.firebolt.io/) is a high-performance, scale-out analytical database. [Firebolt Core](https://github.com/firebolt-db/firebolt-core) is the free, self-hosted edition packaged as a single Docker image. Both connect to Lakekeeper through the same `CREATE LOCATION` syntax.
+
+Firebolt supports vended-credentials from Iceberg REST Catalogs for AWS S3, so no S3 credentials need to be configured on Firebolt when the underlying storage is real AWS S3.
+
+=== "AWS S3"
+
+    ```sql
+    CREATE LOCATION lakekeeper
+    WITH
+        SOURCE = ICEBERG
+        CATALOG = REST
+        CATALOG_OPTIONS = (
+            URL = '<Lakekeeper Catalog URI, i.e. https://lakekeeper.example.com/catalog>'
+            WAREHOUSE = '<Name of the Warehouse in Lakekeeper>'
+            NAMESPACE = '<Namespace identifier>'
+            TABLE = '<Table name>'
+        )
+        -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        CREDENTIALS = (
+            OAUTH_CLIENT_ID = '<Client-ID>'
+            OAUTH_CLIENT_SECRET = '<Client-Secret>'
+            OAUTH_SERVER_URL = '<Token Endpoint of your IdP, i.e. https://keycloak.example.com/realms/iceberg/protocol/openid-connect/token>'
+            -- Optional:
+            OAUTH_SCOPE = '<Scopes to request from the IdP, i.e. lakekeeper>'
+        );
+
+    -- Read the table
+    SELECT * FROM READ_ICEBERG(LOCATION => 'lakekeeper');
+    ```
+
+Refer to the [Firebolt CREATE LOCATION (Iceberg) docs](https://docs.firebolt.io/reference-sql/commands/data-definition/create-location-iceberg) for additional options.
+
 ## <img src="/assets/trino.svg" width="30"> Trino
 
 The following docker compose examples are available for trino:
