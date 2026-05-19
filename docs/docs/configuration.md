@@ -235,6 +235,48 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 
+#### Multiple OIDC Providers
+
+For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), use the `LAKEKEEPER__OPENID_PROVIDERS` configuration. When set, this takes precedence over `LAKEKEEPER__OPENID_PROVIDER_URI`.
+
+The configuration is a JSON array of provider objects:
+
+| Variable                              | Description |
+|---------------------------------------|-------------|
+| <nobr>`LAKEKEEPER__OPENID_PROVIDERS`</nobr> | JSON array of OIDC provider configurations. Each object supports: `uri` (required), `idp_id` (required), `audience`, `additional_issuers`, `scope`, `subject_claims`. |
+
+**Provider Object Fields:**
+
+| Field               | Required | Example                                   | Description |
+|---------------------|----------|-------------------------------------------|-------------|
+| `uri`               | Yes      | `https://company.okta.com`                | OIDC provider URI (must expose `.well-known/openid-configuration`). |
+| `idp_id`            | Yes      | `okta`                                    | Unique identifier for this IdP. Used in user IDs like `{idp_id}~{subject}`. |
+| `audience`          | No       | `https://company.okta.com`                | Expected audience(s) for tokens. Comma-separated for multiple. |
+| `additional_issuers`| No       | `https://sts.windows.net/tenant/`         | Additional issuers to trust (comma-separated). |
+| `scope`             | No       | `lakekeeper`                              | Scope that must be present in tokens. |
+| `subject_claims`    | No       | `sub` or `oid,sub`                        | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
+
+**Example: Okta + EKS OIDC**
+
+```bash
+LAKEKEEPER__OPENID_PROVIDERS='[
+  {
+    "uri": "https://company.okta.com",
+    "idp_id": "okta",
+    "audience": "https://company.okta.com",
+    "subject_claims": "sub"
+  },
+  {
+    "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456",
+    "idp_id": "eks-prod",
+    "audience": "sts.amazonaws.com",
+    "subject_claims": "sub"
+  }
+]'
+```
+
+!!! note
+    If a provider fails to initialize (e.g., unreachable OIDC endpoint), it is skipped with an error log. Other providers continue to work normally.
 
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled.

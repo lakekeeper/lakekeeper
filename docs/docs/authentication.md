@@ -452,6 +452,61 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
     ```
 We are now able to login and bootstrap Lakekeeper.
 
+## Multiple OIDC Providers
+
+For scenarios where you need to authenticate tokens from multiple identity providers simultaneously—such as Okta for human users and EKS OIDC for Kubernetes service accounts—Lakekeeper supports configuring multiple OIDC providers.
+
+When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
+
+### Configuration
+
+Use the `LAKEKEEPER__OPENID_PROVIDERS` environment variable with a JSON array to configure multiple providers. This configuration takes precedence over the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` if both are set.
+
+```bash
+LAKEKEEPER__OPENID_PROVIDERS='[
+  {
+    "uri": "https://company.okta.com",
+    "idp_id": "okta",
+    "audience": "https://company.okta.com",
+    "subject_claims": "sub"
+  },
+  {
+    "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456",
+    "idp_id": "eks-cluster-a",
+    "audience": "sts.amazonaws.com",
+    "subject_claims": "sub"
+  },
+  {
+    "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/XYZ789GHI012",
+    "idp_id": "eks-cluster-b",
+    "audience": "sts.amazonaws.com",
+    "subject_claims": "sub"
+  }
+]'
+```
+
+### User Identity Format
+
+User IDs include the provider's `IDP_ID` as a prefix: `{idp_id}~{subject}`. For example:
+- `okta~user@example.com` for a user from Okta
+- `eks-cluster-a~system:serviceaccount:namespace:my-app` for a Kubernetes service account
+
+This allows you to distinguish users from different identity providers when granting permissions.
+
+### Resilient Initialization
+
+If a provider fails to initialize (e.g., the OIDC endpoint is temporarily unreachable), Lakekeeper logs an error but continues starting with the remaining providers. This ensures one misconfigured or unreachable provider doesn't prevent the entire service from starting.
+
+### When to Use Multiple Providers
+
+Common use cases include:
+
+- **Okta/Entra + EKS OIDC**: Human users authenticate via corporate IdP, while Kubernetes workloads use EKS OIDC tokens
+- **Multi-cluster Kubernetes**: Different EKS/GKE clusters each have their own OIDC provider
+- **Migration scenarios**: Gradually migrating from one IdP to another while both remain active
+
+See the [Configuration Reference](./configuration.md#multiple-oidc-providers) for the full list of available options per provider.
+
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:
 

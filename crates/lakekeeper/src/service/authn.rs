@@ -77,6 +77,10 @@ pub enum BuiltInAuthenticators {
 
 /// Get the default authenticator configuration from the environment.
 ///
+/// Supports both single-provider mode (via `OPENID_PROVIDER_URI`) and
+/// multi-provider mode (via `OPENID_PROVIDERS` array). Multi-provider mode
+/// takes precedence if configured.
+///
 /// # Errors
 /// If the authenticator cannot be created, or if the configuration is invalid.
 #[allow(clippy::too_many_lines)]
@@ -125,78 +129,175 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
         None
     };
 
-    let authn_oidc = if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-        let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
-            uri.as_ref(),
-            Some(std::time::Duration::from_hours(1)),
-        )
-        .await?
-        .set_idp_id(OIDC_IDP_ID);
-        if let Some(aud) = &CONFIG.openid_audience {
-            tracing::debug!("Setting accepted audiences: {aud:?}");
-            authenticator = authenticator.set_accepted_audiences(aud.clone());
-        }
-        if let Some(iss) = &CONFIG.openid_additional_issuers {
-            tracing::debug!("Setting openid_additional_issuers: {iss:?}");
-            authenticator = authenticator.add_additional_issuers(iss.clone());
-        }
-        if let Some(scope) = &CONFIG.openid_scope {
-            tracing::debug!("Setting openid_scope: {scope}");
-            authenticator = authenticator.set_scope(scope.clone());
-        }
-        if let Some(subject_claims) = &CONFIG.openid_subject_claim {
-            tracing::debug!("Setting openid_subject_claim: {subject_claims:?}");
-            authenticator = authenticator.with_subject_claims(subject_claims.clone());
+    // Build OIDC authenticator(s)
+    // Multi-provider mode takes precedence over single-provider mode
+    let authn_oidc_list: Vec<AuthenticatorEnum> =
+        if let Some(providers) = &CONFIG.openid_providers {
+            if providers.is_empty() {
+                tracing::warn!("OPENID_PROVIDERS is configured but empty.");
+                vec![]
+            } else {
+                tracing::info!(
+                    "Multi-provider OIDC mode: configuring {} provider(s)",
+                    providers.len()
+                );
+                build_multi_oidc_authenticators(providers).await
+            }
+        } else if let Some(uri) = CONFIG.openid_provider_uri.clone() {
+            let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
+                uri.as_ref(),
+                Some(std::time::Duration::from_hours(1)),
+            )
+            .await?
+            .set_idp_id(OIDC_IDP_ID);
+            if let Some(aud) = &CONFIG.openid_audience {
+                tracing::debug!("Setting accepted audiences: {aud:?}");
+                authenticator = authenticator.set_accepted_audiences(aud.clone());
+            }
+            if let Some(iss) = &CONFIG.openid_additional_issuers {
+                tracing::debug!("Setting openid_additional_issuers: {iss:?}");
+                authenticator = authenticator.add_additional_issuers(iss.clone());
+            }
+            if let Some(scope) = &CONFIG.openid_scope {
+                tracing::debug!("Setting openid_scope: {scope}");
+                authenticator = authenticator.set_scope(scope.clone());
+            }
+            if let Some(subject_claims) = &CONFIG.openid_subject_claim {
+                tracing::debug!("Setting openid_subject_claim: {subject_claims:?}");
+                authenticator = authenticator.with_subject_claims(subject_claims.clone());
+            } else {
+                // "oid" should be used for entra-id, as the `sub` is different between applications.
+                // We prefer oid here by default as no other IdP sets this field (that we know of) and
+                // we can provide an out-of-the-box experience for users.
+                // Nevertheless, we document this behavior in the docs and recommend as part of the
+                // `production` checklist to set the claim explicitly.
+                tracing::debug!("Defaulting openid_subject_claim to: oid, sub");
+                authenticator = authenticator
+                    .with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
+            }
+            if let Some(roles_claim) = &CONFIG.openid_roles_claim {
+                tracing::debug!("Setting openid_roles_claim: {roles_claim}");
+                authenticator = authenticator.with_role_claim(roles_claim.clone());
+            }
+            tracing::info!("Running with OIDC authentication.");
+            vec![AuthenticatorEnum::from(authenticator)]
         } else {
-            // "oid" should be used for entra-id, as the `sub` is different between applications.
-            // We prefer oid here by default as no other IdP sets this field (that we know of) and
-            // we can provide an out-of-the-box experience for users.
-            // Nevertheless, we document this behavior in the docs and recommend as part of the
-            // `production` checklist to set the claim explicitly.
-            tracing::debug!("Defaulting openid_subject_claim to: oid, sub");
-            authenticator =
-                authenticator.with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
-        }
-        if let Some(roles_claim) = &CONFIG.openid_roles_claim {
-            tracing::debug!("Setting openid_roles_claim: {roles_claim}");
-            authenticator = authenticator.with_role_claim(roles_claim.clone());
-        }
-        tracing::info!("Running with OIDC authentication.");
-        Some(authenticator)
-    } else {
-        tracing::info!("Running without OIDC authentication.");
-        None
-    };
+            tracing::info!("Running without OIDC authentication.");
+            vec![]
+        };
 
-    let authn_k8s = authn_k8s_audience.map(AuthenticatorEnum::from);
-    let authn_k8s_legacy = authn_k8s_legacy.map(AuthenticatorEnum::from);
-    let authn_oidc = authn_oidc.map(AuthenticatorEnum::from);
-    match (authn_k8s, authn_oidc, authn_k8s_legacy) {
-        (Some(k8s), Some(oidc), Some(authn_k8s_legacy)) => {
-            Ok(Some(limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
-                .add_authenticator(oidc)
-                .add_authenticator(k8s)
-                .add_authenticator(authn_k8s_legacy)
-                .build().into()))
-        }
-        (None, Some(auth1), Some(auth2))
-        | (Some(auth1), None, Some(auth2))
-        // OIDC has priority over k8s if specified
-        | (Some(auth2), Some(auth1), None) => {
-            Ok(Some(limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
-                .add_authenticator(auth1)
-                .add_authenticator(auth2)
-                .build().into()))
-        }
-        (Some(auth), None, None) | (None, Some(auth), None) | (None, None, Some(auth)) => {
-            Ok(Some(auth.into()))
-        }
-        (None, None, None) => {
+    let multi_provider_configured = CONFIG
+        .openid_providers
+        .as_ref()
+        .is_some_and(|p| !p.is_empty());
+    if multi_provider_configured && authn_oidc_list.is_empty() {
+        return Err(anyhow::anyhow!(
+            "OPENID_PROVIDERS is configured, but no OIDC provider could be initialized"
+        ));
+    }
+
+    // Collect all authenticators into a chain: OIDC first (priority), then any additional
+    let mut all_authenticators: Vec<AuthenticatorEnum> = authn_oidc_list;
+    if let Some(authn) = authn_k8s_audience.map(AuthenticatorEnum::from) {
+        all_authenticators.push(authn);
+    }
+    if let Some(authn) = authn_k8s_legacy.map(AuthenticatorEnum::from) {
+        all_authenticators.push(authn);
+    }
+
+    match all_authenticators.len() {
+        0 => {
             tracing::warn!("Authentication is disabled. This is not suitable for production!");
             Ok(None)
         }
+        1 => Ok(Some(all_authenticators.remove(0).into())),
+        _ => {
+            let mut chain_builder = limes::AuthenticatorChain::<AuthenticatorEnum>::builder();
+            for auth in all_authenticators {
+                chain_builder = chain_builder.add_authenticator(auth);
+            }
+            Ok(Some(chain_builder.build().into()))
+        }
     }
 }
+
+/// Build authenticators for multiple OIDC providers.
+/// Failed providers are logged and skipped - one broken provider shouldn't break everything.
+async fn build_multi_oidc_authenticators(
+    providers: &[crate::config::OidcProviderConfig],
+) -> Vec<AuthenticatorEnum> {
+    let mut authenticators = Vec::new();
+
+    for provider in providers {
+        tracing::info!(
+            "Creating OIDC authenticator for {} ({})",
+            provider.idp_id,
+            provider.uri
+        );
+
+        match limes::jwks::JWKSWebAuthenticator::new(
+            provider.uri.as_ref(),
+            Some(std::time::Duration::from_secs(3600)),
+        )
+        .await
+        {
+            Ok(mut authenticator) => {
+                authenticator = authenticator.set_idp_id(&provider.idp_id);
+
+                if let Some(audiences) = &provider.audience {
+                    tracing::debug!(
+                        "Setting accepted audiences for {}: {:?}",
+                        provider.idp_id,
+                        audiences
+                    );
+                    authenticator = authenticator.set_accepted_audiences(audiences.clone());
+                }
+
+                if let Some(issuers) = &provider.additional_issuers {
+                    tracing::debug!(
+                        "Setting additional issuers for {}: {:?}",
+                        provider.idp_id,
+                        issuers
+                    );
+                    authenticator = authenticator.add_additional_issuers(issuers.clone());
+                }
+
+                if let Some(scope) = &provider.scope {
+                    tracing::debug!("Setting scope for {}: {}", provider.idp_id, scope);
+                    authenticator = authenticator.set_scope(scope.clone());
+                }
+
+                if let Some(claims) = &provider.subject_claims {
+                    tracing::debug!(
+                        "Setting subject claims for {}: {:?}",
+                        provider.idp_id,
+                        claims
+                    );
+                    authenticator = authenticator.with_subject_claims(claims.clone());
+                } else {
+                    // Default to "oid", "sub" for Entra ID compatibility
+                    authenticator = authenticator
+                        .with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
+                }
+
+                authenticators.push(AuthenticatorEnum::from(authenticator));
+                tracing::info!("Successfully added OIDC authenticator: {}", provider.idp_id);
+            }
+            Err(e) => {
+                // Log error but continue - one failed provider shouldn't break everything
+                tracing::error!(
+                    "Failed to create OIDC authenticator for {} ({}): {}. Skipping this provider.",
+                    provider.idp_id,
+                    provider.uri,
+                    e
+                );
+            }
+        }
+    }
+
+    authenticators
+}
+
 
 #[cfg(feature = "router")]
 #[allow(clippy::too_many_lines)]

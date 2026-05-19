@@ -73,6 +73,22 @@ fn get_config() -> DynAppConfig {
         .extract::<DynAppConfig>()
         .expect("Valid Configuration");
 
+    if let Some(providers) = &config.openid_providers {
+        let mut seen_idp_ids = HashSet::new();
+        for provider in providers {
+            assert!(
+                !provider.idp_id.trim().is_empty(),
+                "Invalid OIDC provider '{}': idp_id must not be empty",
+                provider.uri
+            );
+            assert!(
+                seen_idp_ids.insert(provider.idp_id.clone()),
+                "Invalid OIDC providers: duplicate idp_id '{}'",
+                provider.idp_id
+            );
+        }
+    }
+
     // Ensure base_uri has a trailing slash
     if let Some(base_uri) = config.base_uri.as_mut() {
         let base_uri_path = base_uri.path().to_string();
@@ -438,6 +454,16 @@ pub struct DynAppConfig {
     /// The field should contain an array of strings or a single string.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
+    /// Multiple OIDC providers configuration.
+    /// When set, each provider gets its own JWKS authenticator.
+    /// Takes precedence over the single-provider configuration (`openid_provider_uri`).
+    /// Set as a JSON string: `'[{"uri":"https://...", "idp_id":"okta", ...}]'`
+    #[serde(
+        default,
+        deserialize_with = "deserialize_openid_providers",
+        serialize_with = "serialize_openid_providers"
+    )]
+    pub openid_providers: Option<Vec<OidcProviderConfig>>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -618,6 +644,63 @@ where
         .as_deref()
         .map(|value| value.join(","))
         .serialize(serializer)
+}
+
+/// Deserialize OIDC providers from either:
+/// - A JSON string: `'[{"uri":"https://...", "idp_id":"okta", ...}]'`
+/// - A JSON array (when parsing config files)
+fn deserialize_openid_providers<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<OidcProviderConfig>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::String(s)) => {
+            // Parse JSON string
+            let providers: Vec<OidcProviderConfig> =
+                serde_json::from_str(&s).map_err(serde::de::Error::custom)?;
+            if providers.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(providers))
+            }
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            // Parse JSON array directly
+            let providers: Vec<OidcProviderConfig> =
+                serde_json::from_value(serde_json::Value::Array(arr))
+                    .map_err(serde::de::Error::custom)?;
+            if providers.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(providers))
+            }
+        }
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "Expected JSON string or array for openid_providers, got: {}",
+            other
+        ))),
+    }
+}
+
+fn serialize_openid_providers<S>(
+    value: &Option<Vec<OidcProviderConfig>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        None => serializer.serialize_none(),
+        Some(providers) => {
+            let json_str =
+                serde_json::to_string(providers).map_err(serde::ser::Error::custom)?;
+            serializer.serialize_str(&json_str)
+        }
+    }
 }
 
 fn deserialize_origin<'de, D>(deserializer: D) -> Result<Option<Vec<HeaderValue>>, D::Error>
@@ -969,6 +1052,54 @@ impl std::default::Default for Tokio {
     }
 }
 
+/// Configuration for a single OIDC provider in multi-provider mode.
+///
+/// When multiple OIDC providers are configured, each provider fetches its own
+/// JWKS keys independently, allowing authentication from multiple identity sources
+/// (e.g., Okta for users + EKS OIDC for Kubernetes service accounts).
+///
+/// # Example Environment Variables
+/// ```bash
+/// LAKEKEEPER__OPENID_PROVIDERS__0__URI=https://company.okta.com
+/// LAKEKEEPER__OPENID_PROVIDERS__0__IDP_ID=okta
+/// LAKEKEEPER__OPENID_PROVIDERS__0__AUDIENCE=https://company.okta.com
+/// LAKEKEEPER__OPENID_PROVIDERS__0__SUBJECT_CLAIMS=sub
+/// ```
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+pub struct OidcProviderConfig {
+    /// The OIDC provider URI (must expose .well-known/openid-configuration)
+    pub uri: Url,
+    /// Unique identifier for this IdP. Used in user IDs like "{idp_id}~{subject}".
+    /// Examples: "okta", "eks-prod", "entra-id"
+    pub idp_id: String,
+    /// Expected audience(s) for tokens from this provider.
+    /// Specify multiple audiences as a comma-separated list.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
+    )]
+    pub audience: Option<Vec<String>>,
+    /// Additional issuers to trust for this provider.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
+    )]
+    pub additional_issuers: Option<Vec<String>>,
+    /// A scope that must be present in tokens from this provider.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Claims to use as the subject (user ID), in order of preference.
+    /// Defaults to ["oid", "sub"] if not specified.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
+    )]
+    pub subject_claims: Option<Vec<String>>,
+}
+
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
@@ -1026,6 +1157,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             openid_roles_claim: None,
+            openid_providers: None,
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
@@ -1066,6 +1198,10 @@ impl DynAppConfig {
 
     pub fn authn_enabled(&self) -> bool {
         self.openid_provider_uri.is_some()
+            || self
+                .openid_providers
+                .as_ref()
+                .is_some_and(|p| !p.is_empty())
     }
 
     /// Helper for common conversion of optional page size to `i64`.
@@ -1827,6 +1963,15 @@ mod test {
     }
 
     #[test]
+    fn test_openid_providers_not_set() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.openid_providers.is_none());
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_user_assignments_cache() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
@@ -2319,5 +2464,173 @@ mod test {
         // Audience matches even though subject doesn't
         let auds: HashSet<&str> = ["trino"].into_iter().collect();
         assert!(id.matches(&auds, Some("other")));
+    }
+
+    #[test]
+    fn test_openid_providers_single() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS",
+                r#"[{"uri":"https://okta.example.com","idp_id":"okta"}]"#,
+            );
+            let config = get_config();
+            assert!(config.openid_providers.is_some());
+            let providers = config.openid_providers.unwrap();
+            assert_eq!(providers.len(), 1);
+            assert_eq!(providers[0].idp_id, "okta");
+            assert_eq!(providers[0].uri.as_str(), "https://okta.example.com/");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_multiple() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS",
+                r#"[
+                    {
+                        "uri": "https://company.okta.com",
+                        "idp_id": "okta",
+                        "audience": "https://company.okta.com",
+                        "subject_claims": "sub"
+                    },
+                    {
+                        "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123",
+                        "idp_id": "eks-prod",
+                        "audience": "sts.amazonaws.com"
+                    }
+                ]"#,
+            );
+
+            let config = get_config();
+            assert!(config.openid_providers.is_some());
+            let providers = config.openid_providers.unwrap();
+            assert_eq!(providers.len(), 2);
+
+            // Check provider 0
+            assert_eq!(providers[0].idp_id, "okta");
+            assert_eq!(
+                providers[0].audience,
+                Some(vec!["https://company.okta.com".to_string()])
+            );
+            assert_eq!(providers[0].subject_claims, Some(vec!["sub".to_string()]));
+
+            // Check provider 1
+            assert_eq!(providers[1].idp_id, "eks-prod");
+            assert_eq!(
+                providers[1].audience,
+                Some(vec!["sts.amazonaws.com".to_string()])
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_with_all_fields() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS",
+                r#"[{
+                    "uri": "https://login.microsoftonline.com/tenant-id/v2.0",
+                    "idp_id": "entra",
+                    "audience": "api://my-app,second-audience",
+                    "additional_issuers": "https://sts.windows.net/tenant-id/",
+                    "scope": "lakekeeper",
+                    "subject_claims": "oid,sub"
+                }]"#,
+            );
+
+            let config = get_config();
+            assert!(config.openid_providers.is_some());
+            let providers = config.openid_providers.unwrap();
+            assert_eq!(providers.len(), 1);
+
+            let provider = &providers[0];
+            assert_eq!(provider.idp_id, "entra");
+            assert_eq!(
+                provider.audience,
+                Some(vec![
+                    "api://my-app".to_string(),
+                    "second-audience".to_string()
+                ])
+            );
+            assert_eq!(
+                provider.additional_issuers,
+                Some(vec!["https://sts.windows.net/tenant-id/".to_string()])
+            );
+            assert_eq!(provider.scope, Some("lakekeeper".to_string()));
+            assert_eq!(
+                provider.subject_claims,
+                Some(vec!["oid".to_string(), "sub".to_string()])
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_openid_providers() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS",
+                r#"[{"uri":"https://okta.example.com","idp_id":"okta"}]"#,
+            );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_single_provider() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDER_URI",
+                "https://keycloak.example.com/realms/test",
+            );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_disabled_by_default() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "idp_id must not be empty")]
+    fn test_openid_providers_empty_idp_id_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS",
+                r#"[{"uri":"https://okta.example.com","idp_id":""}]"#,
+            );
+            let _ = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate idp_id 'okta'")]
+    fn test_openid_providers_duplicate_idp_id_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS",
+                r#"[
+                    {"uri":"https://okta.example.com","idp_id":"okta"},
+                    {"uri":"https://other.example.com","idp_id":"okta"}
+                ]"#,
+            );
+            let _ = get_config();
+            Ok(())
+        });
     }
 }
