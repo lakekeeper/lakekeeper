@@ -71,7 +71,7 @@ duckdb.sql(f"""
 duckdb.sql("SELECT * FROM my_datalake.my_namespace.my_table").show()
 ```
 
-## <img src="/assets/firebolt.svg" width="30"> Firebolt
+## <img src="/assets/firebolt.svg" width="30" alt="Firebolt"> Firebolt
 
 [Firebolt](https://www.firebolt.io/) is a high-performance, scale-out analytical database. [Firebolt Core](https://github.com/firebolt-db/firebolt-core) is the free, self-hosted edition packaged as a single Docker image. Both connect to Lakekeeper through the same `CREATE LOCATION` syntax.
 
