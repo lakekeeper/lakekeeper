@@ -505,9 +505,9 @@ A Docker Compose example including Fluss, the tiering service, and Lakekeeper is
 
 [Firebolt](https://www.firebolt.io/) is a high-performance, scale-out analytical database. [Firebolt Core](https://github.com/firebolt-db/firebolt-core) is the free, self-hosted edition packaged as a single Docker image. Both connect to Lakekeeper through the same `CREATE LOCATION` syntax.
 
-Firebolt supports vended-credentials from Iceberg REST Catalogs for AWS S3, so no S3 credentials need to be configured on Firebolt when the underlying storage is real AWS S3.
+Firebolt supports vended-credentials from Iceberg REST Catalogs for S3, so no S3 credentials need to be configured on Firebolt. This works for both AWS S3 and self-hosted S3-compatible object stores (e.g. MinIO, RustFS).
 
-=== "AWS S3"
+=== "S3-Compatible"
 
     ```sql
     CREATE LOCATION lakekeeper
