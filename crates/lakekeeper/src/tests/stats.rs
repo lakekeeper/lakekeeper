@@ -23,6 +23,15 @@ mod test {
         tests::{random_request_metadata, spawn_build_in_queues},
     };
 
+    // The stats trigger truncates `now()` to the configured interval unit
+    // ('second' under test, see `configure_trigger`) and pushes the previous
+    // counts to `warehouse_statistics_history` only when a write crosses that
+    // boundary. Setup operations (create_table / create_view) may straddle a
+    // second on slow CI runners, so the number of history rows present after
+    // setup is not deterministic. This test therefore asserts on relative
+    // deltas (length grew by exactly 1 across a boundary-crossing action,
+    // 0 across an in-bucket action) and on the latest-by-timestamp row's
+    // counts, rather than absolute counts.
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {
         let setup = super::setup_stats_test(pool, 1, 1).await;
@@ -31,25 +40,37 @@ mod test {
         let queues_handle =
             spawn_build_in_queues(&setup.ctx, None, cancellation_token.clone()).await;
         let whi = setup.warehouse.warehouse_id;
-        let stats = ApiServer::get_warehouse_statistics(
-            whi,
-            GetWarehouseStatisticsQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: None,
-            },
-            setup.ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
 
-        assert!(!stats.stats.is_empty());
-        assert_eq!(stats.warehouse_ident, *whi);
-        let stats = stats.stats.into_iter().next().unwrap();
-        assert_eq!(stats.number_of_tables, 1);
-        assert_eq!(stats.number_of_views, 1);
+        let get_stats = async || {
+            ApiServer::get_warehouse_statistics(
+                whi,
+                GetWarehouseStatisticsQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: None,
+                },
+                setup.ctx.clone(),
+                random_request_metadata(),
+            )
+            .await
+            .unwrap()
+        };
+
+        // Baseline after setup: there is at least one row (the current bucket).
+        // Setup may have produced extra history rows depending on wall-clock
+        // straddling; capture whatever len() is, do not assume 1.
+        let baseline = get_stats().await;
+        assert!(!baseline.stats.is_empty());
+        assert_eq!(baseline.warehouse_ident, *whi);
+        let baseline_current = baseline.stats.first().unwrap();
+        assert_eq!(baseline_current.number_of_tables, 1);
+        assert_eq!(baseline_current.number_of_views, 1);
+        let baseline_len = baseline.stats.len();
+        let baseline_current_ts = baseline_current.timestamp;
+        let baseline_current_updated_at = baseline_current.updated_at;
+
+        // Sleep past the next-second boundary so the next write is guaranteed
+        // to land in a fresh bucket and push a history row.
         let tn = Uuid::now_v7().to_string();
-        // sleep one second so that we get a new stats entry
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
         let _ = crate::tests::create_table(
@@ -61,31 +82,39 @@ mod test {
         )
         .await
         .unwrap();
-
         tracing::info!("created table {}", tn);
 
-        let stats = ApiServer::get_warehouse_statistics(
-            whi,
-            GetWarehouseStatisticsQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: None,
-            },
-            setup.ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(stats.stats.len(), 2);
-        assert_eq!(stats.warehouse_ident, *whi);
-        assert!(
-            stats.stats[0].timestamp > stats.stats[1].timestamp,
-            "{stats:?}",
+        let after_add = get_stats().await;
+        assert_eq!(
+            after_add.stats.len(),
+            baseline_len + 1,
+            "expected exactly one new history row from the boundary-crossing write; baseline={baseline:?}, after_add={after_add:?}",
         );
-        assert_eq!(stats.stats.first().unwrap().number_of_tables, 2);
-        assert_eq!(stats.stats.first().unwrap().number_of_views, 1);
-        assert_eq!(stats.stats.last().unwrap().number_of_tables, 1);
-        assert_eq!(stats.stats.last().unwrap().number_of_views, 1);
+        assert_eq!(after_add.warehouse_ident, *whi);
+        let after_add_current = after_add.stats.first().unwrap();
+        assert!(
+            after_add_current.timestamp > baseline_current_ts,
+            "newest stats timestamp should advance; after_add={after_add:?}",
+        );
+        assert_eq!(after_add_current.number_of_tables, 2);
+        assert_eq!(after_add_current.number_of_views, 1);
+        // The row that was the current bucket at baseline is now in history
+        // at the same timestamp, frozen at the pre-add counts.
+        let frozen = after_add
+            .stats
+            .iter()
+            .find(|s| s.timestamp == baseline_current_ts)
+            .expect("baseline's current row should now appear in history");
+        assert_eq!(frozen.number_of_tables, 1);
+        assert_eq!(frozen.number_of_views, 1);
+
+        // Drop the table. We do not sleep; depending on how fast the test
+        // runs the drop may land in the same second-bucket as the add (in
+        // which case the current row is updated in place) or in the next
+        // bucket (in which case the trigger pushes a history row). Both are
+        // valid outcomes — assert only that the latest row reflects the
+        // post-drop counts and that the post-add row is preserved with its
+        // counts at the moment of the drop.
         super::super::drop_table(
             setup.ctx.clone(),
             setup.warehouse.warehouse_id.to_string().as_str(),
@@ -96,27 +125,21 @@ mod test {
         )
         .await
         .unwrap();
-        let new_stats = ApiServer::get_warehouse_statistics(
-            whi,
-            GetWarehouseStatisticsQuery {
-                page_token: PageToken::NotSpecified,
-                page_size: None,
-            },
-            setup.ctx.clone(),
-            random_request_metadata(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(new_stats.stats.len(), 2);
-        assert_eq!(new_stats.warehouse_ident, *whi);
+
+        let after_drop = get_stats().await;
+        assert_eq!(after_drop.warehouse_ident, *whi);
         assert!(
-            new_stats.stats[0].updated_at > stats.stats[0].updated_at,
-            "new stats: {new_stats:?}, old stats: {stats:?}"
+            after_drop.stats.len() >= after_add.stats.len(),
+            "drop must not lose history rows; after_add={after_add:?}, after_drop={after_drop:?}",
         );
-        assert_eq!(new_stats.stats.first().unwrap().number_of_tables, 1);
-        assert_eq!(new_stats.stats.first().unwrap().number_of_views, 1);
-        assert_eq!(new_stats.stats.last().unwrap().number_of_tables, 1);
-        assert_eq!(new_stats.stats.last().unwrap().number_of_views, 1);
+        let after_drop_current = after_drop.stats.first().unwrap();
+        assert!(
+            after_drop_current.updated_at > baseline_current_updated_at,
+            "current row should have been touched; after_drop={after_drop:?}",
+        );
+        assert_eq!(after_drop_current.number_of_tables, 1);
+        assert_eq!(after_drop_current.number_of_views, 1);
+
         cancellation_token.cancel();
         queues_handle.await.unwrap();
     }

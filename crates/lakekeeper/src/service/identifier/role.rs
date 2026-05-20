@@ -283,24 +283,18 @@ pub struct RoleIdent {
 }
 
 impl RoleIdent {
-    #[must_use]
-    pub fn new(provider: RoleProviderId, source_id: RoleSourceId) -> Self {
-        Self {
-            provider: Arc::new(provider),
-            source_id,
-        }
-    }
-
-    /// Construct a [`RoleIdent`] that shares an already-allocated [`RoleProviderId`].
+    /// Construct a [`RoleIdent`].
     ///
-    /// Use this in tight loops that emit many idents for the same provider
-    /// (e.g. converting an LDAP search result into one [`RoleIdent`] per
-    /// returned group): the caller allocates the `Arc` once and each call
-    /// here is a refcount bump rather than a `String` clone.
+    /// `provider` accepts either an owned [`RoleProviderId`] (one-shot
+    /// callers, wrapped in `Arc` here) or an `Arc<RoleProviderId>` (callers
+    /// emitting many idents that share a provider — e.g. an LDAP role
+    /// provider returning every group a user belongs to — pay one
+    /// allocation up front and a refcount bump per ident). Use
+    /// [`Self::provider_id_arc`] to retrieve the shared `Arc` for reuse.
     #[must_use]
-    pub fn with_provider_arc(provider: Arc<RoleProviderId>, source_id: RoleSourceId) -> Self {
+    pub fn new(provider: impl Into<Arc<RoleProviderId>>, source_id: RoleSourceId) -> Self {
         Self {
-            provider,
+            provider: provider.into(),
             source_id,
         }
     }
