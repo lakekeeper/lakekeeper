@@ -460,42 +460,33 @@ When multiple providers are configured, each provider fetches its own JWKS keys 
 
 ### Configuration
 
-Use the `LAKEKEEPER__OPENID_PROVIDERS` environment variable with a JSON array to configure multiple providers. This configuration takes precedence over the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` if both are set.
+Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. This configuration takes precedence over the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` if both are set.
 
 ```bash
-LAKEKEEPER__OPENID_PROVIDERS='[
-  {
-    "uri": "https://company.okta.com",
-    "idp_id": "okta",
-    "audience": "https://company.okta.com",
-    "subject_claims": "sub"
-  },
-  {
-    "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456",
-    "idp_id": "eks-cluster-a",
-    "audience": "sts.amazonaws.com",
-    "subject_claims": "sub"
-  },
-  {
-    "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/XYZ789GHI012",
-    "idp_id": "eks-cluster-b",
-    "audience": "sts.amazonaws.com",
-    "subject_claims": "sub"
-  }
-]'
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__URI=https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__SUBJECT_CLAIMS=sub
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__URI=https://oidc.eks.us-east-1.amazonaws.com/id/XYZ789GHI012
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__SUBJECT_CLAIMS=sub
 ```
 
 ### User Identity Format
 
 User IDs include the provider's `IDP_ID` as a prefix: `{idp_id}~{subject}`. For example:
 - `okta~user@example.com` for a user from Okta
-- `eks-cluster-a~system:serviceaccount:namespace:my-app` for a Kubernetes service account
+- `eksclustera~system:serviceaccount:namespace:my-app` for a Kubernetes service account
 
 This allows you to distinguish users from different identity providers when granting permissions.
 
 ### Resilient Initialization
 
-If a provider fails to initialize (e.g., the OIDC endpoint is temporarily unreachable), Lakekeeper logs an error but continues starting with the remaining providers. This ensures one misconfigured or unreachable provider doesn't prevent the entire service from starting.
+By default, Lakekeeper refuses to start if a configured provider's OIDC/JWKS configuration cannot be loaded. Set `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting with the remaining authenticators.
 
 ### When to Use Multiple Providers
 

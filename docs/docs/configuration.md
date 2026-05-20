@@ -230,53 +230,45 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid,sub`                           | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
-| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Currently only has an effect when using the Cedar Authorizer. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
+| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 
 #### Multiple OIDC Providers
 
-For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), use the `LAKEKEEPER__OPENID_PROVIDERS` configuration. When set, this takes precedence over `LAKEKEEPER__OPENID_PROVIDER_URI`.
+For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), configure providers under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. When set, this takes precedence over `LAKEKEEPER__OPENID_PROVIDER_URI`.
 
-The configuration is a JSON array of provider objects:
+The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<subject>`. It must not contain `~`; `kubernetes` is reserved for the built-in Kubernetes authenticator.
 
-| Variable                              | Description |
-|---------------------------------------|-------------|
-| <nobr>`LAKEKEEPER__OPENID_PROVIDERS`</nobr> | JSON array of OIDC provider configurations. Each object supports: `uri` (required), `idp_id` (required), `audience`, `additional_issuers`, `scope`, `subject_claims`. |
+**Provider Fields:**
 
-**Provider Object Fields:**
-
-| Field               | Required | Example                                   | Description |
-|---------------------|----------|-------------------------------------------|-------------|
-| `uri`               | Yes      | `https://company.okta.com`                | OIDC provider URI (must expose `.well-known/openid-configuration`). |
-| `idp_id`            | Yes      | `okta`                                    | Unique identifier for this IdP. Used in user IDs like `{idp_id}~{subject}`. |
-| `audience`          | No       | `https://company.okta.com`                | Expected audience(s) for tokens. Comma-separated for multiple. |
-| `additional_issuers`| No       | `https://sts.windows.net/tenant/`         | Additional issuers to trust (comma-separated). |
-| `scope`             | No       | `lakekeeper`                              | Scope that must be present in tokens. |
-| `subject_claims`    | No       | `sub` or `oid,sub`                        | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
+| Variable suffix | Required | Example | Description |
+|-----------------|----------|---------|-------------|
+| `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
+| `__AUDIENCE` | No | `lakekeeper,warehouse` | Expected audience(s) for tokens. Comma-separated for multiple. |
+| `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
+| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
+| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
+| `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
+| `__REQUIRE_CONNECTED_ON_STARTUP` | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
 
 **Example: Okta + EKS OIDC**
 
 ```bash
-LAKEKEEPER__OPENID_PROVIDERS='[
-  {
-    "uri": "https://company.okta.com",
-    "idp_id": "okta",
-    "audience": "https://company.okta.com",
-    "subject_claims": "sub"
-  },
-  {
-    "uri": "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456",
-    "idp_id": "eks-prod",
-    "audience": "sts.amazonaws.com",
-    "subject_claims": "sub"
-  }
-]'
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__ROLES_CLAIM=resource_access.lakekeeper.roles
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__URI=https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__SUBJECT_CLAIMS=sub
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__REQUIRE_CONNECTED_ON_STARTUP=false
 ```
 
 !!! note
-    If a provider fails to initialize (e.g., unreachable OIDC endpoint), it is skipped with an error log. Other providers continue to work normally.
+    Providers fail startup by default if their OIDC endpoint cannot be loaded. Set `REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting.
 
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled.
