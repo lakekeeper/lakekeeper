@@ -183,7 +183,11 @@ jobs:
         postgres-version: ["15", "18"]
     services:
       vault:
-        image: hashicorp/vault:latest
+        # Pinned: hashicorp/vault:latest switched to a non-root entrypoint
+        # that ignores SKIP_SETCAP and hard-requires IPC_LOCK, which GHA
+        # service-container syntax cannot grant. 1.18.x is the last minor
+        # with the root entrypoint that honours SKIP_SETCAP.
+        image: hashicorp/vault:1.18.5
         ports:
           - 8200:8200
         env:
