@@ -187,7 +187,7 @@ jobs:
         # old SKIP_SETCAP escape hatch is now ignored. Granting the capability
         # via `options: --cap-add IPC_LOCK` is the supported workaround. Pin
         # to a specific patch so an image refresh can't break CI again.
-        image: hashicorp/vault:1.21.0
+        image: hashicorp/vault:1.21.4
         ports:
           - 8200:8200
         env:
