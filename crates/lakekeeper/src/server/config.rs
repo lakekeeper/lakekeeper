@@ -10,6 +10,7 @@ use crate::{
         },
         management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
+    config::MaintenanceMode,
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
@@ -33,7 +34,15 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
     ) -> Result<CatalogConfig> {
         let authorizer = api_context.v1_state.authz;
 
-        maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone()).await?;
+        // Maintenance mode: the catalog is in a read-only window (typically a
+        // Kubernetes operator running a schema migration). Skip the
+        // first-touch user-register side-effect so `GET /v1/config` stays a
+        // pure read. Returning the catalog config itself is still valuable —
+        // existing clients need it to keep reading.
+        if matches!(CONFIG.maintenance_mode, MaintenanceMode::Off) {
+            maybe_register_user::<C>(&request_metadata, api_context.v1_state.catalog.clone())
+                .await?;
+        }
 
         let request_metadata_arc = Arc::new(request_metadata);
 

@@ -3,6 +3,8 @@ pub mod management;
 
 pub(crate) mod endpoints;
 #[cfg(feature = "router")]
+pub mod maintenance;
+#[cfg(feature = "router")]
 pub mod router;
 pub use iceberg_ext::catalog::rest::*;
 

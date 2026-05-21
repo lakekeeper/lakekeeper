@@ -445,6 +445,19 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
+### Maintenance Mode
+
+Captured at startup; not dynamic. While `read-only`:
+
+- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. `/health` is unaffected.
+- Built-in task queue workers are not started.
+- `GET /v1/config` skips user auto-registration.
+- `GET /health` exposes the current mode as `maintenance_mode` for operator fan-out checks.
+
+| Variable                                       | Example     | Description |
+|------------------------------------------------|-------------|-------------|
+| <nobr>`LAKEKEEPER__MAINTENANCE_MODE`</nobr>    | `read-only` | `off` (default) or `read-only`. Captured at startup; not dynamic. |
+
 ### Idempotency
 
 Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) specification. When enabled, clients can send an `Idempotency-Key` header on mutation requests to guarantee at-most-once execution. The server advertises support via the `idempotency-key-lifetime` field in the `GET /v1/config` response.
