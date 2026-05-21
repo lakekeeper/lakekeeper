@@ -543,6 +543,43 @@ pub struct DynAppConfig {
         serialize_with = "serialize_std_duration_as_ms"
     )]
     pub max_request_time: Duration,
+
+    // ------------- Maintenance -------------
+    /// Maintenance mode.
+    ///
+    /// `off` (default) serves all requests normally.
+    ///
+    /// `read-only` is intended to be set by a Kubernetes operator during a
+    /// zero-downtime version upgrade: a rolling restart sets the flag on every
+    /// pod, the operator then runs migrations against the database, and a
+    /// second rolling restart removes the flag once new pods are ready. The
+    /// flag is captured once at startup and is not dynamic.
+    ///
+    /// When `read-only`, mutating HTTP requests (anything other than GET, HEAD
+    /// or OPTIONS) on `/catalog/v1` and `/management/v1` are rejected with
+    /// `503 Service Unavailable` and a `Retry-After` header. Built-in task
+    /// queue workers are not started. Per-warehouse user auto-registration on
+    /// `GET /v1/config` is suppressed.
+    #[serde(default)]
+    pub maintenance_mode: MaintenanceMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaintenanceMode {
+    /// Normal operation.
+    #[default]
+    Off,
+    /// Reject mutating requests with 503, do not start built-in task queue
+    /// workers, suppress side-effecting writes on read endpoints.
+    ReadOnly,
+}
+
+impl MaintenanceMode {
+    #[must_use]
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
 }
 
 pub(crate) fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
@@ -1050,6 +1087,7 @@ impl Default for DynAppConfig {
             audit: AuditConfig {
                 tracing: AuditTracingConfig { enabled: true },
             },
+            maintenance_mode: MaintenanceMode::Off,
         }
     }
 }
@@ -1305,6 +1343,34 @@ mod test {
                 result.is_err(),
                 "bare string must not be accepted as a single-element list, got {result:?}",
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_maintenance_mode_default_off() {
+        let config = get_config();
+        assert_eq!(config.maintenance_mode, MaintenanceMode::Off);
+        assert!(!config.maintenance_mode.is_read_only());
+    }
+
+    #[test]
+    fn test_maintenance_mode_read_only_via_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__MAINTENANCE_MODE", "read-only");
+            let config = get_config();
+            assert_eq!(config.maintenance_mode, MaintenanceMode::ReadOnly);
+            assert!(config.maintenance_mode.is_read_only());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_maintenance_mode_off_via_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__MAINTENANCE_MODE", "off");
+            let config = get_config();
+            assert_eq!(config.maintenance_mode, MaintenanceMode::Off);
             Ok(())
         });
     }

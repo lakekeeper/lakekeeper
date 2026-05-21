@@ -9,7 +9,7 @@ services:
       inithvault:
         condition: service_completed_successfully
   hvault:
-    image: hashicorp/vault:latest
+    image: hashicorp/vault:1.21.4
     ports:
       - 8200:8200
     environment:
@@ -28,7 +28,7 @@ services:
     networks:
       - iceberg_rest_tests
   inithvault:
-    image: hashicorp/vault:latest
+    image: hashicorp/vault:1.21.4
     depends_on:
       hvault:
         condition: service_healthy

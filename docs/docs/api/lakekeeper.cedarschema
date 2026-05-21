@@ -94,6 +94,9 @@ namespace Lakekeeper {
   entity User in [Role, Server] {
     // Email of the user, extracted from the authentication token.
     // Not available for all token types.
+    // Lakekeeper does not enforce email uniqueness. Two distinct
+    // users may share an email (e.g. service principals using a
+    // shared mailbox, or default emails issued by an IDP).
     email?: String,
     // Provider-resolved role memberships as Cedar Role entity UIDs.
     // The user entity is a Cedar parent of every role in this set, so

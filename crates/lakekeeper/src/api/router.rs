@@ -127,6 +127,13 @@ pub async fn new_full_router<
     let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
+        // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
+        // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
+        // before `/health` is added so liveness/readiness probes are
+        // unaffected.
+        .layer(axum::middleware::from_fn(
+            crate::api::maintenance::maintenance_middleware_fn,
+        ))
         .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body
