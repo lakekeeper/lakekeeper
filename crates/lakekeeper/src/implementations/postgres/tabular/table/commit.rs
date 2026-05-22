@@ -836,4 +836,117 @@ mod tests {
         let new_metadata_loaded = &new_metadata_loaded[0];
         pretty_assertions::assert_eq!(new_metadata_loaded.table_metadata, new_metadata);
     }
+
+    /// Regression test: removing the last/only table property must persist after reload.
+    ///
+    /// Previously, `set_table_properties` early-returned when the new property
+    /// map was empty, so the DELETE from `table_properties` never ran and the
+    /// stale row resurfaced on the next load.
+    #[sqlx::test]
+    async fn test_remove_last_property_persists_after_reload(pool: sqlx::PgPool) {
+        let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
+        let warehouse_id = previous_table_info.warehouse_id;
+        let table_id = TableId::from(previous_metadata.uuid());
+
+        // Step 1: set a single property on the table.
+        let prev_loc = previous_table_info
+            .metadata_location
+            .clone()
+            .unwrap()
+            .to_string();
+        let set_build = previous_metadata
+            .clone()
+            .into_builder(Some(prev_loc.clone()))
+            .set_properties(HashMap::from_iter(vec![(
+                "lakekeeper.history.expire.enabled".to_string(),
+                "true".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap();
+        let after_set_metadata = set_build.metadata;
+        let new_loc_1 =
+            Location::from_str("s3://bucket/test/location/metadata/metadata2.json").unwrap();
+        let commit_1 = TableCommit {
+            new_metadata: Arc::new(after_set_metadata.clone()),
+            new_metadata_location: new_loc_1.clone(),
+            previous_metadata_location: Some(
+                previous_table_info.metadata_location.clone().unwrap(),
+            ),
+            updates: Arc::new(set_build.changes),
+            diffs: calculate_diffs(&after_set_metadata, &previous_metadata, 1, 0),
+        };
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit_1], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Sanity-check: property is visible after reload.
+        let mut t = pool.begin().await.unwrap();
+        let loaded = PostgresBackend::load_tables(
+            warehouse_id,
+            [table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(
+            loaded[0]
+                .table_metadata
+                .properties()
+                .get("lakekeeper.history.expire.enabled"),
+            Some(&"true".to_string()),
+            "property should be set after the first commit"
+        );
+
+        // Step 2: remove that one property; the new property map is empty.
+        let remove_build = after_set_metadata
+            .clone()
+            .into_builder(Some(new_loc_1.to_string()))
+            .remove_properties(&["lakekeeper.history.expire.enabled".to_string()])
+            .unwrap()
+            .build()
+            .unwrap();
+        let after_remove_metadata = remove_build.metadata;
+        assert!(
+            after_remove_metadata.properties().is_empty(),
+            "test precondition: new metadata properties must be empty to trigger the bug path"
+        );
+        let new_loc_2 =
+            Location::from_str("s3://bucket/test/location/metadata/metadata3.json").unwrap();
+        let commit_2 = TableCommit {
+            new_metadata: Arc::new(after_remove_metadata.clone()),
+            new_metadata_location: new_loc_2,
+            previous_metadata_location: Some(new_loc_1),
+            updates: Arc::new(remove_build.changes),
+            diffs: calculate_diffs(&after_remove_metadata, &after_set_metadata, 1, 0),
+        };
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit_2], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // The real test: reload from Postgres and verify the row is gone.
+        let mut t = pool.begin().await.unwrap();
+        let loaded = PostgresBackend::load_tables(
+            warehouse_id,
+            [table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert!(
+            loaded[0].table_metadata.properties().is_empty(),
+            "property must be gone after reload, found: {:?}",
+            loaded[0].table_metadata.properties(),
+        );
+    }
 }

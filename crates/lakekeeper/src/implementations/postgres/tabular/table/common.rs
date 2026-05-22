@@ -605,18 +605,33 @@ pub(crate) async fn set_table_properties(
     properties: &HashMap<String, String>,
     transaction: &mut PgConnection,
 ) -> Result<(), CatalogBackendError> {
-    if properties.is_empty() {
-        return Ok(());
-    }
     let (keys, vals): (Vec<String>, Vec<String>) = properties
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .unzip();
+    // Replace the full property set for this table:
+    //   - DELETE any existing key not present in the new set
+    //   - UPSERT each key in the new set
+    // The `NOT EXISTS` predicate avoids the "same row modified twice in one
+    // statement" case (which is undefined per the PostgreSQL docs), so DELETE
+    // only touches keys exclusive to the old set and the INSERT…ON CONFLICT
+    // only touches keys in the new set. Runs unconditionally so removing the
+    // last property on a table also wipes the row.
     sqlx::query!(
-        r#"WITH drop as (DELETE FROM table_properties WHERE warehouse_id = $1 AND table_id = $2)
-           INSERT INTO table_properties (warehouse_id, table_id, key, value)
-           SELECT $1, $2, u.* FROM UNNEST($3::text[], $4::text[]) u
-           ON CONFLICT (warehouse_id, table_id, key) DO UPDATE SET value = EXCLUDED.value;"#,
+        r#"
+        WITH new_props AS (
+            SELECT k, v FROM UNNEST($3::text[], $4::text[]) AS u(k, v)
+        ),
+        deleted AS (
+            DELETE FROM table_properties tp
+            WHERE tp.warehouse_id = $1
+              AND tp.table_id = $2
+              AND NOT EXISTS (SELECT 1 FROM new_props np WHERE np.k = tp.key)
+        )
+        INSERT INTO table_properties (warehouse_id, table_id, key, value)
+        SELECT $1, $2, k, v FROM new_props
+        ON CONFLICT (warehouse_id, table_id, key) DO UPDATE SET value = EXCLUDED.value
+        "#,
         *warehouse_id,
         *table_id,
         &keys,
