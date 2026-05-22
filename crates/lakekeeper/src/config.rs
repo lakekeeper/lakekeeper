@@ -25,7 +25,7 @@ use crate::{
     WarehouseId,
     service::{
         ArcProjectId, UserId,
-        authn::{IDP_SEPARATOR, K8S_IDP_ID},
+        authn::{IDP_SEPARATOR, K8S_IDP_ID, OIDC_IDP_ID},
     },
 };
 
@@ -167,6 +167,10 @@ fn validate_openid_provider_ids(config: &DynAppConfig) {
         assert!(
             !idp_id.eq_ignore_ascii_case(K8S_IDP_ID),
             "Invalid OIDC provider '{idp_id}': IdP ID '{K8S_IDP_ID}' is reserved"
+        );
+        assert!(
+            !idp_id.eq_ignore_ascii_case(OIDC_IDP_ID),
+            "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
         );
     }
 }
@@ -461,8 +465,8 @@ pub struct DynAppConfig {
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
     /// Multiple OIDC providers keyed by identity provider ID.
-    /// When set, each provider gets its own JWKS authenticator and this takes
-    /// precedence over the single-provider configuration (`openid_provider_uri`).
+    /// When set, each provider gets its own JWKS authenticator and is added
+    /// in addition to the single-provider configuration (`openid_provider_uri`).
     #[serde(default)]
     pub openid_providers: HashMap<String, OidcProviderConfig>,
 
@@ -1148,8 +1152,16 @@ impl DynAppConfig {
         self.default_tabular_expiration_delay_seconds
     }
 
+    /// Is any authentication active? Used by /info to reject anonymous.
     pub fn authn_enabled(&self) -> bool {
-        self.openid_provider_uri.is_some() || !self.openid_providers.is_empty()
+        self.openid_provider_uri.is_some()
+            || !self.openid_providers.is_empty()
+            || self.enable_kubernetes_authentication
+    }
+
+    /// Does the UI have an SSO target? Used by the UI config.
+    pub fn ui_login_enabled(&self) -> bool {
+        self.openid_provider_uri.is_some()
     }
 
     /// Helper for common conversion of optional page size to `i64`.
@@ -2014,6 +2026,19 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "IdP ID 'oidc' is reserved")]
+    fn test_openid_provider_id_rejects_oidc() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OIDC__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_user_assignments_cache() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
@@ -2168,7 +2193,7 @@ mod test {
                 "trino.run-as-owner",
             );
             jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES",
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__prod_AUDIENCES",
                 "[trino_dev, trino_prod]",
             );
             jail.set_env(
@@ -2625,6 +2650,16 @@ mod test {
                 "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
                 "https://okta.example.com",
             );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_kubernetes_only() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ENABLE_KUBERNETES_AUTHENTICATION", "true");
             let config = get_config();
             assert!(config.authn_enabled());
             Ok(())

@@ -79,7 +79,7 @@ pub enum BuiltInAuthenticators {
 ///
 /// Supports both single-provider mode (via `OPENID_PROVIDER_URI`) and
 /// multi-provider mode (via `OPENID_PROVIDERS` map). Multi-provider mode
-/// takes precedence if configured.
+/// is additive and extends the single-provider configuration.
 ///
 /// # Errors
 /// If the authenticator cannot be created, or if the configuration is invalid.
@@ -169,32 +169,34 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
 fn oidc_provider_configs_from_config(
     config: &crate::config::DynAppConfig,
 ) -> Vec<(String, OidcProviderConfig)> {
+    let mut providers = Vec::new();
+
+    if let Some(uri) = config.openid_provider_uri.clone() {
+        providers.push((
+            OIDC_IDP_ID.to_string(),
+            OidcProviderConfig {
+                uri,
+                audience: config.openid_audience.clone(),
+                additional_issuers: config.openid_additional_issuers.clone(),
+                scope: config.openid_scope.clone(),
+                subject_claims: config.openid_subject_claim.clone(),
+                roles_claim: config.openid_roles_claim.clone(),
+                require_connected_on_startup: true,
+            },
+        ));
+    }
+
     if !config.openid_providers.is_empty() {
-        let mut providers = config
+        let mut extras = config
             .openid_providers
             .iter()
             .map(|(idp_id, provider)| (idp_id.clone(), provider.clone()))
             .collect::<Vec<_>>();
-        providers.sort_by(|(left, _), (right, _)| left.cmp(right));
-        return providers;
+        extras.sort_by(|(left, _), (right, _)| left.cmp(right));
+        providers.extend(extras);
     }
 
-    let Some(uri) = config.openid_provider_uri.clone() else {
-        return vec![];
-    };
-
-    vec![(
-        OIDC_IDP_ID.to_string(),
-        OidcProviderConfig {
-            uri,
-            audience: config.openid_audience.clone(),
-            additional_issuers: config.openid_additional_issuers.clone(),
-            scope: config.openid_scope.clone(),
-            subject_claims: config.openid_subject_claim.clone(),
-            roles_claim: config.openid_roles_claim.clone(),
-            require_connected_on_startup: true,
-        },
-    )]
+    providers
 }
 
 /// Build authenticators for configured OIDC providers.
@@ -706,10 +708,100 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use axum::{Json, Router, routing::get};
+    use limes::Authenticator;
+    use serde_json::json;
+    use tokio::{net::TcpListener, task::JoinHandle};
+    use url::Url;
     use uuid::Uuid;
 
     use super::*;
     use crate::{config::DynAppConfig, service::RoleId};
+
+    async fn spawn_oidc_test_server() -> (Url, Url, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind oidc test server");
+        let addr = listener.local_addr().expect("oidc test server addr");
+        let base = Url::parse(&format!("http://{addr}")).expect("oidc test server base url");
+        let good_base = base.join("good/").expect("good base url");
+        let bad_base = base.join("bad/").expect("bad base url");
+
+        let good_config = json!({
+            "issuer": good_base.as_str(),
+            "jwks_uri": format!("{good_base}jwks"),
+        });
+        let bad_config = json!({
+            "issuer": bad_base.as_str(),
+        });
+        let jwks = json!({ "keys": [] });
+
+        let app = Router::new()
+            .route(
+                "/good/.well-known/openid-configuration",
+                get({
+                    let good_config = good_config.clone();
+                    move || async move { Json(good_config) }
+                }),
+            )
+            .route(
+                "/bad/.well-known/openid-configuration",
+                get({
+                    let bad_config = bad_config.clone();
+                    move || async move { Json(bad_config) }
+                }),
+            )
+            .route(
+                "/good/jwks",
+                get({
+                    let jwks = jwks.clone();
+                    move || async move { Json(jwks) }
+                }),
+            );
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("oidc test server failed");
+        });
+
+        (good_base, bad_base, handle)
+    }
+
+    async fn get_default_authenticator_from_config_with(
+        config: &DynAppConfig,
+        authn_k8s_audience: Option<AuthenticatorEnum>,
+        authn_k8s_legacy: Option<AuthenticatorEnum>,
+    ) -> anyhow::Result<Option<BuiltInAuthenticators>> {
+        let oidc_provider_configs = oidc_provider_configs_from_config(config);
+        let authn_oidc_list = if oidc_provider_configs.is_empty() {
+            vec![]
+        } else {
+            build_oidc_authenticators(oidc_provider_configs).await?
+        };
+
+        let mut all_authenticators: Vec<AuthenticatorEnum> = authn_oidc_list;
+        if let Some(authn) = authn_k8s_audience {
+            all_authenticators.push(authn);
+        }
+        if let Some(authn) = authn_k8s_legacy {
+            all_authenticators.push(authn);
+        }
+
+        match all_authenticators.len() {
+            0 => Ok(None),
+            1 => Ok(Some(all_authenticators.remove(0).into())),
+            _ => {
+                let mut chain_builder = limes::AuthenticatorChain::<AuthenticatorEnum>::builder();
+                for auth in all_authenticators {
+                    chain_builder = chain_builder.add_authenticator(auth);
+                }
+                Ok(Some(chain_builder.build().into()))
+            }
+        }
+    }
 
     #[test]
     fn oidc_provider_configs_from_config_uses_legacy_provider_id_and_roles_claim() {
@@ -740,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn oidc_provider_configs_from_config_prefers_multi_provider_config() {
+    fn oidc_provider_configs_from_config_adds_multi_provider_config() {
         let mut config = DynAppConfig::default();
         config.openid_provider_uri = Some(url::Url::parse("https://legacy.example.com").unwrap());
         config.openid_providers.insert(
@@ -758,10 +850,134 @@ mod tests {
 
         let providers = oidc_provider_configs_from_config(&config);
 
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].0, "okta");
-        assert_eq!(providers[0].1.roles_claim, Some("groups".to_string()));
-        assert!(!providers[0].1.require_connected_on_startup);
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].0, OIDC_IDP_ID);
+        assert_eq!(providers[1].0, "okta");
+        assert_eq!(providers[1].1.roles_claim, Some("groups".to_string()));
+        assert!(!providers[1].1.require_connected_on_startup);
+    }
+
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_chain_order_primary_additional_k8s() {
+        let (good_base, _bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(good_base.clone());
+        config.openid_providers.insert(
+            "okta".to_string(),
+            OidcProviderConfig {
+                uri: good_base.clone(),
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: true,
+            },
+        );
+
+        let k8s_stub = limes::jwks::JWKSWebAuthenticator::new(
+            good_base.as_str(),
+            Some(Duration::from_hours(1)),
+        )
+        .await
+        .expect("k8s stub authenticator")
+        .set_idp_id(K8S_IDP_ID);
+
+        let authenticator = get_default_authenticator_from_config_with(
+            &config,
+            Some(AuthenticatorEnum::from(k8s_stub)),
+            None,
+        )
+        .await
+        .expect("build authenticators")
+        .expect("authn enabled");
+
+        let idp_ids = match authenticator {
+            BuiltInAuthenticators::Single(auth) => auth
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+            BuiltInAuthenticators::Chain(chain) => chain
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+        };
+        assert_eq!(
+            idp_ids,
+            vec![
+                Some(OIDC_IDP_ID.to_string()),
+                Some("okta".to_string()),
+                Some(K8S_IDP_ID.to_string()),
+            ]
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_skips_optional_provider() {
+        let (good_base, bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(good_base);
+        config.openid_providers.insert(
+            "bad".to_string(),
+            OidcProviderConfig {
+                uri: bad_base,
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: false,
+            },
+        );
+
+        let authenticator = get_default_authenticator_from_config_with(&config, None, None)
+            .await
+            .expect("build authenticators")
+            .expect("authn enabled");
+
+        let idp_ids = match authenticator {
+            BuiltInAuthenticators::Single(auth) => auth
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+            BuiltInAuthenticators::Chain(chain) => chain
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+        };
+        assert_eq!(idp_ids, vec![Some(OIDC_IDP_ID.to_string())]);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_fails_required_provider() {
+        let (good_base, bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(good_base);
+        config.openid_providers.insert(
+            "bad".to_string(),
+            OidcProviderConfig {
+                uri: bad_base,
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: true,
+            },
+        );
+
+        let result = get_default_authenticator_from_config_with(&config, None, None).await;
+        assert!(result.is_err());
+
+        server.abort();
     }
 
     #[test]

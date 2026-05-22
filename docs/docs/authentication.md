@@ -460,7 +460,7 @@ When multiple providers are configured, each provider fetches its own JWKS keys 
 
 ### Configuration
 
-Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. This configuration takes precedence over the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` if both are set.
+Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI`, which remains the primary provider (`idp_id = "oidc"`).
 
 ```bash
 LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
@@ -486,7 +486,7 @@ This allows you to distinguish users from different identity providers when gran
 
 ### Resilient Initialization
 
-By default, Lakekeeper refuses to start if a configured provider's OIDC/JWKS configuration cannot be loaded. Set `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting with the remaining authenticators.
+By default, Lakekeeper refuses to start if a configured provider's OIDC/JWKS configuration cannot be loaded. Set `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting with the remaining authenticators. The primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI` always requires a successful connection on startup.
 
 ### When to Use Multiple Providers
 
@@ -497,6 +497,8 @@ Common use cases include:
 - **Migration scenarios**: Gradually migrating from one IdP to another while both remain active
 
 See the [Configuration Reference](./configuration.md#multiple-oidc-providers) for the full list of available options per provider.
+
+**Identity continuity note:** Existing user IDs are formatted as `oidc~<subject>` from the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Do not move that provider into `OPENID_PROVIDERS` under a different `IDP_ID` (e.g., `okta`), or existing role/user assignments will no longer match.
 
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:

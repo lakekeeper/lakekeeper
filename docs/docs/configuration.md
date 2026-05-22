@@ -237,9 +237,9 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 
 #### Multiple OIDC Providers
 
-For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), configure providers under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. When set, this takes precedence over `LAKEKEEPER__OPENID_PROVIDER_URI`.
+For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), configure providers under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to `LAKEKEEPER__OPENID_PROVIDER_URI` (the primary provider, `idp_id = "oidc"`).
 
-The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<subject>`. It must not contain `~`; `kubernetes` is reserved for the built-in Kubernetes authenticator.
+The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<subject>`. Figment lowercases env var segments and uses `__` as a nesting separator, so `LAKEKEEPER__OPENID_PROVIDERS__MY_PROVIDER__URI=...` yields `idp_id = "my_provider"`; avoid extra `__` in the IDP segment because it creates nested keys. The ID must not contain `~`; `oidc` and `kubernetes` are reserved.
 
 **Provider Fields:**
 
