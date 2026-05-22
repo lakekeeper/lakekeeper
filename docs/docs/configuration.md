@@ -190,6 +190,7 @@ To prohibit unwanted access to data, we recommend to enable Authentication.
 Authentication is enabled if:
 
 * `LAKEKEEPER__OPENID_PROVIDER_URI` is set OR
+* `LAKEKEEPER__OPENID_PROVIDERS` has at least one configured provider OR
 * `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true
 
 In Lakekeeper multiple Authentication mechanisms can be enabled together, for example OpenID + Kubernetes. Lakekeeper builds an internal Authenticator chain of up to three identity providers. Incoming tokens need to be JWT tokens - Opaque tokens are not yet supported. Incoming tokens are introspected, and each Authentication provider checks if the given token can be handled by this provider. If it can be handled, the token is authenticated against this provider, otherwise the next Authenticator in the chain is checked.
