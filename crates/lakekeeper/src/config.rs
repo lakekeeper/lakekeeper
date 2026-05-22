@@ -461,7 +461,7 @@ pub struct DynAppConfig {
     )]
     pub openid_subject_claim: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
-    /// The field should contain an array of strings or a single string.
+    /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
     /// Multiple OIDC providers keyed by identity provider ID.
@@ -1047,7 +1047,7 @@ pub struct OidcProviderConfig {
     )]
     pub subject_claims: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
-    /// The field should contain an array of strings or a single string.
+    /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     #[serde(default)]
     pub roles_claim: Option<String>,
