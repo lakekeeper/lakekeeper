@@ -3069,7 +3069,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.9.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=bb7017339f778de44830b4f970d9d5e1e84f5599#bb7017339f778de44830b4f970d9d5e1e84f5599"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=488accddc17ac722ce49a3b2412a0a9f563b4593#488accddc17ac722ce49a3b2412a0a9f563b4593"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4570,6 +4570,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "paste",
+ "ring",
  "seq-macro",
  "simdutf8",
  "snap",
