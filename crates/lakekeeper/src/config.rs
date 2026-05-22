@@ -2193,7 +2193,7 @@ mod test {
                 "trino.run-as-owner",
             );
             jail.set_env(
-                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__prod_AUDIENCES",
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES",
                 "[trino_dev, trino_prod]",
             );
             jail.set_env(
