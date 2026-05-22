@@ -498,7 +498,7 @@ Common use cases include:
 
 See the [Configuration Reference](./configuration.md#multiple-oidc-providers) for the full list of available options per provider.
 
-**Identity continuity note:** Existing user IDs are formatted as `oidc~<subject>` from the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Do not move that provider into `OPENID_PROVIDERS` under a different `IDP_ID` (e.g., `okta`), or existing role/user assignments will no longer match.
+**Identity continuity note:** Existing user IDs are formatted as `oidc~<subject>` from the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Do not move that provider into `LAKEKEEPER__OPENID_PROVIDERS` under a different `IDP_ID` (e.g., `okta`), or existing role/user assignments will no longer match.
 
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:
