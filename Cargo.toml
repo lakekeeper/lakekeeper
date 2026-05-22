@@ -142,7 +142,7 @@ serde_norway = "0.9.42"
 serde_urlencoded = "0.7.1"
 serde_with = "^3.4"
 similar = "2.6.0"
-sqlx = { version = "0.8.6", default-features = false, features = [
+sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",

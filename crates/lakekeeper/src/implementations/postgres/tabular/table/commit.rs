@@ -195,8 +195,8 @@ fn build_table_and_tabular_update_queries(
     location_metadata_pairs: Vec<TableMetadataTransition>,
 ) -> Result<
     (
-        sqlx::QueryBuilder<'static, Postgres>,
-        sqlx::QueryBuilder<'static, Postgres>,
+        sqlx::QueryBuilder<Postgres>,
+        sqlx::QueryBuilder<Postgres>,
     ),
     ConversionError,
 > {

@@ -248,20 +248,20 @@ pub(crate) async fn get_namespaces_by_name<
             AND n.namespace_name IN (SELECT parent_name FROM parent_paths)
         )
         SELECT
-                n.namespace_id,
+                n.namespace_id as "namespace_id!: uuid::Uuid",
                 -- Canonical (stored) name: what's written to cache for case-deterministic id lookups.
-                n.namespace_name as "namespace_name: Vec<String>",
+                n.namespace_name as "namespace_name!: Vec<String>",
                 -- User-requested name: the caller's case. Matches canonical when the row
                 -- is an internal parent not referenced by any user input (COALESCE fallback).
                 -- The `=` join uses the case-insensitive ICU collation on namespace_name,
                 -- so `['foo']` from the user matches stored `['Foo']`.
                 COALESCE(rpp.parent_name, n.namespace_name) as "requested_name!: Vec<String>",
-                n.warehouse_id,
-                n.protected,
-                n.namespace_properties as "properties: Json<Option<HashMap<String, String>>>",
-                n.created_at,
-                n.updated_at,
-                n.version,
+                n.warehouse_id as "warehouse_id!: uuid::Uuid",
+                n.protected as "protected!: bool",
+                n.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
+                n.created_at as "created_at!: chrono::DateTime<chrono::Utc>",
+                n.updated_at as "updated_at?: chrono::DateTime<chrono::Utc>",
+                n.version as "version!: i64",
                 p.namespace_id as "parent_namespace_id?",
                 p.version as "parent_version?"
         FROM relevant_namespaces n
