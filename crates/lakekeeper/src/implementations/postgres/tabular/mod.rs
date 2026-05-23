@@ -64,7 +64,7 @@ impl From<FromTabularRowError> for GetTabularInfoError {
 }
 
 #[derive(Debug, FromRow)]
-struct TabularRow {
+pub(super) struct TabularRow {
     tabular_id: Uuid,
     warehouse_version: i64,
     namespace_name: Vec<String>,
@@ -87,7 +87,7 @@ struct TabularRow {
 }
 
 impl TabularRow {
-    fn try_into_table_or_view(
+    pub(super) fn try_into_table_or_view(
         self,
         warehouse_id: WarehouseId,
     ) -> Result<ViewOrTableInfo, FromTabularRowError> {

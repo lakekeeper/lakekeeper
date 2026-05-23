@@ -14,11 +14,15 @@ use crate::{
     WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler as _,
-        tabular::{CreateTabular, TabularType, create_tabular},
+        tabular::{
+            CreateTabular, FromTabularRowError, TabularType, create_tabular,
+            get_partial_fs_locations,
+        },
     },
     service::{
-        CatalogBackendError, ConversionError, CreateViewError, CreateViewVersionError,
-        InternalParseLocationError, NamespaceId, SerializationError, UnexpectedTabularInResponse,
+        CatalogBackendError, CommitViewError, ConcurrentUpdateError, ConversionError,
+        CreateViewError, CreateViewVersionError, InternalParseLocationError, LocationAlreadyTaken,
+        NamespaceId, SerializationError, TabularNotFound, UnexpectedTabularInResponse, ViewId,
         ViewInfo,
     },
 };
@@ -69,6 +73,136 @@ pub(crate) async fn create_view(
     .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     tracing::debug!("Inserted base view and tabular.");
+    populate_view_metadata(warehouse_id, namespace_id, view_id, metadata, transaction).await?;
+
+    Ok(view_info)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn commit_existing_view(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    metadata_location: &Location,
+    previous_metadata_location: &Location,
+    transaction: &mut Transaction<'_, Postgres>,
+    metadata: &ViewMetadata,
+) -> Result<ViewInfo, CommitViewError> {
+    let location =
+        Location::from_str(metadata.location()).map_err(InternalParseLocationError::from)?;
+    let view_id = ViewId::from(metadata.uuid());
+
+    let current_metadata_location = sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT metadata_location
+        FROM tabular
+        WHERE warehouse_id = $1
+            AND tabular_id = $2
+            AND typ = $3
+            AND tabular_id IN (
+                SELECT tabular_id
+                FROM active_tabulars
+                WHERE warehouse_id = $1
+                    AND tabular_id = $2
+            )
+        FOR UPDATE
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(*view_id)
+    .bind(TabularType::View)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(|| TabularNotFound::new(warehouse_id, view_id))?;
+
+    if current_metadata_location != Some(previous_metadata_location.to_string()) {
+        return Err(ConcurrentUpdateError::new(warehouse_id, view_id).into());
+    }
+
+    let partial_locations = get_partial_fs_locations(&location)?;
+    let fs_location = location.authority_and_path();
+    let location_is_taken = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM tabular ta
+            WHERE ta.warehouse_id = $1
+                AND ta.tabular_id != $3
+                AND (
+                    ta.fs_location = ANY($2)
+                    OR (
+                        length($4) < length(ta.fs_location)
+                        AND ((TRIM(TRAILING '/' FROM ta.fs_location) || '/') LIKE $4 || '/%')
+                    )
+                )
+        )
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(&partial_locations)
+    .bind(*view_id)
+    .bind(fs_location)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
+    if location_is_taken {
+        return Err(LocationAlreadyTaken::new(location.clone()).into());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE tabular
+        SET metadata_location = $3,
+            fs_protocol = $4,
+            fs_location = $5
+        WHERE warehouse_id = $1
+            AND tabular_id = $2
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(*view_id)
+    .bind(metadata_location.to_string())
+    .bind(location.scheme())
+    .bind(fs_location)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error updating view tabular metadata.")
+    })?;
+
+    sqlx::query(
+        r#"
+        UPDATE view
+        SET view_format_version = $3
+        WHERE warehouse_id = $1
+            AND view_id = $2
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(*view_id)
+    .bind(ViewFormatVersion::from(metadata.format_version()))
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error updating base view row.")
+    })?;
+
+    clear_view_metadata(warehouse_id, *view_id, transaction).await?;
+    populate_view_metadata(warehouse_id, namespace_id, *view_id, metadata, transaction).await?;
+
+    load_view_info(warehouse_id, view_id, transaction).await
+}
+
+async fn populate_view_metadata(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    view_id: Uuid,
+    metadata: &ViewMetadata,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), CreateViewError> {
     for schema in metadata.schemas_iter() {
         let schema_id =
             create_view_schema(warehouse_id, view_id, schema.clone(), transaction).await?;
@@ -123,6 +257,136 @@ pub(crate) async fn create_view(
     set_view_properties(warehouse_id, view_id, metadata.properties(), transaction).await?;
 
     tracing::debug!("Inserted view properties for view",);
+
+    Ok(())
+}
+
+async fn clear_view_metadata(
+    warehouse_id: WarehouseId,
+    view_id: Uuid,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), CatalogBackendError> {
+    sqlx::query(
+        r#"
+        DELETE FROM view_properties
+        WHERE warehouse_id = $1
+            AND view_id = $2
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(view_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error clearing view properties before commit.")
+    })?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM view_schema
+        WHERE warehouse_id = $1
+            AND view_id = $2
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(view_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error clearing view metadata before commit.")
+    })?;
+
+    Ok(())
+}
+
+async fn load_view_info(
+    warehouse_id: WarehouseId,
+    view_id: ViewId,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<ViewInfo, CommitViewError> {
+    let row = sqlx::query_as::<_, super::TabularRow>(
+        r#"
+        WITH selected_tabular AS (
+            SELECT t.tabular_id,
+                   w.version as warehouse_version,
+                   t.tabular_namespace_name as namespace_name,
+                   n.version as namespace_version,
+                   t.namespace_id,
+                   t.name as tabular_name,
+                   t.updated_at,
+                   t.metadata_location,
+                   t.protected,
+                   t.typ,
+                   t.fs_location,
+                   t.fs_protocol
+            FROM tabular t
+            INNER JOIN warehouse w ON w.warehouse_id = $1
+            INNER JOIN namespace n ON n.namespace_id = t.namespace_id
+                AND n.warehouse_id = $1
+            WHERE t.warehouse_id = $1
+                AND t.tabular_id = $2
+                AND t.typ = $3
+                AND t.deleted_at IS NULL
+                AND t.metadata_location IS NOT NULL
+                AND w.status = 'active'
+        )
+        SELECT st.tabular_id,
+               st.warehouse_version,
+               st.namespace_name,
+               st.namespace_version,
+               st.namespace_id,
+               st.tabular_name,
+               st.updated_at,
+               st.metadata_location,
+               st.protected,
+               st.typ as "typ: TabularType",
+               st.fs_location,
+               st.fs_protocol,
+               vp.view_properties_keys,
+               vp.view_properties_values,
+               NULL::text[] as table_properties_keys,
+               NULL::text[] as table_properties_values
+        FROM selected_tabular st
+        LEFT JOIN (
+            SELECT view_id,
+                   ARRAY_AGG(key) AS view_properties_keys,
+                   ARRAY_AGG(value) AS view_properties_values
+            FROM view_properties
+            WHERE warehouse_id = $1
+                AND view_id = $2
+            GROUP BY view_id
+        ) vp ON st.tabular_id = vp.view_id
+        "#,
+    )
+    .bind(*warehouse_id)
+    .bind(*view_id)
+    .bind(TabularType::View)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error loading committed view info.")
+    })?
+    .ok_or_else(|| TabularNotFound::new(warehouse_id, view_id))?;
+
+    let info = row
+        .try_into_table_or_view(warehouse_id)
+        .map_err(|e| match e {
+            FromTabularRowError::InvalidNamespaceIdentifier(e) => {
+                CommitViewError::InvalidNamespaceIdentifier(e)
+            }
+            FromTabularRowError::InternalParseLocationError(e) => {
+                CommitViewError::InternalParseLocationError(e)
+            }
+        })?;
+
+    let Some(view_info) = info.into_view_info() else {
+        return Err(UnexpectedTabularInResponse::new()
+            .append_detail("Expected committed tabular to be of type view")
+            .into());
+    };
 
     Ok(view_info)
 }
