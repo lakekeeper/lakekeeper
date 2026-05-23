@@ -5,9 +5,14 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use futures::future::BoxFuture;
-/// Re-exported for convenience: extension crates need this to build their
-/// own `Migrator` via `sqlx::migrate!()` without pulling sqlx in as a
-/// direct dependency.
+/// Re-exported for convenience so the `ExtensionMigrations::migrator` field
+/// type is reachable without naming `sqlx` in the caller's import list.
+///
+/// **Only the `Migrator` type is re-exported.** The `sqlx::migrate!` macro
+/// itself cannot be re-exported usefully — its expansion references `::sqlx::*`
+/// paths, so the extension crate must still depend on `sqlx` directly to
+/// invoke `sqlx::migrate!("./migrations")`. `SqlxMigrator` only saves an
+/// import line, not a Cargo dependency.
 pub use sqlx::migrate::Migrator as SqlxMigrator;
 use sqlx::{
     Error, Postgres,
@@ -57,10 +62,12 @@ pub struct ExtensionMigrations {
     /// verbatim to derive the per-source migration tracker table name
     /// `ext_<name>_sqlx_migrations`.
     ///
-    /// Must match `[a-z_][a-z0-9_]{0,40}` — a tight subset of `PostgreSQL`
-    /// identifier rules, length-bounded so the full tracker name fits within
-    /// `NAMEDATALEN` (63). `migrate()` rejects non-conforming names with a
-    /// clear error before any database work begins.
+    /// Length **1–40 characters**. First character `[a-z_]`, remaining
+    /// characters `[a-z0-9_]`. Enforced at runtime by `validate_name()`,
+    /// called from `migrate()` before any database work — non-conforming
+    /// names fail fast with a clear error. The length cap keeps the
+    /// derived tracker table name well within `PostgreSQL`'s `NAMEDATALEN`
+    /// (63 bytes).
     #[builder(setter(into))]
     name: Cow<'static, str>,
     /// Migrations to apply, typically produced by `sqlx::migrate!("./migrations")`
@@ -92,9 +99,10 @@ impl ExtensionMigrations {
         format!("ext_{}_sqlx_migrations", self.name)
     }
 
-    /// Validate `name` against `[a-z_][a-z0-9_]{0,40}`. Returns `Ok` on the
-    /// first matching character set; otherwise returns an error naming the
-    /// offending input. Called by `migrate()` before any DB work.
+    /// Validate `name`: 1–40 characters, first `[a-z_]`, remaining
+    /// `[a-z0-9_]`. Returns `Ok` on conformance; otherwise returns an
+    /// error naming the offending input. Called by `migrate()` before any
+    /// DB work.
     fn validate_name(&self) -> anyhow::Result<()> {
         if self.name.is_empty() {
             return Err(anyhow!("extension name must not be empty"));

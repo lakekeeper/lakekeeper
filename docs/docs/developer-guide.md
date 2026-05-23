@@ -171,8 +171,8 @@ entire upgrade rolls back. Partial state is impossible.
 ```rust
 use lakekeeper::implementations::postgres::migrations::{ExtensionMigrations, migrate};
 
-// `name` must match [a-z_][a-z0-9_]{0,40} — rejected at the start of
-// `migrate()` if not. Derives tracker table `ext_my_extension_sqlx_migrations`.
+// `name` must be 1–40 chars: first [a-z_], remaining [a-z0-9_]; rejected at
+// the start of `migrate()` otherwise. Derives `ext_my_extension_sqlx_migrations`.
 let extensions = vec![ExtensionMigrations::builder()
     .name("my_extension")
     .migrator(sqlx::migrate!("./migrations")) // embedded at compile time
