@@ -6,12 +6,24 @@
       {
         "ordinal": 0,
         "name": "task_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "task_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "entity_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "entity_id"
+          }
+        }
       },
       {
         "ordinal": 2,
@@ -32,27 +44,57 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "entity_type"
+          }
         }
       },
       {
         "ordinal": 3,
         "name": "entity_name",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "entity_name"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "warehouse_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "warehouse_id"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "task_data",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "task_data"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "scheduled_for",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "scheduled_for"
+          }
+        }
       },
       {
         "ordinal": 7,
@@ -68,37 +110,74 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "status"
+          }
         }
       },
       {
         "ordinal": 8,
         "name": "picked_up_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "picked_up_at"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "attempt",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "attempt"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "parent_task_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "parent_task_id"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "queue_name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "queue_name"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "config",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "project_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "project_id"
+          }
+        }
       }
     ],
     "parameters": {

@@ -6,57 +6,123 @@
       {
         "ordinal": 0,
         "name": "namespace_id!",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "namespace_name!",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "requested_name!",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "warehouse_id!",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "warehouse_id"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "protected!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "protected"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "properties!: Json<Option<HashMap<String, String>>>",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_properties"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "created_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "updated_at"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "version!",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "parent_namespace_id?",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_id"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "parent_version?",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {

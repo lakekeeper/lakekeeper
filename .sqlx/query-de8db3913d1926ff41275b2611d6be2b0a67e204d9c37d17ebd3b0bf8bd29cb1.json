@@ -6,7 +6,8 @@
       {
         "ordinal": 0,
         "name": "server_id!",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": "Expression"
       }
     ],
     "parameters": {

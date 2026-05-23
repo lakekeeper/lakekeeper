@@ -193,13 +193,7 @@ struct CommitVerificationData {
 #[allow(clippy::too_many_lines)]
 fn build_table_and_tabular_update_queries(
     location_metadata_pairs: Vec<TableMetadataTransition>,
-) -> Result<
-    (
-        sqlx::QueryBuilder<Postgres>,
-        sqlx::QueryBuilder<Postgres>,
-    ),
-    ConversionError,
-> {
+) -> Result<(sqlx::QueryBuilder<Postgres>, sqlx::QueryBuilder<Postgres>), ConversionError> {
     let n_commits = location_metadata_pairs.len();
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"

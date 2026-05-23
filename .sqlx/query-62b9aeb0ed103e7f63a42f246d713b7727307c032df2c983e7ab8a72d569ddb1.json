@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "timestamp",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "endpoint_statistics",
+            "name": "timestamp"
+          }
+        }
       },
       {
         "ordinal": 1,
@@ -133,37 +139,44 @@
               }
             }
           }
-        }
+        },
+        "origin": "Expression"
       },
       {
         "ordinal": 2,
         "name": "status_code!",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
         "name": "count!",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 4,
         "name": "warehouse_id!: Vec<Option<Uuid>>",
-        "type_info": "UuidArray"
+        "type_info": "UuidArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 5,
         "name": "warehouse_name!: Vec<Option<String>>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "created_at!",
-        "type_info": "TimestamptzArray"
+        "type_info": "TimestamptzArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
         "name": "updated_at!: Vec<Option<chrono::DateTime<Utc>>>",
-        "type_info": "TimestamptzArray"
+        "type_info": "TimestamptzArray",
+        "origin": "Expression"
       }
     ],
     "parameters": {

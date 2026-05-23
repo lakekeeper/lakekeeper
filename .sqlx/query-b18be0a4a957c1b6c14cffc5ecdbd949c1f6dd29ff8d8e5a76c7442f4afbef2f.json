@@ -6,47 +6,91 @@
       {
         "ordinal": 0,
         "name": "tabular_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "warehouse_version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "namespace_name!",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
         "name": "namespace_version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "namespace_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "namespace_id"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "tabular_name!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "updated_at"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "metadata_location",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "protected!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "protected"
+          }
+        }
       },
       {
         "ordinal": 9,
@@ -61,37 +105,59 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
         }
       },
       {
         "ordinal": 10,
         "name": "fs_location",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_location"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "fs_protocol",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_protocol"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "view_properties_keys",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "view_properties_values",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 14,
         "name": "table_properties_keys",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 15,
         "name": "table_properties_values",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       }
     ],
     "parameters": {
