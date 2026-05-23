@@ -154,11 +154,11 @@ mod test {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::implementations::postgres::{CatalogState, migrations::migrate};
+    use crate::implementations::postgres::{CatalogState, migrations::migrate_core_only};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {
-        migrate(&pool).await.unwrap();
+        migrate_core_only(&pool).await.unwrap();
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let data = get_validation_data(&state.read_pool()).await.unwrap();
@@ -177,7 +177,7 @@ mod test {
 
     #[sqlx::test]
     async fn test_reopen_for_bootstrap_round_trip(pool: PgPool) {
-        migrate(&pool).await.unwrap();
+        migrate_core_only(&pool).await.unwrap();
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         // Fresh server: already open. reopen must refuse so the operator

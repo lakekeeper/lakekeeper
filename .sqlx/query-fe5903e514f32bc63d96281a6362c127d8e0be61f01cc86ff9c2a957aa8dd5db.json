@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH new_props AS (\n            SELECT k, v FROM UNNEST($3::text[], $4::text[]) AS u(k, v)\n        ),\n        deleted AS (\n            DELETE FROM table_properties tp\n            WHERE tp.warehouse_id = $1\n              AND tp.table_id = $2\n              AND NOT EXISTS (SELECT 1 FROM new_props np WHERE np.k = tp.key)\n        )\n        INSERT INTO table_properties (warehouse_id, table_id, key, value)\n        SELECT $1, $2, k, v FROM new_props\n        ON CONFLICT (warehouse_id, table_id, key) DO UPDATE SET value = EXCLUDED.value\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fe5903e514f32bc63d96281a6362c127d8e0be61f01cc86ff9c2a957aa8dd5db"
+}

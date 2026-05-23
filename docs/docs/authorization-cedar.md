@@ -50,6 +50,8 @@ The `Lakekeeper::User` entity also carries `provider_id` and `source_id` attribu
 | <nobr>`project_roles`</nobr>   | `[{provider_id: "oidc", source_id: "admins"}]` | Provider-resolved role memberships as `{provider_id, source_id}` records. Includes roles from token claims and role providers (e.g. LDAP) relevant to the current project. |
 | <nobr>`global_role_ids`</nobr> | `["admins", "developers"]`                     | `source_id` of every provider-resolved role as a plain `Set<String>`. Only populated when `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true`. See below. |
 
+The `Lakekeeper::User` entity also exposes an optional `email` attribute extracted from the authentication token. Email uniqueness is not enforced — two distinct users may share an email.
+
 ### When to use `project_roles` vs `global_role_ids` vs `principal in Role::...`
 
 | Scenario                                                         | Recommended approach |

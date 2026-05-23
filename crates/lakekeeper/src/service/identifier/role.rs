@@ -271,17 +271,30 @@ impl FromStr for RoleSourceId {
 /// or `"oidc~admin-group"`). This composite string is used in REST path parameters
 /// and the `x-assume-role` header. The two parts are also exposed individually in
 /// API responses (`provider-id` and `source-id` fields) to support filtering by provider.
+/// `provider` is stored as `Arc<RoleProviderId>` so that producers emitting many
+/// idents that share one provider (e.g. an LDAP role provider returning every
+/// group a user belongs to) can avoid cloning the underlying `String` per ident.
+/// Cloning a `RoleIdent` is a refcount bump on the provider portion plus the
+/// `RoleSourceId` string clone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RoleIdent {
-    provider: RoleProviderId,
+    provider: Arc<RoleProviderId>,
     source_id: RoleSourceId,
 }
 
 impl RoleIdent {
+    /// Construct a [`RoleIdent`].
+    ///
+    /// `provider` accepts either an owned [`RoleProviderId`] (one-shot
+    /// callers, wrapped in `Arc` here) or an `Arc<RoleProviderId>` (callers
+    /// emitting many idents that share a provider — e.g. an LDAP role
+    /// provider returning every group a user belongs to — pay one
+    /// allocation up front and a refcount bump per ident). Use
+    /// [`Self::provider_id_arc`] to retrieve the shared `Arc` for reuse.
     #[must_use]
-    pub fn new(provider: RoleProviderId, source_id: RoleSourceId) -> Self {
+    pub fn new(provider: impl Into<Arc<RoleProviderId>>, source_id: RoleSourceId) -> Self {
         Self {
-            provider,
+            provider: provider.into(),
             source_id,
         }
     }
@@ -303,7 +316,7 @@ impl RoleIdent {
     #[must_use]
     pub fn new_random() -> Self {
         Self {
-            provider: RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string()),
+            provider: Arc::new(RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string())),
             source_id: RoleSourceId(Uuid::now_v7().to_string()),
         }
     }
@@ -312,7 +325,7 @@ impl RoleIdent {
     #[must_use]
     pub fn new_internal_with_role_id(role_id: RoleId) -> Self {
         Self {
-            provider: RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string()),
+            provider: Arc::new(RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string())),
             source_id: RoleSourceId(role_id.to_string()),
         }
     }
@@ -328,7 +341,7 @@ impl RoleIdent {
     #[must_use]
     pub fn new_unchecked(provider: impl Into<String>, source_id: impl Into<String>) -> Self {
         Self {
-            provider: RoleProviderId(provider.into()),
+            provider: Arc::new(RoleProviderId(provider.into())),
             source_id: RoleSourceId(source_id.into()),
         }
     }
@@ -345,7 +358,7 @@ impl RoleIdent {
     #[doc(hidden)]
     pub fn from_db_unchecked(provider: impl Into<String>, source_id: impl Into<String>) -> Self {
         Self {
-            provider: RoleProviderId(provider.into()),
+            provider: Arc::new(RoleProviderId(provider.into())),
             source_id: RoleSourceId(source_id.into()),
         }
     }
@@ -353,7 +366,15 @@ impl RoleIdent {
     /// Returns the provider portion.
     #[must_use]
     pub fn provider_id(&self) -> &RoleProviderId {
-        &self.provider
+        self.provider.as_ref()
+    }
+
+    /// Returns the provider portion as a shared `Arc`, for callers that want
+    /// to construct further [`RoleIdent`]s with the same provider without
+    /// re-allocating the underlying string. Companion to [`Self::with_provider_arc`].
+    #[must_use]
+    pub fn provider_id_arc(&self) -> Arc<RoleProviderId> {
+        Arc::clone(&self.provider)
     }
 
     /// Returns the source ID portion.

@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "project_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "project_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "warehouse_name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "warehouse_name"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "warehouse_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "warehouse_id"
+          }
+        }
       }
     ],
     "parameters": {

@@ -1596,7 +1596,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                 &new_compression_codec,
                 Uuid::now_v7(),
                 next_metadata_count,
-            )?;
+            );
 
             let number_added_metadata_log_entries = (new_metadata.metadata_log().len()
                 + number_expired_metadata_log_entries)

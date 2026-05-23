@@ -3336,6 +3336,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/remove_orphan_files/config:
+    get:
+      tags:
+        - tasks
+      summary: Get the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: get_task_queue_config_remove_orphan_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          headers:
+            x-request-id:
+              schema:
+                type: string
+                format: uuid
+              description: Request identifier, add this to your bug reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRemoveOrphanFilesQueueConfig'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tasks
+      summary: Set the configuration for a Task Queue.
+      description: These configurations are global per warehouse and shared across all instances of this kind of task.
+      operationId: set_task_queue_config_remove_orphan_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetRemoveOrphanFilesQueueConfig'
+        required: true
+      responses:
+        '204':
+          description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
     get:
       tags:
@@ -4370,6 +4431,27 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
+    ConsoleInfo:
+      type: object
+      description: Information about the UI (console) shipped with this binary.
+      required:
+        - edition
+        - version
+      properties:
+        commit-sha:
+          type:
+            - string
+            - 'null'
+          description: Git commit SHA of the console source, if known.
+        edition:
+          type: string
+          description: |-
+            Edition / crate name of the bundled console.
+            e.g. `lakekeeper-console` for the OSS console or
+            `lakekeeper-console-plus` for the enterprise console.
+        version:
+          type: string
+          description: SemVer of the console crate.
     ControlTaskAction:
       oneOf:
         - type: object
@@ -5219,6 +5301,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
+    GetRemoveOrphanFilesQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/RemoveOrphanFilesQueueConfig'
     GetRoleAccessResponse:
       type: object
       required:
@@ -6900,6 +6994,92 @@ components:
           properties:
             queue-name:
               type: string
+    RemoveOrphanFilesQueueConfig:
+      type: object
+      properties:
+        default-older-than-ms:
+          type: integer
+          format: int64
+          description: |-
+            Only remove files older than this duration (in milliseconds).
+            Defaults to 604800000 (7 days). **24-hour safety floor** is
+            enforced at task pickup (`RemoveOrphanFilesRetentionTooShort`
+            error code); values below it cause the worker to refuse to
+            run, unless `disable-min-older-than-check` is set on this same
+            config. Mirrors Spark's `retentionDurationCheck.enabled =
+            false` escape.
+
+            Negative, zero, or sub-day values still deserialize cleanly —
+            the runtime check is what blocks them. Out-of-range i64 values
+            that don't fit in `chrono::TimeDelta` fall back to a zero
+            duration rather than panicking.
+          default: 604800000
+        disable-min-older-than-check:
+          type: boolean
+          description: |-
+            Bypass the 24-hour minimum on `default-older-than-ms`. When
+            `false` (the default), the worker refuses to run a task whose
+            configured retention is shorter than 24h — a typo like
+            `default-older-than-ms: 6000` (6 seconds) would otherwise
+            silently delete in-flight writer uploads. Set to `true` only
+            when you genuinely need sub-day retention (dev/test). Mirrors
+            Spark's `retentionDurationCheck.enabled = false` escape.
+          default: false
+        dry-run:
+          type: boolean
+          description: |-
+            When `true`, identify orphan files but do not delete them. The
+            task still completes normally and records `would_delete_count` /
+            `would_delete_bytes` in its result; `deleted_bytes` is zero, so
+            the adaptive scheduler observes a rate of zero and falls back
+            to `maximum-interval-seconds`. Useful for previewing what a
+            run would remove before enabling deletion. Defaults to `false`.
+          default: false
+        enable-remove-orphan-files:
+          type: boolean
+          description: |-
+            Master switch for adaptive scheduling on this warehouse. When
+            `false` (the default), no tables are scheduled for the orphan-
+            files queue unless they have
+            `lakekeeper.remove-orphan-files.enabled=true` set explicitly.
+          default: false
+        max-run-time-seconds:
+          type: integer
+          format: int64
+          description: |-
+            Maximum wall-clock duration of a single task attempt, in seconds.
+            On timeout the task is marked failed and is retried at most once
+            before being recorded as a terminal failure. Operators with very
+            large tables can raise this; in exchange a single attempt may hold
+            a worker slot for the configured duration. Defaults to 3600 (60
+            minutes). Must be at least 60.
+          default: 3600
+          minimum: 60
+        maximum-interval-seconds:
+          type: integer
+          format: int64
+          description: |-
+            Upper bound on the adaptive next-run interval, in seconds. Even
+            idle tables get a periodic safety check at this cadence.
+            Defaults to 90 days. Must be at least 86400 (1 day).
+          default: 7776000
+          minimum: 86400
+        target-reclaim-bytes:
+          type: integer
+          format: int64
+          description: |-
+            Discovery-rate target in bytes. The hook schedules the next run
+            at the time the previous run's observed orphan-bytes-per-second
+            rate is expected to accumulate this much reclaimable data,
+            clamped to the internal floor (1 day) and the configured ceiling
+            (`maximum-interval-seconds`). Defaults to 1 GiB.
+
+            `0` is accepted and means "always schedule at the floor (1 day)
+            whenever any orphan is found." Useful for setups that want
+            scheduling driven solely by the floor/ceiling clamp instead of
+            by observed rate.
+          default: 1073741824
+          minimum: 0
     RenameProjectRequest:
       type: object
       required:
@@ -7472,6 +7652,7 @@ components:
       type: object
       required:
         - version
+        - lakekeeper-version
         - bootstrapped
         - server-id
         - authz-backend
@@ -7493,6 +7674,11 @@ components:
         bootstrapped:
           type: boolean
           description: Whether the catalog has been bootstrapped.
+        console:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ConsoleInfo'
+              description: Information about the bundled console (UI), if any.
         default-project-id:
           type:
             - string
@@ -7501,6 +7687,30 @@ components:
         gcp-system-identities-enabled:
           type: boolean
           description: If using GCP system identities for GCS storage profiles are enabled.
+        lakekeeper-commit-sha:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Git commit SHA of the upstream `lakekeeper` crate, if the binary
+            reported it at build time.
+        lakekeeper-enterprise-commit-sha:
+          type:
+            - string
+            - 'null'
+          description: Git commit SHA of the enterprise binary, if known.
+        lakekeeper-enterprise-version:
+          type:
+            - string
+            - 'null'
+          description: |-
+            SemVer of the enterprise binary (e.g. `lakekeeper-plus`) when this
+            server is an enterprise build. `None` on OSS builds.
+        lakekeeper-version:
+          type: string
+          description: |-
+            SemVer of the upstream `lakekeeper` crate the server was built
+            against.
         license-status:
           $ref: '#/components/schemas/LicenseStatus'
           description: License status information
@@ -7517,7 +7727,11 @@ components:
             Returns null if the catalog has not been bootstrapped.
         version:
           type: string
-          description: Version of the server.
+          description: |-
+            Deprecated alias of `lakekeeper-version`. Always equal to it; kept
+            for clients that read the plain `version` field. New clients should
+            read `lakekeeper-version` and/or `lakekeeper-enterprise-version`.
+          deprecated: true
     ServerRelation:
       type: string
       enum:
@@ -7562,6 +7776,18 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
+    SetRemoveOrphanFilesQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/RemoveOrphanFilesQueueConfig'
     SetTabularExpirationQueueConfig:
       type: object
       required:
@@ -7600,8 +7826,8 @@ components:
                 let cred: StorageCredential = serde_json::from_str(r#"{
                     "type": "s3",
                     "credential-type": "access-key",
-                    "aws-access-key-id": "minio-root-user",
-                    "aws-secret-access-key": "minio-root-password"
+                    "access-key-id": "minio-root-user",
+                    "secret-access-key": "minio-root-password"
                   }"#).unwrap();
                 ```
             - type: object
@@ -7623,8 +7849,8 @@ components:
             let cred: StorageCredential = serde_json::from_str(r#"{
                 "type": "s3",
                 "credential-type": "access-key",
-                "aws-access-key-id": "minio-root-user",
-                "aws-secret-access-key": "minio-root-password"
+                "access-key-id": "minio-root-user",
+                "secret-access-key": "minio-root-password"
               }"#).unwrap();
             ```
         - allOf:
@@ -8370,7 +8596,9 @@ components:
             Storage profile to use for the warehouse.
             The new profile must point to the same location as the existing profile
             to avoid data loss. For S3 this means that you may not change the
-            bucket or key prefix. The region may only be changed if an endpoint is set.
+            bucket or key prefix. The region may only be changed if an `endpoint`
+            is set on the new profile (so the endpoint, not the region, determines
+            where S3 requests are routed).
     User:
       type: object
       description: User of the catalog

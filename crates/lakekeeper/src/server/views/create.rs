@@ -116,7 +116,7 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
         &CompressionCodec::try_from_properties(&request.properties)?,
         *view_id,
         0,
-    )?;
+    );
 
     let view_creation = ViewMetadataBuilder::from_view_creation(ViewCreation {
         name: view.name.clone(),

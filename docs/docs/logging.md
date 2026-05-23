@@ -307,7 +307,22 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 |------------------|-----------------------------------------------------------|
 | `success`        | User found and role list resolved (possibly empty after mapping) |
 | `user_not_found` | No LDAP entry matched the search filter for this subject  |
-| `no_roles`       | User entry exists but has no group memberships configured |
+| `no_roles`       | User entry exists but the group-membership attribute is absent |
+| `ambiguous_user` *(since 0.12.2)* | LDAP search matched more than one entry for the subject; request errors out |
+| `dn_no_match` *(since 0.12.2)* | `Branching` mode with `else.mode = none`: the user DN did not match `branch_if_user_dn_matches`; empty role list returned |
+
+*Since 0.12.2*, every `ldap_resolve_roles` context carries a `mode` field describing which resolution path was active. Possible values:
+
+| `mode`                  | Meaning                                                                                                 |
+|-------------------------|---------------------------------------------------------------------------------------------------------|
+| `search`                | Stand-alone Search-mode resolution                                                                      |
+| `attribute`             | Stand-alone Attribute-mode resolution                                                                   |
+| `branching`             | Branching mode, but no branch decision was reached (e.g. `user_not_found`)                              |
+| `branch_then`           | Branching mode `then` branch ran (DN matched the regex)                                                 |
+| `branch_else_attribute` | Branching mode `else.mode = attribute` ran (DN did not match)                                           |
+| `branch_else_none`      | Branching mode `else.mode = none` (only emitted alongside `outcome = "dn_no_match"`)                    |
+
+**PII in context fields.** `filter` (substituted with the user's subject), `user_dn`, and `principal` are PII. `provider_id`, `attribute`, `pattern`, `role_count`, `count`, and `mode` are not.
 
 **Examples:**
 
@@ -327,7 +342,8 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "outcome": "success",
   "context": {
     "provider_id": "my-ldap",
-    "role_count": 3
+    "role_count": 3,
+    "mode": "search"
   },
   "message": "LDAP role resolution complete",
   "target": "lakekeeper_role_provider::role_provider::ldap"
@@ -351,9 +367,62 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
   "outcome": "user_not_found",
   "context": {
     "provider_id": "my-ldap",
-    "filter": "(&(objectClass=person)(uid=unknown))"
+    "filter": "(&(objectClass=person)(uid=unknown))",
+    "mode": "search"
   },
   "message": "LDAP user not found; returning empty role list",
+  "target": "lakekeeper_role_provider::role_provider::ldap"
+}
+```
+</details>
+
+<details>
+<summary>Ambiguous user (multiple matches)</summary>
+
+```json
+{
+  "timestamp": "2026-03-05T09:12:34.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~alice@corp.example.com"
+  },
+  "outcome": "ambiguous_user",
+  "context": {
+    "provider_id": "my-ldap",
+    "filter": "(&(objectClass=person)(uid=alice))",
+    "count": 2,
+    "mode": "attribute"
+  },
+  "message": "LDAP search matched multiple entries; cannot resolve principal unambiguously",
+  "target": "lakekeeper_role_provider::role_provider::ldap"
+}
+```
+</details>
+
+<details>
+<summary>Branching mode: user DN did not match (else.mode = none)</summary>
+
+```json
+{
+  "timestamp": "2026-03-05T09:12:34.000000Z",
+  "level": "INFO",
+  "event_source": "audit",
+  "operation": "ldap_resolve_roles",
+  "actor": {
+    "actor_type": "principal",
+    "principal": "oidc~svc-account@corp.example.com"
+  },
+  "outcome": "dn_no_match",
+  "context": {
+    "provider_id": "my-ldap",
+    "user_dn": "CN=svc-account,OU=Services,DC=corp,DC=example,DC=com",
+    "pattern": "OU=(?<tenant>[^,]+),OU=Tenants,",
+    "mode": "branch_else_none"
+  },
+  "message": "branching DN regex did not match; explicit no-roles outcome",
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```

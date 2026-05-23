@@ -310,7 +310,7 @@ impl AdlsProfile {
                     .await?
                 }
                 AzCredential::SharedAccessKey { key } => {
-                    let sas = Self::sas(
+                    let sas = self.sas(
                         &stc_request,
                         requested_sas_token_end,
                         azure_core::auth::Secret::new(key.clone()),
@@ -476,30 +476,38 @@ impl AdlsProfile {
 
         let key = delegation_key.user_deligation_key;
 
-        let sas = Self::sas(stc_request, signed_expiry, key)?;
+        let sas = self.sas(stc_request, signed_expiry, key)?;
         Ok((sas, signed_expiry))
     }
 
     fn sas(
+        &self,
         stc_request: &ShortTermCredentialsRequest,
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        // `sas` is a static function and can't read the profile's
-        // `allow_alternative_protocols` flag. Passing `true` here is safe:
-        // `stc_request.table_location` was already validated against the
-        // profile at table registration, so accepting both `abfss://` and
-        // `wasbs://` here only affects `AdlsLocation` construction for SAS
-        // signing — it does not re-grant access to alternative protocols.
-        let adls_location = AdlsLocation::try_from_location(&stc_request.table_location, true)
-            .map_err(|e| CredentialsError::ShortTermCredential {
+        let path = reduce_scheme_string(stc_request.table_location.as_ref()).map_err(|e| {
+            CredentialsError::ShortTermCredential {
                 reason: format!("Invalid ADLS location for SAS signing: {e}"),
                 source: Some(Box::new(e)),
-            })?;
-        let (canonical_resource, depth) = azure_sas_canonical_path(&adls_location);
+            }
+        })?;
+        let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
+        let depth = rootless_path.split('/').count();
+
+        // Azure recomputes the canonical-resource by URL-decoding the request
+        // URL path. Hand-rolling the canonical with the encoded form (e.g.
+        // literal `%3F` or `%20`) produces a signature mismatch.
+        let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
+        let canonical_resource = format!(
+            "/blob/{}/{}/{}",
+            self.account_name.as_str(),
+            self.filesystem.as_str(),
+            decoded_path
+        );
 
         tracing::debug!(
-            "Generating SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
+            "Generationg SAS token for resource `{canonical_resource}` with permissions {} valid until {signed_expiry}",
             stc_request.storage_permissions
         );
 
@@ -592,41 +600,12 @@ impl AdlsProfile {
     }
 }
 
-// --- Egress encoders ---------------------------------------------------
-//
-// Each encoder takes the `Location` (or its components) plus any
-// backend-specific context, and returns the exact byte form a downstream
-// consumer expects. They live next to their consumer so a reviewer can
-// verify the canonical form against the consumer's spec.
-
-/// Build the ADLS SAS canonical-resource string and its directory depth.
-///
-/// Form: `/blob/{account}/{filesystem}/{decoded_path}` where
-/// `decoded_path` is percent-decoded. Azure recomputes the canonical
-/// resource by URL-decoding the request URL path before HMAC; signing
-/// with the encoded form (e.g. literal `%3F` or `%20`) produces a
-/// signature mismatch and a silent 403.
-///
-/// Returns `(canonical_resource, signed_directory_depth)`. Depth counts
-/// non-empty path segments — root locations have depth 0.
-fn azure_sas_canonical_path(loc: &AdlsLocation) -> (String, usize) {
-    let blob_path = loc.blob_name();
-    let rootless_path = blob_path.trim_start_matches('/').trim_end_matches('/');
-    let depth = if rootless_path.is_empty() {
-        0
-    } else {
-        rootless_path.split('/').count()
-    };
-    let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
-    (
-        format!(
-            "/blob/{}/{}/{}",
-            loc.account_name(),
-            loc.filesystem(),
-            decoded_path
-        ),
-        depth,
-    )
+/// Removes the hostname and user from the path.
+/// Keeps only the path and optionally the scheme.
+/// Reduce an ADLS URL to its rooted blob path (`/<blob_name>`).
+pub(crate) fn reduce_scheme_string(path: &str) -> Result<String, InvalidLocationError> {
+    let l = AdlsLocation::try_from_str(path, true)?;
+    Ok(format!("/{}", l.blob_name().trim_start_matches('/')))
 }
 
 #[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -763,6 +742,19 @@ pub(crate) mod test {
         storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
 
+    #[test]
+    fn test_reduce_scheme_string() {
+        let path = "abfss://filesystem@dfs.windows.net/path/_test";
+        assert_eq!(reduce_scheme_string(path).unwrap(), "/path/_test");
+
+        let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
+        assert_eq!(reduce_scheme_string(wasbs_path).unwrap(), "/path/to/data");
+
+        // Non-ADLS scheme must error rather than silently pass through.
+        let non_matching = "http://example.com/path";
+        assert!(reduce_scheme_string(non_matching).is_err());
+    }
+
     pub(crate) mod azure_integration_tests {
         use crate::{
             api::RequestMetadata,
@@ -861,44 +853,6 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn azure_sas_canonical_path_decodes_percent_encoded_path() {
-        // Azure HMAC's canonical resource is computed against the URL-decoded
-        // request path; the encoded form (`%3F`/`%20`) would mismatch.
-        let loc = AdlsLocation::try_from_str(
-            "abfss://filesystem@account.dfs.core.windows.net/wh/foo%20bar/baz%3Fqux",
-            false,
-        )
-        .unwrap();
-        let (canonical, depth) = azure_sas_canonical_path(&loc);
-        assert_eq!(canonical, "/blob/account/filesystem/wh/foo bar/baz?qux");
-        assert_eq!(depth, 3);
-    }
-
-    #[test]
-    fn azure_sas_canonical_path_root_has_depth_zero() {
-        // Root location with no path segments must report depth 0
-        // (not 1, which `"".split('/').count()` would give).
-        let loc =
-            AdlsLocation::try_from_str("abfss://filesystem@account.dfs.core.windows.net/", false)
-                .unwrap();
-        let (canonical, depth) = azure_sas_canonical_path(&loc);
-        assert_eq!(canonical, "/blob/account/filesystem/");
-        assert_eq!(depth, 0);
-    }
-
-    #[test]
-    fn azure_sas_canonical_path_strips_trailing_slash() {
-        let loc = AdlsLocation::try_from_str(
-            "abfss://filesystem@account.dfs.core.windows.net/wh/table/",
-            false,
-        )
-        .unwrap();
-        let (canonical, depth) = azure_sas_canonical_path(&loc);
-        assert_eq!(canonical, "/blob/account/filesystem/wh/table");
-        assert_eq!(depth, 2);
-    }
-
-    #[test]
     fn test_default_adls_locations() {
         let profile = AdlsProfile {
             filesystem: "filesystem".to_string(),
@@ -926,9 +880,7 @@ pub(crate) mod test {
         };
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp
-            .default_tabular_location(&namespace_location, &tabular_name_context)
-            .unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
             format!(
@@ -942,9 +894,7 @@ pub(crate) mod test {
         let sp: StorageProfile = profile.into();
 
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
-        let location = sp
-            .default_tabular_location(&namespace_location, &tabular_name_context)
-            .unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
             format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")

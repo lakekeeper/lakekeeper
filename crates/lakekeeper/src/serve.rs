@@ -428,7 +428,16 @@ async fn serve_inner<
 
     // Task queues
     let task_queue_registry = TaskQueueRegistry::new();
-    if enable_built_in_queues {
+    // In read-only maintenance mode we don't start built-in queue workers:
+    // the operator drains writes before running schema migrations, and
+    // workers would otherwise tick against a half-migrated DB.
+    let skip_built_in_queues_for_maintenance = CONFIG.maintenance_mode.is_read_only();
+    if skip_built_in_queues_for_maintenance {
+        tracing::info!(
+            "Maintenance mode is read-only: skipping built-in task queue worker registration."
+        );
+    }
+    if enable_built_in_queues && !skip_built_in_queues_for_maintenance {
         task_queue_registry
             .register_built_in_queues::<C, _, _>(
                 catalog_state.clone(),

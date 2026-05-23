@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "namespace_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_id"
+          }
+        }
       }
     ],
     "parameters": {
