@@ -3,12 +3,17 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use futures::future::BoxFuture;
+/// Re-exported for convenience: extension crates need this to build their
+/// own `Migrator` via `sqlx::migrate!()` without pulling sqlx in as a
+/// direct dependency.
+pub use sqlx::migrate::Migrator as SqlxMigrator;
 use sqlx::{
     Error, Postgres,
     migrate::{AppliedMigration, Migrate, MigrateError, Migration as SqlxMigration, Migrator},
 };
+use typed_builder::TypedBuilder;
 
 use crate::{
     implementations::postgres::{
@@ -31,11 +36,22 @@ const CORE_MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 /// applied inside upstream's outer transaction — upgrades are atomic across
 /// core and every extension; partial state is impossible.
 ///
-/// Per the extension table convention (see CONTRIBUTING.md), extensions:
+/// Per the extension table convention (see the "Extension tables" section of
+/// the developer guide), extensions:
 /// - Name tables `ext_<feature>_*`.
 /// - FK only into upstream tables, with `ON DELETE CASCADE` or `ON DELETE SET NULL`.
 /// - Create no triggers, functions, or indexes on upstream-owned objects.
+///
+/// Construct via the typed builder:
+///
+/// ```ignore
+/// ExtensionMigrations::builder()
+///     .name("cedar")
+///     .migrator(sqlx::migrate!("./migrations"))
+///     .build()
+/// ```
 #[allow(missing_debug_implementations)]
+#[derive(TypedBuilder)]
 pub struct ExtensionMigrations {
     /// Short identifier for this extension (e.g. `"cedar"`, `"audit"`). Used
     /// verbatim to derive the per-source migration tracker table name
@@ -43,16 +59,18 @@ pub struct ExtensionMigrations {
     ///
     /// Must match `[a-z_][a-z0-9_]{0,40}` — a tight subset of `PostgreSQL`
     /// identifier rules, length-bounded so the full tracker name fits within
-    /// NAMEDATALEN (63). `migrate()` rejects non-conforming names with a
+    /// `NAMEDATALEN` (63). `migrate()` rejects non-conforming names with a
     /// clear error before any database work begins.
-    pub name: &'static str,
+    #[builder(setter(into))]
+    name: Cow<'static, str>,
     /// Migrations to apply, typically produced by `sqlx::migrate!("./migrations")`
     /// in the extension crate.
-    pub migrator: Migrator,
+    migrator: Migrator,
     /// Data migration hooks keyed by migration version, mirroring upstream's
     /// own hook registry. Each hook runs immediately after the matching
     /// migration is applied, inside the same transaction.
-    pub data_hooks: HashMap<i64, Box<dyn MigrationHook>>,
+    #[builder(default)]
+    data_hooks: HashMap<i64, Box<dyn MigrationHook>>,
     /// Migration versions whose content was intentionally changed after they
     /// were first shipped (e.g. a previously-shipped `.sql` file's body had
     /// to be edited without a version bump). For each version listed here,
@@ -60,7 +78,8 @@ pub struct ExtensionMigrations {
     /// table to match the current file's checksum, instead of failing with
     /// `VersionMismatch`. Mirrors upstream's own
     /// `get_changed_migration_ids()` for the core source — use sparingly.
-    pub sha_patches: HashSet<i64>,
+    #[builder(default)]
+    sha_patches: HashSet<i64>,
 }
 
 /// Maximum length of `ExtensionMigrations::name`. Combined with the fixed
@@ -145,9 +164,21 @@ pub async fn migrate(
     mut extensions: Vec<ExtensionMigrations>,
 ) -> anyhow::Result<ServerId> {
     // Fail fast on misconfigured extension names — before any DB work, before
-    // the advisory lock is acquired. Catches typos in caller crate source.
-    for ext in &extensions {
-        ext.validate_name()?;
+    // the advisory lock is acquired. Catches typos in caller crate source and
+    // duplicate registrations (which would otherwise silently collide on the
+    // same tracker table and corrupt history).
+    {
+        let mut seen: HashSet<&str> = HashSet::with_capacity(extensions.len());
+        for ext in &extensions {
+            ext.validate_name()?;
+            if !seen.insert(ext.name.as_ref()) {
+                return Err(anyhow!(
+                    "extension name `{}` registered more than once: each `ExtensionMigrations` \
+                     entry must have a unique name (they share a tracker table otherwise)",
+                    ext.name,
+                ));
+            }
+        }
     }
 
     let core_migrator = sqlx::migrate!();
@@ -175,15 +206,19 @@ pub async fn migrate(
     let mut sources: Vec<SourceState> = Vec::with_capacity(1 + extensions.len());
     sources.push(SourceState {
         table_name: CORE_MIGRATIONS_TABLE.to_string(),
-        applied: run_checks(&core_migrator, transaction, CORE_MIGRATIONS_TABLE).await?,
+        applied: run_checks(&core_migrator, transaction, CORE_MIGRATIONS_TABLE)
+            .await
+            .with_context(|| format!("pre-flight for source `{CORE_MIGRATIONS_TABLE}`"))?,
         hooks: get_data_migrations(),
         sha_patches: get_changed_migration_ids(),
     });
     for ext in &mut extensions {
         let table = ext.tracker_table();
-        let applied = run_checks(&ext.migrator, transaction, &table).await?;
+        let applied = run_checks(&ext.migrator, transaction, &table)
+            .await
+            .with_context(|| format!("pre-flight for source `{table}`"))?;
         tracing::info!(
-            extension = ext.name,
+            extension = %ext.name,
             "Pre-flight checks passed; will apply via {}",
             table,
         );
@@ -219,10 +254,17 @@ pub async fn migrate(
     // 3. Apply in merged order, dispatching each migration to its source's
     //    tracker table. Each source's checksum / sha-patch / hook state lives
     //    on its `SourceState`.
-    for (_version, src_idx, mut migration) in timeline {
+    for (version, src_idx, mut migration) in timeline {
         migration.no_tx = true;
         let source = &mut sources[src_idx];
-        apply_migration(transaction, source, migration).await?;
+        apply_migration(transaction, source, migration)
+            .await
+            .with_context(|| {
+                format!(
+                    "applying migration version {version} from source `{}`",
+                    source.table_name,
+                )
+            })?;
     }
 
     let server_id = get_or_set_server_id(&mut **transaction).await?;
@@ -434,7 +476,7 @@ fn validate_applied_migrations(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     use sqlx::{
         AssertSqlSafe, PgPool,
@@ -507,12 +549,10 @@ mod tests {
 
         // Phase 2: operator switches to a binary that registers an extension.
         // migrate() is called against the same DB, with extensions this time.
-        let ext = ExtensionMigrations {
-            name: "demo",
-            migrator: sqlx::migrate!("./tests/extension_migrations_fixture"),
-            data_hooks: HashMap::new(),
-            sha_patches: HashSet::new(),
-        };
+        let ext = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!("./tests/extension_migrations_fixture"))
+            .build();
         migrate(&pool, vec![ext])
             .await
             .expect("enabling an extension on a populated core DB must succeed");
@@ -571,12 +611,10 @@ mod tests {
         const PATCHED_VERSION: i64 = 20_260_101_000_000;
 
         // Phase 1: apply the original fixture.
-        let v1 = ExtensionMigrations {
-            name: "demo",
-            migrator: sqlx::migrate!("./tests/extension_migrations_fixture"),
-            data_hooks: HashMap::new(),
-            sha_patches: HashSet::new(),
-        };
+        let v1 = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!("./tests/extension_migrations_fixture"))
+            .build();
         migrate(&pool, vec![v1]).await.unwrap();
 
         let original_checksum: Vec<u8> =
@@ -589,12 +627,12 @@ mod tests {
         // Phase 2: simulate the in-place edit by re-running with a fixture
         // whose file body differs but whose version is identical. Without
         // sha_patches the migrator must refuse to proceed.
-        let v2_no_patch = ExtensionMigrations {
-            name: "demo",
-            migrator: sqlx::migrate!("./tests/extension_migrations_fixture_patched"),
-            data_hooks: HashMap::new(),
-            sha_patches: HashSet::new(),
-        };
+        let v2_no_patch = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!(
+                "./tests/extension_migrations_fixture_patched"
+            ))
+            .build();
         let err = migrate(&pool, vec![v2_no_patch]).await.unwrap_err();
         // sqlx 0.9 surfaces `MigrateError::VersionMismatch` with this exact
         // wording — pin on the version number to avoid matching unrelated
@@ -617,12 +655,13 @@ mod tests {
 
         // Phase 3: with the version listed in sha_patches, the migrator
         // rewrites the tracker row to match the new content's checksum.
-        let v2_with_patch = ExtensionMigrations {
-            name: "demo",
-            migrator: sqlx::migrate!("./tests/extension_migrations_fixture_patched"),
-            data_hooks: HashMap::new(),
-            sha_patches: HashSet::from([PATCHED_VERSION]),
-        };
+        let v2_with_patch = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!(
+                "./tests/extension_migrations_fixture_patched"
+            ))
+            .sha_patches(HashSet::from([PATCHED_VERSION]))
+            .build();
         migrate(&pool, vec![v2_with_patch]).await.unwrap();
 
         let patched_checksum: Vec<u8> =
@@ -641,11 +680,11 @@ mod tests {
     /// the well-formed subset. No DB connection needed — pure validation.
     #[test]
     fn test_extension_name_validation() {
-        let mk = |name: &'static str| ExtensionMigrations {
-            name,
-            migrator: sqlx::migrate!("./tests/extension_migrations_fixture"),
-            data_hooks: HashMap::new(),
-            sha_patches: HashSet::new(),
+        let mk = |name: &'static str| {
+            ExtensionMigrations::builder()
+                .name(name)
+                .migrator(sqlx::migrate!("./tests/extension_migrations_fixture"))
+                .build()
         };
 
         // Accept: simple lowercase, with digits, leading underscore.
@@ -669,12 +708,12 @@ mod tests {
     /// in the database afterward.
     #[sqlx::test(migrations = false)]
     async fn test_extension_migrations_failure_rolls_back_core(pool: PgPool) {
-        let ext = ExtensionMigrations {
-            name: "demo",
-            migrator: sqlx::migrate!("./tests/extension_migrations_fixture_invalid"),
-            data_hooks: HashMap::new(),
-            sha_patches: HashSet::new(),
-        };
+        let ext = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!(
+                "./tests/extension_migrations_fixture_invalid"
+            ))
+            .build();
         let result = migrate(&pool, vec![ext]).await;
         assert!(
             result.is_err(),

@@ -171,16 +171,18 @@ entire upgrade rolls back. Partial state is impossible.
 ```rust
 use lakekeeper::implementations::postgres::migrations::{ExtensionMigrations, migrate};
 
-let extensions = vec![ExtensionMigrations {
-    // Must match [a-z_][a-z0-9_]{0,40}; rejected at the start of `migrate()` if not.
-    // Derives the tracker table name `ext_my_extension_sqlx_migrations`.
-    name: "my_extension",
-    migrator: sqlx::migrate!("./migrations"), // embedded at compile time
-    data_hooks: std::collections::HashMap::new(),
-    sha_patches: std::collections::HashSet::new(),
-}];
+// `name` must match [a-z_][a-z0-9_]{0,40} — rejected at the start of
+// `migrate()` if not. Derives tracker table `ext_my_extension_sqlx_migrations`.
+let extensions = vec![ExtensionMigrations::builder()
+    .name("my_extension")
+    .migrator(sqlx::migrate!("./migrations")) // embedded at compile time
+    .build()];
 let server_id = migrate(&pool, extensions).await?;
 ```
+
+Optional fields not shown: `.data_hooks(map)` for Rust-side hooks tied to
+specific migration versions, and `.sha_patches(set)` for in-place edits to
+already-shipped migrations.
 
 The `data_hooks` field on `ExtensionMigrations` is a
 `HashMap<i64, Box<dyn MigrationHook>>` keyed by the migration's version id.
