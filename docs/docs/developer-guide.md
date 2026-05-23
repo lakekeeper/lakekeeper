@@ -157,7 +157,7 @@ an operational contract between upstream and any extension:
 |---|---|
 | Reserved prefix | Upstream core migrations **never** create tables matching `ext_*`. Extensions own that namespace. The integration test `test_core_does_not_create_ext_objects` enforces this. |
 | FK direction | Extension tables FK *into* upstream tables. Upstream never FKs into `ext_*`. |
-| CASCADE required | Every FK from an `ext_*` table to an upstream table must be `ON DELETE CASCADE` or `ON DELETE SET NULL`. The test `test_extension_fk_cascade_rule` enforces this. |
+| CASCADE required | Every FK from an `ext_*` table to an upstream table should be `ON DELETE CASCADE` or `ON DELETE SET NULL`. Enforce in the extension crate's own CI — upstream cannot inspect downstream migration sets. |
 | Scope of allowed objects | `ext_*` may name tables and objects owned by those tables (indexes, sequences). Triggers, functions, indexes, or views attached to upstream-owned objects are not permitted under the prefix — they would survive extension removal and could brick OSS. |
 | Tracker tables | Each registered extension migration source uses its own SQLx tracker, named `ext_<name>_sqlx_migrations`. Core's `_sqlx_migrations` is untouched. |
 
@@ -172,12 +172,19 @@ entire upgrade rolls back. Partial state is impossible.
 use lakekeeper::implementations::postgres::migrations::{ExtensionMigrations, migrate};
 
 let extensions = vec![ExtensionMigrations {
-    name: "lakekeeper_plus",
+    name: "my-lakekeeper-extension",
     migrator: sqlx::migrate!("./migrations"), // embedded at compile time
     data_hooks: std::collections::HashMap::new(),
 }];
 let server_id = migrate(&pool, extensions).await?;
 ```
+
+The `data_hooks` field on `ExtensionMigrations` is a
+`HashMap<i64, Box<dyn MigrationHook>>` keyed by the migration's version id.
+Each entry's `MigrationHook` runs immediately after the matching extension
+migration is applied, inside the same transaction — use it for Rust-side
+data backfills tied to a specific SQL migration. Pass `HashMap::new()`
+when no hooks are needed (the common case in the snippet above).
 
 Callers that don't register extensions use the back-compat shim
 `migrate_core_only(pool)`. Core upstream tooling and tests already do.
