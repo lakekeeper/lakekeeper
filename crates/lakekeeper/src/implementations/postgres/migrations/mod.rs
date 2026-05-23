@@ -634,14 +634,19 @@ mod tests {
             ))
             .build();
         let err = migrate(&pool, vec![v2_no_patch]).await.unwrap_err();
-        // sqlx 0.9 surfaces `MigrateError::VersionMismatch` with this exact
-        // wording — pin on the version number to avoid matching unrelated
-        // failure modes.
-        let msg = err.to_string();
+        // Top-level message carries our context (source + version); the
+        // underlying sqlx `VersionMismatch` is in the chain. Use the
+        // alternate Display (`{:#}`) to include both.
+        let chain = format!("{err:#}");
         assert!(
-            msg.contains(&PATCHED_VERSION.to_string())
-                && msg.contains("previously applied but has been modified"),
-            "expected checksum-mismatch error for version {PATCHED_VERSION}, got: {err}",
+            chain.contains(&PATCHED_VERSION.to_string())
+                && chain.contains("previously applied but has been modified"),
+            "expected checksum-mismatch error chain for version {PATCHED_VERSION}, got: {chain}",
+        );
+        // Source identification — operator must know which tracker is dirty.
+        assert!(
+            chain.contains("ext_demo_sqlx_migrations"),
+            "error chain must name the offending source tracker, got: {chain}",
         );
 
         // Tracker row unchanged because the outer tx rolled back.
