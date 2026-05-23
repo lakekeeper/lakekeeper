@@ -172,9 +172,12 @@ entire upgrade rolls back. Partial state is impossible.
 use lakekeeper::implementations::postgres::migrations::{ExtensionMigrations, migrate};
 
 let extensions = vec![ExtensionMigrations {
-    name: "my-lakekeeper-extension",
+    // Must match [a-z_][a-z0-9_]{0,40}; rejected at the start of `migrate()` if not.
+    // Derives the tracker table name `ext_my_extension_sqlx_migrations`.
+    name: "my_extension",
     migrator: sqlx::migrate!("./migrations"), // embedded at compile time
     data_hooks: std::collections::HashMap::new(),
+    sha_patches: std::collections::HashSet::new(),
 }];
 let server_id = migrate(&pool, extensions).await?;
 ```

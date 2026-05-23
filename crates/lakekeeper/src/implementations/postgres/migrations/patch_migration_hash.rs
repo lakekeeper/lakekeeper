@@ -36,18 +36,24 @@ pub(crate) async fn patch(
     .bind(stored_in_db.as_ref())
     .execute(&mut **trx)
     .await?;
-    if q.rows_affected() > 1 {
-        tracing::error!(
-            "More than one row was updated in {table_name} by the checksum patch — this is a bug; please report it."
-        );
-        return Err(anyhow::anyhow!(
-            "More than one row was updated in {table_name} by the checksum patch — this is a bug; please report it."
-        ));
+    match q.rows_affected() {
+        1 => {
+            tracing::info!("Patched checksum in {table_name} for version {version}");
+            Ok(())
+        }
+        0 => Err(anyhow::anyhow!(
+            "Checksum patch matched zero rows in {table_name} for version {version}: \
+             the row's stored checksum did not match the value read pre-patch. \
+             This indicates a logic bug or concurrent write inside the migration \
+             transaction; please report it."
+        )),
+        n => {
+            tracing::error!(
+                "{n} rows were updated in {table_name} by the checksum patch — this is a bug; please report it."
+            );
+            Err(anyhow::anyhow!(
+                "{n} rows were updated in {table_name} by the checksum patch — this is a bug; please report it."
+            ))
+        }
     }
-    if q.rows_affected() == 1 {
-        tracing::info!("Patched checksum in {table_name} for version {version}");
-    } else {
-        tracing::info!("No rows were updated in {table_name} for version {version}");
-    }
-    Ok(())
 }

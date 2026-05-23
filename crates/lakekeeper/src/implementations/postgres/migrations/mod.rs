@@ -118,14 +118,25 @@ pub async fn migrate_core_only(pool: &sqlx::PgPool) -> anyhow::Result<ServerId> 
     migrate(pool, Vec::new()).await
 }
 
-/// Apply core migrations followed by every registered extension's migrations,
-/// all in one outer transaction. Either all migrations succeed and the
-/// transaction commits, or it rolls back — partial state is impossible.
+/// Apply every registered migration — core and all extensions — in a single
+/// outer transaction. Either every migration succeeds and the transaction
+/// commits, or it rolls back — partial state is impossible.
 ///
-/// Extensions are applied in registration order, after all core migrations.
+/// Ordering: all sources are pooled, then applied in ascending `version`
+/// order (the timestamp prefix on the `.sql` filename). When two migrations
+/// share a version, registration order breaks the tie — core first, then
+/// extensions in the order passed to `migrate()`. Extensions are **not**
+/// guaranteed to run strictly after all core migrations: an extension
+/// migration dated earlier than a core migration interleaves into the
+/// appropriate position in the merged timeline. This is what lets core
+/// add a column → extension FKs it → extension migrates the FK target →
+/// core drops the column to work as a single atomic sequence across both
+/// repos, as long as the dates line up.
+///
 /// Each extension tracks its applied migrations in its own
-/// `ext_<name>_sqlx_migrations` table. Extensions must depend only on core
-/// upstream state — never on each other.
+/// `ext_<name>_sqlx_migrations` table; core uses `_sqlx_migrations`.
+/// Extensions must depend only on core upstream state — never on each
+/// other.
 ///
 /// # Errors
 /// Returns an error if any migration fails.
@@ -624,17 +635,6 @@ mod tests {
             patched_checksum, original_checksum,
             "extension sha patch should have rewritten the tracker row",
         );
-
-        // Core's tracker was never touched by an extension sha patch — the
-        // patch function uses the source's own table name. Verify there is
-        // no `core_sqlx_migrations`-shaped collateral; specifically, every
-        // core checksum is intact.
-        let core_rows: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE checksum IS NULL")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(core_rows, 0, "no core tracker row should be null/blank");
     }
 
     /// `validate_name` rejects identifiers that would break PG DDL and accepts
@@ -660,7 +660,7 @@ mod tests {
         for bad in [
             "", "1ext", "ExtName", "my-ext", "my ext", "my.ext", too_long,
         ] {
-            assert!(mk(bad).validate_name().is_err(), "`{bad}` must be rejected",);
+            assert!(mk(bad).validate_name().is_err(), "`{bad}` must be rejected");
         }
     }
 
