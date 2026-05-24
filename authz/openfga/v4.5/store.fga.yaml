@@ -384,7 +384,7 @@ tests:
           can_grant_select: true
           can_grant_project_admin: false
           can_grant_security_admin: true
-          can_grant_data_admin: false
+          can_grant_data_admin: true
       - user: user:project_1_security_admin
         object: warehouse:warehouse_1
         assertions:
@@ -478,7 +478,7 @@ tests:
           can_grant_select: false
           can_grant_project_admin: false
           can_grant_security_admin: false
-          can_grant_data_admin: true
+          can_grant_data_admin: false
       - user: user:project_1_data_admin
         object: warehouse:warehouse_1
         assertions:
