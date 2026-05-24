@@ -281,17 +281,29 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
             is_delegated_execution: delegated,
             namespace: namespace.clone(),
         });
-        // Only views have a security model. Tables can only appear as the
-        // last entry (the target) because all referenced-by entries are looked
-        // up as TabularIdentBorrowed::View and the DB filters by type.
-        if matches!(tabular, ViewOrTableInfo::Table(_)) {
-            debug_assert!(
-                tabulars
-                    .last()
-                    .is_some_and(|(t, _)| std::ptr::eq(t, tabular)),
-                "Table appeared as intermediate entry in authorization chain"
-            );
-            continue;
+        // Only views have a security model. Tables and generic tables can only
+        // appear as the last entry (the target) — all referenced-by entries are
+        // looked up as TabularIdentBorrowed::View and the DB filters by type.
+        // This function is shared between the iceberg-table load path (target
+        // is a Table) and the generic-table credentials path (target is a
+        // GenericTable), so both must short-circuit the security-model check.
+        // Otherwise a generic table whose properties happen to match an
+        // engine's owner-property key would be misread as DEFINER and trigger
+        // delegated execution.
+        //
+        // Exhaustive match: a future variant of ViewOrTableInfo must make an
+        // explicit decision here.
+        match tabular {
+            ViewOrTableInfo::Table(_) | ViewOrTableInfo::GenericTable(_) => {
+                debug_assert!(
+                    tabulars
+                        .last()
+                        .is_some_and(|(t, _)| std::ptr::eq(t, tabular)),
+                    "Table or generic table appeared as intermediate entry in authorization chain"
+                );
+                continue;
+            }
+            ViewOrTableInfo::View(_) => {}
         }
         match engines
             .determine_security_model(tabular.properties())

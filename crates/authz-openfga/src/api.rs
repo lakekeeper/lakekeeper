@@ -2570,7 +2570,8 @@ async fn checked_write<RA: Assignment>(
         }
     ) && (object.starts_with("namespace:")
         || object.starts_with("lakekeeper_table")
-        || object.starts_with("lakekeeper_view"))
+        || object.starts_with("lakekeeper_view")
+        || object.starts_with("lakekeeper_generic_table"))
     {
         // Currently not supported as we are missing public usersets for managed access
         return Err(OpenFGAError::GrantRoleWithAssumedRole);

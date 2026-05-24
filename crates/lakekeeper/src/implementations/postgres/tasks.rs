@@ -1379,6 +1379,52 @@ mod test {
         assert_ne!(id, id3);
     }
 
+    #[sqlx::test]
+    async fn test_queue_task_batch_round_trips_generic_table_entity(pool: PgPool) {
+        // Pins the TaskEntityTypeDB::GenericTable arm of the InsertResult
+        // mapping at the queue_task_batch site: a GenericTable entity goes in,
+        // a GenericTable entity must come back with the same generic_table_id.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+
+        let generic_table_uuid = Uuid::now_v7();
+        let entity_id = WarehouseTaskEntityId::GenericTable {
+            generic_table_id: generic_table_uuid.into(),
+        };
+        let tq_name = generate_tq_name();
+
+        let mut inserts = queue_task_batch(
+            &mut conn,
+            &tq_name,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    scheduled_for: None,
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id,
+                        entity_name: vec!["ns".to_string(), format!("gt-{generic_table_uuid}")],
+                    },
+                },
+                payload: serde_json::json!({"kind": "generic-table"}),
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(inserts.len(), 1, "expected one InsertResult");
+        let inserted = inserts.pop().unwrap();
+        match inserted.entity_id {
+            Some(WarehouseTaskEntityId::GenericTable { generic_table_id }) => {
+                assert_eq!(*generic_table_id, generic_table_uuid);
+            }
+            other => panic!(
+                "expected InsertResult.entity_id = GenericTable, got {other:?}"
+            ),
+        }
+    }
+
     pub(crate) async fn setup_warehouse(pool: PgPool) -> (WarehouseId, ArcProjectId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(

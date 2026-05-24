@@ -1338,6 +1338,20 @@ impl From<ViewInTableList> for ErrorModel {
     }
 }
 define_simple_tabular_err!(
+    GenericTableInTableList,
+    "Catalog returned a generic table when filtering for tables"
+);
+impl From<GenericTableInTableList> for ErrorModel {
+    fn from(err: GenericTableInTableList) -> Self {
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("GenericTableInTableList")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
+    }
+}
+define_simple_tabular_err!(
     TableInViewList,
     "Catalog returned a table when filtering for views"
 );
@@ -1346,6 +1360,20 @@ impl From<TableInViewList> for ErrorModel {
         ErrorModel::builder()
             .message(err.to_string())
             .r#type("TableInViewList")
+            .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+            .stack(err.stack)
+            .build()
+    }
+}
+define_simple_tabular_err!(
+    GenericTableInViewList,
+    "Catalog returned a generic table when filtering for views"
+);
+impl From<GenericTableInViewList> for ErrorModel {
+    fn from(err: GenericTableInViewList) -> Self {
+        ErrorModel::builder()
+            .message(err.to_string())
+            .r#type("GenericTableInViewList")
             .code(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
             .stack(err.stack)
             .build()
@@ -1368,7 +1396,8 @@ define_transparent_error! {
     stack_message: "Error listing tables in catalog",
     variants: [
         ListTabularsError,
-        ViewInTableList
+        ViewInTableList,
+        GenericTableInTableList
     ]
 }
 
@@ -1377,7 +1406,8 @@ define_transparent_error! {
     stack_message: "Error listing tables in catalog",
     variants: [
         ListTabularsError,
-        TableInViewList
+        TableInViewList,
+        GenericTableInViewList
     ]
 }
 
@@ -1776,16 +1806,22 @@ where
         .await?;
         let views = page.map::<ViewId, ViewDeletionInfo, ListViewsError>(
             |k| match k {
-                TabularId::Table(_) | TabularId::GenericTable(_) => {
-                    Err(TableInViewList::new(warehouse_id, k).into())
+                TabularId::Table(_) => Err(TableInViewList::new(warehouse_id, k).into()),
+                TabularId::GenericTable(_) => {
+                    Err(GenericTableInViewList::new(warehouse_id, k).into())
                 }
                 TabularId::View(t) => Ok(t),
             },
             |v| {
                 let tabular_id = v.tabular_id();
-                match v.into_view_info() {
-                    Some(view) => Ok(view),
-                    None => Err(TableInViewList::new(warehouse_id, tabular_id).into()),
+                match v {
+                    ViewOrTableDeletionInfo::View(view) => Ok(view),
+                    ViewOrTableDeletionInfo::Table(_) => {
+                        Err(TableInViewList::new(warehouse_id, tabular_id).into())
+                    }
+                    ViewOrTableDeletionInfo::GenericTable(_) => {
+                        Err(GenericTableInViewList::new(warehouse_id, tabular_id).into())
+                    }
                 }
             },
         )?;
@@ -1811,15 +1847,21 @@ where
         let tables = page.map::<TableId, TableDeletionInfo, ListTablesError>(
             |k| match k {
                 TabularId::Table(t) => Ok(t),
-                TabularId::View(_) | TabularId::GenericTable(_) => {
-                    Err(ViewInTableList::new(warehouse_id, k).into())
+                TabularId::View(_) => Err(ViewInTableList::new(warehouse_id, k).into()),
+                TabularId::GenericTable(_) => {
+                    Err(GenericTableInTableList::new(warehouse_id, k).into())
                 }
             },
             |v| {
                 let tabular_id = v.tabular_id();
-                match v.into_table_info() {
-                    Some(table) => Ok(table),
-                    None => Err(ViewInTableList::new(warehouse_id, tabular_id).into()),
+                match v {
+                    ViewOrTableDeletionInfo::Table(table) => Ok(table),
+                    ViewOrTableDeletionInfo::View(_) => {
+                        Err(ViewInTableList::new(warehouse_id, tabular_id).into())
+                    }
+                    ViewOrTableDeletionInfo::GenericTable(_) => {
+                        Err(GenericTableInTableList::new(warehouse_id, tabular_id).into())
+                    }
                 }
             },
         )?;

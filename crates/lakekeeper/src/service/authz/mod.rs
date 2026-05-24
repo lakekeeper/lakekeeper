@@ -1386,6 +1386,20 @@ pub(crate) mod tests {
                 },
                 serde_json::json!({"action": "update_properties"}),
             ),
+            (
+                CatalogNamespaceAction::CreateGenericTable {
+                    name: None,
+                    generic_table_id: None,
+                    format: None,
+                    base_location: None,
+                    properties: Arc::new(BTreeMap::new()),
+                },
+                serde_json::json!({"action": "create_generic_table"}),
+            ),
+            (
+                CatalogNamespaceAction::ListGenericTables,
+                serde_json::json!({"action": "list_generic_tables"}),
+            ),
         ] {
             let serialized = serde_json::to_value(&action).expect("Failed to serialize");
             let expected_serialized =
@@ -1393,6 +1407,87 @@ pub(crate) mod tests {
             assert_eq!(serialized, expected_serialized);
 
             let deserialized: CatalogNamespaceAction =
+                serde_json::from_value(serialized).expect("Failed to deserialize");
+            assert_eq!(deserialized, action);
+        }
+    }
+
+    #[test]
+    fn test_create_generic_table_action_serde_with_payload() {
+        // Populated payload — every optional field must round-trip and surface
+        // in JSON under its kebab-tag name. Covers the inverse of
+        // skip_serializing_if: when present, the field is emitted.
+        let mut props = BTreeMap::new();
+        props.insert("k".to_string(), "v".to_string());
+        let gt_uuid = Uuid::nil();
+        let action = CatalogNamespaceAction::CreateGenericTable {
+            name: Some("my-gt".to_string()),
+            generic_table_id: Some(crate::service::GenericTableId::from(gt_uuid)),
+            format: Some("lance".to_string()),
+            base_location: Some("memory://warehouse/path".to_string()),
+            properties: Arc::new(props),
+        };
+        let expected = serde_json::json!({
+            "action": "create_generic_table",
+            "name": "my-gt",
+            "generic_table_id": gt_uuid,
+            "format": "lance",
+            "base_location": "memory://warehouse/path",
+            "properties": {"k": "v"},
+        });
+        let serialized = serde_json::to_value(&action).expect("serialize");
+        assert_eq!(serialized, expected);
+        let deserialized: CatalogNamespaceAction =
+            serde_json::from_value(serialized).expect("deserialize");
+        assert_eq!(deserialized, action);
+    }
+
+    #[test]
+    fn test_catalog_generic_table_action_serde() {
+        for (action, expected) in [
+            (
+                CatalogGenericTableAction::Drop,
+                serde_json::json!({"action": "drop"}),
+            ),
+            (
+                CatalogGenericTableAction::ReadData,
+                serde_json::json!({"action": "read_data"}),
+            ),
+            (
+                CatalogGenericTableAction::WriteData,
+                serde_json::json!({"action": "write_data"}),
+            ),
+            (
+                CatalogGenericTableAction::GetMetadata,
+                serde_json::json!({"action": "get_metadata"}),
+            ),
+            (
+                CatalogGenericTableAction::Rename,
+                serde_json::json!({"action": "rename"}),
+            ),
+            (
+                CatalogGenericTableAction::IncludeInList,
+                serde_json::json!({"action": "include_in_list"}),
+            ),
+            (
+                CatalogGenericTableAction::Undrop,
+                serde_json::json!({"action": "undrop"}),
+            ),
+            (
+                CatalogGenericTableAction::GetTasks,
+                serde_json::json!({"action": "get_tasks"}),
+            ),
+            (
+                CatalogGenericTableAction::ControlTasks,
+                serde_json::json!({"action": "control_tasks"}),
+            ),
+        ] {
+            let serialized = serde_json::to_value(&action).expect("Failed to serialize");
+            let expected_serialized =
+                serde_json::to_value(expected).expect("Failed to serialize expected");
+            assert_eq!(serialized, expected_serialized);
+
+            let deserialized: CatalogGenericTableAction =
                 serde_json::from_value(serialized).expect("Failed to deserialize");
             assert_eq!(deserialized, action);
         }
@@ -2450,6 +2545,149 @@ pub(crate) mod tests {
         assert!(
             allowed,
             "instance admin must bypass blocked view GetMetadata (control-plane)",
+        );
+    }
+
+    /// Instance admins must NOT bypass data-plane generic-table actions —
+    /// ReadData/WriteData still route through the configured authorizer, while
+    /// control-plane actions like Drop are bypassed. Mirrors the table test.
+    #[tokio::test]
+    async fn test_instance_admin_does_not_bypass_data_plane_generic_table_actions() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(
+            format!("generic_table:{:?}", CatalogGenericTableAction::WriteData).as_str(),
+        );
+        authz.block_action(
+            format!("generic_table:{:?}", CatalogGenericTableAction::ReadData).as_str(),
+        );
+
+        let user = crate::service::UserId::try_from("oidc~admin").unwrap();
+        let md = RequestMetadata::test_instance_admin(user);
+
+        let warehouse = ResolvedWarehouse::new_with_id(Uuid::nil().into());
+        let hierarchy = NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+                requested_ident: None,
+            },
+            parents: vec![],
+        };
+        let gt_info = crate::service::GenericTabularInfo::new_random(Uuid::nil().into());
+
+        // WriteData is blocked → instance admin gets denied (data-plane is NOT bypassed).
+        let allowed = authz
+            .is_allowed_generic_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &gt_info,
+                CatalogGenericTableAction::WriteData,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !allowed,
+            "instance admin must not bypass blocked generic-table WriteData (data-plane)",
+        );
+
+        // ReadData same.
+        let allowed = authz
+            .is_allowed_generic_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &gt_info,
+                CatalogGenericTableAction::ReadData,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            !allowed,
+            "instance admin must not bypass blocked generic-table ReadData (data-plane)",
+        );
+
+        // Drop (control-plane) — also block it, and verify instance admin STILL
+        // bypasses it. Confirms the bypass applies selectively per action.
+        authz.block_action(
+            format!("generic_table:{:?}", CatalogGenericTableAction::Drop).as_str(),
+        );
+        let allowed = authz
+            .is_allowed_generic_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &gt_info,
+                CatalogGenericTableAction::Drop,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "instance admin must bypass blocked generic-table Drop (control-plane)",
+        );
+    }
+
+    /// Lakekeeper-internal actors must bypass even data-plane generic-table
+    /// actions, matching the table/view behaviour.
+    #[tokio::test]
+    async fn test_lakekeeper_internal_bypasses_all_generic_table_actions() {
+        let authz = HidingAuthorizer::new();
+        authz.block_action(
+            format!("generic_table:{:?}", CatalogGenericTableAction::WriteData).as_str(),
+        );
+
+        let md = RequestMetadata::new_lakekeeper_internal(Uuid::now_v7());
+        let warehouse = ResolvedWarehouse::new_with_id(Uuid::nil().into());
+        let hierarchy = NamespaceHierarchy {
+            namespace: NamespaceWithParent {
+                namespace: Arc::new(Namespace {
+                    namespace_ident: NamespaceIdent::new("test".to_string()),
+                    namespace_id: NamespaceId::new_random(),
+                    warehouse_id: Uuid::nil().into(),
+                    protected: false,
+                    properties: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: Some(chrono::Utc::now()),
+                    version: 0.into(),
+                }),
+                parent: None,
+                requested_ident: None,
+            },
+            parents: vec![],
+        };
+        let gt_info = crate::service::GenericTabularInfo::new_random(Uuid::nil().into());
+
+        let allowed = authz
+            .is_allowed_generic_table_action(
+                &md,
+                None,
+                &warehouse,
+                &hierarchy,
+                &gt_info,
+                CatalogGenericTableAction::WriteData,
+            )
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            allowed,
+            "LakekeeperInternal must bypass WriteData (data-plane) on generic tables too",
         );
     }
 

@@ -382,6 +382,66 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_resolve_tasks_generic_table_branch(pool: PgPool) {
+        // Pins the WarehouseTaskEntityId::GenericTable → ResolvedTaskEntity::GenericTable
+        // mapping. Fails if a refactor breaks the resolve branch added for
+        // generic tables.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+
+        let generic_table_uuid = Uuid::now_v7();
+        let entity = WarehouseTaskEntityId::GenericTable {
+            generic_table_id: generic_table_uuid.into(),
+        };
+        let expected_table_name = format!("table{generic_table_uuid}");
+        let tq_name = generate_test_queue_name();
+
+        let task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            None,
+            entity,
+            project_id.clone(),
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"type": "generic"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let _picked = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &[task_id],
+            &pool,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let resolved = &result[0];
+        assert_eq!(resolved.task_id, task_id);
+        assert_eq!(resolved.queue_name, tq_name);
+        match &resolved.entity {
+            ResolvedTaskEntity::GenericTable(gt) => {
+                assert_eq!(*gt.generic_table_id, generic_table_uuid);
+                assert_eq!(gt.warehouse_id, warehouse_id);
+                assert_eq!(gt.generic_table_ident.namespace.as_ref(), &["ns".to_string()]);
+                assert_eq!(gt.generic_table_ident.name, expected_table_name);
+            }
+            other => panic!("Expected ResolvedTaskEntity::GenericTable, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test]
     async fn test_resolve_tasks_completed_tasks_only(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
