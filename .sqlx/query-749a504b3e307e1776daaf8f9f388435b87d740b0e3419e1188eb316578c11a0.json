@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT metadata_location\n        FROM tabular\n        WHERE warehouse_id = $1\n          AND tabular_id = $2\n          AND typ = 'view'\n          AND deleted_at IS NULL\n          AND namespace_id = $3\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "metadata_location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "749a504b3e307e1776daaf8f9f388435b87d740b0e3419e1188eb316578c11a0"
+}

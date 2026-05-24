@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO view_representation (\n            warehouse_id, view_id, view_version_id, typ, sql, dialect\n        )\n        SELECT $1, $2, u.view_version_id, 'sql'::view_representation_type, u.sql, u.dialect\n        FROM UNNEST($3::int[], $4::text[], $5::text[])\n             AS u(view_version_id, sql, dialect)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4Array",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0e177cb68d14c84f1d7472697d90227905056574170a73415e2949c65e940e40"
+}
