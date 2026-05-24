@@ -6,32 +6,68 @@
       {
         "ordinal": 0,
         "name": "warehouse_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "warehouse_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "table_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "table_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "last_sequence_number",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "last_sequence_number"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "last_column_id",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "last_column_id"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "last_updated_ms",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "last_updated_ms"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "last_partition_id",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "last_partition_id"
+          }
+        }
       },
       {
         "ordinal": 6,
@@ -47,252 +83,362 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "table_format_version"
+          }
         }
       },
       {
         "ordinal": 7,
         "name": "next_row_id",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "\"table\"",
+            "name": "next_row_id"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "table_name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "table_fs_location",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_location"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "table_fs_protocol",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_protocol"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "namespace_name",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_namespace_name"
+          }
+        }
       },
       {
         "ordinal": 12,
         "name": "namespace_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "namespace_id"
+          }
+        }
       },
       {
         "ordinal": 13,
         "name": "metadata_location",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
       },
       {
         "ordinal": 14,
         "name": "warehouse_version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 15,
         "name": "schema_ids",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 16,
         "name": "current_schema",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "table_current_schema",
+            "name": "schema_id"
+          }
+        }
       },
       {
         "ordinal": 17,
         "name": "default_partition_spec_id",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "table_default_partition_spec",
+            "name": "partition_spec_id"
+          }
+        }
       },
       {
         "ordinal": 18,
         "name": "schemas: Vec<Json<Schema>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 19,
         "name": "snapshot_ids",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 20,
         "name": "snapshot_parent_snapshot_id: Vec<Option<i64>>",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 21,
         "name": "snapshot_sequence_number",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 22,
         "name": "snapshot_manifest_list: Vec<String>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 23,
         "name": "snapshot_timestamp_ms",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 24,
         "name": "snapshot_summary: Vec<Json<Summary>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 25,
         "name": "snapshot_schema_id: Vec<Option<i32>>",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 26,
         "name": "snapshot_first_row_ids: Vec<Option<i64>>",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 27,
         "name": "snapshot_assigned_rows: Vec<Option<i64>>",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 28,
         "name": "snapshot_key_ids: Vec<Option<String>>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 29,
         "name": "default_sort_order_id?",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "table_default_sort_order",
+            "name": "sort_order_id"
+          }
+        }
       },
       {
         "ordinal": 30,
         "name": "partition_spec_ids",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 31,
         "name": "partition_specs: Vec<Json<PartitionSpec>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 32,
         "name": "table_properties_keys",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 33,
         "name": "table_properties_values",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 34,
         "name": "snapshot_log_ids",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 35,
         "name": "snapshot_log_timestamps",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 36,
         "name": "metadata_log_files",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 37,
         "name": "metadata_log_timestamps",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 38,
         "name": "sort_order_ids",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 39,
         "name": "sort_orders: Vec<Json<SortOrder>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 40,
         "name": "table_ref_names",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 41,
         "name": "table_ref_snapshot_ids",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 42,
         "name": "table_ref_retention: Vec<Json<SnapshotRetention>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 43,
         "name": "partition_stats_snapshot_ids",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 44,
         "name": "partition_stats_statistics_paths",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 45,
         "name": "partition_stats_file_size_in_bytes",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 46,
         "name": "table_stats_snapshot_ids",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 47,
         "name": "table_stats_statistics_paths",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 48,
         "name": "table_stats_file_size_in_bytes",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 49,
         "name": "table_stats_file_footer_size_in_bytes",
-        "type_info": "Int8Array"
+        "type_info": "Int8Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 50,
         "name": "table_stats_key_metadata: Vec<Option<String>>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 51,
         "name": "table_stats_blob_metadata: Vec<Json<Vec<BlobMetadata>>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 52,
         "name": "encryption_key_ids",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 53,
         "name": "encryption_encrypted_key_metadatas",
-        "type_info": "ByteaArray"
+        "type_info": "ByteaArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 54,
         "name": "encryption_encrypted_by_ids: Vec<Option<String>>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 55,
         "name": "encryption_properties: Vec<Option<serde_json::Value>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -321,7 +467,7 @@
       false,
       null,
       false,
-      false,
+      true,
       null,
       null,
       null,
@@ -333,7 +479,7 @@
       null,
       null,
       null,
-      false,
+      true,
       null,
       null,
       null,

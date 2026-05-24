@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "view_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "view",
+            "name": "view_id"
+          }
+        }
       },
       {
         "ordinal": 1,
@@ -20,107 +26,158 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "view",
+            "name": "view_format_version"
+          }
         }
       },
       {
         "ordinal": 2,
         "name": "view_fs_location",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_location"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "view_fs_protocol",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_protocol"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "metadata_location!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "current_version_id",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "current_view_metadata_version",
+            "name": "version_id"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "schema_ids",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
         "name": "schemas: Vec<Json<Schema>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 8,
         "name": "view_properties_keys",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 9,
         "name": "view_properties_values",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 10,
         "name": "version_ids!: Vec<ViewVersionId>",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 11,
         "name": "version_schema_ids",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 12,
         "name": "version_timestamps",
-        "type_info": "TimestamptzArray"
+        "type_info": "TimestamptzArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "version_default_namespace_ids!: Vec<Option<Uuid>>",
-        "type_info": "UuidArray"
+        "type_info": "UuidArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 14,
         "name": "version_default_catalogs!: Vec<Option<String>>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 15,
         "name": "version_metadata_summaries: Vec<Json<HashMap<String, String>>>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 16,
         "name": "version_log_ids",
-        "type_info": "Int4Array"
+        "type_info": "Int4Array",
+        "origin": "Expression"
       },
       {
         "ordinal": 17,
         "name": "version_log_timestamps",
-        "type_info": "TimestamptzArray"
+        "type_info": "TimestamptzArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 18,
         "name": "view_representation_typ: Json<Vec<Vec<ViewRepresentationType>>>",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": "Expression"
       },
       {
         "ordinal": 19,
         "name": "view_representation_sql: Json<Vec<Vec<String>>>",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": "Expression"
       },
       {
         "ordinal": 20,
         "name": "view_representation_dialect: Json<Vec<Vec<String>>>",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": "Expression"
       },
       {
         "ordinal": 21,
         "name": "warehouse_version",
-        "type_info": "Int8"
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {

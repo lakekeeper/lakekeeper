@@ -394,7 +394,8 @@ async fn migrate() -> anyhow::Result<()> {
 
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup
-    let server_id = lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
+    let server_id =
+        lakekeeper::implementations::postgres::migrations::migrate_core_only(&write_pool).await?;
     tracing::info!("Database migration complete.");
 
     tracing::info!("Migrating authorizer...");

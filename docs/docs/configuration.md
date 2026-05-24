@@ -568,11 +568,88 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 
 **Group / role mapping:**
 
+The LDAP role provider supports three resolution modes, selected via `__GROUP_RESOLUTION_MODE`:
+
+| Mode | When to use |
+|------|-------------|
+| `attribute` *(default)* | Read group DNs directly from a `memberOf`-style attribute on the user entry. Correct for Active Directory / ADFS, OpenLDAP with the `memberof` overlay, and most setups where every user-of-interest has a populated `memberOf`. |
+| `search` | Run a paged subtree LDAP search to find groups whose member attribute references the user. Useful for directories without `memberOf`, for filtering to a specific group name prefix (e.g. `ACME-*`) at the directory level instead of post-filtering, and for AD transitive resolution via `LDAP_MATCHING_RULE_IN_CHAIN`. |
+| `branching` *(since 0.12.2)* | Per-user-DN branching: a regex tested against the user's DN selects between a Search-style filter (with named captures available as `${name}` placeholders) and an explicit `else` branch. |
+
+The selector and shared fields:
+
+| Variable                              | Default     | Description                                                                                            |
+|---------------------------------------|-------------|--------------------------------------------------------------------------------------------------------|
+| <nobr>`…__GROUP_RESOLUTION_MODE`</nobr> | `attribute` | One of `attribute`, `search`, or `branching`. The remaining fields depend on the mode you choose.    |
+| <nobr>`…__GROUP_BASE_DN`</nobr>         |             | Base DN for the group search. Required by `search` and `branching`; ignored by `attribute`.            |
+| <nobr>`…__GROUP_CASE`</nobr>            | `keep`      | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
+
+**Attribute mode (`group_resolution_mode = "attribute"`):**
+
 | Variable                                   | Default    | Description        |
 |--------------------------------------------|------------|--------------------|
-| <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. The default (`memberOf`) is correct for Active Directory and OpenLDAP with the `memberof` overlay. |
+| <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. |
 | <nobr>`…__GROUP_NAME_SOURCE`</nobr>        | `dn_cn`    | How to derive the role name from a group entry. `dn_cn` extracts the `CN=` component from the group's distinguished name (recommended for AD/ADFS). |
-| <nobr>`…__GROUP_CASE`</nobr>               | `keep`     | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
+
+**Search mode (`group_resolution_mode = "search"`)** — *available since 0.12.2 with `${USER}` / `${DOMAIN}` placeholder support and the composed default filter*:
+
+| Variable                                | Default                       | Description                                                                                            |
+|-----------------------------------------|-------------------------------|--------------------------------------------------------------------------------------------------------|
+| <nobr>`…__GROUP_SEARCH_FILTER`</nobr>     | `({GROUP_MEMBER_ATTRIBUTE}=${USER_DN})` | LDAP filter for the group search. May reference `${USER_DN}`, `${USER}`, and `${DOMAIN}` placeholders. When omitted, composed from `…__GROUP_MEMBER_ATTRIBUTE` — works on AD (`objectClass=group`), OpenLDAP (`groupOfNames` with `member`, or `groupOfUniqueNames` with `uniqueMember`), and 389-DS. For AD transitive resolution, set to `(member:1.2.840.113556.1.4.1941:=${USER_DN})`. |
+| <nobr>`…__GROUP_MEMBER_ATTRIBUTE`</nobr>  | `member`                      | Attribute on the group entry that references members; drives the default filter when `…__GROUP_SEARCH_FILTER` is unset. Use `uniqueMember` for `groupOfUniqueNames` directories. |
+| <nobr>`…__GROUP_NAME_ATTRIBUTE`</nobr>    | `cn`                          | Attribute on each returned group entry used as the role name. Use `sAMAccountName` for AD if you want the short name instead of the CN. |
+
+**Branching mode (`group_resolution_mode = "branching"`)** — *available since 0.12.2* — per-user-DN dispatch between a Search-style `then` branch and an explicit `else` branch:
+
+| Variable                                                 | Description |
+|----------------------------------------------------------|-------------|
+| <nobr>`…__BRANCH_IF_USER_DN_MATCHES`</nobr>                | Regex tested against the user's DN (case-insensitive by default; prepend `(?-i)` for strict casing). Named captures `(?<name>…)` become `${name}` placeholders in the `then` filter. Reserved names `USER`, `DOMAIN`, `USER_DN` are rejected. |
+| <nobr>`…__BRANCH_THEN__GROUP_SEARCH_FILTER`</nobr>         | LDAP filter for the `then` branch. May reference `${USER_DN}`, `${USER}`, `${DOMAIN}`, and any named capture from `…__BRANCH_IF_USER_DN_MATCHES`. Every placeholder must resolve at startup (unknown placeholders are rejected). |
+| <nobr>`…__BRANCH_THEN__GROUP_MEMBER_ATTRIBUTE`</nobr>      | Same role as in Search mode — drives the default filter when `…__BRANCH_THEN__GROUP_SEARCH_FILTER` is unset. Defaults to `member`. |
+| <nobr>`…__BRANCH_THEN__GROUP_NAME_ATTRIBUTE`</nobr>        | Attribute used as the role name for groups returned by the `then` branch. Defaults to `cn`. |
+| <nobr>`…__BRANCH_ELSE__MODE`</nobr>                        | **Required.** One of `attribute` (run Attribute-mode resolution against the user entry) or `none` (return empty roles, emit `outcome = "dn_no_match"` to audit). No implicit default — pick explicitly so audit logs distinguish "no roles" from "no match". |
+| <nobr>`…__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE`</nobr>    | When `…__BRANCH_ELSE__MODE=attribute`: the `memberOf`-style attribute to read. Defaults to `memberOf`. |
+| <nobr>`…__BRANCH_ELSE__GROUP_NAME_SOURCE`</nobr>           | When `…__BRANCH_ELSE__MODE=attribute`: how to derive the role name. Defaults to `dn_cn`. |
+
+!!! note "Capture-driven filters and cross-scope memberships"
+    A capture-driven filter (e.g. `sAMAccountName=${tenant}*ABC-*`) constrains resolution to the captured value; memberships outside that scope are not returned. For cross-scope memberships, add another role provider in the chain with a broader filter.
+
+!!! note "AD primary group is never returned"
+    Active Directory's primary group (typically `Domain Users`, identified by `primaryGroupID` rather than a `member` link) is not returned by any mode — `memberOf` omits it and `LDAP_MATCHING_RULE_IN_CHAIN` does not walk it. To expose it as a Lakekeeper role, add explicit `member` entries in the directory.
+
+!!! note "Regex is case-insensitive; `${USER_DN}` preserves directory casing"
+    `…__BRANCH_IF_USER_DN_MATCHES` is compiled case-insensitive by default (prepend `(?-i)` to make it strict). The DN substituted into `${USER_DN}` is escaped per RFC 4515 and inserted with the casing the directory returned. DN-typed attribute predicates (`member=`, `memberOf=`, …) match server-side regardless of case.
+
+!!! note "`group_base_dn` is always required in branching mode"
+    Set `…__GROUP_BASE_DN` even if you expect every user to take the `else.mode = attribute` branch — the validator can't know which branch a given user will hit. Use the same value you would use in Search mode.
+
+!!! warning "Role cache persists across restarts; changing modes does not invalidate it"
+    Role assignments are cached in the catalog database, not just in process memory. Restarting Lakekeeper with a new `group_resolution_mode` does **not** invalidate the DB cache — users keep their previously-resolved roles for up to `…__SYNC_INTERVAL_SECS`. During a config rollout, either lower `…__SYNC_INTERVAL_SECS` temporarily or flush the role-assignments table for the affected provider.
+
+**Example — Search mode with AD transitive resolution:**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_RESOLUTION_MODE=search
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_BASE_DN=dc=corp,dc=example,dc=com
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_SEARCH_FILTER='(&(sAMAccountName=ACME-*)(member:1.2.840.113556.1.4.1941:=${USER_DN}))'
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_NAME_ATTRIBUTE=sAMAccountName
+```
+
+**Example — Branching mode (tenant users → tenant-scoped search; service accounts → `memberOf`):**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_RESOLUTION_MODE=branching
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_BASE_DN=dc=corp,dc=example,dc=com
+
+# Extract the tenant code from the user's DN (the OU directly below OU=Tenants)
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_IF_USER_DN_MATCHES='OU=(?<tenant>[^,]+),OU=Tenants,'
+
+# THEN branch — tenant users get tenant-scoped, transitively-resolved roles
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_THEN__GROUP_SEARCH_FILTER='(&(sAMAccountName=${tenant}-ACME-*)(member:1.2.840.113556.1.4.1941:=${USER_DN}))'
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_THEN__GROUP_NAME_ATTRIBUTE=sAMAccountName
+
+# ELSE branch — service accounts under OU=Service fall back to memberOf
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__MODE=attribute
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE=memberOf
+```
 
 **Connection and TLS:**
 

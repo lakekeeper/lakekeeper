@@ -12,7 +12,7 @@ use crate::{
     },
     implementations::{
         CatalogState,
-        postgres::{PostgresBackend, SecretsState, migrations::migrate},
+        postgres::{PostgresBackend, SecretsState, migrations::migrate_core_only},
     },
     service::{
         ArcProjectId, UserId,
@@ -145,7 +145,7 @@ pub(crate) async fn setup<T: Authorizer>(
         number_of_warehouses > 0,
         "Number of warehouses must be greater than 0",
     );
-    migrate(&pool).await.unwrap();
+    migrate_core_only(&pool).await.unwrap();
     let api_context = get_api_context(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {

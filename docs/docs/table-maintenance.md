@@ -53,7 +53,9 @@ Expire snapshots tasks are intelligently scheduled immediately after table commi
 
 ## Remove Orphan Files <span class="lkp"></span> {#remove-orphan-files}
 
-Lakekeeper can detect and remove orphaned files — files that exist in a table's storage location but are no longer referenced by any snapshot, manifest, statistics file, or metadata log entry. Orphaned files commonly arise from failed write operations (optimistic concurrency conflicts) or incomplete maintenance tasks.
+Lakekeeper can detect and remove orphan files — files in a table's storage location that are no longer referenced by any snapshot, manifest, statistics file, or metadata log entry. Orphans typically come from failed writes (optimistic-concurrency conflicts) or incomplete maintenance jobs.
+
+The queue is **opt-in per warehouse** and disabled by default. Once enabled, tables are scheduled adaptively: the next run is timed to the observed rate at which orphans accumulate, with a 1-day floor and a configurable ceiling. Idle tables get a periodic safety check at the ceiling; busy tables get reclaimed more often. No cron-based polling is involved.
 
 ### How It Works
 
@@ -61,20 +63,38 @@ Lakekeeper can detect and remove orphaned files — files that exist in a table'
 2. **List storage**: The table's storage location is listed recursively.
 3. **Identify orphans**: Files present in storage but not in the referenced set are orphan candidates.
 4. **Age filter**: Only files older than the configured threshold are deleted. Recently created files are preserved to avoid deleting data from in-progress writes.
-5. **Delete**: Orphans are deleted in micro-batches for efficiency (leveraging cloud-native batch delete APIs where available).
+5. **Delete**: Orphans are deleted in micro-batches (using cloud-native batch-delete APIs where available).
+6. **Reschedule**: The worker self-schedules the next run based on the observed orphan-bytes-per-second rate.
 
 ### Configuration
 
-Configuration can be set via the Management REST API:
+Configuration can be set via the Management UI or REST API endpoints:
+
+- **GET** `/management/v1/warehouse/{warehouse_id}/task-queue/remove_orphan_files/config`
+- **POST** `/management/v1/warehouse/{warehouse_id}/task-queue/remove_orphan_files/config`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `default-older-than-period` | ISO 8601 duration | `P3D` (3 days) | Minimum age of a file before it is eligible for deletion. Must be at least 1 day (`P1D`). |
+| `enable-remove-orphan-files` | boolean | `false` | Master switch for the warehouse. When `false`, no tables are scheduled unless they set `lakekeeper.remove-orphan-files.enabled=true`. |
+| `default-older-than-ms` | integer | `604800000` (7 days) | Minimum file age before deletion. **24-hour safety floor enforced at task pickup** (see below). Override per table with `lakekeeper.remove-orphan-files.older-than-ms`. |
+| `target-reclaim-bytes` | integer | `1073741824` (1 GiB) | Adaptive scheduler target: the next run is timed to reclaim roughly this many bytes based on the last run's observed rate. Clamped to [1 day, `maximum-interval-seconds`]. |
+| `maximum-interval-seconds` | integer | `7776000` (90 days) | Upper bound on the adaptive next-run interval. Idle tables get a safety check at this cadence. Must be ≥ 86400 (1 day). |
+| `max-run-time-seconds` | integer | `3600` (1 hour) | Wall-clock timeout for a single task attempt. Must be ≥ 60. |
+| `dry-run` | boolean | `false` | Identify orphans but do not delete. Useful for previewing what a run would remove. |
+| `disable-min-older-than-check` | boolean | `false` | Bypass the 24h floor on `default-older-than-ms`. Set only for dev/test setups that genuinely need sub-day retention. |
+
+### Table-Level Overrides
+
+Individual tables can override warehouse settings using these Iceberg table properties:
+
+- `lakekeeper.remove-orphan-files.enabled` — `true` includes a table even when the warehouse master switch is off; `false` excludes it.
+- `lakekeeper.remove-orphan-files.older-than-ms` — per-table deletion-age threshold. Not subject to the 24h safety floor; use only for known-stale tables.
+- `lakekeeper.remove-orphan-files.dry-run` — per-table dry-run. Safer mode wins: if the warehouse is dry-run, the table cannot downgrade to live.
 
 ### Safety Mechanisms
 
 - **`gc.enabled` check**: Tables with `gc.enabled=false` are excluded. Attempting to remove orphan files on such a table returns an error immediately.
-- **Age threshold**: Files younger than `default-older-than-period` are never deleted, protecting in-progress writes from concurrent operations.
+- **24h safety floor on `default-older-than-ms`**: At task pickup, the worker refuses to run with a queue-config retention shorter than 24 hours, returning `RemoveOrphanFilesRetentionTooShort`. A typo like `default-older-than-ms: 6000` (six seconds) would otherwise delete in-flight writer uploads. Mirrors Spark/Iceberg's `retentionDurationCheck.enabled=false` escape — set `disable-min-older-than-check=true` to override.
 - **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped_unknown_age_count` in the result).
 
 ### Recommended Usage
@@ -85,8 +105,8 @@ Run remove orphan files **after** expire snapshots. Expiring snapshots first ens
 
 For production workloads, we recommend running remove orphan files workers in dedicated pods, similar to expire snapshots:
 
-1. **API pods**: Set `LAKEKEEPER__TASK_REMOVE_ORPHANED_FILES_WORKERS=0` to disable workers
-2. **Worker pods**: Configure the desired number of workers to handle remove orphan files tasks
+1. **API pods**: Set `LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS=0` to disable workers.
+2. **Worker pods**: Use the default (2 workers) or set `LAKEKEEPER__TASK_REMOVE_ORPHAN_FILES_WORKERS` to the desired number.
 
 !!! warning
-    Remove orphan files performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. Schedule accordingly.
+    Every run performs a full recursive listing of the table's storage location, which can be expensive for tables with many files. The adaptive scheduler stretches the cadence on tables that produce few orphans, but each run still pays the listing cost.
