@@ -1,0 +1,187 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH inserted AS (\n            INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)\n            SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8\n            FROM namespace n\n            WHERE n.namespace_id = $3 AND n.warehouse_id = $4\n            RETURNING\n                tabular_id,\n                namespace_id,\n                name as tabular_name,\n                tabular_namespace_name as namespace_name,\n                typ,\n                metadata_location,\n                updated_at,\n                protected,\n                fs_location,\n                fs_protocol\n        )\n        SELECT i.tabular_id,\n               w.version as warehouse_version,\n               i.namespace_name,\n               n.version as namespace_version,\n               i.namespace_id,\n               i.tabular_name,\n               i.updated_at,\n               i.metadata_location,\n               i.protected,\n               i.typ as \"typ: TabularType\",\n               i.fs_location,\n               i.fs_protocol\n        FROM inserted i\n        INNER JOIN warehouse w ON w.warehouse_id = $4\n        INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "namespace_name",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "tabular_namespace_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "namespace_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "tabular_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "metadata_location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "metadata_location"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "protected",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "protected"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "typ: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "fs_location",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_location"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "fs_protocol",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "fs_protocol"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ddf66f3dbbe933c112fc5f37128b9adca52af82ac9ec9e1bc41c139cda366571"
+}

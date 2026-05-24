@@ -3,7 +3,7 @@ use crate::{
     WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler,
-        tabular::{FromTabularRowError, TabularRow},
+        tabular::{FromTabularRowError, TabularRowWithProperties},
     },
     service::{SetTabularProtectionError, TabularId, TabularNotFound, ViewOrTableInfo},
 };
@@ -32,7 +32,7 @@ pub(crate) async fn set_tabular_protected(
     let tabular_type = TabularType::from(tabular_id);
 
     let row = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH selected_tabular AS (
             SELECT tabular_id, namespace_id, typ
