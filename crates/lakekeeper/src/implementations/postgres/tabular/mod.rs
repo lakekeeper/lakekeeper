@@ -64,7 +64,7 @@ impl From<FromTabularRowError> for GetTabularInfoError {
 }
 
 #[derive(Debug, FromRow)]
-struct TabularRow {
+pub(super) struct TabularRow {
     tabular_id: Uuid,
     warehouse_version: i64,
     namespace_name: Vec<String>,
@@ -87,7 +87,7 @@ struct TabularRow {
 }
 
 impl TabularRow {
-    fn try_into_table_or_view(
+    pub(super) fn try_into_table_or_view(
         self,
         warehouse_id: WarehouseId,
     ) -> Result<ViewOrTableInfo, FromTabularRowError> {
@@ -432,6 +432,46 @@ impl From<FromTabularRowError> for CreateTabularError {
     }
 }
 
+/// Errors with `LocationAlreadyTaken` if any other tabular in `warehouse_id`
+/// occupies `location` (or a path that this location would shadow).
+///
+/// Shared between `create_tabular` (where it backstops the table-level unique
+/// constraint on `(warehouse_id, name, namespace_id)` for location uniqueness)
+/// and `view::commit_existing_view` (where there is no analogous constraint
+/// because commits don't go through INSERT).
+pub(crate) async fn ensure_location_available(
+    warehouse_id: Uuid,
+    self_tabular_id: Uuid,
+    location: &Location,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), CreateTabularError> {
+    let partial_locations = get_partial_fs_locations(location)?;
+    let fs_location = location.authority_and_path();
+    let taken = sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+               SELECT 1
+               FROM tabular ta
+               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
+                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
+               ) AND tabular_id != $3
+           ) as "exists!""#,
+        warehouse_id,
+        &partial_locations,
+        self_tabular_id,
+        fs_location,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error checking for conflicting locations")
+    })?;
+    if taken {
+        return Err(LocationAlreadyTaken::new(location.clone()).into());
+    }
+    Ok(())
+}
+
 pub(crate) async fn create_tabular(
     CreateTabular {
         id,
@@ -446,7 +486,11 @@ pub(crate) async fn create_tabular(
 ) -> Result<ViewOrTableInfo, CreateTabularError> {
     let fs_protocol = location.scheme();
     let fs_location = location.authority_and_path();
-    let partial_locations = get_partial_fs_locations(location)?;
+
+    // Check location availability before the INSERT so a collision raises
+    // `LocationAlreadyTaken` cleanly instead of inserting a row we'll have to
+    // rely on transaction rollback to undo.
+    ensure_location_available(warehouse_id, id, location, transaction).await?;
 
     let tabular_id = sqlx::query_as!(
         TabularRow,
@@ -456,7 +500,7 @@ pub(crate) async fn create_tabular(
             SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
             FROM namespace n
             WHERE n.namespace_id = $3 AND n.warehouse_id = $4
-            RETURNING 
+            RETURNING
                 tabular_id,
                 namespace_id,
                 name as tabular_name,
@@ -509,29 +553,6 @@ pub(crate) async fn create_tabular(
             _ => e.into_catalog_backend_error().into(),
         }
     })?;
-
-    let location_is_taken = sqlx::query_scalar!(
-        r#"SELECT EXISTS (
-               SELECT 1
-               FROM tabular ta
-               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
-                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
-               ) AND tabular_id != $3
-           ) as "exists!""#,
-        warehouse_id,
-        &partial_locations,
-        id,
-        fs_location
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        e.into_catalog_backend_error().append_detail("Error checking for conflicting locations")
-    })?;
-
-    if location_is_taken {
-        return Err(LocationAlreadyTaken::new(location.clone()).into());
-    }
 
     let tabular_info = tabular_id.try_into_table_or_view(warehouse_id.into())?;
 

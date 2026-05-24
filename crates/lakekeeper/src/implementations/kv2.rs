@@ -231,20 +231,20 @@ impl HealthExt for SecretsState {
         match t {
             Ok(_) => {
                 tracing::debug!("Vault is healthy");
-                self.health
-                    .write()
-                    .await
-                    .push(Health::now("vault", HealthStatus::Healthy));
+                set_vault_health(&self.health, HealthStatus::Healthy).await;
             }
             Err(err) => {
                 tracing::error!(?err, "Vault is unhealthy");
-                self.health
-                    .write()
-                    .await
-                    .push(Health::now("vault", HealthStatus::Unhealthy));
+                set_vault_health(&self.health, HealthStatus::Unhealthy).await;
             }
         }
     }
+}
+
+async fn set_vault_health(health: &Arc<RwLock<Vec<Health>>>, status: HealthStatus) {
+    let mut lock = health.write().await;
+    lock.clear();
+    lock.extend([Health::now("vault", status)]);
 }
 
 impl std::fmt::Debug for SecretsState {
@@ -265,6 +265,20 @@ fn secret_ident_to_key(secret_id: SecretId) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_set_vault_health_replaces_previous_entry() {
+        let health = Arc::default();
+
+        set_vault_health(&health, HealthStatus::Unhealthy).await;
+        set_vault_health(&health, HealthStatus::Healthy).await;
+
+        let entries = health.read().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status(), HealthStatus::Healthy);
+    }
+
     mod kv2_integration_tests {
         use super::super::*;
         use crate::{

@@ -1,13 +1,17 @@
 mod load;
 
-use std::{collections::HashMap, default::Default, str::FromStr as _};
+use std::{
+    collections::{HashMap, HashSet},
+    default::Default,
+    str::FromStr as _,
+};
 
 use chrono::{DateTime, Utc};
 use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
 use lakekeeper_io::Location;
 pub(crate) use load::load_view;
 use serde::Deserialize;
-use sqlx::{FromRow, Postgres, Transaction};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
@@ -17,9 +21,9 @@ use crate::{
         tabular::{CreateTabular, TabularType, create_tabular},
     },
     service::{
-        CatalogBackendError, ConversionError, CreateViewError, CreateViewVersionError,
-        InternalParseLocationError, NamespaceId, SerializationError, UnexpectedTabularInResponse,
-        ViewInfo,
+        CatalogBackendError, CommitViewError, ConcurrentUpdateError, ConversionError,
+        CreateViewError, CreateViewVersionError, InternalParseLocationError, NamespaceId,
+        SerializationError, TabularNotFound, UnexpectedTabularInResponse, ViewId, ViewInfo,
     },
 };
 
@@ -69,33 +73,181 @@ pub(crate) async fn create_view(
     .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     tracing::debug!("Inserted base view and tabular.");
-    for schema in metadata.schemas_iter() {
-        let schema_id =
-            create_view_schema(warehouse_id, view_id, schema.clone(), transaction).await?;
-        tracing::debug!("Inserted schema with id: '{}'", schema_id);
+    populate_view_metadata(warehouse_id, view_id, metadata, transaction).await?;
+
+    // `view_info` came from `create_tabular` and has no properties (the row
+    // hadn't been populated yet); refresh them from the metadata we just
+    // wrote so the caller doesn't see an empty `properties` HashMap.
+    Ok(finalize_view_info(view_info, metadata))
+}
+
+pub(crate) async fn commit_existing_view(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    metadata_location: &Location,
+    previous_metadata_location: &Location,
+    transaction: &mut Transaction<'_, Postgres>,
+    metadata: &ViewMetadata,
+) -> Result<ViewInfo, CommitViewError> {
+    let location =
+        Location::from_str(metadata.location()).map_err(InternalParseLocationError::from)?;
+    let view_id = ViewId::from(metadata.uuid());
+    let fs_location = location.authority_and_path();
+    let fs_protocol = location.scheme();
+
+    // Compile-time guard: the `tabular` UPDATE below does not touch
+    // `view.view_format_version`. When iceberg introduces V2, this `From`
+    // impl breaks to compile — at that point, also add an UPDATE on
+    // `view.view_format_version` here.
+    let _ = ViewFormatVersion::from(metadata.format_version());
+
+    // Lock the tabular row + classify. Existence-and-authz check
+    // (namespace_id matches what authz authorized against) + row-lock for the
+    // unconditional UPDATE below + read of `metadata_location` for the
+    // concurrent-update guard. 0 rows → TabularNotFound; mismatch →
+    // ConcurrentUpdateError. The DB check constraint `tabular_check`
+    // guarantees views always have non-NULL `metadata_location`, so the
+    // unwrap-into-Some below cannot misfire on a staged row.
+    let current_metadata_location: Option<String> = sqlx::query_scalar!(
+        r#"
+        SELECT metadata_location
+        FROM tabular
+        WHERE warehouse_id = $1
+          AND tabular_id = $2
+          AND typ = 'view'
+          AND deleted_at IS NULL
+          AND namespace_id = $3
+        FOR UPDATE
+        "#,
+        *warehouse_id,
+        *view_id,
+        *namespace_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error locking view row for commit.")
+    })?
+    .ok_or_else(|| TabularNotFound::new(warehouse_id, view_id))?;
+
+    if current_metadata_location.as_deref() != Some(previous_metadata_location.as_str()) {
+        return Err(ConcurrentUpdateError::new(warehouse_id, view_id).into());
     }
 
-    for view_version in metadata.versions() {
-        let ViewVersionResponse {
-            version_id,
-            view_id,
-            warehouse_id,
-        } = create_view_version(
-            warehouse_id,
-            namespace_id,
-            view_id,
-            view_version.clone(),
-            transaction,
+    super::ensure_location_available(*warehouse_id, *view_id, &location, &mut *transaction).await?;
+
+    // We hold the row lock — this UPDATE always matches the one row above.
+    let row = sqlx::query_as!(
+        super::TabularRow,
+        r#"
+        WITH updated AS (
+            UPDATE tabular
+            SET metadata_location = $3,
+                fs_protocol = $4,
+                fs_location = $5
+            WHERE warehouse_id = $1 AND tabular_id = $2
+            RETURNING tabular_id,
+                      namespace_id,
+                      name AS tabular_name,
+                      tabular_namespace_name AS namespace_name,
+                      typ,
+                      metadata_location,
+                      updated_at,
+                      protected,
+                      fs_location,
+                      fs_protocol
         )
-        .await?;
+        SELECT u.tabular_id,
+               u.namespace_id,
+               u.tabular_name,
+               u.namespace_name,
+               u.typ AS "typ: TabularType",
+               u.metadata_location,
+               u.updated_at,
+               u.protected,
+               u.fs_location,
+               u.fs_protocol,
+               w.version AS warehouse_version,
+               n.version AS namespace_version,
+               NULL::text[] AS view_properties_keys,
+               NULL::text[] AS view_properties_values,
+               NULL::text[] AS table_properties_keys,
+               NULL::text[] AS table_properties_values
+        FROM updated u
+        INNER JOIN warehouse w ON w.warehouse_id = $1
+        INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $1
+        "#,
+        *warehouse_id,
+        *view_id,
+        metadata_location.to_string(),
+        fs_protocol,
+        fs_location,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error updating tabular row during view commit.")
+    })?;
 
-        tracing::debug!(
-            "Inserted view version with id: '{}' for view_id: '{}' in warehouse with id '{}'",
-            version_id,
-            view_id,
-            warehouse_id,
-        );
-    }
+    clear_view_metadata(warehouse_id, *view_id, transaction).await?;
+    populate_view_metadata(warehouse_id, *view_id, metadata, transaction).await?;
+
+    let info = row
+        .try_into_table_or_view(warehouse_id)
+        .map_err(|e| match e {
+            super::FromTabularRowError::InvalidNamespaceIdentifier(e) => CommitViewError::from(e),
+            super::FromTabularRowError::InternalParseLocationError(e) => CommitViewError::from(e),
+        })?;
+    let Some(view_info) = info.into_view_info() else {
+        return Err(UnexpectedTabularInResponse::new()
+            .append_detail("Expected committed tabular to be of type view")
+            .into());
+    };
+    Ok(finalize_view_info(view_info, metadata))
+}
+
+/// Overlays properties from the in-memory metadata onto `view_info` so the
+/// returned value reflects the just-written `view_properties` rows without a
+/// re-query. Used by both `create_view` and `commit_existing_view` after
+/// `populate_view_metadata`.
+fn finalize_view_info(mut view_info: ViewInfo, metadata: &ViewMetadata) -> ViewInfo {
+    view_info.properties.clone_from(metadata.properties());
+    view_info
+}
+
+async fn populate_view_metadata(
+    warehouse_id: WarehouseId,
+    view_id: Uuid,
+    metadata: &ViewMetadata,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), CreateViewError> {
+    // schemas first (FK target for view_version)
+    batch_insert_view_schemas(
+        warehouse_id,
+        view_id,
+        metadata.schemas_iter(),
+        &mut *transaction,
+    )
+    .await?;
+
+    // versions (FK to schemas, FK target for representations/log/current)
+    batch_insert_view_versions(
+        warehouse_id,
+        view_id,
+        metadata.versions(),
+        &mut *transaction,
+    )
+    .await?;
+
+    batch_insert_view_representations(
+        warehouse_id,
+        view_id,
+        metadata.versions(),
+        &mut *transaction,
+    )
+    .await?;
 
     set_current_view_metadata_version(
         warehouse_id,
@@ -105,69 +257,106 @@ pub(crate) async fn create_view(
     )
     .await?;
 
-    for history in metadata.history() {
-        insert_view_version_log(
-            warehouse_id,
-            view_id,
-            history.version_id(),
-            Some(
-                history
-                    .timestamp()
-                    .map_err(|e| ConversionError::new("view_version_log.timestamp", e))?,
-            ),
-            transaction,
-        )
+    batch_insert_view_version_log(warehouse_id, view_id, metadata.history(), &mut *transaction)
         .await?;
-    }
 
     set_view_properties(warehouse_id, view_id, metadata.properties(), transaction).await?;
 
-    tracing::debug!("Inserted view properties for view",);
-
-    Ok(view_info)
+    Ok(())
 }
 
-// TODO: do we wanna do this via a trigger?
-async fn insert_view_version_log(
+// Removes all view sub-metadata so a commit can repopulate it from `ViewMetadata`.
+//
+// Only two DELETEs are needed because of the FK chain set up in migration
+// `20250904142650_reusable_table_id.sql`:
+//
+//   - `view_version` REFERENCES `view_schema` ON DELETE CASCADE
+//     → deleting `view_schema` cascades to all `view_version` rows.
+//   - `view_version_log`, `view_representation`, and
+//     `current_view_metadata_version` all REFERENCE `view_version` ON DELETE
+//     CASCADE → cascade transitively from the `view_schema` delete.
+//
+// If a future migration weakens any of those CASCADE constraints, this
+// function must be updated to delete from the affected tables explicitly,
+// or `populate_view_metadata` will hit PK collisions.
+async fn clear_view_metadata(
     warehouse_id: WarehouseId,
     view_id: Uuid,
-    version_id: ViewVersionId,
-    timestamp_ms: Option<DateTime<Utc>>,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), CatalogBackendError> {
-    if let Some(ts) = timestamp_ms {
-        sqlx::query!(
-            r#"
-        INSERT INTO view_version_log (warehouse_id, view_id, version_id, timestamp)
-        VALUES ($1, $2, $3, $4)
+    sqlx::query!(
+        r#"
+        DELETE FROM view_properties
+        WHERE warehouse_id = $1 AND view_id = $2
         "#,
-            *warehouse_id,
-            view_id,
-            version_id,
-            ts
-        )
-    } else {
-        sqlx::query!(
-            r#"
-        INSERT INTO view_version_log (warehouse_id, view_id, version_id)
-        VALUES ($1, $2, $3)
+        *warehouse_id,
+        view_id,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error clearing view properties before commit.")
+    })?;
+
+    sqlx::query!(
+        r#"
+        DELETE FROM view_schema
+        WHERE warehouse_id = $1 AND view_id = $2
         "#,
-            *warehouse_id,
-            view_id,
-            version_id,
-        )
+        *warehouse_id,
+        view_id,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error clearing view metadata before commit.")
+    })?;
+
+    Ok(())
+}
+
+async fn batch_insert_view_version_log(
+    warehouse_id: WarehouseId,
+    view_id: Uuid,
+    log: &[iceberg::spec::ViewVersionLog],
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), CreateViewError> {
+    if log.is_empty() {
+        return Ok(());
     }
+    let mut version_ids: Vec<ViewVersionId> = Vec::with_capacity(log.len());
+    let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(log.len());
+    for entry in log {
+        version_ids.push(entry.version_id());
+        timestamps.push(
+            entry
+                .timestamp()
+                .map_err(|e| ConversionError::new("view_version_log.timestamp", e))?,
+        );
+    }
+    sqlx::query!(
+        r#"
+        INSERT INTO view_version_log (warehouse_id, view_id, version_id, timestamp)
+        SELECT $1, $2, u.version_id, u.timestamp
+        FROM UNNEST($3::int[], $4::timestamptz[]) AS u(version_id, timestamp)
+        "#,
+        *warehouse_id,
+        view_id,
+        &version_ids,
+        &timestamps,
+    )
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
         e.into_catalog_backend_error()
             .append_detail("Error inserting view version log.")
     })?;
-    tracing::debug!("Inserted view version log");
     Ok(())
 }
 
-pub(crate) async fn set_view_properties(
+async fn set_view_properties(
     warehouse_id: WarehouseId,
     view_id: Uuid,
     properties: &HashMap<String, String>,
@@ -197,121 +386,167 @@ pub(crate) async fn set_view_properties(
     Ok(())
 }
 
-pub(crate) async fn create_view_schema(
+async fn batch_insert_view_schemas<'a>(
     warehouse_id: WarehouseId,
     view_id: Uuid,
-    schema: SchemaRef,
+    schemas: impl IntoIterator<Item = &'a SchemaRef>,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<i32, CreateViewError> {
-    let schema_as_value =
-        serde_json::to_value(&schema).map_err(|e| SerializationError::new("schema", e))?;
-    Ok(sqlx::query_scalar!(
+) -> Result<(), CreateViewError> {
+    let (schema_ids, schema_jsons): (Vec<i32>, Vec<serde_json::Value>) = schemas
+        .into_iter()
+        .map(|s| {
+            serde_json::to_value(s)
+                .map(|json| (s.schema_id(), json))
+                .map_err(|e| SerializationError::new("schema", e))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip();
+
+    if schema_ids.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query!(
         r#"
         INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
-        VALUES ($1, $2, $3, $4)
-        RETURNING schema_id
+        SELECT $1, $2, u.schema_id, u.schema
+        FROM UNNEST($3::int[], $4::jsonb[]) AS u(schema_id, schema)
         "#,
         *warehouse_id,
         view_id,
-        schema.schema_id(),
-        schema_as_value
+        &schema_ids,
+        &schema_jsons,
     )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?)
-}
-
-#[derive(Debug, FromRow, Clone, Copy)]
-#[allow(clippy::struct_field_names)]
-struct ViewVersionResponse {
-    version_id: ViewVersionId,
-    view_id: Uuid,
-    warehouse_id: Uuid,
-}
-
-/// Creates a `view_version` in the namespace specified by `namespace_id`.
-///
-/// Note that `namespace_id` is not the view's default namespace. Instead the default namespace is
-/// specified separately via `view_version_request`.
-#[allow(clippy::too_many_lines)]
-async fn create_view_version(
-    warehouse_id: WarehouseId,
-    namespace_id: NamespaceId,
-    view_id: Uuid,
-    view_version_request: ViewVersionRef,
-    transaction: &mut Transaction<'_, Postgres>,
-) -> Result<ViewVersionResponse, CreateViewVersionError> {
-    let view_version = view_version_request;
-    let version_id = view_version.version_id();
-    let schema_id = view_version.schema_id();
-
-    // According to the [iceberg spec] `view_version.default_namespace` is a required field. However
-    // some query engines (e.g. Spark) may send an empty string for `default_namespace`. We
-    // represent this by NULL in the `default_namespace_id` column.
-    //
-    // While the [iceberg spec] specifies `default_namespace` as namespace identifier, we store
-    // the corresponding namespace's id as surrogate key for performance reasons.
-    //
-    // [iceberg spec]: https://iceberg.apache.org/view-spec/#view-metadata
-    let default_ns = view_version.default_namespace();
-    let default_ns = default_ns.clone().inner();
-    let default_namespace_id: Option<Uuid> = sqlx::query_scalar!(
-        r#"
-        SELECT namespace_id
-        FROM namespace n
-        WHERE namespace_name = $1
-        AND warehouse_id in (SELECT warehouse_id FROM namespace WHERE namespace_id = $2)
-        "#,
-        &default_ns,
-        *namespace_id
-    )
-    .fetch_optional(&mut **transaction)
+    .execute(&mut **transaction)
     .await
     .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
-
-    let default_catalog = view_version.default_catalog();
-    let summary = serde_json::to_value(view_version.summary())
-        .map_err(|e| SerializationError::new("view_version.summary", e))?;
-
-    let insert_response = sqlx::query_as!(ViewVersionResponse,
-                r#"
-                    INSERT INTO view_version (warehouse_id, view_id, version_id, schema_id, timestamp, default_namespace_id, default_catalog, summary)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                    returning warehouse_id, view_id, version_id
-                "#,
-                *warehouse_id,
-                view_id,
-                version_id,
-                schema_id,
-                view_version.timestamp().map_err(|e|
-                    ConversionError::new(
-                        "view_version.timestamp",
-                        e
-                    )
-                )?,
-                default_namespace_id,
-                default_catalog,
-                summary
-            )
-        .fetch_one(&mut **transaction)
-        .await.map_err(|e| {
-            e.into_catalog_backend_error()
-    })?;
-
-    for rep in view_version.representations().iter() {
-        insert_representation(rep, transaction, insert_response).await?;
-    }
-
-    tracing::debug!(
-        "Inserted version: '{}' view metadata version for '{}'",
-        version_id,
-        view_id
-    );
-
-    Ok(insert_response)
+    Ok(())
 }
 
-pub(crate) async fn set_current_view_metadata_version(
+/// Resolves a set of namespace paths to their surrogate `namespace_id` UUIDs
+/// in a single query. Paths that don't exist in the warehouse are absent from
+/// the returned map (write-side counterpart of the warning-and-empty path in
+/// `load_view::get_default_namespace_ident`).
+async fn resolve_namespace_paths(
+    warehouse_id: WarehouseId,
+    paths: &HashSet<Vec<String>>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<HashMap<Vec<String>, Uuid>, CatalogBackendError> {
+    if paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Pass each path as a JSON-encoded text array, then decode back to
+    // `text[]` server-side — postgres doesn't accept ragged `text[][]`.
+    let path_jsons: Vec<serde_json::Value> = paths.iter().map(|p| serde_json::json!(p)).collect();
+    let rows = sqlx::query!(
+        r#"
+        WITH requested AS (
+            SELECT ARRAY(SELECT jsonb_array_elements_text(r))::text[] AS namespace_name
+            FROM UNNEST($2::jsonb[]) AS r
+        )
+        SELECT n.namespace_name AS "namespace_name!", n.namespace_id AS "namespace_id!"
+        FROM namespace n
+        INNER JOIN requested r ON r.namespace_name = n.namespace_name
+        WHERE n.warehouse_id = $1
+        "#,
+        *warehouse_id,
+        &path_jsons,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error resolving default-namespace paths during view commit.")
+    })?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.namespace_name, r.namespace_id))
+        .collect())
+}
+
+/// Inserts every `view_version` from the metadata in a single batched INSERT.
+///
+/// Unique default-namespace paths are pre-resolved in one batch query
+/// (iceberg view-spec requires the field; Spark sometimes sends an empty
+/// path, which we store as NULL; unresolvable paths are also stored as NULL,
+/// symmetric to the warning-and-empty behavior in `load_view`).
+async fn batch_insert_view_versions<'a>(
+    warehouse_id: WarehouseId,
+    view_id: Uuid,
+    versions: impl IntoIterator<Item = &'a ViewVersionRef>,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), CreateViewVersionError> {
+    let versions: Vec<&ViewVersionRef> = versions.into_iter().collect();
+    if versions.is_empty() {
+        return Ok(());
+    }
+
+    let unique_ns: HashSet<Vec<String>> = versions
+        .iter()
+        .map(|v| v.default_namespace().clone().inner())
+        .filter(|ns| !ns.is_empty())
+        .collect();
+    let ns_map = resolve_namespace_paths(warehouse_id, &unique_ns, &mut *transaction).await?;
+
+    let mut version_ids: Vec<ViewVersionId> = Vec::with_capacity(versions.len());
+    let mut schema_ids: Vec<i32> = Vec::with_capacity(versions.len());
+    let mut timestamps: Vec<DateTime<Utc>> = Vec::with_capacity(versions.len());
+    let mut default_namespace_ids: Vec<Option<Uuid>> = Vec::with_capacity(versions.len());
+    let mut default_catalogs: Vec<Option<String>> = Vec::with_capacity(versions.len());
+    let mut summaries: Vec<serde_json::Value> = Vec::with_capacity(versions.len());
+
+    for v in &versions {
+        version_ids.push(v.version_id());
+        schema_ids.push(v.schema_id());
+        timestamps.push(
+            v.timestamp()
+                .map_err(|e| ConversionError::new("view_version.timestamp", e))?,
+        );
+        let ns_path = v.default_namespace().clone().inner();
+        let ns_id = if ns_path.is_empty() {
+            None
+        } else {
+            ns_map.get(&ns_path).copied()
+        };
+        default_namespace_ids.push(ns_id);
+        default_catalogs.push(v.default_catalog().cloned());
+        summaries.push(
+            serde_json::to_value(v.summary())
+                .map_err(|e| SerializationError::new("view_version.summary", e))?,
+        );
+    }
+
+    sqlx::query!(
+        r#"
+        INSERT INTO view_version (
+            warehouse_id, view_id, version_id, schema_id, timestamp,
+            default_namespace_id, default_catalog, summary
+        )
+        SELECT $1, $2, u.version_id, u.schema_id, u.timestamp,
+               u.default_namespace_id, u.default_catalog, u.summary
+        FROM UNNEST(
+            $3::int[], $4::int[], $5::timestamptz[],
+            $6::uuid[], $7::text[], $8::jsonb[]
+        ) AS u(version_id, schema_id, timestamp,
+               default_namespace_id, default_catalog, summary)
+        "#,
+        *warehouse_id,
+        view_id,
+        &version_ids,
+        &schema_ids,
+        &timestamps,
+        &default_namespace_ids as &[Option<Uuid>],
+        &default_catalogs as &[Option<String>],
+        &summaries,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    Ok(())
+}
+
+async fn set_current_view_metadata_version(
     warehouse_id: WarehouseId,
     view_id: Uuid,
     version_id: ViewVersionId,
@@ -341,28 +576,51 @@ pub(crate) async fn set_current_view_metadata_version(
     Ok(())
 }
 
-async fn insert_representation(
-    rep: &ViewRepresentation,
+async fn batch_insert_view_representations<'a>(
+    warehouse_id: WarehouseId,
+    view_id: Uuid,
+    versions: impl IntoIterator<Item = &'a ViewVersionRef>,
     transaction: &mut Transaction<'_, Postgres>,
-    view_version_response: ViewVersionResponse,
 ) -> Result<(), CreateViewVersionError> {
-    let ViewRepresentation::Sql(repr) = rep;
+    let mut version_ids: Vec<ViewVersionId> = Vec::new();
+    let mut sqls: Vec<String> = Vec::new();
+    let mut dialects: Vec<String> = Vec::new();
+
+    for v in versions {
+        for rep in v.representations().iter() {
+            let ViewRepresentation::Sql(repr) = rep;
+            version_ids.push(v.version_id());
+            sqls.push(repr.sql.clone());
+            dialects.push(repr.dialect.clone());
+        }
+    }
+
+    if version_ids.is_empty() {
+        return Ok(());
+    }
+
+    // `view_representation_type` has a single variant (`sql`) — hardcode the
+    // cast rather than threading a typed enum array through the bind layer.
     sqlx::query!(
         r#"
-            INSERT INTO view_representation (warehouse_id, view_id, view_version_id, typ, sql, dialect)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            "#,
-        view_version_response.warehouse_id,
-        view_version_response.view_id,
-        view_version_response.version_id,
-        ViewRepresentationType::from(rep) as _,
-        repr.sql.as_str(),
-        repr.dialect.as_str()
+        INSERT INTO view_representation (
+            warehouse_id, view_id, view_version_id, typ, sql, dialect
+        )
+        SELECT $1, $2, u.view_version_id, 'sql'::view_representation_type, u.sql, u.dialect
+        FROM UNNEST($3::int[], $4::text[], $5::text[])
+             AS u(view_version_id, sql, dialect)
+        "#,
+        *warehouse_id,
+        view_id,
+        &version_ids,
+        &sqls,
+        &dialects,
     )
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
-        e.into_catalog_backend_error().append_detail("Error inserting view representation.")
+        e.into_catalog_backend_error()
+            .append_detail("Error inserting view representations.")
     })?;
     Ok(())
 }
@@ -378,14 +636,6 @@ pub(crate) enum ViewFormatVersion {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ViewRepresentationType {
     Sql,
-}
-
-impl From<&iceberg::spec::ViewRepresentation> for ViewRepresentationType {
-    fn from(value: &ViewRepresentation) -> Self {
-        match value {
-            ViewRepresentation::Sql(_) => Self::Sql,
-        }
-    }
 }
 
 impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
@@ -418,8 +668,8 @@ pub(crate) mod tests {
             warehouse::test::initialize_warehouse,
         },
         service::{
-            ArcProjectId, CreateViewError, DropTabularError, LoadViewError, TabularId,
-            TabularIdentBorrowed, TabularListFlags, ViewId,
+            ArcProjectId, CommitViewError, CreateViewError, DropTabularError, LoadViewError,
+            TabularId, TabularIdentBorrowed, TabularListFlags, ViewId,
             tasks::{
                 ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -884,28 +1134,256 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(infos.len(), 1);
 
-        // Creating a duplicate view with different case should fail
+        // Creating a duplicate view with different case should fail on the
+        // name uniqueness constraint. Use a distinct storage location so
+        // `ensure_location_available` doesn't short-circuit this with
+        // `LocationAlreadyTaken`.
+        let second_location = "s3://my_bucket/my_view_v2/metadata"
+            .parse::<Location>()
+            .unwrap();
         let mut tx = pool.begin().await.unwrap();
         let err = super::create_view(
             warehouse_id,
             namespace_id,
-            &format!(
-                "s3://my_bucket/my_view2/metadata/bar/metadata-{}.gz.json",
-                Uuid::now_v7()
-            )
-            .parse()
-            .unwrap(),
+            &format!("{second_location}/metadata-{}.gz.json", Uuid::now_v7())
+                .parse()
+                .unwrap(),
             &mut tx,
             "MY_VIEW",
-            &ViewMetadataBuilder::new_from_metadata(request.clone())
-                .assign_uuid(Uuid::now_v7())
-                .build()
-                .unwrap()
-                .metadata,
+            &view_request(Some(Uuid::now_v7()), &second_location),
         )
         .await
         .expect_err("duplicate view name with different case should fail");
         assert!(matches!(err, CreateViewError::TabularAlreadyExists(_)));
+    }
+
+    #[sqlx::test]
+    async fn commit_existing_view_detects_stale_previous_metadata_location(pool: PgPool) {
+        let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
+            prepare_view(pool).await;
+        let namespace_id =
+            crate::implementations::postgres::tabular::table::tests::get_namespace_id(
+                state.clone(),
+                warehouse_id,
+                &namespace,
+            )
+            .await;
+
+        let stale_metadata_location: Location = format!(
+            "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
+        assert_ne!(stale_metadata_location, metadata_location);
+
+        let new_metadata_location: Location = format!(
+            "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
+
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = super::commit_existing_view(
+            warehouse_id,
+            namespace_id,
+            &new_metadata_location,
+            &stale_metadata_location,
+            &mut tx,
+            &metadata,
+        )
+        .await
+        .expect_err("commit with stale previous_metadata_location should fail");
+        assert!(
+            matches!(err, CommitViewError::ConcurrentUpdateError(_)),
+            "expected ConcurrentUpdateError, got: {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn commit_existing_view_returns_tabular_not_found_when_view_absent(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id =
+            crate::implementations::postgres::tabular::table::tests::get_namespace_id(
+                state.clone(),
+                warehouse_id,
+                &namespace,
+            )
+            .await;
+
+        // A view UUID that was never created.
+        let absent_view_uuid = Uuid::now_v7();
+        let location = "s3://my_bucket/missing_view/metadata"
+            .parse::<Location>()
+            .unwrap();
+        let metadata = view_request(Some(absent_view_uuid), &location);
+        let new_metadata_location: Location = format!(
+            "s3://my_bucket/missing_view/metadata/metadata-{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
+        let previous_metadata_location: Location = format!(
+            "s3://my_bucket/missing_view/metadata/metadata-{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
+
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = super::commit_existing_view(
+            warehouse_id,
+            namespace_id,
+            &new_metadata_location,
+            &previous_metadata_location,
+            &mut tx,
+            &metadata,
+        )
+        .await
+        .expect_err("commit against absent view should fail");
+        assert!(
+            matches!(err, CommitViewError::TabularNotFound(_)),
+            "expected TabularNotFound, got: {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn commit_existing_view_rejects_colliding_location(pool: PgPool) {
+        // First view at the location used by `prepare_view`
+        // (`s3://my_bucket/my_table/metadata/bar`).
+        let (state, _, warehouse_id, namespace, _, _, _) = prepare_view(pool.clone()).await;
+        let namespace_id =
+            crate::implementations::postgres::tabular::table::tests::get_namespace_id(
+                state.clone(),
+                warehouse_id,
+                &namespace,
+            )
+            .await;
+
+        // Second view at a distinct location.
+        let other_location = "s3://my_bucket/other_view/metadata"
+            .parse::<Location>()
+            .unwrap();
+        let other_metadata_location: Location = format!("{other_location}/metadata-init.gz.json")
+            .parse()
+            .unwrap();
+        let other_view_uuid = Uuid::now_v7();
+        let other_request = view_request(Some(other_view_uuid), &other_location);
+        let mut tx = state.write_pool().begin().await.unwrap();
+        super::create_view(
+            warehouse_id,
+            namespace_id,
+            &other_metadata_location,
+            &mut tx,
+            "other_view",
+            &other_request,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Build metadata for `other_view` whose `location()` collides with the
+        // first view's storage path — the location-collision check must reject
+        // it. The fixture's `view_request` constructs the metadata JSON
+        // directly with the provided location, so reuse it with the same UUID.
+        let stolen_location = "s3://my_bucket/my_table/metadata/bar"
+            .parse::<Location>()
+            .unwrap();
+        let stolen_metadata = view_request(Some(other_view_uuid), &stolen_location);
+
+        let new_metadata_location: Location = format!("{stolen_location}/metadata-2.gz.json")
+            .parse()
+            .unwrap();
+        let mut tx = state.write_pool().begin().await.unwrap();
+        let err = super::commit_existing_view(
+            warehouse_id,
+            namespace_id,
+            &new_metadata_location,
+            &other_metadata_location,
+            &mut tx,
+            &stolen_metadata,
+        )
+        .await
+        .expect_err("commit at a colliding location should fail");
+        assert!(
+            matches!(err, CommitViewError::LocationAlreadyTaken(_)),
+            "expected LocationAlreadyTaken, got: {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn commit_existing_view_cleans_old_sub_metadata(pool: PgPool) {
+        // `clear_view_metadata` only deletes from `view_properties` and
+        // `view_schema`; everything else relies on ON DELETE CASCADE. If a
+        // future migration weakens any CASCADE link, the second
+        // `populate_view_metadata` call below will hit a PK collision because
+        // the prior version/representation/log rows weren't cleared. This
+        // test asserts the cascade chain still works end-to-end.
+        let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
+            prepare_view(pool.clone()).await;
+        let namespace_id =
+            crate::implementations::postgres::tabular::table::tests::get_namespace_id(
+                state.clone(),
+                warehouse_id,
+                &namespace,
+            )
+            .await;
+        let view_uuid = metadata.uuid();
+        let expected_schemas = i64::try_from(metadata.schemas_iter().len()).unwrap();
+        let expected_versions = i64::try_from(metadata.versions().len()).unwrap();
+        let expected_reps = i64::try_from(
+            metadata
+                .versions()
+                .map(|v| v.representations().iter().count())
+                .sum::<usize>(),
+        )
+        .unwrap();
+
+        let new_metadata_location: Location = format!(
+            "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
+        let mut tx = state.write_pool().begin().await.unwrap();
+        super::commit_existing_view(
+            warehouse_id,
+            namespace_id,
+            &new_metadata_location,
+            &metadata_location,
+            &mut tx,
+            &metadata,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let schema_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM view_schema WHERE view_id = $1")
+                .bind(view_uuid)
+                .fetch_one(&state.read_pool())
+                .await
+                .unwrap();
+        let version_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM view_version WHERE view_id = $1")
+                .bind(view_uuid)
+                .fetch_one(&state.read_pool())
+                .await
+                .unwrap();
+        let rep_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM view_representation WHERE view_id = $1")
+                .bind(view_uuid)
+                .fetch_one(&state.read_pool())
+                .await
+                .unwrap();
+
+        assert_eq!(schema_count, expected_schemas, "view_schema not cleared");
+        assert_eq!(version_count, expected_versions, "view_version not cleared");
+        assert_eq!(rep_count, expected_reps, "view_representation not cleared");
     }
 
     async fn prepare_view(
