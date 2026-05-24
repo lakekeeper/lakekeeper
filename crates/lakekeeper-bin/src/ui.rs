@@ -66,6 +66,10 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
         },
         enable_authentication: CONFIG.openid_provider_uri.is_some(),
         enable_permissions: CONFIG.authz_backend != AuthZBackend::AllowAll,
+        enable_user_surveys: std::env::var("LAKEKEEPER__UI__ENABLE_SURVEYS")
+            .ok()
+            .and_then(|v| v.to_lowercase().parse::<bool>().ok())
+            .unwrap_or(default_config.enable_user_surveys),
         app_lakekeeper_url: std::env::var("LAKEKEEPER__UI__LAKEKEEPER_URL")
             .ok()
             .or(CONFIG.base_uri.as_ref().map(ToString::to_string)),
