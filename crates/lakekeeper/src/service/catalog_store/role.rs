@@ -545,12 +545,16 @@ where
         Ok(roles.into_iter().next().expect("length checked above"))
     }
 
-    /// Create a batch of roles. `on_conflict` selects whether to fail on
-    /// existing `(project_id, provider_id, source_id)` rows
-    /// ([`crate::service::OnRoleConflict::Fail`]) or skip them silently
-    /// ([`crate::service::OnRoleConflict::SkipExisting`]). The returned
-    /// `Vec` always reflects only rows that were actually inserted — callers
-    /// detect partial inserts by comparing `Vec.len()` to the request count.
+    /// Create a batch of roles. `on_conflict` selects how to treat an
+    /// existing `(project_id, provider_id, source_id)` row:
+    /// [`crate::service::OnRoleConflict::Fail`] aborts the batch, while
+    /// [`crate::service::OnRoleConflict::UpdateMetadata`] upserts (insert
+    /// when absent, refresh mutable metadata when present).
+    ///
+    /// The returned `Vec` contains only rows that were actually inserted
+    /// or updated — under `UpdateMetadata`, no-op rows (no change to
+    /// `name`/`description`) are omitted. Callers detect partial
+    /// application by comparing `Vec::len()` to the request count.
     async fn create_roles<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
