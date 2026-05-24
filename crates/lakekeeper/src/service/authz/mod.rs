@@ -2622,9 +2622,7 @@ pub(crate) mod tests {
 
         // Drop (control-plane) — also block it, and verify instance admin STILL
         // bypasses it. Confirms the bypass applies selectively per action.
-        authz.block_action(
-            format!("generic_table:{:?}", CatalogGenericTableAction::Drop).as_str(),
-        );
+        authz.block_action(format!("generic_table:{:?}", CatalogGenericTableAction::Drop).as_str());
         let allowed = authz
             .is_allowed_generic_table_action(
                 &md,

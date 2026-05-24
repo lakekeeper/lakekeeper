@@ -434,7 +434,10 @@ mod tests {
             ResolvedTaskEntity::GenericTable(gt) => {
                 assert_eq!(*gt.generic_table_id, generic_table_uuid);
                 assert_eq!(gt.warehouse_id, warehouse_id);
-                assert_eq!(gt.generic_table_ident.namespace.as_ref(), &["ns".to_string()]);
+                assert_eq!(
+                    gt.generic_table_ident.namespace.as_ref(),
+                    &["ns".to_string()]
+                );
                 assert_eq!(gt.generic_table_ident.name, expected_table_name);
             }
             other => panic!("Expected ResolvedTaskEntity::GenericTable, got {other:?}"),

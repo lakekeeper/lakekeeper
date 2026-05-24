@@ -1419,9 +1419,7 @@ mod test {
             Some(WarehouseTaskEntityId::GenericTable { generic_table_id }) => {
                 assert_eq!(*generic_table_id, generic_table_uuid);
             }
-            other => panic!(
-                "expected InsertResult.entity_id = GenericTable, got {other:?}"
-            ),
+            other => panic!("expected InsertResult.entity_id = GenericTable, got {other:?}"),
         }
     }
 
