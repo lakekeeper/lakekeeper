@@ -157,10 +157,7 @@ impl TabularRowCore {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
-                properties: prepare_properties(
-                    self.generic_table_properties_keys,
-                    self.generic_table_properties_values,
-                ),
+                properties,
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
@@ -193,6 +190,8 @@ pub(super) struct TabularRowWithProperties {
     view_properties_values: Option<Vec<String>>,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
+    generic_table_properties_keys: Option<Vec<String>>,
+    generic_table_properties_values: Option<Vec<String>>,
 }
 
 impl TabularRowWithProperties {
@@ -207,6 +206,10 @@ impl TabularRowWithProperties {
             TabularType::View => {
                 prepare_properties(self.view_properties_keys, self.view_properties_values)
             }
+            TabularType::GenericTable => prepare_properties(
+                self.generic_table_properties_keys,
+                self.generic_table_properties_values,
+            ),
         };
         let core = TabularRowCore {
             tabular_id: self.tabular_id,
