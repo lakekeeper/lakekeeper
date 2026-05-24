@@ -487,6 +487,11 @@ pub(crate) async fn create_tabular(
     let fs_protocol = location.scheme();
     let fs_location = location.authority_and_path();
 
+    // Check location availability before the INSERT so a collision raises
+    // `LocationAlreadyTaken` cleanly instead of inserting a row we'll have to
+    // rely on transaction rollback to undo.
+    ensure_location_available(warehouse_id, id, location, transaction).await?;
+
     let tabular_id = sqlx::query_as!(
         TabularRow,
         r#"
@@ -495,7 +500,7 @@ pub(crate) async fn create_tabular(
             SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
             FROM namespace n
             WHERE n.namespace_id = $3 AND n.warehouse_id = $4
-            RETURNING 
+            RETURNING
                 tabular_id,
                 namespace_id,
                 name as tabular_name,
@@ -548,8 +553,6 @@ pub(crate) async fn create_tabular(
             _ => e.into_catalog_backend_error().into(),
         }
     })?;
-
-    ensure_location_available(warehouse_id, id, location, transaction).await?;
 
     let tabular_info = tabular_id.try_into_table_or_view(warehouse_id.into())?;
 

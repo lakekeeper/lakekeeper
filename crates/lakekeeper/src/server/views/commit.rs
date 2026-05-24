@@ -248,7 +248,6 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     C::commit_view(
         ViewCommit {
-            view_ident: &ctx.view_info.tabular_ident,
             previous_view: &previous_view,
             namespace_id: ctx.view_info.namespace_id,
             warehouse_id: ctx.view_info.warehouse_id,

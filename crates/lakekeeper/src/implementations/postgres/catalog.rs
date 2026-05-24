@@ -672,7 +672,6 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn commit_view_impl<'a>(
         ViewCommit {
-            view_ident: _,
             namespace_id,
             warehouse_id,
             previous_view,

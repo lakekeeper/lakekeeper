@@ -75,7 +75,10 @@ pub(crate) async fn create_view(
     tracing::debug!("Inserted base view and tabular.");
     populate_view_metadata(warehouse_id, view_id, metadata, transaction).await?;
 
-    Ok(view_info)
+    // `view_info` came from `create_tabular` and has no properties (the row
+    // hadn't been populated yet); refresh them from the metadata we just
+    // wrote so the caller doesn't see an empty `properties` HashMap.
+    Ok(finalize_view_info(view_info, metadata))
 }
 
 pub(crate) async fn commit_existing_view(
@@ -92,11 +95,19 @@ pub(crate) async fn commit_existing_view(
     let fs_location = location.authority_and_path();
     let fs_protocol = location.scheme();
 
+    // Compile-time guard: the `tabular` UPDATE below does not touch
+    // `view.view_format_version`. When iceberg introduces V2, this `From`
+    // impl breaks to compile — at that point, also add an UPDATE on
+    // `view.view_format_version` here.
+    let _ = ViewFormatVersion::from(metadata.format_version());
+
     // Lock the tabular row + classify. Existence-and-authz check
     // (namespace_id matches what authz authorized against) + row-lock for the
     // unconditional UPDATE below + read of `metadata_location` for the
     // concurrent-update guard. 0 rows → TabularNotFound; mismatch →
-    // ConcurrentUpdateError.
+    // ConcurrentUpdateError. The DB check constraint `tabular_check`
+    // guarantees views always have non-NULL `metadata_location`, so the
+    // unwrap-into-Some below cannot misfire on a staged row.
     let current_metadata_location: Option<String> = sqlx::query_scalar!(
         r#"
         SELECT metadata_location
@@ -183,30 +194,27 @@ pub(crate) async fn commit_existing_view(
     clear_view_metadata(warehouse_id, *view_id, transaction).await?;
     populate_view_metadata(warehouse_id, *view_id, metadata, transaction).await?;
 
-    finalize_view_info(row, warehouse_id, metadata)
-}
-
-/// Converts the updated `TabularRow` into a `ViewInfo`, overlaying properties
-/// from the in-memory metadata so we don't re-query `view_properties` we just
-/// wrote in `populate_view_metadata`.
-fn finalize_view_info(
-    row: super::TabularRow,
-    warehouse_id: WarehouseId,
-    metadata: &ViewMetadata,
-) -> Result<ViewInfo, CommitViewError> {
     let info = row
         .try_into_table_or_view(warehouse_id)
         .map_err(|e| match e {
             super::FromTabularRowError::InvalidNamespaceIdentifier(e) => CommitViewError::from(e),
             super::FromTabularRowError::InternalParseLocationError(e) => CommitViewError::from(e),
         })?;
-    let Some(mut view_info) = info.into_view_info() else {
+    let Some(view_info) = info.into_view_info() else {
         return Err(UnexpectedTabularInResponse::new()
             .append_detail("Expected committed tabular to be of type view")
             .into());
     };
+    Ok(finalize_view_info(view_info, metadata))
+}
+
+/// Overlays properties from the in-memory metadata onto `view_info` so the
+/// returned value reflects the just-written `view_properties` rows without a
+/// re-query. Used by both `create_view` and `commit_existing_view` after
+/// `populate_view_metadata`.
+fn finalize_view_info(mut view_info: ViewInfo, metadata: &ViewMetadata) -> ViewInfo {
     view_info.properties.clone_from(metadata.properties());
-    Ok(view_info)
+    view_info
 }
 
 async fn populate_view_metadata(
@@ -1126,24 +1134,23 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(infos.len(), 1);
 
-        // Creating a duplicate view with different case should fail
+        // Creating a duplicate view with different case should fail on the
+        // name uniqueness constraint. Use a distinct storage location so
+        // `ensure_location_available` doesn't short-circuit this with
+        // `LocationAlreadyTaken`.
+        let second_location = "s3://my_bucket/my_view_v2/metadata"
+            .parse::<Location>()
+            .unwrap();
         let mut tx = pool.begin().await.unwrap();
         let err = super::create_view(
             warehouse_id,
             namespace_id,
-            &format!(
-                "s3://my_bucket/my_view2/metadata/bar/metadata-{}.gz.json",
-                Uuid::now_v7()
-            )
-            .parse()
-            .unwrap(),
+            &format!("{second_location}/metadata-{}.gz.json", Uuid::now_v7())
+                .parse()
+                .unwrap(),
             &mut tx,
             "MY_VIEW",
-            &ViewMetadataBuilder::new_from_metadata(request.clone())
-                .assign_uuid(Uuid::now_v7())
-                .build()
-                .unwrap()
-                .metadata,
+            &view_request(Some(Uuid::now_v7()), &second_location),
         )
         .await
         .expect_err("duplicate view name with different case should fail");

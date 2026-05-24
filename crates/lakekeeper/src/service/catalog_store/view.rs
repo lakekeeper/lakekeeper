@@ -30,7 +30,6 @@ pub struct CatalogView {
 
 #[derive(Debug, Clone)]
 pub struct ViewCommit<'a> {
-    pub view_ident: &'a TableIdent,
     pub namespace_id: NamespaceId,
     pub warehouse_id: WarehouseId,
     pub previous_view: &'a CatalogView,
