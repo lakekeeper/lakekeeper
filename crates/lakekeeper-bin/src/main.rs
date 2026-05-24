@@ -403,7 +403,8 @@ async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Authorizer migration complete.");
     tracing::info!("Running post-migration hooks...");
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool.clone());
-    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state).await?;
+    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state, Vec::new())
+        .await?;
     tracing::info!("Post-migration hooks complete.");
 
     Ok(())

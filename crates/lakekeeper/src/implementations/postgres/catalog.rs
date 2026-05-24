@@ -307,9 +307,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: crate::service::OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Role>, CreateRoleError> {
-        create_roles(project_id, roles_to_create, &mut **transaction).await
+        create_roles(project_id, roles_to_create, on_conflict, &mut **transaction).await
     }
 
     async fn update_role_impl<'a>(
@@ -348,11 +349,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn delete_roles_impl<'a>(
-        project_id: &ProjectId,
-        role_id_filter: Option<&[RoleId]>,
+        project_id: Option<&ProjectId>,
+        filter: crate::service::CatalogListRolesByIdFilter<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
-        delete_roles(project_id, role_id_filter, &mut **transaction).await
+        delete_roles(project_id, filter, &mut **transaction).await
     }
 
     async fn search_role_impl(

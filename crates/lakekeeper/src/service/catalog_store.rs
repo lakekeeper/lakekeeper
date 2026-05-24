@@ -160,6 +160,30 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub provider_id: &'a RoleProviderId,
 }
 
+/// How [`CatalogStore::create_roles_impl`] should handle a row that already
+/// exists with the same `(project_id, provider_id, source_id)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnRoleConflict {
+    /// Fail the entire batch with [`crate::service::RoleSourceIdConflict`].
+    /// Default — matches the standard customer-facing `POST /role`
+    /// semantics.
+    #[default]
+    Fail,
+    /// Upsert: insert if absent, or update the row's mutable metadata
+    /// (`name`, `description`) to the requested values. The existing `id`,
+    /// `created_at`, and monotonic `version` are preserved (version only
+    /// bumps when name/description actually change).
+    ///
+    /// The SQL's `WHERE ... IS DISTINCT FROM ...` predicate skips no-op
+    /// updates entirely, so the returned `Vec<Role>` reflects only rows
+    /// that were **inserted or actually changed** — its length may be
+    /// less than the request count. Use this for catalog-managed seeding
+    /// paths where the **code** is the authoritative source of truth and
+    /// a redeploy may legitimately ship a refined display name or
+    /// description (e.g. catalog-managed system roles).
+    UpdateMetadata,
+}
+
 #[async_trait::async_trait]
 pub trait CatalogStore
 where
@@ -514,6 +538,7 @@ where
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Role>, CreateRoleError>;
 
@@ -540,10 +565,16 @@ where
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;
 
-    /// Returns the list of deleted role ids.
+    /// Delete role rows matching `filter`, optionally scoped to a single
+    /// project. Mirrors [`Self::list_roles_impl`] so the same filter type
+    /// drives both reads and writes. Returns the IDs of deleted rows.
+    ///
+    /// The implementation must refuse to run when `project_id` is `None`
+    /// **and** every filter is `None` — that combination would erase every
+    /// role row across every project.
     async fn delete_roles_impl<'a>(
-        project_id: &ProjectId,
-        role_id_filter: Option<&[RoleId]>,
+        project_id: Option<&ProjectId>,
+        filter: CatalogListRolesByIdFilter<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
