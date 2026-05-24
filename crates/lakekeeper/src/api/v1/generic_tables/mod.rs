@@ -438,12 +438,22 @@ async fn load_generic_table_credentials<I: GenericTableService<S>, S: crate::api
     headers: HeaderMap,
     Extension(metadata): Extension<RequestMetadata>,
 ) -> Result<LoadGenericTableCredentialsResponse> {
+    // Deserialization cannot fail in practice: StrDeserializer always reaches
+    // visit_str, and visit_str delegates to parse_referenced_by_param which
+    // returns Option (invalid input → None, never Err). Mirrors the iceberg
+    // load-table-credentials route — the warn is defensive in case the
+    // deserialize impl ever grows a real error path.
     let load_credentials_query = raw_query
         .as_deref()
         .and_then(|q| {
             use serde::de::{IntoDeserializer, value::StrDeserializer};
             let deserializer: StrDeserializer<'_, serde::de::value::Error> = q.into_deserializer();
-            LoadGenericTableCredentialsQuery::deserialize(deserializer).ok()
+            LoadGenericTableCredentialsQuery::deserialize(deserializer)
+                .map_err(|e| {
+                    tracing::warn!("Failed to parse load generic table credentials query: {e}");
+                    e
+                })
+                .ok()
         })
         .unwrap_or_default();
 

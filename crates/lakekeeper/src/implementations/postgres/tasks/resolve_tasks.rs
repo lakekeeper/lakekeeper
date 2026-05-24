@@ -364,7 +364,7 @@ mod tests {
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
             | ResolvedTaskEntity::Project
-            | ResolvedTaskEntity::Warehouse { .. } => panic!("Expected TaskEntity::Table"),
+            | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
 
         // Verify second task

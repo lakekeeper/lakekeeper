@@ -59,14 +59,13 @@ pub(super) async fn load_generic_table<C: CatalogStore, A: Authorizer + Clone, S
         .await,
     )?;
 
+    // Load by the authz-resolved id, not by (namespace_id, name). Closes the
+    // TOCTOU window where a concurrent rename + create-with-same-name between
+    // authz and load would substitute a different row than the one the
+    // caller's grant applied to.
     let mut t = C::Transaction::begin_read(state.v1_state.catalog.clone()).await?;
-    let info = C::load_generic_table(
-        warehouse_id,
-        gt_tabular.namespace_id,
-        &table_name,
-        t.transaction(),
-    )
-    .await?;
+    let info =
+        C::load_generic_table_by_id(warehouse_id, gt_tabular.tabular_id, t.transaction()).await?;
     t.commit().await?;
 
     let (config, storage_credentials) = if let Some(storage_permissions) = storage_permissions {

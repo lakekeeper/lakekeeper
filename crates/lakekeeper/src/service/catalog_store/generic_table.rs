@@ -295,6 +295,19 @@ where
         Self::load_generic_table_impl(warehouse_id, namespace_id, table_name, transaction).await
     }
 
+    /// Load a generic table by its stable id. Prefer this over
+    /// [`Self::load_generic_table`] when the caller already holds an
+    /// authorized identity (e.g. after a successful authz check) — using the
+    /// id closes the TOCTOU window where a concurrent rename + create-with-
+    /// same-name between authz and load would substitute a different row.
+    async fn load_generic_table_by_id<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError> {
+        Self::load_generic_table_by_id_impl(warehouse_id, generic_table_id, transaction).await
+    }
+
     async fn list_generic_tables<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,

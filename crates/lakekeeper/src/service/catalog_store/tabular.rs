@@ -1056,12 +1056,14 @@ impl TabularIdentOrId {
 
     #[must_use]
     pub fn type_str(&self) -> &'static str {
-        if self.is_table() {
-            "table"
+        // Explicit dispatch — generic_table first defends against a future
+        // variant silently being labelled "generic-table" via the fallback.
+        if self.is_generic_table() {
+            "generic-table"
         } else if self.is_view() {
             "view"
         } else {
-            "generic-table"
+            "table"
         }
     }
 }
@@ -1139,6 +1141,11 @@ macro_rules! define_simple_tabular_err {
             pub fn is_view(&self) -> bool {
                 self.tabular().is_view()
             }
+
+            #[must_use]
+            pub fn is_generic_table(&self) -> bool {
+                self.tabular().is_generic_table()
+            }
         }
 
         impl_error_stack_methods!($error_name);
@@ -1195,7 +1202,9 @@ impl From<ConcurrentUpdateError> for ErrorModel {
 define_simple_tabular_err!(TabularNotFound, "Error getting tabular from catalog");
 impl From<TabularNotFound> for ErrorModel {
     fn from(err: TabularNotFound) -> Self {
-        let t = if err.is_view() {
+        let t = if err.is_generic_table() {
+            "NoSuchGenericTableException"
+        } else if err.is_view() {
             "NoSuchViewException"
         } else {
             "NoSuchTableException"

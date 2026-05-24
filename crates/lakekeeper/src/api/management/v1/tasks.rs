@@ -1441,7 +1441,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
                     ResolvedTaskEntity::GenericTable(g) => {
                         Some(TabularId::GenericTable(g.generic_table_id))
                     }
-                    ResolvedTaskEntity::Warehouse { .. } | ResolvedTaskEntity::Project => None, // Project not returned due to scope
+                    ResolvedTaskEntity::Warehouse(_) | ResolvedTaskEntity::Project => None, // Project not returned due to scope
                 }
             } else {
                 None

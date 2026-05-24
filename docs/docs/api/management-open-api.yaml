@@ -7855,11 +7855,15 @@ components:
                 type: string
             table:
               type: string
-              description: Name of the table or view
+              description: Name of the table, view, or generic table.
             warehouse-id:
               type: string
               format: uuid
-      description: Identifier for a table or view, either a UUID or its name and namespace
+      description: |-
+        Identifier for a tabular (table, view, or generic table) — either a UUID
+        or its name and namespace. Wire format primary names are `table-id` and
+        `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
+        accepted as input aliases for client ergonomics.
     TabularIdentUuid:
       oneOf:
         - type: object

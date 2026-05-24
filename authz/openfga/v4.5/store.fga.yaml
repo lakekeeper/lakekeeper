@@ -118,6 +118,27 @@ tuples:
   - user: role:select_table_3#assignee
     relation: select
     object: lakekeeper_table:warehouse_1/table_3
+  # Hierarchies: generic_table_1 under namespace_1_2 (sibling of table_3, view_1)
+  - user: lakekeeper_generic_table:warehouse_1/generic_table_1
+    relation: child
+    object: namespace:namespace_1_2
+  - user: namespace:namespace_1_2
+    relation: parent
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
+  # Roles (Select on Generic Table 1) — role-based grant on a generic table
+  - user: user:select_generic_table_1
+    relation: assignee
+    object: role:select_generic_table_1
+  - user: role:select_generic_table_1#assignee
+    relation: select
+    object: lakekeeper_generic_table:warehouse_1/generic_table_1
+  # Hierarchies: generic_table_2_2 under managed-access namespace_2_2
+  - user: lakekeeper_generic_table:warehouse_2/generic_table_2_2
+    relation: child
+    object: namespace:namespace_2_2
+  - user: namespace:namespace_2_2
+    relation: parent
+    object: lakekeeper_generic_table:warehouse_2/generic_table_2_2
   # Roles (Owner on warehouse_2)
   - user: user:warehouse_2_owner
     relation: ownership
@@ -831,6 +852,30 @@ tests:
           can_grant_select: false
           can_grant_modify: false
           can_change_ownership: false
+  - name: Select grant on a generic table bubbles list up
+    check:
+      - user: user:select_generic_table_1
+        object: lakekeeper_generic_table:warehouse_1/generic_table_1
+        assertions:
+          can_drop: false
+          can_write_data: false
+          can_read_data: true
+          can_get_metadata: true
+          can_rename: false
+          can_include_in_list: true
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_grant_describe: false
+          can_grant_select: false
+          can_grant_modify: false
+          can_change_ownership: false
+      - user: user:select_generic_table_1
+        object: namespace:namespace_1_2
+        assertions:
+          can_create_generic_table: false
+          can_list_generic_tables: true
+          can_get_metadata: true
+          can_include_in_list: true
   - name: Managed access on warehouse owner can modify warehouse and below
     check:
       - user: user:warehouse_2_owner
@@ -1109,6 +1154,26 @@ tests:
           can_read_data: true
           can_get_metadata: true
           can_commit: true
+          can_rename: true
+          can_include_in_list: true
+          can_grant_pass_grants: false
+          can_grant_manage_grants: false
+          can_grant_describe: false
+          can_grant_select: false
+          can_grant_modify: false
+          can_change_ownership: false
+      # Generic tables under a managed-access warehouse inherit the same
+      # block: namespace owner gets full data-plane + control-plane, but no
+      # grant authority (managed_access_inheritance from parent suppresses
+      # ownership-derived manage_grants).
+      - user: user:namespace_2_2_owner
+        object: lakekeeper_generic_table:warehouse_2/generic_table_2_2
+        assertions:
+          can_drop: true
+          can_undrop: true
+          can_write_data: true
+          can_read_data: true
+          can_get_metadata: true
           can_rename: true
           can_include_in_list: true
           can_grant_pass_grants: false

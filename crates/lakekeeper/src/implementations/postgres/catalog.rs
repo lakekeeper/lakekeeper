@@ -926,6 +926,19 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    async fn load_generic_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: crate::service::GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError> {
+        super::tabular::generic_table::load_generic_table_by_id(
+            warehouse_id,
+            generic_table_id,
+            transaction,
+        )
+        .await
+    }
+
     async fn list_generic_tables_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,

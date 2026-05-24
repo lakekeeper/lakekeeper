@@ -143,21 +143,24 @@ impl NamespaceIdentOrUuid {
 #[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
-/// Identifier for a table or view, either a UUID or its name and namespace
+/// Identifier for a tabular (table, view, or generic table) — either a UUID
+/// or its name and namespace. Wire format primary names are `table-id` and
+/// `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
+/// accepted as input aliases for client ergonomics.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     IdInWarehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
-        #[serde(alias = "view_id")]
+        #[serde(alias = "view_id", alias = "generic_table_id")]
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
-        /// Name of the table or view
-        #[serde(alias = "view")]
+        /// Name of the table, view, or generic table.
+        #[serde(alias = "view", alias = "generic_table")]
         table: String,
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,

@@ -4,6 +4,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Preserves pytest's exit code while guaranteeing teardown on every exit path
+# (pip-install failure, signal, set -e from any pre-pytest step). Without
+# this trap, an early failure would leak containers and the host's port
+# bindings.
+test_exit=0
+cleanup() {
+    rc=$?
+    echo ">>> Tearing down Docker infrastructure..."
+    docker compose logs || true
+    docker compose down -v || true
+    # If pytest set test_exit, propagate that; otherwise use the script's
+    # current exit code (e.g. from set -e firing before pytest ran).
+    if [ "$test_exit" -ne 0 ]; then
+        exit "$test_exit"
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+
 echo ">>> Starting Docker infrastructure..."
 docker compose up -d
 
@@ -23,8 +42,6 @@ done
 
 if [ $elapsed -ge $timeout ]; then
     echo "  ERROR: Timed out waiting for Lakekeeper"
-    docker compose logs
-    docker compose down -v
     exit 1
 fi
 
@@ -32,10 +49,4 @@ echo ">>> Installing Python dependencies..."
 pip install -q -r requirements.txt
 
 echo ">>> Running integration tests..."
-test_exit=0
 pytest test_lance.py -v || test_exit=$?
-
-echo ">>> Tearing down Docker infrastructure..."
-docker compose down -v
-
-exit $test_exit

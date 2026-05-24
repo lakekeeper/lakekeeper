@@ -1130,7 +1130,14 @@ fn interpret_authz_results_for_load_table(
                 }
             }
             ActionOnTableOrView::GenericTable(_) => {
-                // Generic tables don't appear in load_tabular flow.
+                // Unreachable: loadTable authz chain only resolves tables and
+                // intermediate views. Fail closed if the invariant breaks in
+                // release — silent fall-through would let an unexpected
+                // entry bypass authorization checks.
+                return Err(BackendUnavailableOrCountMismatch::from(
+                    AuthorizationCountMismatch::new(0, 0, "generic_table_in_load_table_chain"),
+                )
+                .into());
             }
         }
     }

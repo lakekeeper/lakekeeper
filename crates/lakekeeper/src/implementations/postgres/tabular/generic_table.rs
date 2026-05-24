@@ -238,6 +238,63 @@ pub(crate) async fn load_generic_table(
     full_row_to_info(row, warehouse_id).map_err(LoadGenericTableError::from)
 }
 
+/// Load a generic table by its stable id. Use this when the caller already
+/// holds an authorized identity (e.g. after a successful authz check); it
+/// closes the TOCTOU window where a concurrent rename + create-with-same-name
+/// between authz and load would let the caller read a different row than the
+/// one their grant applied to.
+pub(crate) async fn load_generic_table_by_id(
+    warehouse_id: WarehouseId,
+    generic_table_id: GenericTableId,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<GenericTableInfo, LoadGenericTableError> {
+    let row = sqlx::query_as!(
+        GenericTableFullRow,
+        r#"
+        SELECT
+            t.tabular_id as generic_table_id,
+            w.version as "warehouse_version!",
+            t.namespace_id,
+            n.version as "namespace_version!",
+            t.tabular_namespace_name as "namespace_name!",
+            t.name,
+            gt.format,
+            t.fs_location,
+            t.fs_protocol,
+            t.protected,
+            gt.doc,
+            gt.schema_info,
+            gt.statistics,
+            gtp.keys as property_keys,
+            gtp.values as property_values
+        FROM tabular t
+        INNER JOIN generic_table gt ON gt.warehouse_id = t.warehouse_id AND gt.generic_table_id = t.tabular_id
+        INNER JOIN warehouse w ON w.warehouse_id = t.warehouse_id AND w.status = 'active'
+        INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = t.warehouse_id
+        LEFT JOIN (
+            SELECT generic_table_id,
+                   ARRAY_AGG(key) as keys,
+                   ARRAY_AGG(value) as values
+            FROM generic_table_properties
+            WHERE warehouse_id = $1
+            GROUP BY generic_table_id
+        ) gtp ON t.tabular_id = gtp.generic_table_id
+        WHERE t.warehouse_id = $1
+          AND t.tabular_id = $2
+          AND t.typ = 'generic-table'
+          AND t.deleted_at IS NULL
+        "#,
+        *warehouse_id,
+        *generic_table_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| LoadGenericTableError::from(e.into_catalog_backend_error()))?
+    .ok_or_else(|| LoadGenericTableError::from(GenericTableNotFound::new()))?;
+
+    full_row_to_info(row, warehouse_id).map_err(LoadGenericTableError::from)
+}
+
 pub(crate) async fn list_generic_tables(
     warehouse_id: WarehouseId,
     namespace_id: NamespaceId,

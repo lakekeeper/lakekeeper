@@ -525,6 +525,12 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
 
+    async fn load_generic_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
     async fn list_generic_tables_impl<'a>(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
