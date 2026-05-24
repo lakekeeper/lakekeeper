@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        WITH updated AS (\n            UPDATE tabular\n            SET metadata_location = $3,\n                fs_protocol = $4,\n                fs_location = $5\n            WHERE warehouse_id = $1 AND tabular_id = $2\n            RETURNING tabular_id,\n                      namespace_id,\n                      name AS tabular_name,\n                      tabular_namespace_name AS namespace_name,\n                      typ,\n                      metadata_location,\n                      updated_at,\n                      protected,\n                      fs_location,\n                      fs_protocol\n        )\n        SELECT u.tabular_id,\n               u.namespace_id,\n               u.tabular_name,\n               u.namespace_name,\n               u.typ AS \"typ: TabularType\",\n               u.metadata_location,\n               u.updated_at,\n               u.protected,\n               u.fs_location,\n               u.fs_protocol,\n               w.version AS warehouse_version,\n               n.version AS namespace_version,\n               NULL::text[] AS view_properties_keys,\n               NULL::text[] AS view_properties_values,\n               NULL::text[] AS table_properties_keys,\n               NULL::text[] AS table_properties_values\n        FROM updated u\n        INNER JOIN warehouse w ON w.warehouse_id = $1\n        INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $1\n        ",
+  "query": "\n        WITH updated AS (\n            UPDATE tabular\n            SET metadata_location = $3,\n                fs_protocol = $4,\n                fs_location = $5\n            WHERE warehouse_id = $1 AND tabular_id = $2\n            RETURNING tabular_id,\n                      namespace_id,\n                      name AS tabular_name,\n                      tabular_namespace_name AS namespace_name,\n                      typ,\n                      metadata_location,\n                      updated_at,\n                      protected,\n                      fs_location,\n                      fs_protocol\n        )\n        SELECT u.tabular_id,\n               u.namespace_id,\n               u.tabular_name,\n               u.namespace_name,\n               u.typ AS \"typ: TabularType\",\n               u.metadata_location,\n               u.updated_at,\n               u.protected,\n               u.fs_location,\n               u.fs_protocol,\n               w.version AS warehouse_version,\n               n.version AS namespace_version\n        FROM updated u\n        INNER JOIN warehouse w ON w.warehouse_id = $1\n        INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -144,30 +144,6 @@
             "name": "version"
           }
         }
-      },
-      {
-        "ordinal": 12,
-        "name": "view_properties_keys",
-        "type_info": "TextArray",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 13,
-        "name": "view_properties_values",
-        "type_info": "TextArray",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 14,
-        "name": "table_properties_keys",
-        "type_info": "TextArray",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 15,
-        "name": "table_properties_values",
-        "type_info": "TextArray",
-        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -191,12 +167,8 @@
       false,
       false,
       false,
-      false,
-      null,
-      null,
-      null,
-      null
+      false
     ]
   },
-  "hash": "06eb296b42938d31bb1e76e20a820a76d72bfa32178516240a721e0350c8989b"
+  "hash": "30a99acfea1ae644dcda3419d0a1ed39319fd292e2b4a380c6859b2d04410fa3"
 }

@@ -63,8 +63,15 @@ impl From<FromTabularRowError> for GetTabularInfoError {
     }
 }
 
+/// Tabular row without per-tabular-type properties.
+///
+/// Used by writes (create / commit / rename) that already know the new
+/// property map from the in-memory metadata and would otherwise have to pad
+/// the SELECT with `NULL::text[]` columns just to satisfy the row decoder.
+/// Reads that genuinely return properties from the DB use
+/// [`TabularRowWithProperties`] instead.
 #[derive(Debug, FromRow)]
-pub(super) struct TabularRow {
+pub(super) struct TabularRowCore {
     tabular_id: Uuid,
     warehouse_version: i64,
     namespace_name: Vec<String>,
@@ -80,16 +87,20 @@ pub(super) struct TabularRow {
     typ: TabularType,
     fs_location: String,
     fs_protocol: String,
-    view_properties_keys: Option<Vec<String>>,
-    view_properties_values: Option<Vec<String>>,
-    table_properties_keys: Option<Vec<String>>,
-    table_properties_values: Option<Vec<String>>,
 }
 
-impl TabularRow {
+impl TabularRowCore {
     pub(super) fn try_into_table_or_view(
         self,
         warehouse_id: WarehouseId,
+    ) -> Result<ViewOrTableInfo, FromTabularRowError> {
+        self.try_into_table_or_view_with_properties(warehouse_id, HashMap::new())
+    }
+
+    fn try_into_table_or_view_with_properties(
+        self,
+        warehouse_id: WarehouseId,
+        properties: HashMap<String, String>,
     ) -> Result<ViewOrTableInfo, FromTabularRowError> {
         let namespace = parse_namespace_identifier_from_vec(
             &self.namespace_name,
@@ -116,10 +127,7 @@ impl TabularRow {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
-                properties: prepare_properties(
-                    self.table_properties_keys,
-                    self.table_properties_values,
-                ),
+                properties,
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
@@ -132,16 +140,69 @@ impl TabularRow {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
-                properties: prepare_properties(
-                    self.view_properties_keys,
-                    self.view_properties_values,
-                ),
+                properties,
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
         };
 
         Ok(view_or_table_info)
+    }
+}
+
+/// Tabular row that also carries the table/view property arrays selected via
+/// LEFT JOIN. Use this for queries that need to hydrate properties from the DB
+/// (e.g. listing / lookup / rename). Writes that overlay properties from
+/// in-memory metadata should use [`TabularRowCore`] instead.
+#[derive(Debug, FromRow)]
+pub(super) struct TabularRowWithProperties {
+    tabular_id: Uuid,
+    warehouse_version: i64,
+    namespace_name: Vec<String>,
+    namespace_version: i64,
+    namespace_id: Uuid,
+    tabular_name: String,
+    updated_at: Option<chrono::DateTime<Utc>>,
+    metadata_location: Option<String>,
+    protected: bool,
+    #[sqlx(rename = "typ: TabularType")]
+    typ: TabularType,
+    fs_location: String,
+    fs_protocol: String,
+    view_properties_keys: Option<Vec<String>>,
+    view_properties_values: Option<Vec<String>>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
+}
+
+impl TabularRowWithProperties {
+    pub(super) fn try_into_table_or_view(
+        self,
+        warehouse_id: WarehouseId,
+    ) -> Result<ViewOrTableInfo, FromTabularRowError> {
+        let properties = match self.typ {
+            TabularType::Table => {
+                prepare_properties(self.table_properties_keys, self.table_properties_values)
+            }
+            TabularType::View => {
+                prepare_properties(self.view_properties_keys, self.view_properties_values)
+            }
+        };
+        let core = TabularRowCore {
+            tabular_id: self.tabular_id,
+            warehouse_version: self.warehouse_version,
+            namespace_name: self.namespace_name,
+            namespace_version: self.namespace_version,
+            namespace_id: self.namespace_id,
+            tabular_name: self.tabular_name,
+            updated_at: self.updated_at,
+            metadata_location: self.metadata_location,
+            protected: self.protected,
+            typ: self.typ,
+            fs_location: self.fs_location,
+            fs_protocol: self.fs_protocol,
+        };
+        core.try_into_table_or_view_with_properties(warehouse_id, properties)
     }
 }
 
@@ -179,7 +240,7 @@ where
     );
 
     let rows = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH q AS (
             SELECT id, typ FROM UNNEST($2::uuid[], $3::tabular_type[]) u(id, typ)
@@ -307,7 +368,7 @@ where
 
     // For columns with collation, the query must return the value as in input `tables`.
     let rows = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH selected_tabulars AS (
             SELECT t.tabular_id,
@@ -493,7 +554,7 @@ pub(crate) async fn create_tabular(
     ensure_location_available(warehouse_id, id, location, transaction).await?;
 
     let tabular_id = sqlx::query_as!(
-        TabularRow,
+        TabularRowCore,
         r#"
         WITH inserted AS (
             INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
@@ -523,11 +584,7 @@ pub(crate) async fn create_tabular(
                i.protected,
                i.typ as "typ: TabularType",
                i.fs_location,
-               i.fs_protocol,
-               NULL::text[] as view_properties_keys,
-               NULL::text[] as view_properties_values,
-               NULL::text[] as table_properties_keys,
-               NULL::text[] as table_properties_values
+               i.fs_protocol
         FROM inserted i
         INNER JOIN warehouse w ON w.warehouse_id = $4
         INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4
@@ -591,7 +648,7 @@ impl TabularRowWithDeletion {
         self,
         warehouse_id: WarehouseId,
     ) -> Result<ViewOrTableDeletionInfo, FromTabularRowError> {
-        let row = TabularRow {
+        let row = TabularRowWithProperties {
             tabular_id: self.tabular_id,
             namespace_name: self.namespace_name,
             namespace_id: self.namespace_id,
@@ -1085,7 +1142,7 @@ pub(crate) async fn rename_tabular(
 
     let row = if source_namespace == dest_namespace {
         sqlx::query_as!(
-            TabularRow,
+            TabularRowWithProperties,
             r#"
             WITH locked_tabular AS (
                 SELECT tabular_id, name, namespace_id, typ
@@ -1190,7 +1247,7 @@ pub(crate) async fn rename_tabular(
         })?
     } else {
         sqlx::query_as!(
-            TabularRow,
+            TabularRowWithProperties,
             r#"
             WITH locked_tabular AS (
                 SELECT tabular_id, name, namespace_id, typ
@@ -1486,10 +1543,10 @@ pub(crate) async fn mark_tabular_as_deleted(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ViewOrTableInfo, MarkTabularAsDeletedError> {
     let r = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH locked_tabular AS (
-            SELECT 
+            SELECT
                 tabular_id,
                 namespace_id,
                 name,
