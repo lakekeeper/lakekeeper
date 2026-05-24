@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        WITH inserted AS (\n            INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)\n            SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8\n            FROM namespace n\n            WHERE n.namespace_id = $3 AND n.warehouse_id = $4\n            RETURNING\n                tabular_id,\n                namespace_id,\n                name as tabular_name,\n                tabular_namespace_name as namespace_name,\n                typ,\n                metadata_location,\n                updated_at,\n                protected,\n                fs_location,\n                fs_protocol\n        )\n        SELECT i.tabular_id,\n               w.version as warehouse_version,\n               i.namespace_name,\n               n.version as namespace_version,\n               i.namespace_id,\n               i.tabular_name,\n               i.updated_at,\n               i.metadata_location,\n               i.protected,\n               i.typ as \"typ: TabularType\",\n               i.fs_location,\n               i.fs_protocol,\n               NULL::text[] as view_properties_keys,\n               NULL::text[] as view_properties_values,\n               NULL::text[] as table_properties_keys,\n               NULL::text[] as table_properties_values\n        FROM inserted i\n        INNER JOIN warehouse w ON w.warehouse_id = $4\n        INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4\n        ",
+  "query": "\n        WITH inserted AS (\n            INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)\n            SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8\n            FROM namespace n\n            WHERE n.namespace_id = $3 AND n.warehouse_id = $4\n            RETURNING\n                tabular_id,\n                namespace_id,\n                name as tabular_name,\n                tabular_namespace_name as namespace_name,\n                typ,\n                metadata_location,\n                updated_at,\n                protected,\n                fs_location,\n                fs_protocol\n        )\n        SELECT i.tabular_id,\n               w.version as warehouse_version,\n               i.namespace_name,\n               n.version as namespace_version,\n               i.namespace_id,\n               i.tabular_name,\n               i.updated_at,\n               i.metadata_location,\n               i.protected,\n               i.typ as \"typ: TabularType\",\n               i.fs_location,\n               i.fs_protocol\n        FROM inserted i\n        INNER JOIN warehouse w ON w.warehouse_id = $4\n        INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4\n        ",
   "describe": {
     "columns": [
       {
@@ -144,30 +144,6 @@
             "name": "fs_protocol"
           }
         }
-      },
-      {
-        "ordinal": 12,
-        "name": "view_properties_keys",
-        "type_info": "TextArray",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 13,
-        "name": "view_properties_values",
-        "type_info": "TextArray",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 14,
-        "name": "table_properties_keys",
-        "type_info": "TextArray",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 15,
-        "name": "table_properties_values",
-        "type_info": "TextArray",
-        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -204,12 +180,8 @@
       false,
       false,
       false,
-      false,
-      null,
-      null,
-      null,
-      null
+      false
     ]
   },
-  "hash": "5427128541f4b4a45a266fed9873f7108c29fcc3b599d7491f9e26a61a6e4038"
+  "hash": "ddf66f3dbbe933c112fc5f37128b9adca52af82ac9ec9e1bc41c139cda366571"
 }

@@ -138,8 +138,10 @@ pub(crate) async fn commit_existing_view(
     super::ensure_location_available(*warehouse_id, *view_id, &location, &mut *transaction).await?;
 
     // We hold the row lock — this UPDATE always matches the one row above.
+    // Properties aren't read back from the DB here — `finalize_view_info`
+    // overlays them from the in-memory `ViewMetadata` after this returns.
     let row = sqlx::query_as!(
-        super::TabularRow,
+        super::TabularRowCore,
         r#"
         WITH updated AS (
             UPDATE tabular
@@ -169,11 +171,7 @@ pub(crate) async fn commit_existing_view(
                u.fs_location,
                u.fs_protocol,
                w.version AS warehouse_version,
-               n.version AS namespace_version,
-               NULL::text[] AS view_properties_keys,
-               NULL::text[] AS view_properties_values,
-               NULL::text[] AS table_properties_keys,
-               NULL::text[] AS table_properties_values
+               n.version AS namespace_version
         FROM updated u
         INNER JOIN warehouse w ON w.warehouse_id = $1
         INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $1

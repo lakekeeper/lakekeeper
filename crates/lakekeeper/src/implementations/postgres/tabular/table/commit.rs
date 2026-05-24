@@ -10,7 +10,7 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::{
-            FromTabularRowError, TabularRow,
+            FromTabularRowError, TabularRowCore,
             table::{
                 DbTableFormatVersion, MAX_PARAMETERS, TableUpdateFlags,
                 common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
@@ -116,10 +116,10 @@ pub(crate) async fn commit_table_transaction(
     let table_infos = updated_tabulars
         .iter()
         .map(|row| {
-            let mut table_or_view_info = TabularRow::from_row(row)
+            let mut table_or_view_info = TabularRowCore::from_row(row)
                 .map_err(|e| {
                     e.into_catalog_backend_error()
-                        .append_detail("Failed to build `TabularRow` after table commit")
+                        .append_detail("Failed to build `TabularRowCore` after table commit")
                 })?
                 .try_into_table_or_view(warehouse_id)
                 .map_err(CommitTableTransactionError::from)?;
@@ -287,7 +287,8 @@ fn build_table_and_tabular_update_queries(
     );
 
     query_builder_table.push(" RETURNING t.table_id");
-    // Copy from get_tabular_infos_by_ids
+    // Returns the columns expected by `TabularRowCore`. Properties are not
+    // read back here — callers overlay them from the in-memory metadata.
     query_builder_tabular.push(
         r#" RETURNING
                 t.warehouse_id,
@@ -301,15 +302,11 @@ fn build_table_and_tabular_update_queries(
                 t.fs_location,
                 t.fs_protocol
         )
-        SELECT 
-            u.*, 
+        SELECT
+            u.*,
             w.version as warehouse_version,
             n.namespace_name,
-            n.version as namespace_version,
-            NULL::text[] as view_properties_keys,
-            NULL::text[] as view_properties_values,
-            NULL::text[] as table_properties_keys,
-            NULL::text[] as table_properties_values
+            n.version as namespace_version
         FROM updated u
         INNER JOIN warehouse w ON u.warehouse_id = w.warehouse_id
         INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = u.warehouse_id
