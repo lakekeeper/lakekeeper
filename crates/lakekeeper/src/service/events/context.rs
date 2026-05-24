@@ -23,7 +23,8 @@ use crate::{
         TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
-            ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction, UserOrRoleId,
+            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
+            CatalogViewAction, UserOrRoleId,
         },
         events::{
             Authorization, AuthorizationError, AuthorizationFailedEvent,
@@ -593,21 +594,36 @@ impl APIEventActions for ControlTasksRequest {
 pub struct TabularAction {
     pub table_action: CatalogTableAction,
     pub view_action: CatalogViewAction,
+    pub generic_table_action: CatalogGenericTableAction,
 }
 
 impl APIEventActions for TabularAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         let table_actions = self.table_action.event_actions();
         let view_actions = self.view_action.event_actions();
-        if table_actions
+        let generic_actions = self.generic_table_action.event_actions();
+        let log_string = |d: &ActionDescriptor| d.log_string();
+        // Collapse to a single descriptor when all three log identically — the
+        // common case (e.g. all three are "undrop"). Otherwise emit each set
+        // so audit logs can distinguish them.
+        let table_eq_view = table_actions
             .iter()
-            .map(ActionDescriptor::log_string)
-            .eq(view_actions.iter().map(ActionDescriptor::log_string))
-        {
+            .map(log_string)
+            .eq(view_actions.iter().map(log_string));
+        let table_eq_generic = table_actions
+            .iter()
+            .map(log_string)
+            .eq(generic_actions.iter().map(log_string));
+        if table_eq_view && table_eq_generic {
             table_actions
         } else {
             let mut actions = table_actions;
-            actions.extend(view_actions);
+            if !table_eq_view {
+                actions.extend(view_actions);
+            }
+            if !table_eq_generic {
+                actions.extend(generic_actions);
+            }
             actions
         }
     }

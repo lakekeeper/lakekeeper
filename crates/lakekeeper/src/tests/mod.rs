@@ -32,6 +32,8 @@ mod drop_warehouse;
 #[cfg(test)]
 mod endpoint_stats;
 #[cfg(test)]
+mod generic_table_name_collision;
+#[cfg(test)]
 mod namespace_ops;
 #[cfg(test)]
 mod referenced_by;

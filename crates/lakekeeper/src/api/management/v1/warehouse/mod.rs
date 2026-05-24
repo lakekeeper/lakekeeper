@@ -1118,6 +1118,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             TabularAction {
                 table_action: CatalogTableAction::Undrop,
                 view_action: CatalogViewAction::Undrop,
+                generic_table_action: CatalogGenericTableAction::Undrop,
             },
         );
 

@@ -671,38 +671,26 @@ impl Authorizer for OpenFGAAuthorizer {
         parent: NamespaceId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
-        let parent_id = parent.to_openfga();
-        let this_id = (warehouse_id, generic_table_id).to_openfga();
 
+        // Higher consistency as for stage create overwrites old relations are deleted
+        // immediately before
         self.require_no_relations(&(warehouse_id, generic_table_id))
             .await?;
 
-        self.write_higher_consistency(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: GenericTableRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: GenericTableRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: NamespaceRelation::Child.to_string(),
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_generic_table(
+            warehouse_id,
+            generic_table_id,
+            parent,
+        );
+        tuples.extend(crate::tuples::ownership_tuples_for_generic_table(
+            actor,
+            warehouse_id,
+            generic_table_id,
+        ));
+        self.write_higher_consistency(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_generic_table(
