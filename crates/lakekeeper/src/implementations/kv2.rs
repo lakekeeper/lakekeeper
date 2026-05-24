@@ -217,12 +217,6 @@ impl SecretsState {
             }
         }
     }
-
-    async fn set_health_status(&self, status: HealthStatus) {
-        let mut lock = self.health.write().await;
-        lock.clear();
-        lock.extend([Health::now("vault", status)]);
-    }
 }
 
 #[async_trait]
@@ -237,14 +231,20 @@ impl HealthExt for SecretsState {
         match t {
             Ok(_) => {
                 tracing::debug!("Vault is healthy");
-                self.set_health_status(HealthStatus::Healthy).await;
+                set_vault_health(&self.health, HealthStatus::Healthy).await;
             }
             Err(err) => {
                 tracing::error!(?err, "Vault is unhealthy");
-                self.set_health_status(HealthStatus::Unhealthy).await;
+                set_vault_health(&self.health, HealthStatus::Unhealthy).await;
             }
         }
     }
+}
+
+async fn set_vault_health(health: &Arc<RwLock<Vec<Health>>>, status: HealthStatus) {
+    let mut lock = health.write().await;
+    lock.clear();
+    lock.extend([Health::now("vault", status)]);
 }
 
 impl std::fmt::Debug for SecretsState {
@@ -265,38 +265,18 @@ fn secret_ident_to_key(secret_id: SecretId) -> String {
 
 #[cfg(test)]
 mod tests {
-    use vaultrs::client::VaultClientSettingsBuilder;
-
     use super::*;
 
-    fn test_state() -> SecretsState {
-        SecretsState {
-            vault_client: Arc::new(RwLock::new(
-                VaultClient::new(
-                    VaultClientSettingsBuilder::default()
-                        .address("http://127.0.0.1:8200".to_string())
-                        .build()
-                        .expect("vault settings"),
-                )
-                .expect("vault client"),
-            )),
-            secret_mount: "secret".to_string(),
-            vault_user: "user".to_string(),
-            vault_password: "password".to_string(),
-            health: Arc::new(RwLock::new(Vec::new())),
-        }
-    }
-
     #[tokio::test]
-    async fn test_set_health_status_replaces_previous_entry() {
-        let state = test_state();
+    async fn test_set_vault_health_replaces_previous_entry() {
+        let health = Arc::default();
 
-        state.set_health_status(HealthStatus::Unhealthy).await;
-        state.set_health_status(HealthStatus::Healthy).await;
+        set_vault_health(&health, HealthStatus::Unhealthy).await;
+        set_vault_health(&health, HealthStatus::Healthy).await;
 
-        let health = state.health().await;
-        assert_eq!(health.len(), 1);
-        assert_eq!(health[0].status(), HealthStatus::Healthy);
+        let entries = health.read().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status(), HealthStatus::Healthy);
     }
 
     mod kv2_integration_tests {
