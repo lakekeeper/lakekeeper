@@ -124,8 +124,7 @@ pub(crate) async fn commit_existing_view(
         return Err(ConcurrentUpdateError::new(warehouse_id, view_id).into());
     }
 
-    super::ensure_location_available(*warehouse_id, *view_id, &location, &mut *transaction)
-        .await?;
+    super::ensure_location_available(*warehouse_id, *view_id, &location, &mut *transaction).await?;
 
     // We hold the row lock — this UPDATE always matches the one row above.
     let row = sqlx::query_as!(
