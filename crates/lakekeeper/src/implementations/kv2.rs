@@ -217,6 +217,12 @@ impl SecretsState {
             }
         }
     }
+
+    async fn set_health_status(&self, status: HealthStatus) {
+        let mut lock = self.health.write().await;
+        lock.clear();
+        lock.extend([Health::now("vault", status)]);
+    }
 }
 
 #[async_trait]
@@ -231,17 +237,11 @@ impl HealthExt for SecretsState {
         match t {
             Ok(_) => {
                 tracing::debug!("Vault is healthy");
-                self.health
-                    .write()
-                    .await
-                    .push(Health::now("vault", HealthStatus::Healthy));
+                self.set_health_status(HealthStatus::Healthy).await;
             }
             Err(err) => {
                 tracing::error!(?err, "Vault is unhealthy");
-                self.health
-                    .write()
-                    .await
-                    .push(Health::now("vault", HealthStatus::Unhealthy));
+                self.set_health_status(HealthStatus::Unhealthy).await;
             }
         }
     }
@@ -265,6 +265,40 @@ fn secret_ident_to_key(secret_id: SecretId) -> String {
 
 #[cfg(test)]
 mod tests {
+    use vaultrs::client::VaultClientSettingsBuilder;
+
+    use super::*;
+
+    fn test_state() -> SecretsState {
+        SecretsState {
+            vault_client: Arc::new(RwLock::new(
+                VaultClient::new(
+                    VaultClientSettingsBuilder::default()
+                        .address("http://127.0.0.1:8200".to_string())
+                        .build()
+                        .expect("vault settings"),
+                )
+                .expect("vault client"),
+            )),
+            secret_mount: "secret".to_string(),
+            vault_user: "user".to_string(),
+            vault_password: "password".to_string(),
+            health: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_health_status_replaces_previous_entry() {
+        let state = test_state();
+
+        state.set_health_status(HealthStatus::Unhealthy).await;
+        state.set_health_status(HealthStatus::Healthy).await;
+
+        let health = state.health().await;
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].status(), HealthStatus::Healthy);
+    }
+
     mod kv2_integration_tests {
         use super::super::*;
         use crate::{
