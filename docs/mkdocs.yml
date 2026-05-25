@@ -22,6 +22,7 @@ nav:
           - Authorization (OpenFGA): authorization-openfga.md
           - Authorization (Cedar): authorization-cedar.md
           - View Security: view-security.md
+          - Generic Tables: generic-tables.md
           - logging.md
           - monitoring.md
           - opa.md
