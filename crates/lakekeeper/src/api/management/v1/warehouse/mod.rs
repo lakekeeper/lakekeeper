@@ -1805,7 +1805,7 @@ mod test {
                 },
                 DropParams {
                     purge_requested: true,
-                    force: true,
+                    force: false,
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
