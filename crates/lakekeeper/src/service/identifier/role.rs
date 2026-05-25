@@ -1,4 +1,7 @@
-use std::{str::FromStr, sync::Arc};
+use std::{
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -10,7 +13,116 @@ pub type ArcRoleIdent = Arc<RoleIdent>;
 
 pub const ROLE_PROVIDER_SEPARATOR: char = '~';
 /// Provider ID used for all server-managed (Lakekeeper-generated) roles.
-pub(crate) const LAKEKEEPER_ROLE_PROVIDER_ID: &str = "lakekeeper";
+pub const LAKEKEEPER_ROLE_PROVIDER_NAME: &str = "lakekeeper";
+
+/// Reserved provider name (string literal) for catalog-managed system
+/// roles. Customer-facing role-management endpoints reject this value;
+/// internal seeders (downstream extensions like `lakekeeper-plus`) use
+/// [`SYSTEM_ROLE_PROVIDER_ID`] for the pre-validated typed handle.
+///
+/// Upstream reserves the namespace but does **not** ship any specific
+/// system roles. Extensions own their own set of seeded roles and run
+/// their own backfill after upstream's post-migration hooks complete.
+///
+/// PUBLIC API CONTRACT: the literal string `"system"` is part of the
+/// stable identity used by extension policies (e.g. Cedar references to
+/// `Role::"<pid>/system~..."`) and by external provisioning tools.
+/// Renaming is breaking. Frozen.
+pub const SYSTEM_ROLE_PROVIDER_NAME: &str = "system";
+
+/// Typed handle for the catalog-managed system provider. Lazily constructed
+/// once per process from [`SYSTEM_ROLE_PROVIDER_NAME`] — saves callers from
+/// repeating `RoleProviderId::try_new(...).expect(...)` at use sites.
+pub static SYSTEM_ROLE_PROVIDER_ID: LazyLock<RoleProviderId> = LazyLock::new(|| {
+    RoleProviderId::try_new(SYSTEM_ROLE_PROVIDER_NAME)
+        .expect("SYSTEM_ROLE_PROVIDER_NAME must validate as a RoleProviderId")
+});
+
+/// Specification for one catalog-managed system role; one spec produces one
+/// row in the `role` table per project when the seed/backfill machinery
+/// runs. Upstream defines the type only — extensions own the concrete set
+/// of specs they ship via [`install_system_role_registry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemRoleSpec {
+    /// Pre-validated source ID inside the `system` provider namespace.
+    /// Frozen once shipped — referenced by extension policies and external
+    /// tools.
+    pub source_id: RoleSourceId,
+    /// Display name (returned via the API, shown in UIs). Not load-bearing
+    /// for code or policies; safe to translate or rebrand.
+    pub name: &'static str,
+    /// Human description (returned via the API).
+    pub description: &'static str,
+}
+
+static SYSTEM_ROLE_REGISTRY: std::sync::OnceLock<Vec<SystemRoleSpec>> = std::sync::OnceLock::new();
+
+/// Install the process-wide system role registry. Called from inside
+/// upstream's public entry points (`serve`, `run_post_migration_hooks`),
+/// which take `system_roles` as an explicit argument so the binary has
+/// to actively decide what's in the registry.
+///
+/// The single installed registry drives both consumers:
+/// - the seed inside `create_project` (atomic with project creation),
+/// - the upsert inside [`backfill_registered_system_roles`] at startup.
+///
+/// Binaries do not call this directly. `lakekeeper migrate` and
+/// `lakekeeper serve` typically run as separate processes; each entry
+/// point installs the registry for the duration of its own process.
+/// A single binary that runs both subcommands in one process must pass
+/// the same spec list to both.
+///
+/// **Removed specs are NOT auto-cleaned up.** Both consumers are upsert
+/// only; a row that was seeded by a previous release and dropped from
+/// the registry today remains in the `role` table until an explicit
+/// migration deletes it. Removing a spec is therefore a two-step
+/// release:
+///
+/// 1. Ship a downstream extension migration data hook that calls
+///    `CatalogStore::delete_roles_impl(None, filter, tx)` where `filter`
+///    selects the rows by `(provider_id = "system", source_id = …)`.
+///    The FK on `role_assignment` cascades, so grants referencing the
+///    removed roles vanish with them. Do NOT write raw SQL — use the
+///    catalog trait method.
+/// 2. Drop the spec from the binary's registry.
+///
+/// Doing the deletion inside the migrator transaction (rather than at
+/// startup) keeps it advisory-locked and exactly-once across decentralised
+/// node startups.
+///
+/// # Errors
+/// Returns `Err(rejected)` if a registry has already been installed in
+/// this process. The first installer's set stays in effect; the rejected
+/// specs are returned to the caller (typically just for logging).
+#[must_use = "an Err result from install_system_role_registry means a second installer dropped its specs on the floor — handle it"]
+pub(crate) fn install_system_role_registry(
+    roles: Vec<SystemRoleSpec>,
+) -> Result<(), Vec<SystemRoleSpec>> {
+    let count = roles.len();
+    match SYSTEM_ROLE_REGISTRY.set(roles) {
+        Ok(()) => {
+            tracing::info!(count, "Installed system role registry with {count} role(s)");
+            Ok(())
+        }
+        Err(rejected) => {
+            tracing::error!(
+                rejected_count = rejected.len(),
+                "install_system_role_registry called more than once; second call's {} role(s) \
+                 were rejected. The first installer's set is in effect. Compose all specs at \
+                 the call site and call install_system_role_registry exactly once.",
+                rejected.len(),
+            );
+            Err(rejected)
+        }
+    }
+}
+
+/// Returns the active registered system roles, or an empty slice if no
+/// extension has installed any.
+#[must_use]
+pub fn registered_system_roles() -> &'static [SystemRoleSpec] {
+    SYSTEM_ROLE_REGISTRY.get().map_or(&[], |v| v.as_slice())
+}
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
@@ -71,12 +183,6 @@ impl From<RoleIdentifierError> for ErrorModel {
 #[valuable(transparent)]
 pub struct RoleProviderId(String);
 
-impl std::default::Default for RoleProviderId {
-    fn default() -> Self {
-        Self(LAKEKEEPER_ROLE_PROVIDER_ID.to_string())
-    }
-}
-
 impl std::borrow::Borrow<str> for RoleProviderId {
     fn borrow(&self) -> &str {
         self.as_str()
@@ -122,6 +228,18 @@ impl RoleProviderId {
         Self(value.into())
     }
 
+    /// Returns the [`RoleProviderId`] for roles managed inside Lakekeeper's
+    /// own catalog (or its dependent stores like OpenFGA).
+    ///
+    /// This is **distinct from** [`SYSTEM_ROLE_PROVIDER_ID`] — `system` is
+    /// for catalog-managed built-in roles that the API will not let
+    /// customers create/modify, whereas `lakekeeper` is for roles a
+    /// customer created themselves via the role-management API.
+    #[must_use]
+    pub fn lakekeeper() -> Self {
+        Self(LAKEKEEPER_ROLE_PROVIDER_NAME.to_string())
+    }
+
     /// Returns the provider ID as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -130,12 +248,17 @@ impl RoleProviderId {
 
     #[must_use]
     pub fn is_lakekeeper(&self) -> bool {
-        self.as_str() == LAKEKEEPER_ROLE_PROVIDER_ID
+        self.as_str() == LAKEKEEPER_ROLE_PROVIDER_NAME
     }
 
+    /// Returns `true` if this is the catalog-managed system provider.
+    ///
+    /// System roles (e.g. `workspace_admin`, `workspace_user`) are seeded per
+    /// project by the catalog itself. They cannot be created, updated, or
+    /// deleted through the role-management API.
     #[must_use]
-    pub fn is_external(&self) -> bool {
-        !self.is_lakekeeper()
+    pub fn is_system(&self) -> bool {
+        self.as_str() == SYSTEM_ROLE_PROVIDER_NAME
     }
 }
 
@@ -316,7 +439,7 @@ impl RoleIdent {
     #[must_use]
     pub fn new_random() -> Self {
         Self {
-            provider: Arc::new(RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string())),
+            provider: Arc::new(RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_NAME.to_string())),
             source_id: RoleSourceId(Uuid::now_v7().to_string()),
         }
     }
@@ -325,7 +448,7 @@ impl RoleIdent {
     #[must_use]
     pub fn new_internal_with_role_id(role_id: RoleId) -> Self {
         Self {
-            provider: Arc::new(RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_ID.to_string())),
+            provider: Arc::new(RoleProviderId(LAKEKEEPER_ROLE_PROVIDER_NAME.to_string())),
             source_id: RoleSourceId(role_id.to_string()),
         }
     }
@@ -400,9 +523,11 @@ impl RoleIdent {
         self.provider.is_lakekeeper()
     }
 
+    /// Returns `true` if this is a catalog-managed system role.
+    /// See [`RoleProviderId::is_system`].
     #[must_use]
-    pub fn is_external(&self) -> bool {
-        self.provider.is_external()
+    pub fn is_system(&self) -> bool {
+        self.provider.is_system()
     }
 }
 
@@ -532,7 +657,7 @@ impl TryFrom<&str> for RoleIdWithFallback {
         // Backward-compat: bare UUID → lakekeeper~<uuid>
         if let Ok(uuid) = Uuid::parse_str(s) {
             return Ok(Self(RoleIdent::try_new_from_strs(
-                LAKEKEEPER_ROLE_PROVIDER_ID,
+                LAKEKEEPER_ROLE_PROVIDER_NAME,
                 uuid.to_string(),
             )?));
         }
@@ -854,5 +979,59 @@ mod tests {
             RoleProviderId::try_new("oidc/ext").unwrap_err(),
             RoleProviderIdError::InvalidCharacters(_)
         ));
+    }
+
+    // ── system provider ──────────────────────────────────────────────────────
+
+    #[test]
+    fn provider_id_system_passes_validation() {
+        // The "system" string itself must pass the standard validator — internal
+        // construction paths (DB deserialization, seeding) call try_new and would
+        // otherwise need bypasses. Reservation is enforced at the API boundary.
+        let p = RoleProviderId::try_new(SYSTEM_ROLE_PROVIDER_NAME).unwrap();
+        assert_eq!(p.as_str(), "system");
+    }
+
+    #[test]
+    fn system_role_provider_id_lazy_matches_literal() {
+        assert_eq!(SYSTEM_ROLE_PROVIDER_ID.as_str(), SYSTEM_ROLE_PROVIDER_NAME);
+        assert!(SYSTEM_ROLE_PROVIDER_ID.is_system());
+    }
+
+    #[test]
+    fn provider_id_is_system_predicate() {
+        assert!(RoleProviderId::try_new("system").unwrap().is_system());
+        assert!(!RoleProviderId::try_new("lakekeeper").unwrap().is_system());
+        assert!(!RoleProviderId::try_new("oidc").unwrap().is_system());
+    }
+
+    #[test]
+    fn provider_id_is_system_is_disjoint_from_is_lakekeeper() {
+        let system = RoleProviderId::try_new("system").unwrap();
+        let lakekeeper = RoleProviderId::try_new("lakekeeper").unwrap();
+        let oidc = RoleProviderId::try_new("oidc").unwrap();
+
+        assert!(system.is_system() && !system.is_lakekeeper());
+        assert!(lakekeeper.is_lakekeeper() && !lakekeeper.is_system());
+        assert!(!oidc.is_system() && !oidc.is_lakekeeper());
+    }
+
+    #[test]
+    fn role_ident_is_system_predicate() {
+        let system_role =
+            RoleIdent::try_new_from_strs(SYSTEM_ROLE_PROVIDER_NAME, "example_system_role").unwrap();
+        let customer = RoleIdent::try_new_from_strs("oidc", "analysts").unwrap();
+
+        assert!(system_role.is_system());
+        assert!(!customer.is_system());
+    }
+
+    #[test]
+    fn role_ident_system_cedar_uid_shape() {
+        // Downstream extensions build the Cedar Role UID as
+        // `{project_id}/{provider_id}~{source_id}`. Lock in the ident portion
+        // so the reserved provider name stays stable.
+        let role = RoleIdent::try_new_from_strs(SYSTEM_ROLE_PROVIDER_NAME, "example_role").unwrap();
+        assert_eq!(role.to_string(), "system~example_role");
     }
 }

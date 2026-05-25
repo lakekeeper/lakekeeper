@@ -6,52 +6,72 @@
       {
         "ordinal": 0,
         "name": "is_protected!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "protected"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "namespace_name: Vec<String>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "has_protected_namespaces!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
         "name": "has_protected_tabulars!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 4,
         "name": "has_running_expiration!",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": "Expression"
       },
       {
         "ordinal": 5,
         "name": "child_tabulars!",
-        "type_info": "UuidArray"
+        "type_info": "UuidArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
         "name": "child_tabulars_namespace_names!: Vec<serde_json::Value>",
-        "type_info": "JsonbArray"
+        "type_info": "JsonbArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
         "name": "child_tabulars_table_names!",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 8,
         "name": "child_tabular_fs_protocol!",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 9,
         "name": "child_tabular_fs_location!",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 10,
@@ -73,22 +93,26 @@
               }
             }
           }
-        }
+        },
+        "origin": "Expression"
       },
       {
         "ordinal": 11,
         "name": "child_tabulars_deleted!",
-        "type_info": "UuidArray"
+        "type_info": "UuidArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 12,
         "name": "child_namespaces!",
-        "type_info": "UuidArray"
+        "type_info": "UuidArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "child_tabular_task_id!: Vec<Uuid>",
-        "type_info": "UuidArray"
+        "type_info": "UuidArray",
+        "origin": "Expression"
       }
     ],
     "parameters": {

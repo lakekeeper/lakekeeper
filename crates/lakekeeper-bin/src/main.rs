@@ -394,7 +394,8 @@ async fn migrate() -> anyhow::Result<()> {
 
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup
-    let server_id = lakekeeper::implementations::postgres::migrations::migrate(&write_pool).await?;
+    let server_id =
+        lakekeeper::implementations::postgres::migrations::migrate_core_only(&write_pool).await?;
     tracing::info!("Database migration complete.");
 
     tracing::info!("Migrating authorizer...");
@@ -402,7 +403,8 @@ async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Authorizer migration complete.");
     tracing::info!("Running post-migration hooks...");
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool.clone());
-    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state).await?;
+    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state, Vec::new())
+        .await?;
     tracing::info!("Post-migration hooks complete.");
 
     Ok(())

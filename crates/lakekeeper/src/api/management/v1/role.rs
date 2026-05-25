@@ -16,7 +16,7 @@ use crate::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogBackendError,
         CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CatalogRoleOps, CatalogStore,
         CreateRoleError, DeleteRoleError, Result, RoleId, RoleProviderId, RoleSourceId,
-        SecretStore, State, Transaction, UpdateRoleError,
+        SecretStore, State, SystemRoleImmutable, Transaction, UpdateRoleError,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
             CatalogRoleAction,
@@ -24,6 +24,22 @@ use crate::{
         events::{APIEventContext, context::Unresolved},
     },
 };
+
+/// Rejects a request whose `provider_id` names the catalog-managed system
+/// namespace. Used as a pre-authz check on endpoints that accept a provider
+/// in the request body. See [`crate::service::SYSTEM_ROLE_PROVIDER_ID`].
+fn reject_system_provider(provider_id: &RoleProviderId) -> Result<()> {
+    if provider_id.is_system() {
+        return Err(ErrorModel::bad_request(
+            "provider_id `system` is reserved for catalog-managed roles \
+             and cannot be used in role-management requests.",
+            "RoleProviderIdReserved",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -287,6 +303,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         }
+        if let Some(p) = &request.provider_id {
+            reject_system_provider(p)?;
+        }
         match (&request.provider_id, &request.source_id) {
             (None, None) | (Some(_), Some(_)) => {}
             _ => {
@@ -490,6 +509,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         role_id: RoleId,
         request: UpdateRoleSourceSystemRequest,
     ) -> Result<Role> {
+        // -------------------- VALIDATIONS --------------------
+        // Reject rebinding any role into the catalog-managed `system`
+        // namespace. The check on the *current* role (cannot rebind a system
+        // role to a different provider) lives inside the authz helper
+        // because it needs the role resolved.
+        reject_system_provider(&request.provider_id)?;
+
         let project_id = request_metadata.require_project_id(None)?;
 
         // -------------------- AUTHZ --------------------
@@ -542,7 +568,13 @@ async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
     let source_id = request
         .source_id
         .unwrap_or_else(|| RoleSourceId::new_from_role_id(role_id));
-    let provider_id = request.provider_id.unwrap_or_default();
+    // No provider in the request → the catalog itself is the system of
+    // record for this role (i.e. the `lakekeeper` provider). Not the
+    // catalog-managed `system` provider — those are seeded internally and
+    // never accepted via this endpoint (see `reject_system_provider`).
+    let provider_id = request
+        .provider_id
+        .unwrap_or_else(RoleProviderId::lakekeeper);
     let catalog_create_role_request = CatalogCreateRoleRequest {
         role_id,
         role_name: &request.name,
@@ -671,6 +703,10 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
         .require_role_action(request_metadata, role, *action)
         .await?;
 
+    if role.ident.is_system() {
+        return Err(DeleteRoleError::from(SystemRoleImmutable::new()).into());
+    }
+
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
@@ -704,9 +740,13 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     )
     .await;
 
-    authorizer
+    let role = authorizer
         .require_role_action(request_metadata, role, *action)
         .await?;
+
+    if role.ident.is_system() {
+        return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
+    }
 
     // -------------------- Business Logic --------------------
     let description = request.description.filter(|d| !d.is_empty());
@@ -747,9 +787,13 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     )
     .await;
 
-    authorizer
+    let role = authorizer
         .require_role_action(request_metadata, role, *action)
         .await?;
+
+    if role.ident.is_system() {
+        return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
+    }
 
     // -------------------- Business Logic --------------------
     let mut t = C::Transaction::begin_write(catalog_state)

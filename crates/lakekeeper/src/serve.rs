@@ -161,6 +161,14 @@ pub struct ServeConfiguration<
     /// Defaults to empty values; downstream binaries should inject their own.
     #[builder(default)]
     pub build_info: Option<&'static BuildInfo>,
+    /// Catalog-managed system roles installed into the process-wide
+    /// registry for the duration of this `serve` call. Drives the seed
+    /// in `create_project`. Pass an empty `Vec` for OSS (no system roles
+    /// seeded); downstream binaries pass their
+    /// full spec list — the same one the binary passes to
+    /// `run_post_migration_hooks` so both subcommands agree.
+    #[builder(default)]
+    pub system_roles: Vec<crate::service::SystemRoleSpec>,
 }
 
 /// Starts the service with the provided configuration.
@@ -172,6 +180,19 @@ pub struct ServeConfiguration<
 pub async fn serve<C: CatalogStore, S: SecretStore, A: Authorizer, N: Authenticator + 'static>(
     mut config: ServeConfiguration<C, S, A, N>,
 ) -> anyhow::Result<()> {
+    // Install the system role registry for this process. Driven by the
+    // binary; OSS passes an empty Vec, downstream binaries pass their
+    // spec list. Drives the seed in `create_project` for the lifetime
+    // of this serve call.
+    if let Err(rejected) =
+        crate::service::install_system_role_registry(std::mem::take(&mut config.system_roles))
+    {
+        // Logged at ERROR by the installer; second install in the same
+        // process indicates a programming error in the host binary, but
+        // we don't escalate here.
+        let _ = rejected;
+    }
+
     let cancellation_token = CancellationToken::new();
 
     // Validate Authenticators and propagate their IDP IDs to the authorizer
@@ -335,6 +356,7 @@ async fn serve_inner<
         register_additional_background_services_fn: additional_background_services,
         license_status,
         build_info,
+        system_roles: _,
     } = config;
 
     let license_status = license_status.unwrap_or(&APACHE_LICENSE_STATUS);

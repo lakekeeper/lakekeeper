@@ -6,22 +6,26 @@
       {
         "ordinal": 0,
         "name": "project_id!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 1,
         "name": "warehouse_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": "Expression"
       },
       {
         "ordinal": 2,
         "name": "queue_name!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 3,
         "name": "entity_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": "Expression"
       },
       {
         "ordinal": 4,
@@ -42,12 +46,14 @@
               ]
             }
           }
-        }
+        },
+        "origin": "Expression"
       },
       {
         "ordinal": 5,
         "name": "entity_name: Vec<String>",
-        "type_info": "TextArray"
+        "type_info": "TextArray",
+        "origin": "Expression"
       },
       {
         "ordinal": 6,
@@ -63,7 +69,8 @@
               ]
             }
           }
-        }
+        },
+        "origin": "Expression"
       },
       {
         "ordinal": 7,
@@ -79,72 +86,86 @@
               ]
             }
           }
-        }
+        },
+        "origin": "Expression"
       },
       {
         "ordinal": 8,
         "name": "attempt_scheduled_for!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       },
       {
         "ordinal": 9,
         "name": "started_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       },
       {
         "ordinal": 10,
         "name": "attempt!",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": "Expression"
       },
       {
         "ordinal": 11,
         "name": "last_heartbeat_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       },
       {
         "ordinal": 12,
         "name": "progress!",
-        "type_info": "Float4"
+        "type_info": "Float4",
+        "origin": "Expression"
       },
       {
         "ordinal": 13,
         "name": "parent_task_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": "Expression"
       },
       {
         "ordinal": 14,
         "name": "task_created_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       },
       {
         "ordinal": 15,
         "name": "attempt_created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       },
       {
         "ordinal": 16,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       },
       {
         "ordinal": 17,
         "name": "task_data!",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": "Expression"
       },
       {
         "ordinal": 18,
         "name": "execution_details",
-        "type_info": "Jsonb"
+        "type_info": "Jsonb",
+        "origin": "Expression"
       },
       {
         "ordinal": 19,
         "name": "duration",
-        "type_info": "Interval"
+        "type_info": "Interval",
+        "origin": "Expression"
       },
       {
         "ordinal": 20,
         "name": "message",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       }
     ],
     "parameters": {

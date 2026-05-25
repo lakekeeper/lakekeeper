@@ -85,6 +85,9 @@ markdown_extensions:
 
 copyright: Copyright &copy; 2025 <a href="https://lakekeeper.io">Lakekeeper</a>, Maintained by the <a href="/about/release-notes/#maintenance-team">Lakekeeper Team</a>.
 
+hooks:
+  - ../docs/hooks/env_key_wrap.py
+
 plugins:
   - monorepo
   - search

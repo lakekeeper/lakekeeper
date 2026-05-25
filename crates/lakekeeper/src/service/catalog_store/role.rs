@@ -346,13 +346,46 @@ define_transparent_error! {
     ]
 }
 
+// --------------------------- SYSTEM ROLE ERROR ----------------------
+//
+// Raised when a customer-facing role-management endpoint is invoked against a
+// catalog-managed system role (e.g. `workspace_admin`, `workspace_user`).
+// System roles are seeded per project and are not modifiable via the API —
+// they only change when the catalog itself reseeds them.
+
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Cannot modify or delete a catalog-managed system role. System roles are seeded by the catalog and are immutable through the role-management API."
+)]
+pub struct SystemRoleImmutable {
+    pub stack: Vec<String>,
+}
+impl SystemRoleImmutable {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(SystemRoleImmutable);
+impl From<SystemRoleImmutable> for ErrorModel {
+    fn from(err: SystemRoleImmutable) -> Self {
+        ErrorModel::builder()
+            .r#type("SystemRoleImmutable")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 // --------------------------- DELETE ERROR ---------------------------
 define_transparent_error! {
     pub enum DeleteRoleError,
     stack_message: "Error deleting role in catalog",
     variants: [
         CatalogBackendError,
-        RoleIdNotFoundInProject
+        RoleIdNotFoundInProject,
+        SystemRoleImmutable
     ]
 }
 
@@ -365,6 +398,7 @@ define_transparent_error! {
         RoleSourceIdConflict,
         RoleNameAlreadyExists,
         RoleIdNotFoundInProject,
+        SystemRoleImmutable,
     ]
 }
 
@@ -489,12 +523,20 @@ pub trait CatalogRoleOps
 where
     Self: CatalogStore,
 {
+    /// Create a single role. Fails on conflict — see [`crate::service::OnRoleConflict::Fail`].
+    /// Use [`Self::create_roles`] for idempotent bulk seeding.
     async fn create_role<'a>(
         project_id: &ProjectId,
         role_to_create: CatalogCreateRoleRequest<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<Role>, CreateRoleError> {
-        let roles = Self::create_roles(project_id, vec![role_to_create], transaction).await?;
+        let roles = Self::create_roles(
+            project_id,
+            vec![role_to_create],
+            crate::service::OnRoleConflict::Fail,
+            transaction,
+        )
+        .await?;
         let n_roles = roles.len();
         if n_roles != 1 {
             return Err(ResultCountMismatch::new(1, n_roles, "Create Role").into());
@@ -503,12 +545,23 @@ where
         Ok(roles.into_iter().next().expect("length checked above"))
     }
 
+    /// Create a batch of roles. `on_conflict` selects how to treat an
+    /// existing `(project_id, provider_id, source_id)` row:
+    /// [`crate::service::OnRoleConflict::Fail`] aborts the batch, while
+    /// [`crate::service::OnRoleConflict::UpdateMetadata`] upserts (insert
+    /// when absent, refresh mutable metadata when present).
+    ///
+    /// The returned `Vec` contains only rows that were actually inserted
+    /// or updated — under `UpdateMetadata`, no-op rows (no change to
+    /// `name`/`description`) are omitted. Callers detect partial
+    /// application by comparing `Vec::len()` to the request count.
     async fn create_roles<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: crate::service::OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Arc<Role>>, CreateRoleError> {
-        let roles = Self::create_roles_impl(project_id, roles_to_create, transaction)
+        let roles = Self::create_roles_impl(project_id, roles_to_create, on_conflict, transaction)
             .await?
             .into_iter()
             .map(Arc::new)
@@ -521,8 +574,11 @@ where
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), DeleteRoleError> {
-        let deleted_roles =
-            Self::delete_roles_impl(project_id, Some(&[role_id]), transaction).await?;
+        let role_ids = [role_id];
+        let filter = CatalogListRolesByIdFilter::builder()
+            .role_ids(Some(&role_ids))
+            .build();
+        let deleted_roles = Self::delete_roles_impl(Some(project_id), filter, transaction).await?;
         if deleted_roles.is_empty() {
             Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
         } else {

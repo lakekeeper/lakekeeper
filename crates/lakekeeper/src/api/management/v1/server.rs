@@ -87,14 +87,14 @@ pub struct ConsoleInfo {
 /// Build-time information injected by the binary.
 ///
 /// All fields are optional: the OSS `lakekeeper` binary leaves them empty, while
-/// downstream distributions (e.g. `lakekeeper-plus`) populate them from their
+/// downstream distributions populate them from their
 /// build scripts to expose upstream + enterprise versions, commit SHAs, and
 /// console details via the server-info endpoint.
 #[derive(Debug, Clone, Default)]
 pub struct BuildInfo {
     /// Git commit SHA of the upstream `lakekeeper` dependency, if known.
     pub lakekeeper_commit_sha: Option<String>,
-    /// SemVer of the enterprise binary (e.g. `lakekeeper-plus`), if this is an
+    /// SemVer of the enterprise binary, if this is an
     /// enterprise build.
     pub lakekeeper_enterprise_version: Option<String>,
     /// Git commit SHA of the enterprise binary, if known.

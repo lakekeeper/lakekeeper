@@ -17,6 +17,12 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "task",
+            "name": "status"
+          }
         }
       }
     ],

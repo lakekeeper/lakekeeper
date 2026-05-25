@@ -16,16 +16,18 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
+        role::create_roles,
     },
     service::{
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError,
-        CatalogGetWarehouseByNameError, CatalogListWarehousesError, CatalogRenameWarehouseError,
-        DatabaseIntegrityError, GetProjectResponse, ProjectIdNotFoundError, ResolvedWarehouse,
+        CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
+        CatalogRenameWarehouseError, DatabaseIntegrityError, GetProjectResponse, OnRoleConflict,
+        ProjectIdNotFoundError, ResolvedWarehouse, RoleId, SYSTEM_ROLE_PROVIDER_ID,
         SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
         WarehouseAlreadyExists, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
         WarehouseNotEmpty, WarehouseProtected, WarehouseStatus, WarehouseVersion,
-        storage::StorageProfile,
+        registered_system_roles, storage::StorageProfile,
     },
 };
 
@@ -201,6 +203,39 @@ pub(crate) async fn create_project(
         )
         .into());
     };
+
+    // Seed system roles from the process-wide registry, if any. Empty in
+    // default OSS (no extension registered). Atomic with the project
+    // insert; conflicts can't occur here because the project is fresh.
+    let specs = registered_system_roles();
+    if !specs.is_empty() {
+        let requests: Vec<CatalogCreateRoleRequest<'_>> = specs
+            .iter()
+            .map(|spec| {
+                CatalogCreateRoleRequest::builder()
+                    .role_id(RoleId::new_random())
+                    .role_name(spec.name)
+                    .description(Some(spec.description))
+                    .source_id(&spec.source_id)
+                    .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+                    .build()
+            })
+            .collect();
+        create_roles(
+            project_id,
+            requests,
+            OnRoleConflict::Fail,
+            &mut **transaction,
+        )
+        .await
+        .map_err(|e| {
+            ErrorModel::internal(
+                format!("Failed to seed registered system roles: {e}"),
+                "SystemRoleSeedFailed",
+                Some(Box::new(e)),
+            )
+        })?;
+    }
 
     Ok(())
 }
@@ -1236,5 +1271,200 @@ pub(crate) mod test {
             e,
             CatalogDeleteWarehouseError::WarehouseIdNotFound(_)
         ));
+    }
+
+    // ── create_roles `OnRoleConflict::UpdateMetadata` semantics ────────────
+
+    #[sqlx::test]
+    async fn test_create_roles_update_metadata_is_noop_when_unchanged(pool: sqlx::PgPool) {
+        // The IS DISTINCT FROM guard in the ON CONFLICT clause must keep
+        // re-runs with identical values from bumping `version` (which the
+        // `set_updated_at_and_increment_version` trigger would otherwise
+        // increment on any UPDATE that touched a row tuple). The returned
+        // Vec must also be empty — no rows were inserted or changed.
+        use crate::{
+            implementations::postgres::role::create_roles,
+            service::{
+                CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId,
+                SYSTEM_ROLE_PROVIDER_ID,
+            },
+        };
+
+        let project_id = ProjectId::new_random();
+        let mut t = pool.begin().await.unwrap();
+        create_project(&project_id, "noop-test".to_string(), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // First seed: insert one system role.
+        let source: RoleSourceId = "example_role".parse().unwrap();
+        let initial = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Example Role")
+            .description(Some("Example description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        let seeded = create_roles(
+            &project_id,
+            vec![initial],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(seeded.len(), 1);
+
+        let original = fetch_system_role(&pool, &project_id, &source).await;
+
+        // Re-run with identical values — must be a no-op.
+        let again = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Example Role")
+            .description(Some("Example description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        let upserted = create_roles(
+            &project_id,
+            vec![again],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(
+            upserted.len(),
+            0,
+            "no-op upsert must return an empty Vec, not the unchanged row"
+        );
+
+        let after = fetch_system_role(&pool, &project_id, &source).await;
+        assert_eq!(after.id, original.id, "row id must be unchanged");
+        assert_eq!(
+            after.version, original.version,
+            "version must not bump on no-op upsert"
+        );
+        assert_eq!(
+            after.updated_at, original.updated_at,
+            "updated_at must not move on no-op upsert"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_create_roles_update_metadata_refreshes_existing_row(pool: sqlx::PgPool) {
+        // Locks in `OnRoleConflict::UpdateMetadata`: re-running create_roles
+        // with the same `(project, provider, source_id)` but a new
+        // name/description must update the existing row in place,
+        // preserving its id and bumping its version via the trigger.
+        use crate::{
+            implementations::postgres::role::create_roles,
+            service::{
+                CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId,
+                SYSTEM_ROLE_PROVIDER_ID,
+            },
+        };
+
+        let project_id = ProjectId::new_random();
+        let mut t = pool.begin().await.unwrap();
+        create_project(&project_id, "upsert-test".to_string(), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let source: RoleSourceId = "example_role".parse().unwrap();
+        let initial = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Original Name")
+            .description(Some("Original description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        create_roles(
+            &project_id,
+            vec![initial],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let original = fetch_system_role(&pool, &project_id, &source).await;
+        assert_eq!(original.name, "Original Name");
+
+        // Upsert with a different name+description; row id must be
+        // preserved, name/description and version change.
+        let refreshed_request = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Refreshed Name")
+            .description(Some("Refreshed description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        let upserted = create_roles(
+            &project_id,
+            vec![refreshed_request],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(upserted.len(), 1);
+
+        let refreshed = fetch_system_role(&pool, &project_id, &source).await;
+        assert_eq!(refreshed.id, original.id, "row id must be preserved");
+        assert_eq!(refreshed.name, "Refreshed Name");
+        assert_eq!(
+            refreshed.description.as_deref(),
+            Some("Refreshed description")
+        );
+        assert!(
+            *refreshed.version > *original.version,
+            "version must be bumped by the trigger ({:?} -> {:?})",
+            original.version,
+            refreshed.version
+        );
+    }
+
+    /// Lookup helper used by upsert tests — fetches the single system role
+    /// row identified by `(provider_id = "system", source_id)`.
+    async fn fetch_system_role(
+        pool: &sqlx::PgPool,
+        project_id: &ProjectId,
+        source: &crate::service::RoleSourceId,
+    ) -> std::sync::Arc<crate::service::Role> {
+        use crate::{
+            implementations::postgres::role::list_roles,
+            service::{CatalogListRolesByIdFilter, SYSTEM_ROLE_PROVIDER_ID},
+        };
+        let provider = &*SYSTEM_ROLE_PROVIDER_ID;
+        let providers = [provider];
+        let sources = [source];
+        let filter = CatalogListRolesByIdFilter::builder()
+            .provider_ids(Some(&providers))
+            .source_ids(Some(&sources))
+            .build();
+        let response = list_roles(
+            Some(project_id),
+            filter,
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
+            pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.roles.len(), 1, "expected exactly one matching row");
+        response.roles[0].clone()
     }
 }

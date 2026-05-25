@@ -44,7 +44,7 @@ use crate::{
             get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
             mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
             table::{commit_table_transaction, create_table},
-            view::{create_view, load_view},
+            view::{commit_existing_view, create_view, load_view},
         },
         tasks::{
             cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
@@ -307,9 +307,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: crate::service::OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Role>, CreateRoleError> {
-        create_roles(project_id, roles_to_create, &mut **transaction).await
+        create_roles(project_id, roles_to_create, on_conflict, &mut **transaction).await
     }
 
     async fn update_role_impl<'a>(
@@ -348,11 +349,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn delete_roles_impl<'a>(
-        project_id: &ProjectId,
-        role_id_filter: Option<&[RoleId]>,
+        project_id: Option<&ProjectId>,
+        filter: crate::service::CatalogListRolesByIdFilter<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
-        delete_roles(project_id, role_id_filter, &mut **transaction).await
+        delete_roles(project_id, filter, &mut **transaction).await
     }
 
     async fn search_role_impl(
@@ -672,7 +673,6 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn commit_view_impl<'a>(
         ViewCommit {
-            view_ident,
             namespace_id,
             warehouse_id,
             previous_view,
@@ -680,24 +680,15 @@ impl CatalogStore for super::PostgresBackend {
         }: ViewCommit<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ViewInfo, CommitViewError> {
-        drop_tabular(
-            warehouse_id,
-            ViewId::from(previous_view.metadata.uuid()).into(),
-            true,
-            Some(&previous_view.metadata_location),
-            transaction,
-        )
-        .await?;
-        create_view(
+        commit_existing_view(
             warehouse_id,
             namespace_id,
             &new_view.metadata_location,
+            &previous_view.metadata_location,
             transaction,
-            &view_ident.name,
             &new_view.metadata,
         )
         .await
-        .map_err(Into::into)
     }
 
     async fn search_tabular_impl(

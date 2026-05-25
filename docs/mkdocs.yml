@@ -3,6 +3,9 @@ site_name: docs/latest
 plugins:
     - search
 
+hooks:
+    - hooks/env_key_wrap.py
+
 nav:
     - Concepts: concepts.md
     - API:
