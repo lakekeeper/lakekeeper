@@ -1769,6 +1769,47 @@ where
         Ok(Some(view_info))
     }
 
+    async fn get_generic_table_info(
+        warehouse_id: WarehouseId,
+        tabular: impl Into<GenericTableIdentOrId> + Send,
+        filter: TabularListFlags,
+        catalog_state: Self::State,
+    ) -> Result<Option<GenericTabularInfo>, GetTabularInfoError> {
+        let tabular = tabular.into();
+        let info = match tabular {
+            GenericTableIdentOrId::Ident(ident) => {
+                let tabular_ident = TabularIdentOwned::GenericTable(ident.clone());
+                let borrowed = tabular_ident.as_borrowed();
+                Self::get_tabular_infos_by_ident(warehouse_id, &[borrowed], filter, catalog_state)
+                    .await?
+                    .into_values()
+                    .collect()
+            }
+            GenericTableIdentOrId::Id(id) => {
+                Self::get_tabular_infos_by_id(warehouse_id, &[id.into()], filter, catalog_state)
+                    .await?
+            }
+        };
+
+        if info.len() > 1 {
+            return Err(UnexpectedTabularInResponse::new().into());
+        }
+
+        let Some(info) = info.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let obtained_id = info.tabular_id();
+
+        let Some(gt_info) = info.into_generic_table_info() else {
+            return Err(UnexpectedTabularInResponse::new()
+                .append_detail(format!("Expected only generic tables, got {obtained_id}"))
+                .into());
+        };
+
+        Ok(Some(gt_info))
+    }
+
     async fn set_tabular_protected(
         warehouse_id: WarehouseId,
         tabular_id: TabularId,

@@ -4086,6 +4086,19 @@ components:
                   properties:
                     action:
                       $ref: '#/components/schemas/ViewAction'
+        - type: object
+          required:
+            - generic-table
+          properties:
+            generic-table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/GenericTableAction'
       description: Represents an action on an object
     CheckRequest:
       type: object
@@ -4613,6 +4626,25 @@ components:
           type: string
         universe_domain:
           type: string
+    GenericTableAction:
+      type: string
+      enum:
+        - drop
+        - undrop
+        - write_data
+        - read_data
+        - get_metadata
+        - rename
+        - include_in_list
+        - get_tasks
+        - control_tasks
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_select
+        - grant_modify
+        - change_ownership
     GenericTableAssignment:
       oneOf:
         - allOf:

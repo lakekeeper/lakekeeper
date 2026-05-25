@@ -2060,6 +2060,56 @@ impl ReducedRelation for OpenFGAGenericTableAction {
     }
 }
 
+// Mirrors `APITableAction` minus `Commit` and `SetProtection`, which the
+// generic-table authorization model does not expose.
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=GenericTableAction))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum APIGenericTableAction {
+    Drop,
+    Undrop,
+    WriteData,
+    ReadData,
+    GetMetadata,
+    Rename,
+    IncludeInList,
+    GetTasks,
+    ControlTasks,
+    ReadAssignments,
+    GrantPassGrants,
+    GrantManageGrants,
+    GrantDescribe,
+    GrantSelect,
+    GrantModify,
+    ChangeOwnership,
+}
+
+impl ReducedRelation for APIGenericTableAction {
+    type OpenFgaRelation = GenericTableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            APIGenericTableAction::Drop => GenericTableRelation::CanDrop,
+            APIGenericTableAction::Undrop => GenericTableRelation::CanUndrop,
+            APIGenericTableAction::WriteData => GenericTableRelation::CanWriteData,
+            APIGenericTableAction::ReadData => GenericTableRelation::CanReadData,
+            APIGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
+            APIGenericTableAction::Rename => GenericTableRelation::CanRename,
+            APIGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
+            APIGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
+            APIGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
+            APIGenericTableAction::ReadAssignments => GenericTableRelation::CanReadAssignments,
+            APIGenericTableAction::GrantPassGrants => GenericTableRelation::CanGrantPassGrants,
+            APIGenericTableAction::GrantManageGrants => GenericTableRelation::CanGrantManageGrants,
+            APIGenericTableAction::GrantDescribe => GenericTableRelation::CanGrantDescribe,
+            APIGenericTableAction::GrantSelect => GenericTableRelation::CanGrantSelect,
+            APIGenericTableAction::GrantModify => GenericTableRelation::CanGrantModify,
+            APIGenericTableAction::ChangeOwnership => GenericTableRelation::CanChangeOwnership,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
