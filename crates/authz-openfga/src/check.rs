@@ -399,7 +399,10 @@ async fn authorize_check_table<C: CatalogStore, S: SecretStore>(
         C::get_table_info(
             warehouse_id,
             table.clone(),
-            TabularListFlags::active(),
+            // Include deleted + staged so `/check` evaluates permissions
+            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
+            // tabulars. Matches the bulk /check endpoint.
+            TabularListFlags::all(),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -492,7 +495,10 @@ async fn authorize_check_view<C: CatalogStore, S: SecretStore>(
         C::get_view_info(
             warehouse_id,
             view.clone(),
-            TabularListFlags::active(),
+            // Include deleted + staged so `/check` evaluates permissions
+            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
+            // tabulars. Matches the bulk /check endpoint.
+            TabularListFlags::all(),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -586,7 +592,10 @@ async fn authorize_check_generic_table<C: CatalogStore, S: SecretStore>(
         C::get_generic_table_info(
             warehouse_id,
             generic_table.clone(),
-            TabularListFlags::active(),
+            // Include deleted + staged so `/check` evaluates permissions
+            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
+            // tabulars. Matches the bulk /check endpoint.
+            TabularListFlags::all(),
             api_context.v1_state.catalog.clone(),
         )
     );
