@@ -187,6 +187,8 @@ jobs:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
       - name: Regenerate management openapi
         run: just update-management-openapi
+      - name: Regenerate generic-table openapi
+        run: just update-generic-table-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
