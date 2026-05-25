@@ -525,8 +525,13 @@ mod tests {
             .unwrap();
         t.commit().await.unwrap();
 
+        // Use a distinct location so we isolate the name-uniqueness check
+        // from the location-collision check (which runs first in create_tabular).
+        let mut second = test_creation(warehouse_id, namespace_id, "dup");
+        second.location = "s3://bucket/other/dup".parse().unwrap();
+
         let mut t = pool.begin().await.unwrap();
-        let err = create_generic_table(test_creation(warehouse_id, namespace_id, "dup"), &mut t)
+        let err = create_generic_table(second, &mut t)
             .await
             .expect_err("duplicate should fail");
         t.rollback().await.ok();
