@@ -945,16 +945,16 @@ mod tests {
             .await;
     }
 
-    /// Regression guard for the pg_dump → pg_restore failure mode hit by a
-    /// customer migrating their Postgres backend: a BEFORE trigger whose
+    /// Regression guard for the `pg_dump` → `pg_restore` failure mode hit by
+    /// a customer migrating their Postgres backend: a BEFORE trigger whose
     /// `WHEN` clause references `OLD`/`NEW` as a whole row cannot be re-created
     /// once the underlying table has a generated column (PG enforces this at
     /// `CREATE TRIGGER` time, which is when `pg_restore` runs the dumped DDL).
     ///
     /// The migrator itself never re-creates such a trigger after a generated
     /// column is added, so the bug is invisible to ordinary migration tests
-    /// and to runtime UPDATEs — but pg_dump faithfully emits the broken form,
-    /// and pg_restore then refuses it. We assert on the post-migration catalog
+    /// and to runtime UPDATEs — but `pg_dump` faithfully emits the broken form,
+    /// and `pg_restore` then refuses it. We assert on the post-migration catalog
     /// state instead.
     #[sqlx::test(migrations = false)]
     async fn test_no_wholerow_before_trigger_on_generated_column_tables(pool: PgPool) {
@@ -988,13 +988,13 @@ mod tests {
         );
     }
 
-    /// End-to-end guard for the customer-facing pg_dump → pg_restore failure:
-    /// simulate what pg_restore does (re-execute every trigger's DDL against
-    /// the post-migration schema), then drive the same catalog API paths the
-    /// running server uses to confirm the restored DB is actually functional
-    /// for namespaces, tables, and views.
+    /// End-to-end guard for the customer-facing `pg_dump` → `pg_restore`
+    /// failure: simulate what `pg_restore` does (re-execute every trigger's
+    /// DDL against the post-migration schema), then drive the same catalog
+    /// API paths the running server uses to confirm the restored DB is
+    /// actually functional for namespaces, tables, and views.
     ///
-    /// `pg_get_triggerdef(oid)` returns the exact text pg_dump emits, so
+    /// `pg_get_triggerdef(oid)` returns the exact text `pg_dump` emits, so
     /// re-executing it is equivalent — at the trigger DDL stage — to
     /// restoring a freshly-built dump. Any trigger Postgres now refuses
     /// (e.g. whole-row OLD/NEW on a table that has acquired a generated
