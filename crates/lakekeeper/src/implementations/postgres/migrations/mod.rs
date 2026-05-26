@@ -1051,11 +1051,15 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap_or_else(|e| panic!("DROP TRIGGER {tgname} on {relname} failed: {e}"));
-            sqlx::query(AssertSqlSafe(def.clone())).execute(&pool).await
-                .unwrap_or_else(|e| panic!(
-                    "re-creating trigger `{tgname}` on `{relname}` after migrations failed — \
+            sqlx::query(AssertSqlSafe(def.clone()))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "re-creating trigger `{tgname}` on `{relname}` after migrations failed — \
                      pg_restore would hit the same error: {e}\nDDL: {def}",
-                ));
+                    )
+                });
         }
 
         // Drive the catalog API the same way the server does.
@@ -1063,13 +1067,15 @@ mod tests {
         let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let ns_ident = NamespaceIdent::from_vec(vec!["test_ns".to_string()]).unwrap();
         let initial_props = HashMap::from([("k".to_string(), "v0".to_string())]);
-        let ns = initialize_namespace(state.clone(), warehouse_id, &ns_ident, Some(initial_props))
-            .await;
+        let ns =
+            initialize_namespace(state.clone(), warehouse_id, &ns_ident, Some(initial_props)).await;
         let namespace_id = ns.namespace_id();
         assert_eq!(*ns.version(), 0, "freshly-inserted namespace starts at v0");
 
         // --- Namespace U: each UPDATE must fire the recreated trigger ---
-        let mut tx = PostgresTransaction::begin_write(state.clone()).await.unwrap();
+        let mut tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
         let after_protect = PostgresBackend::set_namespace_protected(
             warehouse_id,
             namespace_id,
@@ -1115,7 +1121,9 @@ mod tests {
         .await;
         let table_tab_id = TabularId::Table(table.table_id);
 
-        let mut tx = PostgresTransaction::begin_write(state.clone()).await.unwrap();
+        let mut tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
         set_tabular_protected(warehouse_id, table_tab_id, true, tx.transaction())
             .await
             .expect("set_tabular_protected on table must succeed post-restore");
@@ -1128,10 +1136,12 @@ mod tests {
         let view_uuid = Uuid::now_v7();
         let view_location: Location = "s3://test_bucket/my_view/".parse().unwrap();
         let view_metadata = view_request(Some(view_uuid), &view_location);
-        let view_metadata_location: Location =
-            format!("s3://test_bucket/my_view/metadata/{}.gz.json", Uuid::now_v7())
-                .parse()
-                .unwrap();
+        let view_metadata_location: Location = format!(
+            "s3://test_bucket/my_view/metadata/{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
 
         let mut tx = pool.begin().await.unwrap();
         create_view(
@@ -1147,7 +1157,9 @@ mod tests {
         tx.commit().await.unwrap();
 
         let view_tab_id = TabularId::View(view_uuid.into());
-        let mut tx = PostgresTransaction::begin_write(state.clone()).await.unwrap();
+        let mut tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
         set_tabular_protected(warehouse_id, view_tab_id, true, tx.transaction())
             .await
             .expect("set_tabular_protected on view must succeed post-restore");
