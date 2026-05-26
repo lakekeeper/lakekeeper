@@ -3215,7 +3215,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "axum",
  "bytes",
@@ -3678,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3766,7 +3766,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-authz-openfga"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "anyhow",
  "fastrand 2.3.0",
@@ -3793,7 +3793,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-bin"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -3823,7 +3823,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-io"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "anyhow",
  "async-stream",
