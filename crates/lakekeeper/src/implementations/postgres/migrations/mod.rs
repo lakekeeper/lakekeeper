@@ -944,4 +944,228 @@ mod tests {
             .execute(&admin_pool)
             .await;
     }
+
+    /// Regression guard for the `pg_dump` → `pg_restore` failure mode hit by
+    /// a customer migrating their Postgres backend: a BEFORE trigger whose
+    /// `WHEN` clause references `OLD`/`NEW` as a whole row cannot be re-created
+    /// once the underlying table has a generated column (PG enforces this at
+    /// `CREATE TRIGGER` time, which is when `pg_restore` runs the dumped DDL).
+    ///
+    /// The migrator itself never re-creates such a trigger after a generated
+    /// column is added, so the bug is invisible to ordinary migration tests
+    /// and to runtime UPDATEs — but `pg_dump` faithfully emits the broken form,
+    /// and `pg_restore` then refuses it. We assert on the post-migration catalog
+    /// state instead.
+    #[sqlx::test(migrations = false)]
+    async fn test_no_wholerow_before_trigger_on_generated_column_tables(pool: PgPool) {
+        migrate_core_only(&pool)
+            .await
+            .expect("core migrations must succeed");
+
+        let broken: Vec<(String, String)> = sqlx::query_as(
+            "SELECT t.tgname::text, c.relname::text \
+             FROM   pg_trigger  t \
+             JOIN   pg_class    c ON c.oid = t.tgrelid \
+             JOIN   pg_namespace n ON n.oid = c.relnamespace \
+             WHERE  n.nspname = current_schema() \
+               AND  NOT t.tgisinternal \
+               AND  (t.tgtype & 2) = 2 \
+               AND  pg_get_triggerdef(t.oid) ~* '(old|new)\\.\\*' \
+               AND  EXISTS ( \
+                      SELECT 1 FROM pg_attribute a \
+                      WHERE  a.attrelid = c.oid \
+                        AND  a.attgenerated <> '' \
+                    )",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            broken.is_empty(),
+            "BEFORE trigger(s) with whole-row OLD/NEW reference on tables that have \
+             generated columns — pg_dump → pg_restore will fail to restore them: {broken:?}"
+        );
+    }
+
+    /// End-to-end guard for the customer-facing `pg_dump` → `pg_restore`
+    /// failure: simulate what `pg_restore` does (re-execute every trigger's
+    /// DDL against the post-migration schema), then drive the same catalog
+    /// API paths the running server uses to confirm the restored DB is
+    /// actually functional for namespaces, tables, and views.
+    ///
+    /// `pg_get_triggerdef(oid)` returns the exact text `pg_dump` emits, so
+    /// re-executing it is equivalent — at the trigger DDL stage — to
+    /// restoring a freshly-built dump. Any trigger Postgres now refuses
+    /// (e.g. whole-row OLD/NEW on a table that has acquired a generated
+    /// column) fails here, just as on a real restore.
+    ///
+    /// CRUD goes through the catalog ops so the test tracks schema changes
+    /// automatically — adding a NOT NULL column to one of these tables won't
+    /// silently fall out of the seed path.
+    #[sqlx::test(migrations = false)]
+    async fn test_pg_restore_round_trip_then_crud(pool: PgPool) {
+        use std::collections::HashMap;
+
+        use iceberg_ext::NamespaceIdent;
+        use lakekeeper_io::Location;
+
+        use crate::{
+            implementations::postgres::{
+                CatalogState, PostgresBackend, PostgresTransaction,
+                namespace::tests::initialize_namespace,
+                tabular::{
+                    drop_tabular, set_tabular_protected,
+                    table::tests::initialize_table,
+                    view::{create_view, tests::view_request},
+                },
+                warehouse::test::initialize_warehouse,
+            },
+            service::{CatalogNamespaceOps as _, TabularId, Transaction as _},
+        };
+
+        migrate_core_only(&pool)
+            .await
+            .expect("core migrations must succeed");
+
+        // Snapshot every user trigger's canonical DDL, drop, and re-create
+        // — exactly the post-data step pg_restore runs.
+        let triggers: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT t.tgname::text, n.nspname::text, c.relname::text, pg_get_triggerdef(t.oid) \
+             FROM   pg_trigger  t \
+             JOIN   pg_class    c ON c.oid = t.tgrelid \
+             JOIN   pg_namespace n ON n.oid = c.relnamespace \
+             WHERE  n.nspname = current_schema() \
+               AND  NOT t.tgisinternal",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(
+            !triggers.is_empty(),
+            "expected core migrations to create at least one trigger"
+        );
+        for (tgname, schema, relname, def) in &triggers {
+            let drop = format!(r#"DROP TRIGGER "{tgname}" ON "{schema}"."{relname}""#);
+            sqlx::query(AssertSqlSafe(drop))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("DROP TRIGGER {tgname} on {relname} failed: {e}"));
+            sqlx::query(AssertSqlSafe(def.clone()))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "re-creating trigger `{tgname}` on `{relname}` after migrations failed — \
+                     pg_restore would hit the same error: {e}\nDDL: {def}",
+                    )
+                });
+        }
+
+        // Drive the catalog API the same way the server does.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ns_ident = NamespaceIdent::from_vec(vec!["test_ns".to_string()]).unwrap();
+        let initial_props = HashMap::from([("k".to_string(), "v0".to_string())]);
+        let ns =
+            initialize_namespace(state.clone(), warehouse_id, &ns_ident, Some(initial_props)).await;
+        let namespace_id = ns.namespace_id();
+        assert_eq!(*ns.version(), 0, "freshly-inserted namespace starts at v0");
+
+        // --- Namespace U: each UPDATE must fire the recreated trigger ---
+        let mut tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let after_protect = PostgresBackend::set_namespace_protected(
+            warehouse_id,
+            namespace_id,
+            true,
+            tx.transaction(),
+        )
+        .await
+        .expect("set_namespace_protected must succeed post-restore");
+        assert_eq!(*after_protect.version(), 1);
+
+        let new_props = HashMap::from([("k".to_string(), "v1".to_string())]);
+        let after_props = PostgresBackend::update_namespace_properties(
+            warehouse_id,
+            namespace_id,
+            new_props,
+            tx.transaction(),
+        )
+        .await
+        .expect("update_namespace_properties must succeed post-restore");
+        assert_eq!(*after_props.version(), 2);
+
+        // Unprotect so the namespace doesn't block table/view inserts (it
+        // doesn't today, but keeps the test resilient to future tightening).
+        PostgresBackend::set_namespace_protected(
+            warehouse_id,
+            namespace_id,
+            false,
+            tx.transaction(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // --- Table C / U / D ---
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(ns_ident.clone()),
+            None,
+            Some("my_table".to_string()),
+        )
+        .await;
+        let table_tab_id = TabularId::Table(table.table_id);
+
+        let mut tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        set_tabular_protected(warehouse_id, table_tab_id, true, tx.transaction())
+            .await
+            .expect("set_tabular_protected on table must succeed post-restore");
+        drop_tabular(warehouse_id, table_tab_id, true, None, tx.transaction())
+            .await
+            .expect("drop_tabular on table must succeed post-restore");
+        tx.commit().await.unwrap();
+
+        // --- View C / U / D ---
+        let view_uuid = Uuid::now_v7();
+        let view_location: Location = "s3://test_bucket/my_view/".parse().unwrap();
+        let view_metadata = view_request(Some(view_uuid), &view_location);
+        let view_metadata_location: Location = format!(
+            "s3://test_bucket/my_view/metadata/{}.gz.json",
+            Uuid::now_v7()
+        )
+        .parse()
+        .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        create_view(
+            warehouse_id,
+            namespace_id,
+            &view_metadata_location,
+            &mut tx,
+            "my_view",
+            &view_metadata,
+        )
+        .await
+        .expect("create_view must succeed post-restore");
+        tx.commit().await.unwrap();
+
+        let view_tab_id = TabularId::View(view_uuid.into());
+        let mut tx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        set_tabular_protected(warehouse_id, view_tab_id, true, tx.transaction())
+            .await
+            .expect("set_tabular_protected on view must succeed post-restore");
+        drop_tabular(warehouse_id, view_tab_id, true, None, tx.transaction())
+            .await
+            .expect("drop_tabular on view must succeed post-restore");
+        tx.commit().await.unwrap();
+    }
 }
