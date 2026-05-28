@@ -90,8 +90,15 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .into_result()?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+
+    let delete_profile = if force {
+        TabularDeleteProfile::Hard {}
+    } else {
+        warehouse.tabular_delete_profile
+    };
     let project_id = &warehouse.project_id;
-    match warehouse.tabular_delete_profile {
+
+    match delete_profile {
         TabularDeleteProfile::Hard {} => {
             let location = C::drop_tabular(warehouse_id, view_id, force, t.transaction()).await?;
 
@@ -181,10 +188,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     t.commit().await?;
 
     // Post-commit: best-effort authz cleanup for hard deletes
-    if matches!(
-        warehouse.tabular_delete_profile,
-        TabularDeleteProfile::Hard {}
-    ) {
+    if matches!(delete_profile, TabularDeleteProfile::Hard {}) {
         authorizer
             .delete_view(warehouse_id, view_id)
             .await
@@ -226,7 +230,9 @@ mod test {
         server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-        service::tasks::WarehouseTaskEntityId,
+        service::tasks::{
+            WarehouseTaskEntityId, tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME,
+        },
         tests::{create_view_request, random_request_metadata},
     };
 
@@ -459,7 +465,7 @@ mod test {
         .expect("Protected View should be droppable via force");
 
         let error = load_view(
-            api_context,
+            api_context.clone(),
             ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
@@ -469,5 +475,26 @@ mod test {
         .expect_err("View should no longer exist");
 
         assert_eq!(error.error.code, StatusCode::NOT_FOUND);
+
+        // force=true must perform an immediate hard delete even in a soft-delete warehouse:
+        // no tabular_expiration task should be scheduled for the view.
+        let expiration_tasks = ManagementApiServer::list_tasks(
+            whi,
+            ListTasksRequest::builder()
+                .entities(Some(vec![WarehouseTaskEntityFilter::View {
+                    view_id: loaded_view.metadata.uuid().into(),
+                }]))
+                .queue_name(Some(vec![EXPIRATION_QUEUE_NAME.clone()]))
+                .build(),
+            api_context,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            expiration_tasks.tasks.len(),
+            0,
+            "force-drop in soft-delete warehouse must not schedule a tabular_expiration task"
+        );
     }
 }

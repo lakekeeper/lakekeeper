@@ -975,138 +975,155 @@ This approach ensures that authorization policies remain consistent and that par
 
 The following tables document all available Cedar actions. Use action groups for broad permissions or individual actions for fine-grained control.
 
+The **Audit log `action_name`** column lists the standardized snake_case identifier that appears in the `action.action_name` field of [audit log events](./logging.md#audit-logs) when that action is checked. For actions shared with OpenFGA (those derived from the authorizer-agnostic `Catalog*Action` enums) the same value is emitted regardless of which authorizer is configured. A dash (`—`) means the action is only reached through a silent backend pre-check (no audit event is emitted under a stable standardized name).
+
+Because the audit `action_name` deliberately omits the resource type (`delete`, `rename`, `get_metadata`, `introspect_authorization`, etc. appear across multiple Cedar action names), use the sibling `entity.entity_type` field on the audit event to pick the right Cedar action. For example, `action_name = "read_data"` with `entity.entity_type = "table"` corresponds to `Lakekeeper::Action::"ReadTableData"`:
+
+```json
+{
+  "action": { "action_name": "read_data" },
+  "entity": {
+    "entity_type": "table",
+    "warehouse-id": "faac5cb2-5902-11f1-b9a7-1360e98a724d",
+    "namespace": "finance",
+    "table": "products"
+  }
+}
+```
+
 ### Server Actions
 
-| Action                                            | Description              |
-|---------------------------------------------------|--------------------------|
-| `ListServerCedarEntitySources`                    | List Cedar entity sources configured at server level |
-| <nobr>`ListCedarPoliciesFromServerSources`</nobr> | View Cedar policies from server-level sources |
-| `ListServerCedarPolicySources`                    | List Cedar policy sources configured at server level |
-| `CreateProject`                                   | Create new projects      |
-| `UpdateUsers`                                     | Modify user information  |
-| `DeleteUsers`                                     | Remove users from the system |
-| `ListUsers`                                       | View all users in the system |
-| `ProvisionUsers`                                  | Provision new users      |
-| `IntrospectServerAuthorization`                   | Check access permissions on the server for **other** users (applies when `identity` parameter doesn't match current user) |
+| Action                                            | Audit log `action_name`                    | Description              |
+|---------------------------------------------------|--------------------------------------------|--------------------------|
+| `ListServerCedarEntitySources`                    | `list_cedar_entity_sources`                | List Cedar entity sources configured at server level |
+| <nobr>`ListCedarPoliciesFromServerSources`</nobr> | `list_cedar_policies_from_server_sources`  | View Cedar policies from server-level sources |
+| `ListServerCedarPolicySources`                    | `list_cedar_policy_sources`                | List Cedar policy sources configured at server level |
+| `CreateProject`                                   | `create_project`                           | Create new projects      |
+| `UpdateUsers`                                     | `update_users`                             | Modify user information  |
+| `DeleteUsers`                                     | `delete_users`                             | Remove users from the system |
+| `ListUsers`                                       | `list_users`                               | View all users in the system |
+| `ProvisionUsers`                                  | `provision_users`                          | Provision new users      |
+| `IntrospectServerAuthorization`                   | `introspect_authorization`                 | Check access permissions on the server for **other** users (applies when `identity` parameter doesn't match current user) |
+| `EvaluateCedarPolicies`                           | `evaluate_cedar_policies`                  | Evaluate user-provided Cedar policies (development tool) |
 
 ### Project Actions
 
-| Action                                        | Description                  |
-|-----------------------------------------------|------------------------------|
-| `GetProjectMetadata`                          | View project details and configuration |
-| `ListWarehouses`                              | List all warehouses in the project |
-| `IncludeProjectInList`                        | Include project in list operations (visibility) |
-| `ListRoles`                                   | List all roles in the project |
-| `SearchRoles`                                 | Search for roles in the project |
-| `GetProjectEndpointStatistics`                | View API usage statistics for the project |
-| `GetProjectTaskQueueConfig`                   | View task queue configuration for the project |
-| `GetProjectTasks`                             | List background tasks in the project |
-| <nobr>`IntrospectProjectAuthorization`</nobr> | Check access permissions on the project for other users |
-| `CreateWarehouse`                             | Create new warehouses in the project |
-| `DeleteProject`                               | Delete the project           |
-| `RenameProject`                               | Change project name          |
-| `CreateRole`                                  | Create new roles in the project |
-| `ModifyProjectTaskQueueConfig`                | Update task queue configuration |
-| `ControlProjectTasks`                         | Manage background tasks (cancel, retry, etc.) |
+| Action                                        | Audit log `action_name`    | Description                  |
+|-----------------------------------------------|----------------------------|------------------------------|
+| `GetProjectMetadata`                          | `get_metadata`             | View project details and configuration |
+| `ListWarehouses`                              | `list_warehouses`          | List all warehouses in the project |
+| `IncludeProjectInList`                        | `include_in_list`          | Include project in list operations (visibility) |
+| `ListRoles`                                   | `list_roles`               | List all roles in the project |
+| `SearchRoles`                                 | `search_roles`             | Search for roles in the project |
+| `GetProjectEndpointStatistics`                | `get_endpoint_statistics`  | View API usage statistics for the project |
+| `GetProjectTaskQueueConfig`                   | `get_task_queue_config`    | View task queue configuration for the project |
+| `GetProjectTasks`                             | `get_project_tasks`        | List background tasks in the project |
+| <nobr>`IntrospectProjectAuthorization`</nobr> | `introspect_authorization` | Check access permissions on the project for other users |
+| `CreateWarehouse`                             | `create_warehouse`         | Create new warehouses in the project |
+| `DeleteProject`                               | `delete`                   | Delete the project           |
+| `RenameProject`                               | `rename`                   | Change project name          |
+| `CreateRole`                                  | `create_role`              | Create new roles in the project |
+| `ModifyProjectTaskQueueConfig`                | `modify_task_queue_config` | Update task queue configuration |
+| `ControlProjectTasks`                         | `control_project_tasks`    | Manage background tasks (cancel, retry, etc.) |
 
 The following Action Groups are available: `ProjectDescribeActions` (read-only), `ProjectModifyActions` (includes Describe), `ProjectActions` (all)
 
 ### Role Actions
 
-| Action                                     | Description                     |
-|--------------------------------------------|---------------------------------|
-| `AssumeRole`                               | Assume this role (use role's permissions) |
-| `DeleteRole`                               | Delete the role                 |
-| `UpdateRole`                               | Modify role properties          |
-| `ReadRole`                                 | View role details               |
-| `ReadRoleMetadata`                         | View role metadata              |
-| <nobr>`IntrospectRoleAuthorization`</nobr> | Check access permissions on the role for other users |
+| Action                                     | Audit log `action_name` | Description                     |
+|--------------------------------------------|-------------------------|---------------------------------|
+| `AssumeRole`                               | `assume_role`           | Assume this role (use role's permissions) |
+| `DeleteRole`                               | `delete`                | Delete the role                 |
+| `UpdateRole`                               | `update`                | Modify role properties          |
+| `ReadRole`                                 | `read`                  | View role details               |
+| `ReadRoleMetadata`                         | `read_metadata`         | View role metadata              |
+| <nobr>`IntrospectRoleAuthorization`</nobr> | —                       | Check access permissions on the role for other users |
 
 The following Action Groups are available: `RoleActions` (all role operations)
 
 ### Warehouse Actions
 
-| Action                                          | Description                |
-|-------------------------------------------------|----------------------------|
-| `UseWarehouse`                                  | Use the warehouse (required for any warehouse operations) |
-| `ListNamespacesInWarehouse`                     | List namespaces in the warehouse |
-| `GetWarehouseMetadata`                          | View warehouse configuration and details |
-| `GetConfig`                                     | Get warehouse configuration for clients |
-| `IncludeWarehouseInList`                        | Include warehouse in list operations (visibility) |
-| `ListDeletedTabulars`                           | List soft-deleted tables and views |
-| `GetTaskQueueConfig`                            | View task queue configuration |
-| `GetAllTasks`                                   | List all background tasks in the warehouse |
-| `ListEverythingInWarehouse`                     | List all objects (namespaces, tables, views) in warehouse |
-| `GetWarehouseEndpointStatistics`                | View API usage statistics for the warehouse |
-| <nobr>`IntrospectWarehouseAuthorization`</nobr> | Check access permissions on the warehouse for other users |
-| `DeleteWarehouse`                               | Delete the warehouse       |
-| `UpdateStorage`                                 | Modify storage configuration |
-| `UpdateStorageCredential`                       | Update storage credentials |
-| `DeactivateWarehouse`                           | Deactivate the warehouse (suspend operations) |
-| `ActivateWarehouse`                             | Activate a deactivated warehouse |
-| `RenameWarehouse`                               | Change warehouse name      |
-| `ModifySoftDeletion`                            | Configure soft-deletion settings |
-| `ModifyTaskQueueConfig`                         | Update task queue configuration |
-| `ControlAllTasks`                               | Manage all background tasks |
-| `SetWarehouseProtection`                        | Enable/disable deletion protection |
-| `CreateNamespaceInWarehouse`                    | Create namespaces directly in the warehouse |
+| Action                                          | Audit log `action_name`     | Description                |
+|-------------------------------------------------|-----------------------------|----------------------------|
+| `UseWarehouse`                                  | `use`                       | Use the warehouse (required for any warehouse operations) |
+| `ListNamespacesInWarehouse`                     | `list_namespaces`           | List namespaces in the warehouse |
+| `GetWarehouseMetadata`                          | `get_metadata`              | View warehouse configuration and details |
+| `GetConfig`                                     | `get_config`                | Get warehouse configuration for clients |
+| `IncludeWarehouseInList`                        | `include_in_list`           | Include warehouse in list operations (visibility) |
+| `ListDeletedTabulars`                           | `list_deleted_tabulars`     | List soft-deleted tables and views |
+| `GetTaskQueueConfig`                            | `get_task_queue_config`     | View task queue configuration |
+| `GetAllTasks`                                   | `get_all_tasks`             | List all background tasks in the warehouse |
+| `ListEverythingInWarehouse`                     | `list_everything`           | List all objects (namespaces, tables, views) in warehouse |
+| `GetWarehouseEndpointStatistics`                | `get_endpoint_statistics`   | View API usage statistics for the warehouse |
+| <nobr>`IntrospectWarehouseAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the warehouse for other users |
+| `DeleteWarehouse`                               | `delete`                    | Delete the warehouse       |
+| `UpdateStorage`                                 | `update_storage`            | Modify storage configuration |
+| `UpdateStorageCredential`                       | `update_storage_credential` | Update storage credentials |
+| `DeactivateWarehouse`                           | `deactivate`                | Deactivate the warehouse (suspend operations) |
+| `ActivateWarehouse`                             | `activate`                  | Activate a deactivated warehouse |
+| `RenameWarehouse`                               | `rename`                    | Change warehouse name      |
+| `ModifySoftDeletion`                            | `modify_soft_deletion`      | Configure soft-deletion settings |
+| `ModifyTaskQueueConfig`                         | `modify_task_queue_config`  | Update task queue configuration |
+| `ControlAllTasks`                               | `control_all_tasks`         | Manage all background tasks |
+| `SetWarehouseProtection`                        | `set_protection`            | Enable/disable deletion protection |
+| `CreateNamespaceInWarehouse`                    | `create_namespace`          | Create namespaces directly in the warehouse |
 
 The following Action Groups are available: `WarehouseDescribeActions` (read-only), `WarehouseModifyActions` (includes Describe), `WarehouseActions` (all)
 
 ### Namespace Actions
 
-| Action                                          | Description                |
-|-------------------------------------------------|----------------------------|
-| `ListEverythingInNamespace`                     | List all objects (tables, views, child namespaces) in namespace |
-| `GetNamespaceMetadata`                          | View namespace properties and configuration |
-| `IncludeNamespaceInList`                        | Include namespace in list operations (visibility) |
-| `ListTables`                                    | List tables in the namespace |
-| `ListViews`                                     | List views in the namespace |
-| `ListNamespacesInNamespace`                     | List child namespaces      |
-| <nobr>`IntrospectNamespaceAuthorization`</nobr> | Check access permissions on the namespace for other users |
-| `DeleteNamespace`                               | Delete the namespace       |
-| `SetNamespaceProtection`                        | Enable/disable deletion protection |
-| `CreateTable`                                   | Create tables in the namespace |
-| `CreateView`                                    | Create views in the namespace |
-| `CreateNamespaceInNamespace`                    | Create child namespaces    |
-| `UpdateNamespaceProperties`                     | Modify namespace properties |
+| Action                                          | Audit log `action_name` | Description                |
+|-------------------------------------------------|-------------------------|----------------------------|
+| `ListEverythingInNamespace`                     | `list_everything`       | List all objects (tables, views, child namespaces) in namespace |
+| `GetNamespaceMetadata`                          | `get_metadata`          | View namespace properties and configuration |
+| `IncludeNamespaceInList`                        | `include_in_list`       | Include namespace in list operations (visibility) |
+| `ListTables`                                    | `list_tables`           | List tables in the namespace |
+| `ListViews`                                     | `list_views`            | List views in the namespace |
+| `ListNamespacesInNamespace`                     | `list_namespaces`       | List child namespaces      |
+| <nobr>`IntrospectNamespaceAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the namespace for other users |
+| `DeleteNamespace`                               | `delete`                | Delete the namespace       |
+| `SetNamespaceProtection`                        | `set_protection`        | Enable/disable deletion protection |
+| `CreateTable`                                   | `create_table`          | Create tables in the namespace |
+| `CreateView`                                    | `create_view`           | Create views in the namespace |
+| `CreateNamespaceInNamespace`                    | `create_namespace`      | Create child namespaces    |
+| `UpdateNamespaceProperties`                     | `update_properties`     | Modify namespace properties |
 
 The following Action Groups are available: `NamespaceDescribeActions` (read-only), `NamespaceModifyActions` (includes Describe), `NamespaceActions` (all)
 
 ### Table Actions
 
-| Action                                      | Description                    |
-|---------------------------------------------|--------------------------------|
-| `GetTableMetadata`                          | View table schema, metadata, and configuration |
-| `IncludeTableInList`                        | Include table in list operations (visibility) |
-| `GetTableTasks`                             | List background tasks for the table |
-| `ReadTableData`                             | Read data from the table (SELECT queries) |
-| <nobr>`IntrospectTableAuthorization`</nobr> | Check access permissions on the table for other users |
-| `DropTable`                                 | Delete the table               |
-| `WriteTableData`                            | Write data to the table (INSERT, UPDATE, DELETE) |
-| `RenameTable`                               | Change table name or move to different namespace |
-| `UndropTable`                               | Restore a soft-deleted table   |
-| `ControlTableTasks`                         | Manage table background tasks  |
-| `SetTableProtection`                        | Enable/disable deletion protection |
-| `CommitTable`                               | Commit table changes (schema updates, snapshots) |
+| Action                                      | Audit log `action_name` | Description                    |
+|---------------------------------------------|-------------------------|--------------------------------|
+| `GetTableMetadata`                          | `get_metadata`          | View table schema, metadata, and configuration |
+| `IncludeTableInList`                        | `include_in_list`       | Include table in list operations (visibility) |
+| `GetTableTasks`                             | `get_tasks`             | List background tasks for the table |
+| `ReadTableData`                             | `read_data`             | Read data from the table (SELECT queries) |
+| <nobr>`IntrospectTableAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the table for other users |
+| `DropTable`                                 | `drop`                  | Delete the table               |
+| `WriteTableData`                            | `write_data`            | Write data to the table (INSERT, UPDATE, DELETE) |
+| `RenameTable`                               | `rename`                | Change table name or move to different namespace |
+| `UndropTable`                               | `undrop`                | Restore a soft-deleted table   |
+| `ControlTableTasks`                         | `control_tasks`         | Manage table background tasks  |
+| `SetTableProtection`                        | `set_protection`        | Enable/disable deletion protection |
+| `CommitTable`                               | `commit`                | Commit table changes (schema updates, snapshots) |
 
 *Action Groups*: `TableDescribeActions` (metadata only), `TableSelectActions` (includes Describe + read data), `TableModifyActions` (includes Describe + Select + modifications), `TableActions` (all)
 
 ### View Actions
 
-| Action                                     | Description                     |
-|--------------------------------------------|---------------------------------|
-| `GetViewMetadata`                          | View view definition and metadata |
-| `IncludeViewInList`                        | Include view in list operations (visibility) |
-| `GetViewTasks`                             | List background tasks for the view |
-| `SelectView`                               | Execute the view to produce rows (data-plane; required to traverse the view in a `referenced-by` chain) |
-| <nobr>`IntrospectViewAuthorization`</nobr> | Check access permissions on the view for other users |
-| `DropView`                                 | Delete the view                 |
-| `RenameView`                               | Change view name or move to different namespace |
-| `UndropView`                               | Restore a soft-deleted view     |
-| `ControlViewTasks`                         | Manage view background tasks    |
-| `SetViewProtection`                        | Enable/disable deletion protection |
-| `CommitView`                               | Commit view changes (update definition, properties) |
+| Action                                     | Audit log `action_name` | Description                     |
+|--------------------------------------------|-------------------------|---------------------------------|
+| `GetViewMetadata`                          | `get_metadata`          | View view definition and metadata |
+| `IncludeViewInList`                        | `include_in_list`       | Include view in list operations (visibility) |
+| `GetViewTasks`                             | `get_tasks`             | List background tasks for the view |
+| `SelectView`                               | `select`                | Execute the view to produce rows (data-plane; required to traverse the view in a `referenced-by` chain) |
+| <nobr>`IntrospectViewAuthorization`</nobr> | `introspect_authorization` (was `IntrospectAuthorization` until 0.12.2) | Check access permissions on the view for other users |
+| `DropView`                                 | `drop`                  | Delete the view                 |
+| `RenameView`                               | `rename`                | Change view name or move to different namespace |
+| `UndropView`                               | `undrop`                | Restore a soft-deleted view     |
+| `ControlViewTasks`                         | `control_tasks`         | Manage view background tasks    |
+| `SetViewProtection`                        | `set_protection`        | Enable/disable deletion protection |
+| `CommitView`                               | `commit`                | Commit view changes (update definition, properties) |
 
 *Action Groups*: `ViewDescribeActions` (metadata only), `ViewSelectActions` (includes Describe + execute), `ViewModifyActions` (includes Describe + Select + modifications), `ViewActions` (all)
 

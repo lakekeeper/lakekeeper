@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO role (id, name, description, source_id, provider_id, project_id)\n        SELECT u.*, $6 FROM UNNEST($1::UUID[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TEXT[]) u\n        RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version\n        ",
+  "query": "\n                INSERT INTO role (id, name, description, source_id, provider_id, project_id)\n                SELECT u.*, $6 FROM UNNEST($1::UUID[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TEXT[]) u\n                ON CONFLICT (project_id, provider_id, source_id)\n                    DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description\n                    WHERE role.name IS DISTINCT FROM EXCLUDED.name\n                       OR role.description IS DISTINCT FROM EXCLUDED.description\n                RETURNING id, name, description, project_id, provider_id, source_id, created_at, updated_at, version\n                ",
   "describe": {
     "columns": [
       {
@@ -125,5 +125,5 @@
       false
     ]
   },
-  "hash": "12dba7d7e089c0c495fcd9e8d623fde4f3d3b5a2061bd40aea94c78df537276c"
+  "hash": "e312ec2c8a78a924166ea19a22c23f56f9be75bb752fca43dddc586e20076459"
 }
