@@ -14,6 +14,7 @@ use crate::{
                 CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
                 TabularIdentOrUuid,
             },
+            task_queue::ScheduleTaskRequest,
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
@@ -521,6 +522,16 @@ impl APIEventActions for ControlTasksRequest {
         vec![
             ActionDescriptor::builder()
                 .action_name("control_tasks")
+                .build(),
+        ]
+    }
+}
+
+impl APIEventActions for ScheduleTaskRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("schedule_task")
                 .build(),
         ]
     }

@@ -94,7 +94,7 @@ pub(crate) async fn set_task_queue_config<C: CatalogStore, A: Authorizer, S: Sec
 }
 
 /// Request body for scheduling a task.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ScheduleTaskRequest {

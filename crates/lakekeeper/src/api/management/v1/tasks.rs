@@ -822,11 +822,14 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Ok(())
     }
 
-    /// Schedule a fresh task on a queue for a specific entity (table or view).
+    /// Schedule a task on a queue for a specific entity.
     ///
-    /// Only queues that opted in via `TaskConfig::user_schedulable()` are
-    /// accepted. `AuthZ` mirrors `control_tasks`: per-entity `ControlTasks`
-    /// with a warehouse-level `ControlAllTasks` bypass.
+    /// Only queues registered with `UserScheduling::Enabled` are accepted;
+    /// others return `400 QueueNotUserSchedulable`. Per-queue eligibility
+    /// (`check_schedule_eligibility`) decides which entity types and
+    /// configurations the queue accepts. `AuthZ` mirrors `control_tasks`:
+    /// per-entity `ControlTasks` with a warehouse-level `ControlAllTasks`
+    /// bypass.
     async fn schedule_task(
         warehouse_id: WarehouseId,
         queue_name: &TaskQueueName,
@@ -842,23 +845,34 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         // roundtrip on obviously-malformed requests.
         validate_schedule_request_static_checks(&request, chrono::Utc::now())?;
 
-        // -------------------- AUTHZ --------------------
+        // -------------------- AUTHZ + AUDIT --------------------
         let authorizer = context.v1_state.authz.clone();
         let catalog_state = context.v1_state.catalog.clone();
 
-        let (warehouse, tabular_info) = check_schedule_task_authorization::<A, C>(
+        let mut event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            request.clone(),
+        );
+        // Path-encoded queue and the requested entity aren't part of the
+        // `schedule_task` action descriptor, so stamp them into the audit
+        // payload directly. Both authz-success and authz-failure events
+        // surface this context.
+        event_ctx.push_extra_context("queue_name", queue_name.to_string());
+        event_ctx.push_extra_context("entity_id", event_ctx.action().entity.as_uuid().to_string());
+
+        let authz_result = check_schedule_task_authorization::<A, C>(
             &authorizer,
             catalog_state.clone(),
-            &request_metadata,
+            event_ctx.request_metadata(),
             warehouse_id,
-            request.entity,
+            event_ctx.action().entity,
         )
-        .await
-        .map_err(|e| {
-            iceberg_ext::catalog::rest::IcebergErrorResponse::from(
-                crate::service::events::AuthorizationFailureSource::into_error_model(e),
-            )
-        })?;
+        .await;
+
+        let (event_ctx, (warehouse, tabular_info)) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse.clone());
 
         // -------------------- Business Logic --------------------
         let entity_name = tabular_info.tabular_ident().clone().into_name_parts();
@@ -871,9 +885,10 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             },
         };
         let entity_properties = crate::service::AuthZTabularInfo::properties(&tabular_info).clone();
+        let project_id = event_ctx.resolved().project_id.clone();
 
         crate::api::management::v1::task_queue::schedule_task::<C, A, S>(
-            warehouse.project_id.clone(),
+            project_id,
             warehouse_id,
             queue_name,
             entity_id,
