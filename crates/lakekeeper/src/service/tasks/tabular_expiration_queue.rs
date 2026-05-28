@@ -28,6 +28,7 @@ pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
         utoipa_type_name: TabularExpirationQueueConfig::name(),
         utoipa_schema: TabularExpirationQueueConfig::schema(),
         scope: super::QueueScope::Warehouse,
+        user_schedulable: false,
     });
 
 pub type TabularExpirationTask = SpecializedTask<

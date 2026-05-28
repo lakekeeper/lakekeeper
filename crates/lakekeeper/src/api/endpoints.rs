@@ -228,6 +228,7 @@ generate_endpoints! {
         SetWarehouseProtection(POST, "/management/v1/warehouse/{warehouse_id}/protection"),
         SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
         GetTaskQueueConfig(GET, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        ScheduleTask(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule"),
         ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
         GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
         ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),

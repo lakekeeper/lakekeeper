@@ -141,12 +141,47 @@ pub(crate) async fn setup<T: Authorizer>(
     ApiContext<State<T, PostgresBackend, SecretsState>>,
     TestWarehouseResponse,
 ) {
+    let (ctx, warehouse, _registry) = setup_with_registry(
+        pool,
+        storage_profile,
+        storage_credential,
+        authorizer,
+        delete_profile,
+        user_id,
+        number_of_warehouses,
+        project_id,
+    )
+    .await;
+    (ctx, warehouse)
+}
+
+/// Like [`setup`] but also returns the `TaskQueueRegistry` so tests can
+/// register additional queues (e.g. a `user_schedulable=true` fixture for
+/// scheduling-endpoint lifecycle tests). The registry shares interior-mutable
+/// state with the `RegisteredTaskQueues` inside the returned `ApiContext`,
+/// so a later `register_queue` call is visible to subsequent endpoint
+/// invocations on `ctx` — no rebuild needed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn setup_with_registry<T: Authorizer>(
+    pool: PgPool,
+    storage_profile: StorageProfile,
+    storage_credential: Option<StorageCredential>,
+    authorizer: T,
+    delete_profile: TabularDeleteProfile,
+    user_id: Option<UserId>,
+    number_of_warehouses: usize,
+    project_id: Option<ProjectId>,
+) -> (
+    ApiContext<State<T, PostgresBackend, SecretsState>>,
+    TestWarehouseResponse,
+    TaskQueueRegistry,
+) {
     assert!(
         number_of_warehouses > 0,
         "Number of warehouses must be greater than 0",
     );
     migrate_core_only(&pool).await.unwrap();
-    let api_context = get_api_context(&pool, authorizer).await;
+    let (api_context, registry) = get_api_context_with_registry(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {
         RequestMetadata::test_user(user_id)
@@ -210,13 +245,31 @@ pub(crate) async fn setup<T: Authorizer>(
             warehouse_name,
             additional_warehouses,
         },
+        registry,
     )
 }
 
+/// Backwards-compatible wrapper for callers that don't need the registry.
+/// Prefer [`get_api_context_with_registry`] for new tests that need to
+/// register additional queues post-bootstrap.
+#[allow(dead_code)] // Some call sites are only enabled under specific feature combos.
 pub(crate) async fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
 ) -> ApiContext<State<T, PostgresBackend, SecretsState>> {
+    get_api_context_with_registry(pool, auth).await.0
+}
+
+/// Like [`get_api_context`] but also returns the `TaskQueueRegistry`.
+/// Lets tests register additional queues into the same shared state the
+/// returned `ApiContext` reads from.
+pub(crate) async fn get_api_context_with_registry<T: Authorizer>(
+    pool: &PgPool,
+    auth: T,
+) -> (
+    ApiContext<State<T, PostgresBackend, SecretsState>>,
+    TaskQueueRegistry,
+) {
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
     let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
 
@@ -230,7 +283,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
         )
         .await;
     let registered_task_queues = task_queues.registered_task_queues();
-    ApiContext {
+    let ctx = ApiContext {
         v1_state: State {
             authz: auth,
             catalog: catalog_state,
@@ -245,7 +298,8 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             license_status: &APACHE_LICENSE_STATUS,
             build_info: &DEFAULT_BUILD_INFO,
         },
-    }
+    };
+    (ctx, task_queues)
 }
 
 pub(crate) fn random_request_metadata() -> RequestMetadata {

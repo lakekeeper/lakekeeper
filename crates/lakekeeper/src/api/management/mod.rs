@@ -119,7 +119,10 @@ pub mod v1 {
                     UpdateRoleSourceSystemRequest,
                 },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
-                task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+                task_queue::{
+                    GetTaskQueueConfigResponse, ScheduleTaskRequest, ScheduleTaskResponse,
+                    SetTaskQueueConfigRequest,
+                },
                 tasks::{
                     ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
                     GetTaskDetailsResponseRef, ListProjectTasksRequest, ListProjectTasksResponse,
@@ -1791,6 +1794,51 @@ pub mod v1 {
             .await?;
         Ok(StatusCode::NO_CONTENT)
     }
+
+    /// Schedule a fresh task on a queue for a specific entity (currently
+    /// table only; views are not supported for v1 schedulable queues).
+    ///
+    /// Only queues that opted in via `TaskConfig::user_schedulable()` accept
+    /// requests on this endpoint. The endpoint also runs a queue-specific
+    /// pre-check via `TaskConfig::check_schedule_eligibility` so misconfig
+    /// (e.g. `gc.enabled=false`, per-table opt-out, warehouse queue
+    /// disabled) fails loudly here instead of producing a no-op task.
+    ///
+    /// On conflict (a task for the same `(warehouse, entity, queue)` triple
+    /// is already active) the response is 409 with the existing `task_id`
+    /// in the message so the operator can chain to `POST /task/control`
+    /// with `run-now` or `run-at` to retime it.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ScheduleTask.path(),
+        params(("warehouse_id" = Uuid,), ("queue_name" = String,)),
+        request_body = ScheduleTaskRequest,
+        responses(
+            (status = 200, body = ScheduleTaskResponse, description = "Task scheduled"),
+            (status = 400, body = IcebergErrorResponse, description = "Validation or eligibility check failed (e.g. queue not user-schedulable, view entity, scheduled-for too far in the future, gc.enabled=false, per-table opt-out, warehouse queue disabled)."),
+            (status = 404, body = IcebergErrorResponse, description = "Queue or target entity not found in this warehouse."),
+            (status = 409, body = IcebergErrorResponse, description = "A task is already active for this (warehouse, entity, queue). The error message includes the existing task_id; retime or cancel via POST /task/control."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn schedule_task<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ScheduleTaskRequest>,
+    ) -> Result<ScheduleTaskResponse> {
+        let queue_name = TaskQueueName::from(queue_name);
+        ApiServer::<C, A, S>::schedule_task(
+            warehouse_id.into(),
+            &queue_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Set the configuration for a Project-level Task Queue.
     ///
     /// These configurations are global per project and shared across all instances of this kind of task.
@@ -2170,6 +2218,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::ScheduleTask.path_in_management_v1(),
+                    post(schedule_task),
                 )
                 .route(
                     ManagementV1Endpoint::SetProjectTaskQueueConfig.path_in_management_v1(),

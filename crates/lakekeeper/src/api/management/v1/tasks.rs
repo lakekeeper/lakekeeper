@@ -14,9 +14,9 @@ use crate::{
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogTaskOps, CatalogWarehouseOps, NoWarehouseTaskError, ResolvedTask, ResolvedWarehouse,
-        Result, SecretStore, State, TableId, TabularId, TabularListFlags, TaskDetails, TaskList,
-        TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
+        CatalogTaskOps, CatalogWarehouseOps, NamedEntity as _, NoWarehouseTaskError, ResolvedTask,
+        ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId, TabularListFlags,
+        TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZTableOps as _,
@@ -45,6 +45,25 @@ const CONTROL_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::Co
 const CONTROL_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
 const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::ControlAllTasks;
+// `schedule` is a form of `control` over the queue for an entity, so it
+// reuses the same per-entity / warehouse-bypass permission split.
+const SCHEDULE_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::ControlTasks;
+const SCHEDULE_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
+const SCHEDULE_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
+    CatalogWarehouseAction::ControlAllTasks;
+/// Maximum number of days the `task-queue/{name}/schedule` endpoint accepts
+/// for `scheduled-for`. Bounds operator typos that would otherwise
+/// permanently occupy the active-task slot for a `(warehouse, entity, queue)`
+/// triple and silently disable adaptive (hook-fired) scheduling.
+///
+/// Independent of any queue's `maximum_interval_seconds` adaptive ceiling
+/// (e.g. ROF defaults to 90 days). An operator scheduling 200 days out is
+/// accepted here but the adaptive scheduler would never have targeted that
+/// far — the task occupies the slot until it runs or is cancelled. We
+/// don't cross-reference per-queue ceilings to keep this layer queue-agnostic;
+/// queues with shorter ceilings should document the divergence in their
+/// operator guide.
+const MAX_SCHEDULE_HORIZON_DAYS: i64 = 365;
 const CAN_GET_ALL_TASKS_DETAILS_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::GetAllTasks;
 const DEFAULT_ATTEMPTS: u16 = 5;
@@ -803,6 +822,71 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Ok(())
     }
 
+    /// Schedule a fresh task on a queue for a specific entity (table or view).
+    ///
+    /// Only queues that opted in via `TaskConfig::user_schedulable()` are
+    /// accepted. AuthZ mirrors `control_tasks`: per-entity `ControlTasks`
+    /// with a warehouse-level `ControlAllTasks` bypass.
+    async fn schedule_task(
+        warehouse_id: WarehouseId,
+        queue_name: &TaskQueueName,
+        request: crate::api::management::v1::task_queue::ScheduleTaskRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<crate::api::management::v1::task_queue::ScheduleTaskResponse> {
+        // Pure validation runs *before* AuthZ on purpose: view-rejection
+        // and the scheduled-for clamp neither reference catalog state nor
+        // depend on caller identity. The error codes they emit
+        // (`ViewSchedulingUnsupported`, `ScheduledForTooFarInFuture`) carry
+        // no info an unauthenticated caller couldn't already infer from
+        // the published API spec, so failing fast here is safe and saves
+        // a DB roundtrip on obviously-malformed requests.
+        validate_schedule_request_static_checks(&request, chrono::Utc::now())?;
+
+        // -------------------- AUTHZ --------------------
+        let authorizer = context.v1_state.authz.clone();
+        let catalog_state = context.v1_state.catalog.clone();
+
+        let (warehouse, tabular_info) = check_schedule_task_authorization::<A, C>(
+            &authorizer,
+            catalog_state.clone(),
+            &request_metadata,
+            warehouse_id,
+            request.entity,
+        )
+        .await
+        .map_err(|e| {
+            iceberg_ext::catalog::rest::IcebergErrorResponse::from(
+                crate::service::events::AuthorizationFailureSource::into_error_model(e),
+            )
+        })?;
+
+        // -------------------- Business Logic --------------------
+        let entity_name = tabular_info.tabular_ident().clone().into_name_parts();
+        let entity_id = match &tabular_info {
+            ViewOrTableInfo::Table(t) => WarehouseTaskEntityId::Table {
+                table_id: t.tabular_id,
+            },
+            ViewOrTableInfo::View(v) => WarehouseTaskEntityId::View {
+                view_id: v.tabular_id,
+            },
+        };
+        let table_properties =
+            crate::service::AuthZTabularInfo::properties(&tabular_info).clone();
+
+        crate::api::management::v1::task_queue::schedule_task::<C, A, S>(
+            warehouse.project_id.clone(),
+            warehouse_id,
+            queue_name,
+            entity_id,
+            entity_name,
+            table_properties,
+            request,
+            context,
+        )
+        .await
+    }
+
     async fn list_project_tasks(
         query: ListProjectTasksRequest,
         context: ApiContext<State<A, C, S>>,
@@ -1373,6 +1457,132 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
     Ok(tabular_expiration_entities)
 }
 
+/// Pure validation that runs before AuthZ on the schedule endpoint.
+///
+/// Catches misuse that doesn't need a DB roundtrip:
+/// - Views aren't supported by the v1 schedulable queues; reject up-front
+///   instead of resolving the entity and then having the worker fail at
+///   pickup.
+/// - `scheduled-for` more than `MAX_SCHEDULE_HORIZON_DAYS` in the future
+///   would occupy the unique-index slot for `(warehouse, entity, queue)`
+///   and silently block adaptive (hook-fired) enqueues until an admin
+///   notices and cancels the row. Most often a year-typo.
+///
+/// `now` is passed in so tests get deterministic horizon checks.
+fn validate_schedule_request_static_checks(
+    request: &crate::api::management::v1::task_queue::ScheduleTaskRequest,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    if matches!(request.entity, WarehouseTaskEntityId::View { .. }) {
+        return Err(ErrorModel::bad_request(
+            "Scheduling for views is not supported. The schedulable queues \
+             (remove_orphan_files, expire_snapshots) operate on tables only.",
+            "ViewSchedulingUnsupported",
+            None,
+        )
+        .into());
+    }
+
+    if let Some(when) = request.scheduled_for {
+        let max_horizon = now + chrono::Duration::days(MAX_SCHEDULE_HORIZON_DAYS);
+        if when > max_horizon {
+            return Err(ErrorModel::bad_request(
+                format!(
+                    "`scheduled-for` cannot be more than {MAX_SCHEDULE_HORIZON_DAYS} days \
+                     in the future (got {when}). Use a closer timestamp or omit the field \
+                     to run on the next worker poll."
+                ),
+                "ScheduledForTooFarInFuture",
+                None,
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+/// AuthZ + entity resolution for the schedule endpoint.
+///
+/// Resolves the warehouse and the target entity (table or view), then checks:
+/// 1. `Use` on the warehouse (must be allowed to address the warehouse at all),
+/// 2. Either `ControlAllTasks` on the warehouse OR `ControlTasks` on the entity.
+///
+/// Returns `AuthZError` on any failure path; callers convert to a public
+/// response (same pattern as `check_control_tasks_authorization`).
+async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    request_metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    entity: WarehouseTaskEntityId,
+) -> Result<(Arc<ResolvedWarehouse>, ViewOrTableInfo), AuthZError> {
+    let warehouse = C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()).await;
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+
+    let [authz_can_use, authz_control_all] = authorizer
+        .are_allowed_warehouse_actions_arr(
+            request_metadata,
+            None,
+            &[
+                (&warehouse, CatalogWarehouseAction::Use),
+                (&warehouse, SCHEDULE_TASK_WAREHOUSE_PERMISSION),
+            ],
+        )
+        .await?
+        .into_inner();
+
+    if !authz_can_use {
+        return Err(AuthZCannotUseWarehouseId::new_access_denied(warehouse_id).into());
+    }
+
+    // Resolve the entity regardless of authz_control_all so we can build
+    // `entity_name` for the task metadata, and so that scheduling for a
+    // non-existent table returns 404 (via AuthZCannotSee*) instead of
+    // creating an orphaned task row.
+    let tabular_id = match entity {
+        WarehouseTaskEntityId::Table { table_id } => TabularId::Table(table_id),
+        WarehouseTaskEntityId::View { view_id } => TabularId::View(view_id),
+    };
+    // Restrict to active entities only. Soft-deleted or staged tabulars
+    // can't be a meaningful schedule target — the worker would either skip
+    // or fail at pickup. Returning "not found" here matches what the
+    // operator would expect anyway.
+    let tabulars = C::get_tabular_infos_by_id(
+        warehouse_id,
+        &[tabular_id],
+        TabularListFlags::active(),
+        catalog_state.clone(),
+    )
+    .await
+    .map_err(RequireTableActionError::from)?;
+    let tabular_info = tabulars.into_iter().next().ok_or_else(|| match tabular_id {
+        TabularId::Table(t) => AuthZError::from(AuthZCannotSeeTable::new_not_found(warehouse_id, t)),
+        TabularId::View(v) => AuthZError::from(AuthZCannotSeeView::new_not_found(warehouse_id, v)),
+    })?;
+
+    let namespaces =
+        C::get_namespaces_by_id(warehouse_id, &[tabular_info.namespace_id()], catalog_state)
+            .await
+            .map_err(RequireNamespaceActionError::from)?;
+
+    if !authz_control_all {
+        let action = (
+            require_namespace_for_tabular(&namespaces, &tabular_info)?,
+            tabular_info.as_action_request(
+                SCHEDULE_TASK_PERMISSION_VIEW,
+                SCHEDULE_TASK_PERMISSION_TABLE,
+                None,
+            ),
+        );
+        authorizer
+            .require_tabular_actions(request_metadata, &warehouse, &namespaces, &[action])
+            .await?;
+    }
+
+    Ok((warehouse, tabular_info))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1404,5 +1614,426 @@ mod test {
         let deserialized: ControlTasksRequest =
             serde_json::from_value(request_json).expect("Failed to deserialize");
         assert_eq!(deserialized, request);
+    }
+
+    mod schedule_static_validation {
+        use crate::api::management::v1::task_queue::ScheduleTaskRequest;
+        use crate::service::tasks::WarehouseTaskEntityId;
+        use crate::service::{TableId, ViewId};
+
+        use super::super::{MAX_SCHEDULE_HORIZON_DAYS, validate_schedule_request_static_checks};
+
+        fn now() -> chrono::DateTime<chrono::Utc> {
+            "2026-05-28T00:00:00Z".parse().unwrap()
+        }
+
+        fn req_with(entity: WarehouseTaskEntityId, scheduled_for: Option<chrono::DateTime<chrono::Utc>>) -> ScheduleTaskRequest {
+            ScheduleTaskRequest {
+                entity,
+                scheduled_for,
+                payload: None,
+            }
+        }
+
+        #[test]
+        fn table_with_no_scheduled_for_passes() {
+            let req = req_with(
+                WarehouseTaskEntityId::Table {
+                    table_id: TableId::new_random(),
+                },
+                None,
+            );
+            assert!(validate_schedule_request_static_checks(&req, now()).is_ok());
+        }
+
+        #[test]
+        fn view_entity_is_rejected_with_view_scheduling_unsupported() {
+            let req = req_with(
+                WarehouseTaskEntityId::View {
+                    view_id: ViewId::new_random(),
+                },
+                None,
+            );
+            let err = validate_schedule_request_static_checks(&req, now())
+                .expect_err("view should be rejected");
+            assert_eq!(err.error.r#type, "ViewSchedulingUnsupported");
+            assert_eq!(err.error.code, 400);
+        }
+
+        #[test]
+        fn far_future_scheduled_for_is_rejected() {
+            let req = req_with(
+                WarehouseTaskEntityId::Table {
+                    table_id: TableId::new_random(),
+                },
+                Some(now() + chrono::Duration::days(MAX_SCHEDULE_HORIZON_DAYS + 1)),
+            );
+            let err = validate_schedule_request_static_checks(&req, now())
+                .expect_err("year-2099-style scheduled-for should be rejected");
+            assert_eq!(err.error.r#type, "ScheduledForTooFarInFuture");
+            assert_eq!(err.error.code, 400);
+            // Operator-facing message names the horizon so they know what to fix.
+            assert!(
+                err.error.message.contains(&MAX_SCHEDULE_HORIZON_DAYS.to_string()),
+                "error message should mention the horizon, got: {}",
+                err.error.message
+            );
+        }
+
+        #[test]
+        fn scheduled_for_at_exact_horizon_is_accepted() {
+            // Boundary: == max is allowed; > max is rejected.
+            let req = req_with(
+                WarehouseTaskEntityId::Table {
+                    table_id: TableId::new_random(),
+                },
+                Some(now() + chrono::Duration::days(MAX_SCHEDULE_HORIZON_DAYS)),
+            );
+            assert!(validate_schedule_request_static_checks(&req, now()).is_ok());
+        }
+
+        #[test]
+        fn past_scheduled_for_is_accepted() {
+            // "Past" timestamps are intentionally allowed — operators sometimes
+            // pass `now - small_delta` racily; the worker picks it up on its
+            // next poll. We only bound the future side.
+            let req = req_with(
+                WarehouseTaskEntityId::Table {
+                    table_id: TableId::new_random(),
+                },
+                Some(now() - chrono::Duration::days(30)),
+            );
+            assert!(validate_schedule_request_static_checks(&req, now()).is_ok());
+        }
+    }
+
+    /// Postgres-backed lifecycle of the schedule endpoint.
+    ///
+    /// Covers the chain that the in-process unit tests can't:
+    ///   1. First schedule → `200 { task_id }`
+    ///   2. Second schedule → `409` with `task-id=<first>` in the body
+    ///      (proves the conflict-lookup path through
+    ///      `lookup_active_task_id` + `format_task_already_active_error`)
+    ///   3. `task/control RunNow` on the existing id → `204`
+    ///
+    /// Uses the `setup_and_registry` test helper to register a custom
+    /// `user_schedulable = true` test queue so the OSS endpoint has
+    /// something to dispatch to without enabling enterprise queues.
+    #[cfg(feature = "open-api")]
+    mod schedule_lifecycle {
+        use std::sync::{Arc, LazyLock};
+
+        use iceberg::{spec::Schema, spec::UnboundPartitionSpec};
+        use iceberg_ext::catalog::rest::CreateTableRequest;
+        use serde::{Deserialize, Serialize};
+        use sqlx::PgPool;
+
+        use crate::api::iceberg::v1::tables::TablesService as _;
+        use crate::api::iceberg::v1::{DataAccess, NamespaceParameters, Prefix};
+        use crate::api::management::v1::ApiServer;
+        use crate::api::management::v1::task_queue::{ScheduleTaskRequest, ScheduleTaskResponse};
+        use crate::api::management::v1::tasks::{
+            ControlTaskAction, ControlTasksRequest, Service as _,
+        };
+        use crate::api::management::v1::warehouse::TabularDeleteProfile;
+        use crate::request_metadata::RequestMetadata;
+        use crate::server::CatalogServer;
+        use crate::service::authz::AllowAllAuthorizer;
+        use crate::service::tasks::{
+            QueueRegistration, QueueScope, TaskConfig, TaskQueueName, WarehouseTaskEntityId,
+        };
+        use crate::tests::{memory_io_profile, setup_with_registry};
+
+        static TEST_QUEUE_NAME: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "test_schedulable_lifecycle".into());
+        static REJECTING_QUEUE_NAME: LazyLock<TaskQueueName> =
+            LazyLock::new(|| "test_schedulable_rejecting".into());
+
+        /// Marker property the rejecting queue's eligibility check looks at.
+        /// When set to `"reject"` on a table the queue refuses to schedule.
+        const REJECTION_MARKER_PROPERTY: &str = "schedule-test.reject-me";
+
+        /// Minimal user-schedulable queue for the lifecycle test. No worker
+        /// is registered (`num_workers=0`) — we never want a real run, just
+        /// the schedule/conflict/control round-trips on the catalog row.
+        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct TestSchedulableConfig {}
+
+        impl TaskConfig for TestSchedulableConfig {
+            fn queue_name() -> &'static TaskQueueName {
+                &TEST_QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn user_schedulable() -> bool {
+                true
+            }
+            // `check_schedule_eligibility` uses the trait default (always Ok)
+            // so the lifecycle test isn't sensitive to property setup.
+        }
+
+        /// User-schedulable queue whose `check_schedule_eligibility` rejects
+        /// any table that carries the `REJECTION_MARKER_PROPERTY`. Used to
+        /// pin the "endpoint surfaces the eligibility-fn 400 verbatim"
+        /// contract that the registry-level unit test cannot exercise
+        /// end-to-end.
+        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+        #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+        struct RejectingSchedulableConfig {}
+
+        impl TaskConfig for RejectingSchedulableConfig {
+            fn queue_name() -> &'static TaskQueueName {
+                &REJECTING_QUEUE_NAME
+            }
+            fn max_time_since_last_heartbeat() -> chrono::Duration {
+                chrono::Duration::seconds(60)
+            }
+            fn user_schedulable() -> bool {
+                true
+            }
+            fn check_schedule_eligibility(
+                _config: &Self,
+                table_properties: &std::collections::HashMap<String, String>,
+                _entity: WarehouseTaskEntityId,
+            ) -> Result<(), iceberg_ext::catalog::rest::ErrorModel> {
+                if table_properties
+                    .get(REJECTION_MARKER_PROPERTY)
+                    .map(String::as_str)
+                    == Some("reject")
+                {
+                    return Err(iceberg_ext::catalog::rest::ErrorModel::bad_request(
+                        format!(
+                            "rejected by test eligibility fn: {REJECTION_MARKER_PROPERTY}=reject"
+                        ),
+                        "RejectedByTestEligibility",
+                        None,
+                    ));
+                }
+                Ok(())
+            }
+        }
+
+        async fn build_schema() -> Schema {
+            use iceberg::spec::{NestedField, PrimitiveType};
+            Schema::builder()
+                .with_fields(vec![
+                    NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                        .into(),
+                ])
+                .build()
+                .unwrap()
+        }
+
+        #[sqlx::test]
+        async fn schedule_then_409_then_runnow(pool: PgPool) {
+            let (ctx, warehouse, registry) = setup_with_registry(
+                pool,
+                memory_io_profile(),
+                None,
+                AllowAllAuthorizer::default(),
+                TabularDeleteProfile::Hard {},
+                None,
+                1,
+                None,
+            )
+            .await;
+
+            registry
+                .register_queue::<TestSchedulableConfig>(QueueRegistration {
+                    queue_name: &TEST_QUEUE_NAME,
+                    worker_fn: Arc::new(|_| Box::pin(async {})),
+                    num_workers: 0,
+                    scope: QueueScope::Warehouse,
+                })
+                .await;
+
+            // ---- create namespace + table ----
+            let warehouse_id = warehouse.warehouse_id;
+            let ns = crate::server::test::create_ns(
+                ctx.clone(),
+                warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let table = CatalogServer::create_table(
+                ns_params,
+                CreateTableRequest {
+                    name: "tab-1".to_string(),
+                    location: None,
+                    schema: build_schema().await,
+                    partition_spec: Some(UnboundPartitionSpec::builder().build()),
+                    write_order: None,
+                    stage_create: Some(false),
+                    properties: None,
+                },
+                DataAccess {
+                    vended_credentials: false,
+                    remote_signing: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .unwrap();
+            let table_id = table.metadata.uuid();
+
+            // ---- 1) First schedule call: 200 + fresh task_id ----
+            let resp: ScheduleTaskResponse = ApiServer::schedule_task(
+                warehouse_id,
+                &TEST_QUEUE_NAME,
+                ScheduleTaskRequest {
+                    entity: WarehouseTaskEntityId::Table {
+                        table_id: table_id.into(),
+                    },
+                    scheduled_for: None,
+                    payload: None,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect("first schedule call should succeed");
+            let first_task_id = resp.task_id;
+
+            // ---- 2) Second schedule call: 409 with the first task_id in body ----
+            let err = ApiServer::schedule_task(
+                warehouse_id,
+                &TEST_QUEUE_NAME,
+                ScheduleTaskRequest {
+                    entity: WarehouseTaskEntityId::Table {
+                        table_id: table_id.into(),
+                    },
+                    scheduled_for: None,
+                    payload: None,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect_err("second schedule call must hit the unique index");
+            assert_eq!(err.error.code, 409, "expected 409 Conflict, got {err:?}");
+            assert_eq!(err.error.r#type, "TaskAlreadyActive");
+            let id_str = first_task_id.to_string();
+            assert!(
+                err.error.message.contains(&id_str),
+                "409 body must include the existing task-id ({id_str}); got: {}",
+                err.error.message
+            );
+
+            // ---- 3) RunNow on the existing id: succeeds, no error ----
+            ApiServer::control_tasks(
+                warehouse_id,
+                ControlTasksRequest {
+                    action: ControlTaskAction::RunNow,
+                    task_ids: vec![first_task_id],
+                },
+                ctx,
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect("control_tasks RunNow on the existing task should succeed");
+        }
+
+        /// End-to-end pin for the eligibility gate: when a queue's
+        /// `check_schedule_eligibility` returns `Err`, the schedule
+        /// endpoint must surface the same error verbatim — not the
+        /// 409 conflict path, not a generic 500, not a swallowed 200.
+        /// The registry-level dispatch test
+        /// (`test_check_schedule_eligibility_dispatches_through_registry`)
+        /// covers the type-erased closure in isolation; this test covers
+        /// the path from `Service::schedule_task` through the catalog
+        /// fetch into the eligibility fn and back out to the caller.
+        #[sqlx::test]
+        async fn schedule_eligibility_rejection_surfaces_as_400(pool: PgPool) {
+            let (ctx, warehouse, registry) = setup_with_registry(
+                pool,
+                memory_io_profile(),
+                None,
+                AllowAllAuthorizer::default(),
+                TabularDeleteProfile::Hard {},
+                None,
+                1,
+                None,
+            )
+            .await;
+
+            registry
+                .register_queue::<RejectingSchedulableConfig>(QueueRegistration {
+                    queue_name: &REJECTING_QUEUE_NAME,
+                    worker_fn: Arc::new(|_| Box::pin(async {})),
+                    num_workers: 0,
+                    scope: QueueScope::Warehouse,
+                })
+                .await;
+
+            let warehouse_id = warehouse.warehouse_id;
+            let ns = crate::server::test::create_ns(
+                ctx.clone(),
+                warehouse_id.to_string(),
+                "ns1".to_string(),
+            )
+            .await;
+            let ns_params = NamespaceParameters {
+                prefix: Some(Prefix(warehouse_id.to_string())),
+                namespace: ns.namespace.clone(),
+            };
+            let table = CatalogServer::create_table(
+                ns_params,
+                CreateTableRequest {
+                    name: "tab-reject".to_string(),
+                    location: None,
+                    schema: build_schema().await,
+                    partition_spec: Some(UnboundPartitionSpec::builder().build()),
+                    write_order: None,
+                    stage_create: Some(false),
+                    properties: Some(std::collections::HashMap::from([(
+                        REJECTION_MARKER_PROPERTY.to_string(),
+                        "reject".to_string(),
+                    )])),
+                },
+                DataAccess {
+                    vended_credentials: false,
+                    remote_signing: false,
+                },
+                ctx.clone(),
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect("create_table should succeed");
+            let table_id = table.metadata.uuid();
+
+            let err = ApiServer::schedule_task(
+                warehouse_id,
+                &REJECTING_QUEUE_NAME,
+                ScheduleTaskRequest {
+                    entity: WarehouseTaskEntityId::Table {
+                        table_id: table_id.into(),
+                    },
+                    scheduled_for: None,
+                    payload: None,
+                },
+                ctx,
+                RequestMetadata::new_unauthenticated(),
+            )
+            .await
+            .expect_err("eligibility rejection must surface as an error from the endpoint");
+
+            assert_eq!(err.error.code, 400, "expected 400, got {err:?}");
+            assert_eq!(
+                err.error.r#type, "RejectedByTestEligibility",
+                "endpoint must surface the queue's error code verbatim, got {err:?}"
+            );
+            assert!(
+                err.error.message.contains(REJECTION_MARKER_PROPERTY),
+                "endpoint must surface the queue's error message verbatim; got: {}",
+                err.error.message
+            );
+        }
     }
 }

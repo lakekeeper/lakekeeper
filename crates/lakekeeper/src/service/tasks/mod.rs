@@ -22,8 +22,8 @@ mod task_queues_runner;
 mod task_registry;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
 pub use task_registry::{
-    QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues, TaskQueueRegistry,
-    ValidatorFn,
+    QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues, ScheduleEligibilityFn,
+    TaskQueueRegistry, ValidatorFn,
 };
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
@@ -53,6 +53,39 @@ pub static BUILT_IN_PROJECT_API_CONFIGS: std::sync::LazyLock<Vec<QueueApiConfig>
 pub static BUILT_IN_DEPENDENT_SCHEMAS: std::sync::LazyLock<
     HashMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>,
 > = std::sync::LazyLock::new(HashMap::new);
+
+#[cfg(all(test, feature = "open-api"))]
+mod built_in_schedulable_pin_test {
+    use super::{BUILT_IN_API_CONFIGS, BUILT_IN_PROJECT_API_CONFIGS};
+
+    /// Pin the set of OSS queues that opt in to `task-queue/{name}/schedule`.
+    ///
+    /// **OSS has zero schedulable queues.** Destructive (`tabular_purge`) and
+    /// lifecycle-managed (`tabular_expiration`) queues intentionally stay
+    /// opted out so they can't be enqueued out-of-band; `task_log_cleanup` is
+    /// project-scoped and not meaningful to trigger manually.
+    ///
+    /// Enterprise has its own pin test for `expire_snapshots` and
+    /// `remove_orphan_files`. If a new OSS queue legitimately needs to be
+    /// manually schedulable, update both this list and the operator docs in
+    /// the same PR so the decision is reviewed.
+    #[test]
+    fn oss_schedulable_queues_pin() {
+        let mut names: Vec<&str> = BUILT_IN_API_CONFIGS
+            .iter()
+            .chain(BUILT_IN_PROJECT_API_CONFIGS.iter())
+            .filter(|c| c.user_schedulable)
+            .map(|c| c.queue_name.as_str())
+            .collect();
+        names.sort_unstable();
+        let expected: Vec<&str> = vec![];
+        assert_eq!(
+            names, expected,
+            "OSS schedulable-queue set changed; review the security \
+             implications and update the operator docs."
+        );
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(transparent)]
@@ -144,6 +177,42 @@ pub trait TaskConfig:
     }
 
     fn queue_name() -> &'static TaskQueueName;
+
+    /// Whether operators can directly schedule a task on this queue for a
+    /// single entity via
+    /// `POST /management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule`.
+    ///
+    /// Default `false` — opt-in. Destructive or lifecycle-managed queues
+    /// (e.g. `tabular_purge`, `tabular_expiration`) must stay opted out so
+    /// they cannot be enqueued out-of-band.
+    #[must_use]
+    fn user_schedulable() -> bool {
+        false
+    }
+
+    /// Decide whether a manual schedule call is acceptable right now.
+    ///
+    /// Called by the `task-queue/{name}/schedule` endpoint after authz, with
+    /// the queue's current config and the target entity's properties already
+    /// fetched. Sync + pure: given inputs, decide.
+    ///
+    /// Return `Err(ErrorModel)` (typically `400 Bad Request`) when the
+    /// configuration is one the worker would skip at pickup — e.g.
+    /// `gc.enabled=false` on the table, per-table opt-out property set, or
+    /// the queue's master switch is off at the warehouse. Failing here
+    /// surfaces the misconfiguration to the operator instead of creating a
+    /// no-op task they have to discover via `task/list`.
+    ///
+    /// Default: always eligible. Queues whose workers have skip-at-pickup
+    /// conditions should override.
+    #[allow(unused_variables)]
+    fn check_schedule_eligibility(
+        config: &Self,
+        table_properties: &std::collections::HashMap<String, String>,
+        entity: WarehouseTaskEntityId,
+    ) -> Result<(), ErrorModel> {
+        Ok(())
+    }
 }
 
 #[cfg(not(feature = "open-api"))]
@@ -157,6 +226,22 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     }
 
     fn queue_name() -> &'static TaskQueueName;
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[must_use]
+    fn user_schedulable() -> bool {
+        false
+    }
+
+    /// See the `open-api`-enabled trait for full documentation.
+    #[allow(unused_variables)]
+    fn check_schedule_eligibility(
+        config: &Self,
+        table_properties: &std::collections::HashMap<String, String>,
+        entity: WarehouseTaskEntityId,
+    ) -> Result<(), ErrorModel> {
+        Ok(())
+    }
 }
 
 /// Task Payload
