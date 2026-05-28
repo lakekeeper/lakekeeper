@@ -484,6 +484,10 @@ User IDs include the provider's `IDP_ID` as a prefix: `{idp_id}~{subject}`. For 
 
 This allows you to distinguish users from different identity providers when granting permissions.
 
+### UI Login
+
+The Lakekeeper UI can redirect to only one OIDC provider for SSO — the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Providers added under `LAKEKEEPER__OPENID_PROVIDERS` are used for API token validation only. If `LAKEKEEPER__OPENID_PROVIDER_URI` is not set, the UI login button is disabled by design; clients must obtain tokens out-of-band and call the API directly.
+
 ### Resilient Initialization
 
 By default, Lakekeeper refuses to start if a configured provider's OIDC/JWKS configuration cannot be loaded. Set `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting with the remaining authenticators. The primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI` always requires a successful connection on startup.

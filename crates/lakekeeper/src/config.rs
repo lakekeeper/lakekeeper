@@ -25,7 +25,7 @@ use crate::{
     WarehouseId,
     service::{
         ArcProjectId, UserId,
-        authn::{IDP_SEPARATOR, K8S_IDP_ID, OIDC_IDP_ID},
+        authn::{K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
     },
 };
 
@@ -77,6 +77,15 @@ fn get_config() -> DynAppConfig {
         .expect("Valid Configuration");
 
     validate_openid_provider_ids(&config);
+
+    if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
+        tracing::warn!(
+            "LAKEKEEPER__OPENID_PROVIDERS is set but LAKEKEEPER__OPENID_PROVIDER_URI is not. \
+             API authentication will work, but the UI login button is disabled — the UI \
+             redirects only to the primary provider. Set LAKEKEEPER__OPENID_PROVIDER_URI to \
+             enable UI login."
+        );
+    }
 
     // Ensure base_uri has a trailing slash
     if let Some(base_uri) = config.base_uri.as_mut() {
@@ -155,21 +164,30 @@ fn get_config() -> DynAppConfig {
 }
 
 fn validate_openid_provider_ids(config: &DynAppConfig) {
+    // Grammar `[a-z0-9-]+` (same shape as `RoleProviderId`). Lowercase-only
+    // means env-var (which figment lowercases) and YAML/TOML keys agree on
+    // one canonical form, so case-collisions, control characters, the
+    // `~` separator, and case-insensitive reserved-name aliases are all
+    // forbidden by the grammar — no separate checks needed.
     for idp_id in config.openid_providers.keys() {
         assert!(
-            !idp_id.trim().is_empty(),
+            !idp_id.is_empty(),
             "Invalid OIDC provider: IdP ID must not be empty"
         );
         assert!(
-            !idp_id.contains(IDP_SEPARATOR),
-            "Invalid OIDC provider '{idp_id}': IdP ID must not contain '{IDP_SEPARATOR}'"
+            idp_id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "Invalid OIDC provider '{idp_id}': IdP ID must match `[a-z0-9-]+`"
         );
+        // Reserved names — direct equality is sufficient because the grammar
+        // already excludes any case variant.
         assert!(
-            !idp_id.eq_ignore_ascii_case(K8S_IDP_ID),
+            idp_id != K8S_IDP_ID,
             "Invalid OIDC provider '{idp_id}': IdP ID '{K8S_IDP_ID}' is reserved"
         );
         assert!(
-            !idp_id.eq_ignore_ascii_case(OIDC_IDP_ID),
+            idp_id != OIDC_IDP_ID,
             "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
         );
     }
@@ -623,7 +641,9 @@ where
     format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
-fn deserialize_comma_separated<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+pub(crate) fn deserialize_comma_separated<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -638,7 +658,7 @@ where
     .transpose()
 }
 
-fn serialize_comma_separated<S>(
+pub(crate) fn serialize_comma_separated<S>(
     value: &Option<Vec<String>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -649,10 +669,6 @@ where
         .as_deref()
         .map(|value| value.join(","))
         .serialize(serializer)
-}
-
-const fn default_true() -> bool {
-    true
 }
 
 fn deserialize_origin<'de, D>(deserializer: D) -> Result<Option<Vec<HeaderValue>>, D::Error>
@@ -1002,58 +1018,6 @@ impl std::default::Default for Tokio {
             report_interval: Duration::from_secs(30),
         }
     }
-}
-
-/// Configuration for a single OIDC provider in multi-provider mode.
-///
-/// When multiple OIDC providers are configured, each provider fetches its own
-/// JWKS keys independently, allowing authentication from multiple identity sources
-/// (e.g., Okta for users + EKS OIDC for Kubernetes service accounts).
-///
-/// # Example Environment Variables
-/// ```bash
-/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
-/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
-/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
-/// ```
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
-pub struct OidcProviderConfig {
-    /// The OIDC provider URI (must expose .well-known/openid-configuration)
-    pub uri: Url,
-    /// Expected audience(s) for tokens from this provider.
-    /// Specify multiple audiences as a comma-separated list.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_comma_separated",
-        serialize_with = "serialize_comma_separated"
-    )]
-    pub audience: Option<Vec<String>>,
-    /// Additional issuers to trust for this provider.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_comma_separated",
-        serialize_with = "serialize_comma_separated"
-    )]
-    pub additional_issuers: Option<Vec<String>>,
-    /// A scope that must be present in tokens from this provider.
-    #[serde(default)]
-    pub scope: Option<String>,
-    /// Claims to use as the subject (user ID), in order of preference.
-    /// Defaults to `oid`, then `sub` if not specified.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_comma_separated",
-        serialize_with = "serialize_comma_separated"
-    )]
-    pub subject_claims: Option<Vec<String>>,
-    /// Claim to use in provided JWT tokens to extract roles.
-    /// The field should contain a single string claim path.
-    /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
-    #[serde(default)]
-    pub roles_claim: Option<String>,
-    /// If true, fail startup when this provider's OIDC/JWKS configuration cannot be loaded.
-    #[serde(default = "default_true")]
-    pub require_connected_on_startup: bool,
 }
 
 impl Default for DynAppConfig {
@@ -2000,12 +1964,28 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "IdP ID must not contain '~'")]
+    #[should_panic(expected = "IdP ID must match `[a-z0-9-]+`")]
     fn test_openid_provider_id_rejects_separator() {
         figment::Jail::expect_with(|jail| {
             jail.set_env(
                 "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA~PROD__URI",
                 "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID must match `[a-z0-9-]+`")]
+    fn test_openid_provider_id_rejects_underscore() {
+        // Underscores were tolerated by the old check but excluded by the new
+        // grammar — pin that behavior since the doc still mentioned `my_provider`
+        // before the grammar was tightened.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__MY_PROVIDER__URI",
+                "https://example.com",
             );
             let _config = get_config();
             Ok(())

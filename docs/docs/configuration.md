@@ -227,7 +227,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | Variable                                                                  | Example                                      | Description |
 |---------------------------------------------------------------------------|----------------------------------------------|-----|
 | <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>                            | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. Lakekeeper expects to find `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration` and load JWKS tokens from there. Do not include the `/.well-known/openid-configuration` in the provided URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
+| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | Strongly recommended. If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid,sub`                           | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
@@ -240,14 +240,18 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 
 For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), configure providers under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to `LAKEKEEPER__OPENID_PROVIDER_URI` (the primary provider, `idp_id = "oidc"`).
 
-The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<subject>`. Figment lowercases env var segments and uses `__` as a nesting separator, so `LAKEKEEPER__OPENID_PROVIDERS__MY_PROVIDER__URI=...` yields `idp_id = "my_provider"`; avoid extra `__` in the IDP segment because it creates nested keys. The ID must not contain `~`; `oidc` and `kubernetes` are reserved.
+The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<subject>`. Each `<IDP_ID>` must match `[a-z0-9-]+` — lowercase letters, digits, and hyphens. Figment lowercases env var segments and uses `__` as a nesting separator, so `LAKEKEEPER__OPENID_PROVIDERS__MY-PROVIDER__URI=...` yields `idp_id = "my-provider"`; use a single `-` to separate words (a `__` in the IDP segment would create a nested key, not part of the name). `oidc` and `kubernetes` are reserved.
+
+**Chain order.** Tokens are tried against authenticators in this order: the primary provider from `LAKEKEEPER__OPENID_PROVIDER_URI` (if set), then providers from `LAKEKEEPER__OPENID_PROVIDERS` in **alphabetical order of `idp_id`**, then Kubernetes (if enabled).
+
+A token is routed to the **first** authenticator whose `iss` set contains the token's `iss` claim **and** whose `aud` set intersects the token's `aud` claim (an unset issuer or audience matches everything). Once routed, that authenticator performs full signature + issuer + audience validation; if validation fails the request is rejected — the chain does **not** fall through to the next link. As a consequence, if two providers' (issuer, audience) criteria overlap, the first chain link owns the overlap. Make `iss` × `aud` pairs disjoint across providers to avoid surprises.
 
 **Provider Fields:**
 
 | Variable suffix | Required | Example | Description |
 |-----------------|----------|---------|-------------|
 | `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
-| `__AUDIENCE` | No | `lakekeeper,warehouse` | Expected audience(s) for tokens. Comma-separated for multiple. |
+| `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. Comma-separated for multiple. If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
 | `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
 | `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
