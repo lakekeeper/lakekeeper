@@ -6693,37 +6693,9 @@ components:
         - path
         - virtual_host
         - auto
-    ScheduleTaskRequest:
-      type: object
-      description: |-
-        Request body for `POST .../task-queue/{queue_name}/schedule`.
-
-        Schedules a single new task on the named queue for the given entity.
-        The queue must have opted in via `TaskConfig::user_schedulable() = true`.
-      required:
-        - entity
-      properties:
-        entity:
-          $ref: '#/components/schemas/WarehouseTaskEntityId'
-          description: |-
-            The entity to schedule a task for. Today only tables and views are
-            accepted; warehouse- or project-scoped queues are not user-schedulable.
-        payload:
-          description: |-
-            Optional queue-specific payload. Defaults to `{}` when omitted.
-            Validated against the queue's payload schema.
-        scheduled-for:
-          type:
-            - string
-            - 'null'
-          format: date-time
-          description: |-
-            When the task should run. `None` means immediately (the worker picks
-            it up on its next poll). RFC 3339 / ISO 8601 format.
-          example: 2026-12-31T23:59:59Z
     ScheduleTaskResponse:
       type: object
-      description: Response from `POST .../task-queue/{queue_name}/schedule`.
+      description: Response returned on a successful schedule call.
       required:
         - task-id
       properties:

@@ -23,7 +23,7 @@ mod task_registry;
 pub use task_queues_runner::{TaskQueueWorkerFn, TaskQueuesRunner};
 pub use task_registry::{
     QueueApiConfig, QueueRegistration, QueueScope, RegisteredTaskQueues, ScheduleEligibilityFn,
-    TaskQueueRegistry, ValidatorFn,
+    TaskQueueRegistry, UserScheduling, ValidatorFn,
 };
 pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
@@ -57,6 +57,7 @@ pub static BUILT_IN_DEPENDENT_SCHEMAS: std::sync::LazyLock<
 #[cfg(all(test, feature = "open-api"))]
 mod built_in_schedulable_pin_test {
     use super::{BUILT_IN_API_CONFIGS, BUILT_IN_PROJECT_API_CONFIGS};
+    use crate::service::tasks::{tabular_expiration_queue, tabular_purge_queue};
 
     /// Pin the set of OSS queues that opt in to `task-queue/{name}/schedule`.
     ///
@@ -74,7 +75,7 @@ mod built_in_schedulable_pin_test {
         let mut names: Vec<&str> = BUILT_IN_API_CONFIGS
             .iter()
             .chain(BUILT_IN_PROJECT_API_CONFIGS.iter())
-            .filter(|c| c.user_schedulable)
+            .filter(|c| c.user_scheduling.is_enabled())
             .map(|c| c.queue_name.as_str())
             .collect();
         names.sort_unstable();
@@ -83,6 +84,23 @@ mod built_in_schedulable_pin_test {
             names, expected,
             "OSS schedulable-queue set changed; review the security \
              implications and update the operator docs."
+        );
+    }
+
+    /// Belt-and-braces: explicitly assert the two queues we must never expose
+    /// stay `Disabled`. If a future refactor reshuffles `BUILT_IN_API_CONFIGS`
+    /// and the aggregate above goes stale, this catches the regression by name.
+    #[test]
+    fn tabular_purge_and_expiration_are_never_schedulable() {
+        assert!(
+            !tabular_purge_queue::API_CONFIG.user_scheduling.is_enabled(),
+            "tabular_purge is destructive and must never be user-schedulable"
+        );
+        assert!(
+            !tabular_expiration_queue::API_CONFIG
+                .user_scheduling
+                .is_enabled(),
+            "tabular_expiration is lifecycle-managed and must never be user-schedulable"
         );
     }
 }
@@ -178,23 +196,16 @@ pub trait TaskConfig:
 
     fn queue_name() -> &'static TaskQueueName;
 
-    /// Whether operators can directly schedule a task on this queue for a
-    /// single entity via
-    /// `POST /management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule`.
-    ///
-    /// Default `false` — opt-in. Destructive or lifecycle-managed queues
-    /// (e.g. `tabular_purge`, `tabular_expiration`) must stay opted out so
-    /// they cannot be enqueued out-of-band.
-    #[must_use]
-    fn user_schedulable() -> bool {
-        false
-    }
-
     /// Decide whether a manual schedule call is acceptable right now.
     ///
     /// Called by the `task-queue/{name}/schedule` endpoint after authz, with
     /// the queue's current config and the target entity's properties already
     /// fetched. Sync + pure: given inputs, decide.
+    ///
+    /// `entity_properties` carries the properties of whichever entity the
+    /// caller targeted — table OR view. Implementors that only support one
+    /// entity kind must match on `entity` and reject the unsupported variant
+    /// explicitly; the framework no longer rejects views globally.
     ///
     /// Return `Err(ErrorModel)` (typically `400 Bad Request`) when the
     /// configuration is one the worker would skip at pickup — e.g.
@@ -208,7 +219,7 @@ pub trait TaskConfig:
     #[allow(unused_variables)]
     fn check_schedule_eligibility(
         config: &Self,
-        table_properties: &std::collections::HashMap<String, String>,
+        entity_properties: &std::collections::HashMap<String, String>,
         entity: WarehouseTaskEntityId,
     ) -> Result<(), ErrorModel> {
         Ok(())
@@ -228,23 +239,24 @@ pub trait TaskConfig: Serialize + DeserializeOwned + Clone + Send + Sync {
     fn queue_name() -> &'static TaskQueueName;
 
     /// See the `open-api`-enabled trait for full documentation.
-    #[must_use]
-    fn user_schedulable() -> bool {
-        false
-    }
-
-    /// See the `open-api`-enabled trait for full documentation.
     #[allow(unused_variables)]
     fn check_schedule_eligibility(
         config: &Self,
-        table_properties: &std::collections::HashMap<String, String>,
+        entity_properties: &std::collections::HashMap<String, String>,
         entity: WarehouseTaskEntityId,
     ) -> Result<(), ErrorModel> {
         Ok(())
     }
 }
 
-/// Task Payload
+/// Task Payload.
+///
+/// Queues whose worker depends on exact payload shape should annotate the
+/// payload type with `#[serde(deny_unknown_fields)]`. The schedule
+/// endpoint's payload validator is `serde_json::from_value::<D>`, which by
+/// default silently ignores unknown fields — fine for queues that take an
+/// empty or open-ended payload, but a silent footgun for queues with a
+/// strict contract.
 pub trait TaskData: Clone + Serialize + DeserializeOwned + Send + Sync {}
 
 pub trait TaskExecutionDetails: Clone + Serialize + DeserializeOwned + Send + Sync {}

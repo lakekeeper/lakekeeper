@@ -1795,19 +1795,18 @@ pub mod v1 {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    /// Schedule a fresh task on a queue for a specific entity (currently
-    /// table only; views are not supported for v1 schedulable queues).
+    /// Schedule a task for an entity.
     ///
-    /// Only queues that opted in via `TaskConfig::user_schedulable()` accept
-    /// requests on this endpoint. The endpoint also runs a queue-specific
-    /// pre-check via `TaskConfig::check_schedule_eligibility` so misconfig
-    /// (e.g. `gc.enabled=false`, per-table opt-out, warehouse queue
-    /// disabled) fails loudly here instead of producing a no-op task.
+    /// Pre-checks run against the warehouse config and target entity
+    /// properties before the task is enqueued. A failure surfaces as `400`
+    /// with a specific error code (see the operator guide for the full set
+    /// of pre-check codes).
     ///
-    /// On conflict (a task for the same `(warehouse, entity, queue)` triple
-    /// is already active) the response is 409 with the existing `task_id`
-    /// in the message so the operator can chain to `POST /task/control`
-    /// with `run-now` or `run-at` to retime it.
+    /// When a task is already active for the same (warehouse, entity,
+    /// queue) triple, the call returns `409 TaskAlreadyActive` with the
+    /// existing `task-id` in the body — chain to `POST /task/control`
+    /// with `run-now` or `run-at` to retime it without an extra
+    /// `task/list` round-trip.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "tasks",
@@ -1816,9 +1815,9 @@ pub mod v1 {
         request_body = ScheduleTaskRequest,
         responses(
             (status = 200, body = ScheduleTaskResponse, description = "Task scheduled"),
-            (status = 400, body = IcebergErrorResponse, description = "Validation or eligibility check failed (e.g. queue not user-schedulable, view entity, scheduled-for too far in the future, gc.enabled=false, per-table opt-out, warehouse queue disabled)."),
-            (status = 404, body = IcebergErrorResponse, description = "Queue or target entity not found in this warehouse."),
-            (status = 409, body = IcebergErrorResponse, description = "A task is already active for this (warehouse, entity, queue). The error message includes the existing task_id; retime or cancel via POST /task/control."),
+            (status = 400, body = IcebergErrorResponse, description = "Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future)."),
+            (status = 404, body = IcebergErrorResponse, description = "Target entity not found in this warehouse."),
+            (status = 409, body = IcebergErrorResponse, description = "A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]

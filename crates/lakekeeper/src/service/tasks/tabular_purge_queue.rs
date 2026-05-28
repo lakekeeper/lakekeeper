@@ -26,7 +26,7 @@ pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
         utoipa_type_name: PurgeQueueConfig::name(),
         utoipa_schema: PurgeQueueConfig::schema(),
         scope: super::QueueScope::Warehouse,
-        user_schedulable: false,
+        user_scheduling: super::UserScheduling::Disabled,
     });
 
 pub type TabularPurgeTask =
