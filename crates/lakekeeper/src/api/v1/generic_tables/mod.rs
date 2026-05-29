@@ -57,6 +57,8 @@ pub struct GenericTableData {
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub format: GenericTableFormat,
     pub base_location: String,
+    /// Whether the generic table is protected from being deleted.
+    pub protected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

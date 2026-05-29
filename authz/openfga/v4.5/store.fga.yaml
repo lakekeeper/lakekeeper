@@ -863,6 +863,7 @@ tests:
           can_get_metadata: true
           can_rename: false
           can_include_in_list: true
+          can_set_protection: false
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_grant_describe: false
@@ -1176,6 +1177,7 @@ tests:
           can_get_metadata: true
           can_rename: true
           can_include_in_list: true
+          can_set_protection: true
           can_grant_pass_grants: false
           can_grant_manage_grants: false
           can_grant_describe: false

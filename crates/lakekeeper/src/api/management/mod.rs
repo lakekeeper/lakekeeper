@@ -2,6 +2,7 @@
 
 pub mod v1 {
     pub mod check;
+    pub mod generic_table;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
@@ -26,6 +27,7 @@ pub mod v1 {
         response::{IntoResponse, Response},
         routing::{get, post, put},
     };
+    use generic_table::GenericTableManagementService as _;
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
@@ -1574,6 +1576,70 @@ pub mod v1 {
         ))
     }
 
+    /// Get Generic Table Protection
+    ///
+    /// Retrieves whether a generic table is protected from deletion.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetGenericTableProtection.path(),
+        params(("warehouse_id" = Uuid,),("generic_table_id" = Uuid,)),
+        responses(
+            (status = 200, body = ProtectionResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_generic_table_protection<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path((warehouse_id, generic_table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::get_generic_table_protection(
+            GenericTableId::from(generic_table_id),
+            warehouse_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Set Generic Table Protection
+    ///
+    /// Configures whether a generic table should be protected from deletion.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetGenericTableProtection.path(),
+        params(("warehouse_id" = Uuid,),("generic_table_id" = Uuid,)),
+        responses(
+            (status = 200, body = ProtectionResponse, description = "Generic table protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_generic_table_protection<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path((warehouse_id, generic_table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::set_generic_table_protection(
+            GenericTableId::from(generic_table_id),
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Get Namespace Protection
     ///
     /// Retrieves whether a namespace is protected from deletion.
@@ -2183,6 +2249,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetGenericTableActions.path_in_management_v1(),
                     get(get_generic_table_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetGenericTableProtection.path_in_management_v1(),
+                    get(get_generic_table_protection).post(set_generic_table_protection),
                 )
                 .route(
                     ManagementV1Endpoint::GetNamespaceProtection.path_in_management_v1(),

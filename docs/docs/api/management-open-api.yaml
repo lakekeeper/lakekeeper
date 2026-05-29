@@ -2874,6 +2874,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection:
+    get:
+      tags:
+        - warehouse
+      summary: Get Generic Table Protection
+      description: Retrieves whether a generic table is protected from deletion.
+      operationId: get_generic_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set Generic Table Protection
+      description: Configures whether a generic table should be protected from deletion.
+      operationId: set_generic_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Generic table protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions:
     get:
       tags:
@@ -4638,6 +4709,7 @@ components:
         - include_in_list
         - get_tasks
         - control_tasks
+        - set_protection
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
@@ -5292,6 +5364,14 @@ components:
               type: string
               enum:
                 - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperNamespaceAction:
       oneOf:
         - type: object

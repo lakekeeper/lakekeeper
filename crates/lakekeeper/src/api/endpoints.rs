@@ -232,6 +232,8 @@ generate_endpoints! {
         SetViewProtection(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         GetViewActions(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
         GetGenericTableActions(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions"),
+        GetGenericTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
+        SetGenericTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
         SetNamespaceProtection(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceProtection(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceActions(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions"),

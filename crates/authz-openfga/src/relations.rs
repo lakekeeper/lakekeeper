@@ -1860,6 +1860,7 @@ pub enum GenericTableRelation {
     CanIncludeInList,
     CanGetTasks,
     CanControlTasks,
+    CanSetProtection,
     // -- Read assignments / grant actions --
     CanReadAssignments,
     CanGrantPassGrants,
@@ -1908,6 +1909,7 @@ impl ReducedRelation for CatalogGenericTableAction {
             CatalogGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
             CatalogGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
             CatalogGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
+            CatalogGenericTableAction::SetProtection => GenericTableRelation::CanSetProtection,
         }
     }
 }
@@ -2060,8 +2062,8 @@ impl ReducedRelation for OpenFGAGenericTableAction {
     }
 }
 
-// Mirrors `APITableAction` minus `Commit` and `SetProtection`, which the
-// generic-table authorization model does not expose.
+// Mirrors `APITableAction` minus `Commit`, which the generic-table
+// authorization model does not expose.
 #[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=GenericTableAction))]
@@ -2076,6 +2078,7 @@ pub(super) enum APIGenericTableAction {
     IncludeInList,
     GetTasks,
     ControlTasks,
+    SetProtection,
     ReadAssignments,
     GrantPassGrants,
     GrantManageGrants,
@@ -2099,6 +2102,7 @@ impl ReducedRelation for APIGenericTableAction {
             APIGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
             APIGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
             APIGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
+            APIGenericTableAction::SetProtection => GenericTableRelation::CanSetProtection,
             APIGenericTableAction::ReadAssignments => GenericTableRelation::CanReadAssignments,
             APIGenericTableAction::GrantPassGrants => GenericTableRelation::CanGrantPassGrants,
             APIGenericTableAction::GrantManageGrants => GenericTableRelation::CanGrantManageGrants,

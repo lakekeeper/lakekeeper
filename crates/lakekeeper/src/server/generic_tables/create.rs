@@ -311,6 +311,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
             name: info.name.clone(),
             format: info.format.clone(),
             base_location: info.location.to_string(),
+            protected: info.protected,
             doc: info.doc.clone(),
             properties: info.properties.clone(),
             schema: info.schema.clone(),

@@ -289,6 +289,7 @@ components:
         - name
         - format
         - base-location
+        - protected
       properties:
         base-location:
           type: string
@@ -306,6 +307,9 @@ components:
             type: string
           propertyNames:
             type: string
+        protected:
+          type: boolean
+          description: Whether the generic table is protected from being deleted.
         schema: {}
         statistics: {}
     GenericTableIdentifier:
