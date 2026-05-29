@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use http::StatusCode;
+use iceberg::spec::FormatVersion;
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use super::{CatalogStore, Transaction};
@@ -70,6 +71,89 @@ impl WarehouseStatus {
 
 define_version_newtype!(WarehouseVersion);
 
+/// The set of Iceberg table format versions that may be created in, or upgraded
+/// to, within a warehouse. Always non-empty; deduplicated and sorted ascending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedFormatVersions(Vec<FormatVersion>);
+
+impl Default for AllowedFormatVersions {
+    /// All format versions supported by Lakekeeper.
+    fn default() -> Self {
+        Self(vec![FormatVersion::V1, FormatVersion::V2, FormatVersion::V3])
+    }
+}
+
+impl AllowedFormatVersions {
+    /// Build from an iterator of versions, deduplicating and sorting ascending.
+    ///
+    /// # Errors
+    /// Returns [`EmptyAllowedFormatVersionsError`] if no versions are provided.
+    pub fn try_new(
+        versions: impl IntoIterator<Item = FormatVersion>,
+    ) -> Result<Self, EmptyAllowedFormatVersionsError> {
+        let mut versions: Vec<FormatVersion> = versions.into_iter().collect();
+        versions.sort_unstable();
+        versions.dedup();
+        if versions.is_empty() {
+            return Err(EmptyAllowedFormatVersionsError::new());
+        }
+        Ok(Self(versions))
+    }
+
+    /// Whether `version` is permitted.
+    #[must_use]
+    pub fn contains(&self, version: FormatVersion) -> bool {
+        self.0.contains(&version)
+    }
+
+    /// Highest allowed format version. The set is non-empty, so this always
+    /// returns a value; `V2` is only a defensive fallback.
+    #[must_use]
+    pub fn max(&self) -> FormatVersion {
+        self.0.iter().copied().max().unwrap_or(FormatVersion::V2)
+    }
+
+    /// Resolve the effective format version for a create-table request that does
+    /// not specify one: the configured `default_format_version` if set, otherwise
+    /// `V2` if allowed, else the highest allowed version.
+    #[must_use]
+    pub fn resolve_default(&self, configured: Option<FormatVersion>) -> FormatVersion {
+        configured.unwrap_or_else(|| {
+            if self.contains(FormatVersion::V2) {
+                FormatVersion::V2
+            } else {
+                self.max()
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[FormatVersion] {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<FormatVersion> {
+        self.0.clone()
+    }
+}
+
+define_simple_error!(
+    EmptyAllowedFormatVersionsError,
+    "allowed_format_versions must contain at least one format version."
+);
+
+impl From<EmptyAllowedFormatVersionsError> for ErrorModel {
+    fn from(err: EmptyAllowedFormatVersionsError) -> Self {
+        ErrorModel::builder()
+            .r#type("EmptyAllowedFormatVersions")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWarehouse {
     /// ID of the warehouse.
@@ -88,6 +172,13 @@ pub struct ResolvedWarehouse {
     pub tabular_delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse.
+    pub allowed_format_versions: AllowedFormatVersions,
+    /// Default Iceberg table format version used when a create-table request
+    /// does not specify one. When `None`, resolves to `V2` if allowed, otherwise
+    /// the highest allowed version. Always a member of `allowed_format_versions`.
+    pub default_format_version: Option<FormatVersion>,
     /// Timestamp when the warehouse metadata was last updated.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Version of the warehouse entity.
@@ -112,6 +203,8 @@ impl ResolvedWarehouse {
             status: WarehouseStatus::Active,
             tabular_delete_profile: TabularDeleteProfile::default(),
             protected: false,
+            allowed_format_versions: AllowedFormatVersions::default(),
+            default_format_version: None,
             updated_at: None,
             version: WarehouseVersion(0),
         }
@@ -132,6 +225,8 @@ impl ResolvedWarehouse {
             status: WarehouseStatus::Active,
             tabular_delete_profile: TabularDeleteProfile::default(),
             protected: false,
+            allowed_format_versions: AllowedFormatVersions::default(),
+            default_format_version: None,
             updated_at: None,
             version: WarehouseVersion(0),
         }
@@ -477,6 +572,17 @@ define_transparent_error! {
     ]
 }
 
+// --------------------- Set Warehouse Format Version Policy Error ---------------------
+define_transparent_error! {
+    pub enum SetWarehouseFormatVersionPolicyError,
+    stack_message: "Error setting warehouse format version policy in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+        DatabaseIntegrityError,
+    ]
+}
+
 #[derive(Debug, Clone, Default, Copy)]
 pub enum CachePolicy {
     /// Use cached data if available
@@ -500,6 +606,8 @@ where
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        allowed_format_versions: AllowedFormatVersions,
+        default_format_version: Option<FormatVersion>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
         let warehouse = Self::create_warehouse_impl(
@@ -508,6 +616,8 @@ where
             storage_profile,
             tabular_delete_profile,
             storage_secret_id,
+            allowed_format_versions,
+            default_format_version,
             transaction,
         )
         .await?;
@@ -744,6 +854,23 @@ where
         Self::set_warehouse_protected_impl(warehouse_id, protect, transaction)
             .await
             .map(Arc::new)
+    }
+
+    /// Set the per-warehouse Iceberg table format version policy.
+    async fn set_warehouse_format_version_policy(
+        warehouse_id: WarehouseId,
+        allowed_format_versions: &AllowedFormatVersions,
+        default_format_version: Option<FormatVersion>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseFormatVersionPolicyError> {
+        Self::set_warehouse_format_version_policy_impl(
+            warehouse_id,
+            allowed_format_versions,
+            default_format_version,
+            transaction,
+        )
+        .await
+        .map(Arc::new)
     }
 }
 

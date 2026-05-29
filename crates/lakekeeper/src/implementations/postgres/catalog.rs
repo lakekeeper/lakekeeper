@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Duration;
-use iceberg::{NamespaceIdent, spec::ViewMetadata};
+use iceberg::{
+    NamespaceIdent,
+    spec::{FormatVersion, ViewMetadata},
+};
 use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper_io::Location;
 
@@ -53,11 +56,14 @@ use crate::{
             resolve_tasks, set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
-        warehouse::{get_warehouse_stats, set_warehouse_protection},
+        warehouse::{
+            get_warehouse_stats, set_warehouse_format_version_policy, set_warehouse_protection,
+        },
     },
     service::{
-        ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
+        AllowedFormatVersions, ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError,
+        CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
         CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
         CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
@@ -75,13 +81,13 @@ use crate::{
         NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask,
         ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleProviderId, SearchRoleResponse,
         SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
-        WarehouseStatus,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
+        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -506,6 +512,8 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        allowed_format_versions: AllowedFormatVersions,
+        default_format_version: Option<FormatVersion>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
         create_warehouse(
@@ -514,6 +522,8 @@ impl CatalogStore for super::PostgresBackend {
             storage_profile,
             tabular_delete_profile,
             storage_secret_id,
+            allowed_format_versions,
+            default_format_version,
             transaction,
         )
         .await
@@ -745,6 +755,21 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
+    }
+
+    async fn set_warehouse_format_version_policy_impl(
+        warehouse_id: WarehouseId,
+        allowed_format_versions: &AllowedFormatVersions,
+        default_format_version: Option<FormatVersion>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
+        set_warehouse_format_version_policy(
+            warehouse_id,
+            allowed_format_versions,
+            default_format_version,
+            transaction,
+        )
+        .await
     }
 
     async fn pick_new_task_impl(

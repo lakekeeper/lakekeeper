@@ -486,9 +486,10 @@ pub enum CatalogWarehouseAction {
     GetAllTasks,
     ControlAllTasks,
     SetProtection,
+    SetFormatVersionPolicy,
     GetEndpointStatistics,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 21]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -513,12 +514,13 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 21]> = LazyL
         CatalogWarehouseAction::GetAllTasks,
         CatalogWarehouseAction::ControlAllTasks,
         CatalogWarehouseAction::SetProtection,
+        CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
     ]
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 21] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 22] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 }
