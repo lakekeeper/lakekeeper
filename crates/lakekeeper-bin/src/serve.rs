@@ -1,4 +1,4 @@
-use std::{sync::Arc, vec};
+use std::sync::Arc;
 
 use lakekeeper::{
     implementations::{get_default_catalog_from_config, postgres::PostgresBackend},
@@ -54,6 +54,8 @@ async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
     stats: Vec<Arc<dyn EndpointStatisticsSink + 'static>>,
     events: EventDispatcher,
 ) -> anyhow::Result<()> {
+    // Use the upstream config-driven authenticator
+    // Supports both single-provider (OPENID_PROVIDER_URI) and multi-provider (OPENID_PROVIDERS) modes
     let authentication = get_default_authenticator_from_config().await?;
 
     match authentication {

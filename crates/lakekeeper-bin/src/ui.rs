@@ -64,7 +64,7 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
                 default_config.idp_token_type
             }
         },
-        enable_authentication: CONFIG.openid_provider_uri.is_some(),
+        enable_authentication: CONFIG.ui_login_enabled(),
         enable_permissions: CONFIG.authz_backend != AuthZBackend::AllowAll,
         enable_user_surveys: std::env::var("LAKEKEEPER__UI__ENABLE_SURVEYS")
             .ok()
