@@ -18,7 +18,7 @@ Generic tables are first-class citizens. Most of Lakekeeper's table-side machine
 |---------|:--------------:|-------|
 | Credentials vending (S3, GCS, Azure) | :white_check_mark: | `GET /lakekeeper/v1/{prefix}/namespaces/{ns}/generic-tables/{t}/credentials` |
 | [Soft-deletion](./concepts.md#soft-deletion) + undrop | :white_check_mark: | Respects per-warehouse soft-delete settings |
-| [Protection](./concepts.md#protection) flag | :white_check_mark: | Prevent accidental drops |
+| [Protection](./concepts.md#protection) flag | :white_check_mark: | `protected: bool` on load response; toggle via `GET/POST /management/v1/warehouse/{wh}/generic-table/{id}/protection`. Drops require `force=true` when set. |
 | Rename | :white_check_mark: | `POST /lakekeeper/v1/{prefix}/generic-tables/rename` |
 | Listing + pagination | :white_check_mark: | Same cursor scheme as Iceberg tables |
 | Per-action permissions | :white_check_mark: | 16 distinct actions (`drop`, `undrop`, `read_data`, `write_data`, `get_metadata`, `rename`, `change_ownership`, grant-* relations, ...) |
