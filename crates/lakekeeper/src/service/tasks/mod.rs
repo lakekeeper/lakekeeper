@@ -13,8 +13,8 @@ use crate::{
     ProjectId,
     api::management::v1::tasks::TaskStatus,
     service::{
-        ArcProjectId, CatalogStore, CatalogTaskOps, TableId, TableNamed, TabularId, ViewId,
-        ViewNamed, task_configs::TaskQueueConfigFilter,
+        ArcProjectId, CatalogStore, CatalogTaskOps, GenericTableId, GenericTableNamed, TableId,
+        TableNamed, TabularId, ViewId, ViewNamed, task_configs::TaskQueueConfigFilter,
     },
 };
 
@@ -160,12 +160,18 @@ pub enum WarehouseTaskEntityId {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         view_id: ViewId,
     },
+    #[serde(rename_all = "kebab-case")]
+    GenericTable {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        generic_table_id: GenericTableId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
 pub enum ResolvedTaskEntity {
     Table(TableNamed),
     View(ViewNamed),
+    GenericTable(GenericTableNamed),
     Warehouse(WarehouseId),
     Project,
 }
@@ -176,6 +182,7 @@ impl ResolvedTaskEntity {
         match self {
             ResolvedTaskEntity::Table(t) => Some(t.warehouse_id),
             ResolvedTaskEntity::View(v) => Some(v.warehouse_id),
+            ResolvedTaskEntity::GenericTable(g) => Some(g.warehouse_id),
             ResolvedTaskEntity::Warehouse(w) => Some(*w),
             ResolvedTaskEntity::Project => None,
         }
@@ -483,6 +490,7 @@ impl TaskMetadata {
 pub enum WarehouseEntityType {
     Table,
     View,
+    GenericTable,
 }
 
 impl std::fmt::Display for WarehouseTaskEntityId {
@@ -490,6 +498,9 @@ impl std::fmt::Display for WarehouseTaskEntityId {
         match self {
             WarehouseTaskEntityId::Table { table_id } => write!(f, "Table({table_id})"),
             WarehouseTaskEntityId::View { view_id } => write!(f, "View({view_id})"),
+            WarehouseTaskEntityId::GenericTable { generic_table_id } => {
+                write!(f, "GenericTable({generic_table_id})")
+            }
         }
     }
 }
@@ -500,6 +511,7 @@ impl WarehouseTaskEntityId {
         match self {
             WarehouseTaskEntityId::Table { .. } => WarehouseEntityType::Table,
             WarehouseTaskEntityId::View { .. } => WarehouseEntityType::View,
+            WarehouseTaskEntityId::GenericTable { .. } => WarehouseEntityType::GenericTable,
         }
     }
 
@@ -508,6 +520,7 @@ impl WarehouseTaskEntityId {
         match self {
             WarehouseTaskEntityId::Table { table_id } => **table_id,
             WarehouseTaskEntityId::View { view_id } => **view_id,
+            WarehouseTaskEntityId::GenericTable { generic_table_id } => **generic_table_id,
         }
     }
 }
@@ -517,6 +530,9 @@ impl From<TabularId> for WarehouseTaskEntityId {
         match id {
             TabularId::Table(table_id) => WarehouseTaskEntityId::Table { table_id },
             TabularId::View(view_id) => WarehouseTaskEntityId::View { view_id },
+            TabularId::GenericTable(generic_table_id) => {
+                WarehouseTaskEntityId::GenericTable { generic_table_id }
+            }
         }
     }
 }
@@ -1335,5 +1351,38 @@ mod test {
 
         let serialized = serde_json::to_value(deserialized).unwrap();
         assert_eq!(serialized, json);
+    }
+
+    #[test]
+    fn test_task_entity_serde_generic_table() {
+        let json = serde_json::json!({
+            "type": "generic-table",
+            "generic-table-id": "550e8400-e29b-41d4-a716-446655440111"
+        });
+        let deserialized: super::WarehouseTaskEntityId =
+            serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            deserialized,
+            WarehouseTaskEntityId::GenericTable {
+                generic_table_id: GenericTableId::from(
+                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440111").unwrap()
+                )
+            }
+        );
+
+        let serialized = serde_json::to_value(deserialized).unwrap();
+        assert_eq!(serialized, json);
+    }
+
+    #[test]
+    fn test_tabular_id_into_warehouse_task_entity_id_generic_table() {
+        let gt_uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440222").unwrap();
+        let tabular = TabularId::GenericTable(GenericTableId::from(gt_uuid));
+        assert_eq!(
+            WarehouseTaskEntityId::from(tabular),
+            WarehouseTaskEntityId::GenericTable {
+                generic_table_id: GenericTableId::from(gt_uuid)
+            }
+        );
     }
 }

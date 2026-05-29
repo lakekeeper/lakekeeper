@@ -449,6 +449,9 @@ async fn lookup_active_task_id<C: CatalogStore>(
     let entity_filter = match entity_id {
         WarehouseTaskEntityId::Table { table_id } => WarehouseTaskEntityFilter::Table { table_id },
         WarehouseTaskEntityId::View { view_id } => WarehouseTaskEntityFilter::View { view_id },
+        WarehouseTaskEntityId::GenericTable { generic_table_id } => {
+            WarehouseTaskEntityFilter::GenericTable { generic_table_id }
+        }
     };
     let query = ListTasksRequest::builder()
         .status(Some(vec![

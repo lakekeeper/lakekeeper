@@ -167,6 +167,15 @@ generate_endpoints! {
         FetchScanTasks(POST, "/catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks"),
     }
 
+    enum GenericTableV1 {
+        CreateGenericTable(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables"),
+        ListGenericTables(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables"),
+        LoadGenericTable(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}"),
+        DropGenericTable(DELETE, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}"),
+        RenameGenericTable(POST, "/lakekeeper/v1/{prefix}/generic-tables/rename"),
+        LoadGenericTableCredentials(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials"),
+    }
+
     enum Sign {
         S3RequestGlobal(POST, "/catalog/v1/aws/s3/sign"),
         S3RequestPrefix(POST, "/catalog/v1/{prefix}/v1/aws/s3/sign"),
@@ -222,6 +231,9 @@ generate_endpoints! {
         GetViewProtection(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         SetViewProtection(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         GetViewActions(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
+        GetGenericTableActions(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions"),
+        GetGenericTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
+        SetGenericTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
         SetNamespaceProtection(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceProtection(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceActions(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions"),
@@ -350,6 +362,9 @@ mod test {
         let variants: Vec<Endpoint> = PermissionV1Endpoint::iter().map(Into::into).collect_vec();
         all_variants.extend(variants);
 
+        let variants: Vec<Endpoint> = GenericTableV1Endpoint::iter().map(Into::into).collect_vec();
+        all_variants.extend(variants);
+
         let endpoint_variants = Endpoint::iter().collect_vec();
 
         // Check no duplicates in all_variants
@@ -399,12 +414,16 @@ mod test {
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
+        let generic_table_yaml =
+            include_str!("../../../../docs/docs/api/generic-table-open-api.yaml");
 
         // Parse YAML files
         let management: Value =
             serde_norway::from_str(management_yaml).expect("Failed to parse management YAML");
         let catalog: Value =
             serde_norway::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
+        let generic_table: Value =
+            serde_norway::from_str(generic_table_yaml).expect("Failed to parse generic-table YAML");
 
         // Extract endpoints from management YAML
         let mut expected_endpoints = HashSet::new();
@@ -444,10 +463,26 @@ mod test {
             }
         }
 
+        // Process generic-table YAML paths (already prefixed with /lakekeeper/v1)
+        if let Value::Mapping(paths) = &generic_table["paths"] {
+            for (path, methods) in paths {
+                let path_str = path.as_str().expect("Path is not a string");
+                if let Value::Mapping(methods_map) = methods {
+                    for (method, _) in methods_map {
+                        let method_str = method.as_str().expect("Method is not a string");
+                        if method_str != "parameters" {
+                            let normalized_path = path_str.trim_start_matches('/');
+                            expected_endpoints
+                                .insert((method_str.to_uppercase(), normalized_path.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
         // Extract endpoints from Endpoints enum
         let mut actual_endpoints = HashSet::new();
         for endpoint in Endpoint::iter() {
-            // Only catalog and management endpoints are relevant for this test
             if matches!(endpoint, Endpoint::PermissionV1(_))
                 || matches!(endpoint, Endpoint::Sign(_))
             {

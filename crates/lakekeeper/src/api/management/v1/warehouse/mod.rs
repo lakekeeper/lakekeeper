@@ -39,8 +39,8 @@ use crate::{
         ViewOrTableDeletionInfo,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
         },
         events::{
             APIEventContext,
@@ -1118,6 +1118,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             TabularAction {
                 table_action: CatalogTableAction::Undrop,
                 view_action: CatalogViewAction::Undrop,
+                generic_table_action: CatalogGenericTableAction::Undrop,
             },
         );
 
@@ -1277,6 +1278,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     t.as_action_request(
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
+                                        CatalogGenericTableAction::IncludeInList,
                                         None,
                                     ),
                                 ))

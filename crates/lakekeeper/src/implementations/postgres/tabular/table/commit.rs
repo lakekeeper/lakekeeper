@@ -141,9 +141,12 @@ pub(crate) async fn commit_table_transaction(
                 ViewOrTableInfo::Table(table_info) => {
                     table_info.properties = properties;
                 }
-               ViewOrTableInfo::View(_view_info) => {
+                ViewOrTableInfo::View(_view_info) => {
                     // This commit is for tables only
                     debug_assert!(false, "Commit should not return views");
+                }
+                ViewOrTableInfo::GenericTable(_) => {
+                    debug_assert!(false, "Commit should not return generic tables");
                 }
             }
 

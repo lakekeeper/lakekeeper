@@ -110,6 +110,9 @@ enum Commands {
     #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
+    #[cfg(feature = "open-api")]
+    /// Get the `OpenAPI` specification of the Generic Table API as yaml
+    GenericTableOpenapi {},
     /// OpenFGA authorizer maintenance operations.
     Openfga {
         #[command(subcommand)]
@@ -257,6 +260,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AuthZBackend::External(e) => anyhow::bail!("Unsupported authz backend `{e}`"),
             };
+            println!("{}", doc.to_yaml()?);
+        }
+        #[cfg(feature = "open-api")]
+        Some(Commands::GenericTableOpenapi {}) => {
+            let doc = lakekeeper::api::data::v1::generic_tables::api_doc();
             println!("{}", doc.to_yaml()?);
         }
         None => {

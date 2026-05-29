@@ -32,9 +32,15 @@ mod drop_warehouse;
 #[cfg(test)]
 mod endpoint_stats;
 #[cfg(test)]
+mod generic_table_name_collision;
+#[cfg(test)]
+mod generic_table_protection;
+#[cfg(test)]
 mod namespace_ops;
 #[cfg(test)]
 mod referenced_by;
+#[cfg(test)]
+mod referenced_by_generic_table;
 #[cfg(test)]
 mod role_ops;
 #[cfg(test)]

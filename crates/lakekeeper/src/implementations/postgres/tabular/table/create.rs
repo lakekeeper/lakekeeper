@@ -171,10 +171,14 @@ async fn maybe_delete_staged_tabular(
     // Returns the staged table id if it was deleted
 ) -> Result<Option<StagedTableId>, CatalogBackendError> {
     // we delete any staged table which has the same namespace + name
-    // staged tables do not have a metadata_location and can be overwritten
+    // staged tables do not have a metadata_location and can be overwritten.
+    // Filter by typ = 'table' so a generic-table row (which also has a NULL
+    // metadata_location) is never silently wiped — that would let an Iceberg
+    // create succeed over a generic-table name and break cross-type
+    // uniqueness.
     let staged_tabular_id = sqlx::query!(
-        r#"DELETE FROM tabular t 
-           WHERE t.warehouse_id = $3 AND t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL
+        r#"DELETE FROM tabular t
+           WHERE t.warehouse_id = $3 AND t.namespace_id = $1 AND t.name = $2 AND t.metadata_location IS NULL AND t.typ = 'table'
            RETURNING t.tabular_id
         "#,
         *namespace_id,

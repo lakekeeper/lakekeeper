@@ -127,6 +127,22 @@ impl EventDispatcher {
         dispatch_event!(self, view_loaded, event);
     }
 
+    pub(crate) async fn generic_table_created(&self, event: types::CreateGenericTableEvent) {
+        dispatch_event!(self, generic_table_created, event);
+    }
+
+    pub(crate) async fn generic_table_dropped(&self, event: types::DropGenericTableEvent) {
+        dispatch_event!(self, generic_table_dropped, event);
+    }
+
+    pub(crate) async fn generic_table_loaded(&self, event: types::LoadGenericTableEvent) {
+        dispatch_event!(self, generic_table_loaded, event);
+    }
+
+    pub(crate) async fn generic_table_renamed(&self, event: types::RenameGenericTableEvent) {
+        dispatch_event!(self, generic_table_renamed, event);
+    }
+
     pub(crate) async fn tabular_undropped(&self, event: types::UndropTabularEvent) {
         dispatch_event!(self, tabular_undropped, event);
     }
@@ -327,6 +343,40 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a view's metadata has been successfully loaded
     async fn view_loaded(&self, _event: types::LoadViewEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Generic Table Events =====
+
+    /// Invoked after a generic table has been successfully created
+    async fn generic_table_created(
+        &self,
+        _event: types::CreateGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully dropped
+    async fn generic_table_dropped(
+        &self,
+        _event: types::DropGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table's metadata has been successfully loaded
+    async fn generic_table_loaded(
+        &self,
+        _event: types::LoadGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully renamed
+    async fn generic_table_renamed(
+        &self,
+        _event: types::RenameGenericTableEvent,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

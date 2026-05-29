@@ -69,8 +69,9 @@ use lakekeeper::{
     implementations::postgres::CatalogState,
     service::{
         ArcProjectId, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
-        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, NamespaceId, ServerId, TableId,
-        TabularId, TabularListFlags, Transaction, ViewId, authz::NamespaceParent,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId, NamespaceId,
+        ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
+        authz::NamespaceParent,
     },
 };
 use openfga_client::client::{
@@ -81,8 +82,9 @@ use crate::{
     FgaType,
     entities::OpenFgaEntity,
     tuples::{
-        hierarchy_tuples_for_namespace, hierarchy_tuples_for_project, hierarchy_tuples_for_role,
-        hierarchy_tuples_for_table, hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
+        hierarchy_tuples_for_generic_table, hierarchy_tuples_for_namespace,
+        hierarchy_tuples_for_project, hierarchy_tuples_for_role, hierarchy_tuples_for_table,
+        hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
     },
 };
 
@@ -250,6 +252,7 @@ struct CatalogIndex {
     namespaces: HashMap<NamespaceId, NamespaceParent>,
     tables: HashMap<TableId, (WarehouseId, NamespaceId)>,
     views: HashMap<ViewId, (WarehouseId, NamespaceId)>,
+    generic_tables: HashMap<GenericTableId, (WarehouseId, NamespaceId)>,
     roles: HashMap<lakekeeper::service::RoleId, ProjectId>,
 }
 
@@ -265,6 +268,7 @@ impl CatalogIndex {
             namespaces: HashMap::new(),
             tables: HashMap::new(),
             views: HashMap::new(),
+            generic_tables: HashMap::new(),
             roles: HashMap::new(),
         };
 
@@ -352,6 +356,9 @@ impl CatalogIndex {
                     }
                     TabularId::View(v) => {
                         idx.views.insert(v, (warehouse_id, ns_id));
+                    }
+                    TabularId::GenericTable(g) => {
+                        idx.generic_tables.insert(g, (warehouse_id, ns_id));
                     }
                 }
             }
@@ -479,6 +486,12 @@ impl CatalogIndex {
                     .map(ViewId::new)
                     .map(|v| self.views.contains_key(&v))
             }
+            FgaType::GenericTable => {
+                let (_, g) = id.split_once('/')?;
+                parse_uuid(g)
+                    .map(GenericTableId::new)
+                    .map(|g| self.generic_tables.contains_key(&g))
+            }
             FgaType::User | FgaType::ModelVersion | FgaType::AuthModelId => None,
         }
     }
@@ -526,11 +539,15 @@ fn is_managed_structural(tuple: &TupleKey) -> bool {
             )
             | (FgaType::Namespace, "namespace", FgaType::Warehouse)
             | (
-                FgaType::Namespace | FgaType::Table | FgaType::View,
+                FgaType::Namespace | FgaType::Table | FgaType::View | FgaType::GenericTable,
                 "child",
                 FgaType::Namespace
             )
-            | (FgaType::Namespace, "parent", FgaType::Table | FgaType::View)
+            | (
+                FgaType::Namespace,
+                "parent",
+                FgaType::Table | FgaType::View | FgaType::GenericTable
+            )
     )
 }
 
@@ -573,6 +590,14 @@ async fn write_missing_from_index(
     for (view_id, (wh, ns)) in &idx.views {
         writer
             .push("view", hierarchy_tuples_for_view(*wh, *view_id, *ns))
+            .await?;
+    }
+    for (gt_id, (wh, ns)) in &idx.generic_tables {
+        writer
+            .push(
+                "generic_table",
+                hierarchy_tuples_for_generic_table(*wh, *gt_id, *ns),
+            )
             .await?;
     }
     for (role_id, project) in &idx.roles {
@@ -685,6 +710,11 @@ fn build_expected_set(idx: &CatalogIndex) -> HashSet<(String, String, String)> {
     }
     for (view_id, (wh, ns)) in &idx.views {
         for t in hierarchy_tuples_for_view(*wh, *view_id, *ns) {
+            push(t, &mut expected);
+        }
+    }
+    for (gt_id, (wh, ns)) in &idx.generic_tables {
+        for t in hierarchy_tuples_for_generic_table(*wh, *gt_id, *ns) {
             push(t, &mut expected);
         }
     }
@@ -805,12 +835,13 @@ impl<'a> BatchWriter<'a> {
 
 fn log_index(idx: &CatalogIndex) {
     tracing::info!(
-        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} roles",
+        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} generic_tables, {} roles",
         idx.projects.len(),
         idx.warehouses.len(),
         idx.namespaces.len(),
         idx.tables.len(),
         idx.views.len(),
+        idx.generic_tables.len(),
         idx.roles.len()
     );
 }
@@ -1374,6 +1405,199 @@ mod openfga_integration_tests {
         assert_eq!(
             state_before, state_after,
             "dry run must not mutate the OpenFGA store"
+        );
+    }
+
+    // ---- Generic-table regressions --------------------------------------
+
+    #[sqlx::test]
+    async fn test_rebuild_restores_missing_generic_table_parent_edge(pool: sqlx::PgPool) {
+        use std::collections::HashMap;
+
+        use lakekeeper::{
+            api::{
+                data::v1::generic_tables::{
+                    CreateGenericTableRequest, GenericTableService as _, ListGenericTablesQuery,
+                },
+                iceberg::v1::namespace::NamespaceParameters,
+            },
+            service::{GenericTableFormat, GenericTableId},
+        };
+
+        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
+        let server_id = authorizer.server_id();
+
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .authorizer(authorizer.clone())
+            .user_id(Some(operator_id.clone()))
+            .build()
+            .setup()
+            .await;
+
+        let ns_name = "ns_gt".to_string();
+        let create_ns = CatalogServer::create_namespace(
+            Some(Prefix::from(warehouse.warehouse_id.to_string())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::from_vec(vec![ns_name.clone()]).unwrap(),
+                properties: None,
+            },
+            ctx.clone(),
+            RequestMetadata::test_user(operator_id.clone()),
+        )
+        .await
+        .unwrap();
+        let ns_id = NamespaceId::from_str_or_internal(
+            create_ns
+                .properties
+                .as_ref()
+                .unwrap()
+                .get(NAMESPACE_ID_PROPERTY)
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Create generic table via the full server path so authz tuples are
+        // written through `authorizer.create_generic_table`.
+        CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(Prefix::from(warehouse.warehouse_id.to_string())),
+                namespace: NamespaceIdent::from_vec(vec![ns_name.clone()]).unwrap(),
+            },
+            CreateGenericTableRequest {
+                name: "my_gt".to_string(),
+                format: GenericTableFormat::Unknown("lance".to_string()),
+                base_location: None,
+                doc: None,
+                properties: HashMap::default(),
+                schema: None,
+                statistics: None,
+            },
+            ctx.clone(),
+            RequestMetadata::test_user(operator_id.clone()),
+        )
+        .await
+        .unwrap();
+
+        // The id isn't returned from create; list to discover it.
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: Some(Prefix::from(warehouse.warehouse_id.to_string())),
+                namespace: NamespaceIdent::from_vec(vec![ns_name.clone()]).unwrap(),
+            },
+            ListGenericTablesQuery::default(),
+            ctx.clone(),
+            RequestMetadata::test_user(operator_id.clone()),
+        )
+        .await
+        .unwrap();
+        let gt_id: GenericTableId = listed
+            .identifiers
+            .iter()
+            .find(|i| i.name == "my_gt")
+            .and_then(|i| i.id)
+            .expect("generic table id present in list response");
+
+        // Delete one hierarchy edge — rebuild must restore it.
+        let parent_edge =
+            crate::tuples::hierarchy_tuples_for_generic_table(warehouse.warehouse_id, gt_id, ns_id)
+                .into_iter()
+                .next()
+                .unwrap();
+        authorizer
+            .client
+            .write(
+                None,
+                Some(vec![TupleKeyWithoutCondition {
+                    user: parent_edge.user.clone(),
+                    relation: parent_edge.relation.clone(),
+                    object: parent_edge.object.clone(),
+                }]),
+            )
+            .await
+            .unwrap();
+        let state_after_delete = read_all_tuples(&authorizer.client).await;
+        assert!(!state_after_delete.contains(&ident(&parent_edge)));
+
+        rebuild_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            pg_state(&pool),
+            &authorizer.client,
+            server_id,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let state_after_rebuild = read_all_tuples(&authorizer.client).await;
+        assert!(
+            state_after_rebuild.contains(&ident(&parent_edge)),
+            "rebuild must restore the generic-table parent edge"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_reconcile_deletes_drifted_generic_table_parent_edge(pool: sqlx::PgPool) {
+        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
+        let server_id = authorizer.server_id();
+        let (warehouse, root_ns_id, _child, _role) =
+            populate(&authorizer, &pool, &operator_id).await;
+
+        // Inject a stale namespace→generic_table parent edge with a generic_table
+        // id that does not exist in the catalog.
+        let bogus_gt_uuid = Uuid::now_v7();
+        let stale_forward = TupleKey {
+            user: format!("namespace:{root_ns_id}"),
+            relation: "parent".to_string(),
+            object: format!(
+                "lakekeeper_generic_table:{}/{bogus_gt_uuid}",
+                warehouse.warehouse_id
+            ),
+            condition: None,
+        };
+        let stale_inverse = TupleKey {
+            user: stale_forward.object.clone(),
+            relation: "child".to_string(),
+            object: stale_forward.user.clone(),
+            condition: None,
+        };
+        authorizer
+            .client
+            .write(
+                Some(vec![stale_forward.clone(), stale_inverse.clone()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let state_before = read_all_tuples(&authorizer.client).await;
+        assert!(state_before.contains(&ident(&stale_forward)));
+        assert!(state_before.contains(&ident(&stale_inverse)));
+
+        let report = reconcile_hierarchy_tuples_from_catalog(
+            pg_state(&pool),
+            &authorizer.client,
+            server_id,
+            ReconcileMode::AddMissingAndDeleteDrift,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            report.tuples_deleted >= 2,
+            "expected both forward and inverse stale generic-table edges to be deleted; report={report:?}"
+        );
+
+        let state_after = read_all_tuples(&authorizer.client).await;
+        assert!(
+            !state_after.contains(&ident(&stale_forward)),
+            "stale forward generic-table edge must be deleted"
+        );
+        assert!(
+            !state_after.contains(&ident(&stale_inverse)),
+            "stale inverse generic-table edge must be deleted"
         );
     }
 }

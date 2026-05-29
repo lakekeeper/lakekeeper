@@ -11,15 +11,17 @@ use crate::{
     api::{ApiContext, iceberg::v1::Result},
     request_metadata::RequestMetadata,
     service::{
-        ArcProjectId, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
-        NamespaceWithParent, ProjectId, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId,
-        State, TableId, ViewId, WarehouseId,
+        ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
+        CatalogStore, GenericTableId, NamespaceId, NamespaceWithParent, ProjectId,
+        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, ViewId,
+        WarehouseId,
         authn::UserId,
         authz::{
-            ActionOnTable, ActionOnView, Authorizer, AuthzBackendErrorOrBadRequest,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-            CatalogTableAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
-            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
+            AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
+            ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -62,6 +64,7 @@ impl Authorizer for AllowAllAuthorizer {
     type NamespaceAction = CatalogNamespaceAction;
     type TableAction = CatalogTableAction;
     type ViewAction = CatalogViewAction;
+    type GenericTableAction = CatalogGenericTableAction;
     type UserAction = CatalogUserAction;
     type RoleAction = CatalogRoleAction;
 
@@ -195,6 +198,21 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![true; actions.len()])
     }
 
+    async fn are_allowed_generic_table_actions_impl<
+        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+    >(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
+        )],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; actions.len()])
+    }
+
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {
         Ok(())
     }
@@ -287,6 +305,24 @@ impl Authorizer for AllowAllAuthorizer {
     }
 
     async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn create_generic_table(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _generic_table_id: GenericTableId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn delete_generic_table(
+        &self,
+        _warehouse_id: WarehouseId,
+        _generic_table_id: GenericTableId,
+    ) -> Result<()> {
         Ok(())
     }
 }

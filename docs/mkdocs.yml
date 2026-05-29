@@ -10,6 +10,7 @@ nav:
     - Concepts: concepts.md
     - API:
           - Catalog: api/catalog.md
+          - Generic Tables: api/generic-table.md
           - Management (Core): api/management.md
           - Management <span class="lkp"></span>: api/management-plus.md
     - Query Engines: engines.md
@@ -21,6 +22,7 @@ nav:
           - Authorization (OpenFGA): authorization-openfga.md
           - Authorization (Cedar): authorization-cedar.md
           - View Security: view-security.md
+          - Generic Tables: generic-tables.md
           - logging.md
           - monitoring.md
           - opa.md

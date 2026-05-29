@@ -280,7 +280,19 @@ fn interpret_authz_results_for_load_view(
                 // Unreachable: all referenced-by entries are looked up as views
                 // (TabularIdentBorrowed::View) and the target is also a view,
                 // so the DB type filter prevents tables from appearing here.
-                debug_assert!(false, "Table action in loadView authorization chain");
+                // Fail closed if the invariant breaks in release — silent
+                // fall-through would skip authorization on this entry.
+                return Err(BackendUnavailableOrCountMismatch::from(
+                    AuthorizationCountMismatch::new(0, 0, "table_in_load_view_chain"),
+                )
+                .into());
+            }
+            ActionOnTableOrView::GenericTable(_) => {
+                // Unreachable: loadView authz chain only resolves views.
+                return Err(BackendUnavailableOrCountMismatch::from(
+                    AuthorizationCountMismatch::new(0, 0, "generic_table_in_load_view_chain"),
+                )
+                .into());
             }
         }
     }

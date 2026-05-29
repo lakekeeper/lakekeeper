@@ -10,12 +10,14 @@ use lakekeeper::{
     axum::{Extension, Json, extract::State as AxumState},
     iceberg::TableIdent,
     service::{
-        AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceIdentOrId, Result, SecretStore, State, TableId,
+        AuthZGenericTableInfo as _, AuthZTableInfo, AuthZViewInfo as _, CatalogNamespaceOps,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId,
+        GenericTableIdentOrId, NamespaceIdentOrId, Result, SecretStore, State, TableId,
         TableIdentOrId, TabularListFlags, ViewId, ViewIdentOrId,
         authz::{
-            AuthZError, AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _, AuthzWarehouseOps,
-            RequireTableActionError, RequireViewActionError,
+            AuthZError, AuthZGenericTableOps, AuthZTableOps, AuthZViewOps, AuthzNamespaceOps as _,
+            AuthzWarehouseOps, RequireGenericTableActionError, RequireTableActionError,
+            RequireViewActionError,
         },
         events::{APIEventContext, EventDispatcher, context::authz_to_error_no_audit},
     },
@@ -27,9 +29,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     OpenFGAAuthorizer, OpenFGAError,
     relations::{
-        APINamespaceAction as NamespaceAction, APIProjectAction as ProjectAction, APIProjectAction,
-        APIServerAction as ServerAction, APIServerAction, APITableAction as TableAction,
-        APIViewAction as ViewAction, APIWarehouseAction as WarehouseAction, APIWarehouseAction,
+        APIGenericTableAction as GenericTableAction, APINamespaceAction as NamespaceAction,
+        APIProjectAction as ProjectAction, APIProjectAction, APIServerAction as ServerAction,
+        APIServerAction, APITableAction as TableAction, APIViewAction as ViewAction,
+        APIWarehouseAction as WarehouseAction, APIWarehouseAction,
+        GenericTableRelation as AllGenericTableRelations,
         NamespaceRelation as AllNamespaceRelations, ProjectRelation as AllProjectRelations,
         ReducedRelation, ServerRelation as AllServerAction, TableRelation as AllTableRelations,
         ViewRelation as AllViewRelations, WarehouseRelation as AllWarehouseRelation,
@@ -134,6 +138,18 @@ async fn check_internal<C: CatalogStore, S: SecretStore>(
         }),
         CheckOperation::View { action, view } => (action.to_openfga().to_string(), {
             check_view(api_context, metadata_clone, view, for_principal.as_ref()).await?
+        }),
+        CheckOperation::GenericTable {
+            action,
+            generic_table,
+        } => (action.to_openfga().to_string(), {
+            check_generic_table(
+                api_context,
+                metadata_clone,
+                generic_table,
+                for_principal.as_ref(),
+            )
+            .await?
         }),
     };
 
@@ -383,7 +399,10 @@ async fn authorize_check_table<C: CatalogStore, S: SecretStore>(
         C::get_table_info(
             warehouse_id,
             table.clone(),
-            TabularListFlags::active(),
+            // Include deleted + staged so `/check` evaluates permissions
+            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
+            // tabulars. Matches the bulk /check endpoint.
+            TabularListFlags::all(),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -476,7 +495,10 @@ async fn authorize_check_view<C: CatalogStore, S: SecretStore>(
         C::get_view_info(
             warehouse_id,
             view.clone(),
-            TabularListFlags::active(),
+            // Include deleted + staged so `/check` evaluates permissions
+            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
+            // tabulars. Matches the bulk /check endpoint.
+            TabularListFlags::all(),
             api_context.v1_state.catalog.clone(),
         )
     );
@@ -503,6 +525,104 @@ async fn authorize_check_view<C: CatalogStore, S: SecretStore>(
         .await?;
 
     Ok((warehouse_id, view_info.view_id()).to_openfga())
+}
+
+async fn check_generic_table<C: CatalogStore, S: SecretStore>(
+    api_context: ApiContext<State<OpenFGAAuthorizer, C, S>>,
+    metadata: Arc<RequestMetadata>,
+    generic_table: &TabularIdentOrUuid,
+    for_principal: Option<&UserOrRole>,
+) -> Result<String> {
+    let action = for_principal.map_or(AllGenericTableRelations::CanGetMetadata, |_| {
+        AllGenericTableRelations::CanReadAssignments
+    });
+
+    let (warehouse_id, generic_table) = match generic_table {
+        TabularIdentOrUuid::IdInWarehouse {
+            warehouse_id,
+            table_id,
+        } => (
+            *warehouse_id,
+            GenericTableIdentOrId::Id(GenericTableId::from(*table_id)),
+        ),
+        TabularIdentOrUuid::Name {
+            namespace,
+            table,
+            warehouse_id,
+        } => (
+            *warehouse_id,
+            GenericTableIdentOrId::Ident(TableIdent {
+                namespace: namespace.clone(),
+                name: table.clone(),
+            }),
+        ),
+    };
+
+    let event_ctx = APIEventContext::for_generic_table(
+        metadata,
+        api_context.v1_state.events.clone(),
+        warehouse_id,
+        generic_table.clone(),
+        action,
+    );
+
+    let authz_result = authorize_check_generic_table::<C, S>(
+        &api_context,
+        event_ctx.request_metadata(),
+        warehouse_id,
+        generic_table,
+        action,
+    )
+    .await;
+    let (_, gt_openfga) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(gt_openfga)
+}
+
+async fn authorize_check_generic_table<C: CatalogStore, S: SecretStore>(
+    api_context: &ApiContext<State<OpenFGAAuthorizer, C, S>>,
+    metadata: &RequestMetadata,
+    warehouse_id: WarehouseId,
+    generic_table: GenericTableIdentOrId,
+    action: AllGenericTableRelations,
+) -> Result<String, AuthZError> {
+    let authorizer = api_context.v1_state.authz.clone();
+    let (warehouse, gt_info) = tokio::join!(
+        C::get_active_warehouse_by_id(warehouse_id, api_context.v1_state.catalog.clone()),
+        C::get_generic_table_info(
+            warehouse_id,
+            generic_table.clone(),
+            // Include deleted + staged so `/check` evaluates permissions
+            // (e.g. `Undrop`) instead of returning NotFound on soft-deleted
+            // tabulars. Matches the bulk /check endpoint.
+            TabularListFlags::all(),
+            api_context.v1_state.catalog.clone(),
+        )
+    );
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let gt_info =
+        authorizer.require_generic_table_presence(warehouse_id, generic_table.clone(), gt_info)?;
+    let namespace = C::get_namespace(
+        warehouse_id,
+        gt_info.namespace_id(),
+        api_context.v1_state.catalog.clone(),
+    )
+    .await;
+    let namespace =
+        authorizer.require_namespace_presence(warehouse_id, gt_info.namespace_id(), namespace)?;
+
+    let gt_info = authorizer
+        .require_generic_table_action(
+            metadata,
+            &warehouse,
+            &namespace,
+            generic_table,
+            Ok::<_, RequireGenericTableActionError>(Some(gt_info)),
+            action,
+        )
+        .await?;
+
+    Ok((warehouse_id, gt_info.generic_table_id()).to_openfga())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -539,6 +659,11 @@ pub(super) enum CheckOperation {
         action: ViewAction,
         #[serde(flatten)]
         view: TabularIdentOrUuid,
+    },
+    GenericTable {
+        action: GenericTableAction,
+        #[serde(flatten)]
+        generic_table: TabularIdentOrUuid,
     },
 }
 
@@ -618,6 +743,44 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn test_serde_check_action_generic_table_id_variant() {
+        let action = CheckOperation::GenericTable {
+            action: GenericTableAction::ReadData,
+            generic_table: TabularIdentOrUuid::IdInWarehouse {
+                table_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
+                warehouse_id: WarehouseId::from_str_or_internal(
+                    "490cbf7a-cbfe-11ef-84c5-178606d4cab3",
+                )
+                .unwrap(),
+            },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        // Output uses the canonical `table-id` field name (the alias
+        // `generic_table_id` is only accepted on input — consistent with
+        // how view checks emit `table-id`).
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "generic-table": {
+                    "action": "read_data",
+                    "table-id": "00000000-0000-0000-0000-000000000003",
+                    "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
+                }
+            })
+        );
+        // And the alias is accepted on input.
+        let from_alias: CheckOperation = serde_json::from_value(serde_json::json!({
+            "generic-table": {
+                "action": "read_data",
+                "generic_table_id": "00000000-0000-0000-0000-000000000003",
+                "warehouse-id": "490cbf7a-cbfe-11ef-84c5-178606d4cab3"
+            }
+        }))
+        .expect("generic_table_id alias must deserialize");
+        assert_eq!(from_alias, action);
     }
 
     #[test]

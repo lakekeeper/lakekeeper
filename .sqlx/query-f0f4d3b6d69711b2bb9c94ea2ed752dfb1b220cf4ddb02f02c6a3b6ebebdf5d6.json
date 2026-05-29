@@ -126,7 +126,16 @@
                 "management-v1-control-project-tasks",
                 "management-v1-get-project-task-details",
                 "management-v1-list-project-tasks",
-                "management-v1-schedule-task"
+                "management-v1-schedule-task",
+                "generic-table-v1-create-generic-table",
+                "generic-table-v1-list-generic-tables",
+                "generic-table-v1-load-generic-table",
+                "generic-table-v1-drop-generic-table",
+                "generic-table-v1-rename-generic-table",
+                "generic-table-v1-load-generic-table-credentials",
+                "management-v1-get-generic-table-actions",
+                "management-v1-get-generic-table-protection",
+                "management-v1-set-generic-table-protection"
               ]
             }
           }
