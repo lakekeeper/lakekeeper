@@ -240,6 +240,7 @@ generate_endpoints! {
         SetWarehouseProtection(POST, "/management/v1/warehouse/{warehouse_id}/protection"),
         SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
         GetTaskQueueConfig(GET, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        ScheduleTask(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule"),
         ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
         GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
         ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
@@ -547,6 +548,9 @@ mod test {
                 !path.starts_with(
                     "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
                 ) && !path.starts_with("management/v1/project/task-queue/{queue_name}/config")
+                    && !path.starts_with(
+                        "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule",
+                    )
             })
             .collect_vec();
         if !extra_endpoints.is_empty() {

@@ -122,7 +122,10 @@ pub mod v1 {
                     UpdateRoleSourceSystemRequest,
                 },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
-                task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+                task_queue::{
+                    GetTaskQueueConfigResponse, ScheduleTaskRequest, ScheduleTaskResponse,
+                    SetTaskQueueConfigRequest,
+                },
                 tasks::{
                     ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
                     GetTaskDetailsResponseRef, ListProjectTasksRequest, ListProjectTasksResponse,
@@ -1892,6 +1895,50 @@ pub mod v1 {
             .await?;
         Ok(StatusCode::NO_CONTENT)
     }
+
+    /// Schedule a task for an entity.
+    ///
+    /// Pre-checks run against the warehouse config and target entity
+    /// properties before the task is enqueued. A failure surfaces as `400`
+    /// with a specific error code (see the operator guide for the full set
+    /// of pre-check codes).
+    ///
+    /// When a task is already active for the same (warehouse, entity,
+    /// queue) triple, the call returns `409 TaskAlreadyActive` with the
+    /// existing `task-id` in the body — chain to `POST /task/control`
+    /// with `run-now` or `run-at` to retime it without an extra
+    /// `task/list` round-trip.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ScheduleTask.path(),
+        params(("warehouse_id" = Uuid,), ("queue_name" = String,)),
+        request_body = ScheduleTaskRequest,
+        responses(
+            (status = 200, body = ScheduleTaskResponse, description = "Task scheduled"),
+            (status = 400, body = IcebergErrorResponse, description = "Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future)."),
+            (status = 404, body = IcebergErrorResponse, description = "Target entity not found in this warehouse."),
+            (status = 409, body = IcebergErrorResponse, description = "A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn schedule_task<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ScheduleTaskRequest>,
+    ) -> Result<ScheduleTaskResponse> {
+        let queue_name = TaskQueueName::from(queue_name);
+        ApiServer::<C, A, S>::schedule_task(
+            warehouse_id.into(),
+            &queue_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Set the configuration for a Project-level Task Queue.
     ///
     /// These configurations are global per project and shared across all instances of this kind of task.
@@ -2281,6 +2328,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::ScheduleTask.path_in_management_v1(),
+                    post(schedule_task),
                 )
                 .route(
                     ManagementV1Endpoint::SetProjectTaskQueueConfig.path_in_management_v1(),

@@ -10,11 +10,13 @@ use utoipa::{
 use crate::{
     api::{
         endpoints::ManagementV1Endpoint,
-        management::v1::task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+        management::v1::task_queue::{
+            GetTaskQueueConfigResponse, ScheduleTaskRequest, SetTaskQueueConfigRequest,
+        },
     },
     service::{
         authz::Authorizer,
-        tasks::{BUILT_IN_DEPENDENT_SCHEMAS, QueueApiConfig, QueueScope},
+        tasks::{BUILT_IN_DEPENDENT_SCHEMAS, QueueApiConfig, QueueScope, UserScheduling},
     },
 };
 
@@ -105,6 +107,7 @@ use crate::{
         super::set_project_task_queue_config,
         super::set_generic_table_protection,
         super::set_table_protection,
+        super::schedule_task,
         super::set_task_queue_config,
         super::set_view_protection,
         super::set_warehouse_protection,
@@ -166,7 +169,144 @@ pub fn api_doc<A: Authorizer>(
         ManagementV1Endpoint::SetProjectTaskQueueConfig.path(),
     );
 
+    fix_task_queue_schedule_paths(
+        &mut doc,
+        queue_api_configs,
+        ManagementV1Endpoint::ScheduleTask.path(),
+    );
+
     doc
+}
+
+/// Materialise per-queue schedule paths and request schemas.
+///
+/// The utoipa-registered placeholder uses `{queue_name}` as a path
+/// parameter and a single generic `ScheduleTaskRequest` body. For each
+/// queue that opted in via `TaskConfig::user_schedulable()` we:
+///
+/// - Clone the placeholder, hard-code its `queue_name` into the URL, and
+///   rewrite `operation_id` to `schedule_task_<queue>` so each queue is a
+///   distinct `OpenAPI` operation.
+/// - Clone `ScheduleTaskRequest::schema()` and strip the generic `payload`
+///   property when the queue declares no payload (`utoipa_payload_schema =
+///   None`), or rewrite it to reference the queue's payload schema when
+///   provided. Either way the published request body is type-correct per
+///   queue rather than the generic "any JSON" the placeholder shows.
+/// - Insert the per-queue request schema as `Schedule{TypeName}TaskRequest`
+///   in components.
+///
+/// Finally the generic `ScheduleTaskRequest` placeholder is removed from
+/// `components/schemas`. Queues that did not opt in are invisible in the
+/// generated spec.
+#[allow(clippy::too_many_lines)]
+fn fix_task_queue_schedule_paths(
+    doc: &mut utoipa::openapi::OpenApi,
+    queue_api_configs: &[&QueueApiConfig],
+    schedule_path: &str,
+) {
+    let Some(comps) = doc.components.as_mut() else {
+        tracing::warn!(
+            "No components found in the OpenAPI document; \
+             not patching per-queue schedule schemas in."
+        );
+        return;
+    };
+    let paths = &mut doc.paths.paths;
+    let Some(placeholder) = paths.remove(schedule_path) else {
+        tracing::warn!(
+            "No path found for ScheduleTask placeholder '{schedule_path}'; \
+             skipping per-queue schedule path materialisation."
+        );
+        return;
+    };
+
+    for QueueApiConfig {
+        queue_name,
+        utoipa_type_name,
+        user_scheduling,
+        scope: _,
+        utoipa_schema: _,
+    } in queue_api_configs
+    {
+        let UserScheduling::Enabled { payload_schema } = user_scheduling else {
+            continue;
+        };
+
+        // Build the per-queue request schema by cloning the placeholder
+        // and adjusting its `payload` property to match what the queue
+        // actually accepts.
+        let mut per_queue_request_schema = ScheduleTaskRequest::schema();
+        match &mut per_queue_request_schema {
+            RefOr::Ref(_) => {
+                unreachable!("ScheduleTaskRequest::schema() returns an inline schema");
+            }
+            RefOr::T(Schema::Object(obj)) => match payload_schema.as_ref() {
+                None => {
+                    obj.properties.remove("payload");
+                    obj.required.retain(|r| r != "payload");
+                }
+                Some(payload_ref) => {
+                    obj.properties
+                        .insert("payload".to_string(), payload_ref.clone());
+                }
+            },
+            RefOr::T(_) => {
+                unreachable!("ScheduleTaskRequest::schema() returns an Object schema");
+            }
+        }
+        // The display stem for the schedule request schema. We strip a
+        // trailing `QueueConfig` from the config type name so we get e.g.
+        // `ScheduleRemoveOrphanFilesTaskRequest` instead of
+        // `ScheduleRemoveOrphanFilesQueueConfigTaskRequest`.
+        let display_stem = utoipa_type_name
+            .strip_suffix("QueueConfig")
+            .unwrap_or(utoipa_type_name);
+        let per_queue_request_name = format!("Schedule{display_stem}TaskRequest");
+
+        comps
+            .schemas
+            .insert(per_queue_request_name.clone(), per_queue_request_schema);
+
+        let concrete_path = schedule_path.replace("{queue_name}", queue_name);
+        let mut path_item = placeholder.clone();
+
+        let Some(post) = path_item.post.as_mut() else {
+            // Skip this queue rather than bailing out of the entire loop —
+            // one malformed item shouldn't hide the rest from the spec.
+            tracing::warn!(
+                "No POST method on ScheduleTask placeholder '{schedule_path}'; \
+                 not materialising schedule path for queue '{queue_name}'."
+            );
+            continue;
+        };
+        post.parameters = post.parameters.take().map(|params| {
+            params
+                .into_iter()
+                .filter(|p| p.name != "queue_name")
+                .collect()
+        });
+        post.operation_id = Some(format!("schedule_task_{}", queue_name.replace('-', "_")));
+        if let Some(body) = post.request_body.as_mut() {
+            body.content.insert(
+                "application/json".to_string(),
+                utoipa::openapi::ContentBuilder::new()
+                    .schema(Some(RefOr::Ref(
+                        utoipa::openapi::schema::RefBuilder::new()
+                            .ref_location_from_schema_name(per_queue_request_name)
+                            .build(),
+                    )))
+                    .build(),
+            );
+        }
+
+        paths.insert(concrete_path, path_item);
+    }
+
+    // Remove the generic placeholder schema — every callable schedule path
+    // now references a concrete `Schedule{TypeName}TaskRequest`.
+    comps
+        .schemas
+        .remove(&ScheduleTaskRequest::name().to_string());
 }
 
 #[allow(clippy::too_many_lines)]
@@ -194,6 +334,7 @@ fn fix_task_queue_config_paths(
         utoipa_type_name,
         utoipa_schema,
         scope,
+        user_scheduling: _,
     } in queue_api_configs
     {
         let operation_object = match scope {
@@ -271,10 +412,11 @@ fn fix_task_queue_config_paths(
 
         let Some(post) = p.post.as_mut() else {
             tracing::warn!(
-                "No post method found for '{}', not patching queue configs into the ApiDoc.",
+                "No post method found for '{}' for queue '{queue_name}'; \
+                 skipping this queue and continuing with the rest.",
                 set_task_queue_config_path
             );
-            return;
+            continue;
         };
         post.parameters = post.parameters.take().map(|params| {
             params
@@ -288,10 +430,11 @@ fn fix_task_queue_config_paths(
         ));
         let Some(body) = post.request_body.as_mut() else {
             tracing::warn!(
-                "No request body found for the '{}', not patching queue configs into the ApiDoc.",
+                "No request body found for '{}' for queue '{queue_name}'; \
+                 skipping this queue and continuing with the rest.",
                 set_task_queue_config_path
             );
-            return;
+            continue;
         };
         body.content.insert(
             "application/json".to_string(),
@@ -301,10 +444,11 @@ fn fix_task_queue_config_paths(
         );
         let Some(get) = p.get.as_mut() else {
             tracing::warn!(
-                "No get method found for '{}', not patching queue configs into the ApiDoc.",
+                "No get method found for '{}' for queue '{queue_name}'; \
+                 skipping this queue and continuing with the rest.",
                 set_task_queue_config_path
             );
-            return;
+            continue;
         };
         get.parameters = get.parameters.take().map(|params| {
             params
@@ -353,15 +497,18 @@ fn fix_task_queue_config_paths(
         comps
             .schemas
             .insert(get_queue_config_type_name, get_queue_config_schema);
-
-        // Remove original SetTaskQueueConfigRequest and GetTaskQueueConfigResponse schemas
-        comps
-            .schemas
-            .remove(&SetTaskQueueConfigRequest::name().to_string());
-        comps
-            .schemas
-            .remove(&GetTaskQueueConfigResponse::name().to_string());
     }
+
+    // Remove the generic placeholder schemas — every callable path now
+    // references a concrete per-queue type. Doing this after the loop
+    // ensures the placeholders are dropped even when `queue_api_configs`
+    // is empty.
+    comps
+        .schemas
+        .remove(&SetTaskQueueConfigRequest::name().to_string());
+    comps
+        .schemas
+        .remove(&GetTaskQueueConfigResponse::name().to_string());
 }
 
 fn add_dependent_schemas(

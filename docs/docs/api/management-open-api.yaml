@@ -7216,6 +7216,16 @@ components:
         - path
         - virtual_host
         - auto
+    ScheduleTaskResponse:
+      type: object
+      description: Response returned on a successful schedule call.
+      required:
+        - task-id
+      properties:
+        task-id:
+          type: string
+          format: uuid
+          description: The id of the newly scheduled task.
     SearchRoleRequest:
       type: object
       required:
