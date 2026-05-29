@@ -14,9 +14,10 @@ use crate::{
     request_metadata::{ProjectIdMissing, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NoWarehouseTaskError, ResolvedTask,
-        ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId, TabularListFlags,
-        TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId, ViewOrTableInfo,
+        CatalogTaskOps, CatalogWarehouseOps, GenericTableId, NamedEntity, NoWarehouseTaskError,
+        ResolvedTask, ResolvedWarehouse, Result, SecretStore, State, TableId, TabularId,
+        TabularListFlags, TaskDetails, TaskList, TaskNotFoundError, Transaction, ViewId,
+        ViewOrTableInfo,
         authz::{
             AuthZCannotListAllTasks, AuthZCannotSeeGenericTable, AuthZCannotSeeTable,
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps as _,
@@ -54,6 +55,8 @@ const CONTROL_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
 // reuses the same per-entity / warehouse-bypass permission split.
 const SCHEDULE_TASK_PERMISSION_TABLE: CatalogTableAction = CatalogTableAction::ControlTasks;
 const SCHEDULE_TASK_PERMISSION_VIEW: CatalogViewAction = CatalogViewAction::ControlTasks;
+const SCHEDULE_TASK_PERMISSION_GENERIC_TABLE: CatalogGenericTableAction =
+    CatalogGenericTableAction::ControlTasks;
 const SCHEDULE_TASK_WAREHOUSE_PERMISSION: CatalogWarehouseAction =
     CatalogWarehouseAction::ControlAllTasks;
 /// Maximum number of days the `task-queue/{name}/schedule` endpoint accepts
@@ -894,6 +897,9 @@ pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ViewOrTableInfo::View(v) => WarehouseTaskEntityId::View {
                 view_id: v.tabular_id,
             },
+            ViewOrTableInfo::GenericTable(g) => WarehouseTaskEntityId::GenericTable {
+                generic_table_id: g.tabular_id,
+            },
         };
         let entity_properties = crate::service::AuthZTabularInfo::properties(&tabular_info).clone();
         let project_id = event_ctx.resolved().project_id.clone();
@@ -1635,6 +1641,9 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
     let tabular_id = match entity {
         WarehouseTaskEntityId::Table { table_id } => TabularId::Table(table_id),
         WarehouseTaskEntityId::View { view_id } => TabularId::View(view_id),
+        WarehouseTaskEntityId::GenericTable { generic_table_id } => {
+            TabularId::GenericTable(generic_table_id)
+        }
     };
     // Restrict to active entities only. Soft-deleted or staged tabulars
     // can't be a meaningful schedule target — the worker would either skip
@@ -1658,6 +1667,9 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
             TabularId::View(v) => {
                 AuthZError::from(AuthZCannotSeeView::new_not_found(warehouse_id, v))
             }
+            TabularId::GenericTable(g) => {
+                AuthZError::from(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, g))
+            }
         })?;
 
     let namespaces =
@@ -1671,6 +1683,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
             tabular_info.as_action_request(
                 SCHEDULE_TASK_PERMISSION_VIEW,
                 SCHEDULE_TASK_PERMISSION_TABLE,
+                SCHEDULE_TASK_PERMISSION_GENERIC_TABLE,
                 None,
             ),
         );

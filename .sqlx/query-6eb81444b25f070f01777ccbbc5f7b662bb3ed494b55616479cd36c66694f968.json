@@ -129,7 +129,10 @@
                       "generic-table-v1-drop-generic-table",
                       "generic-table-v1-rename-generic-table",
                       "generic-table-v1-load-generic-table-credentials",
-                      "management-v1-get-generic-table-actions"
+                      "management-v1-get-generic-table-actions",
+                      "management-v1-get-generic-table-protection",
+                      "management-v1-set-generic-table-protection",
+                      "management-v1-schedule-task"
                     ]
                   }
                 }
