@@ -1264,3 +1264,40 @@ async fn test_delete_system_roles_via_trait(pool: PgPool) {
     tx.commit().await.unwrap();
     assert_eq!(again.len(), 0);
 }
+
+/// `upsert_system_roles` rejects duplicate source_ids in a single batch
+/// with `RoleSourceIdConflict`. Without this check, Postgres would raise
+/// a `cardinality_violation` (`ON CONFLICT DO UPDATE` can't touch the
+/// same row twice) and surface it as an opaque backend error.
+#[sqlx::test]
+async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let cap = SystemRoleSeederCap::new();
+
+    let specs = vec![
+        system_role_spec("dup", "First"),
+        system_role_spec("dup", "Second"),
+    ];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let err = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::service::CreateRoleError::RoleSourceIdConflict(_)
+        ),
+        "expected RoleSourceIdConflict, got: {err:?}"
+    );
+}

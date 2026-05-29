@@ -598,6 +598,12 @@ where
         if specs.is_empty() {
             return Ok(Vec::new());
         }
+        let mut seen = HashSet::with_capacity(specs.len());
+        for spec in specs {
+            if !seen.insert(&spec.source_id) {
+                return Err(RoleSourceIdConflict::new().into());
+            }
+        }
         let requests: Vec<CatalogCreateRoleRequest<'_>> = specs
             .iter()
             .map(|spec| {
