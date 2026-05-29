@@ -7,12 +7,12 @@ use uuid::Uuid;
 use crate::{
     api::{
         ApiContext, ErrorModel,
-        endpoints::EndpointFlat,
-        iceberg::v1::namespace::NamespaceParameters,
-        v1::generic_tables::{
+        data::v1::generic_tables::{
             CreateGenericTableRequest, GenericTableData, GenericTableParameters,
             LoadGenericTableResponse,
         },
+        endpoints::EndpointFlat,
+        iceberg::v1::namespace::NamespaceParameters,
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tabular::determine_tabular_location},

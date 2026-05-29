@@ -264,7 +264,7 @@ async fn main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "open-api")]
         Some(Commands::GenericTableOpenapi {}) => {
-            let doc = lakekeeper::api::v1::generic_tables::api_doc();
+            let doc = lakekeeper::api::data::v1::generic_tables::api_doc();
             println!("{}", doc.to_yaml()?);
         }
         None => {

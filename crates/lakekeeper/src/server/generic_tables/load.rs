@@ -6,8 +6,10 @@ use iceberg_ext::catalog::rest::StorageCredential;
 use crate::{
     api::{
         ApiContext,
+        data::v1::generic_tables::{
+            GenericTableData, GenericTableParameters, LoadGenericTableResponse,
+        },
         iceberg::v1::DataAccessMode,
-        v1::generic_tables::{GenericTableData, GenericTableParameters, LoadGenericTableResponse},
     },
     request_metadata::RequestMetadata,
     server::{maybe_get_secret, require_warehouse_id},

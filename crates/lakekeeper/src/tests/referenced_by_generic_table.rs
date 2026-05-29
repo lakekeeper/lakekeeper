@@ -7,15 +7,15 @@ use crate::{
     WarehouseId,
     api::{
         ApiContext, Result,
+        data::v1::generic_tables::{
+            GenericTableParameters, GenericTableService as _, LoadGenericTableCredentialsRequest,
+            LoadGenericTableCredentialsResponse,
+        },
         iceberg::{
             types::{Prefix, ReferencingView},
             v1::{
                 DataAccess, NamespaceParameters, tables::DataAccessMode, views::ViewService as _,
             },
-        },
-        v1::generic_tables::{
-            GenericTableParameters, GenericTableService as _, LoadGenericTableCredentialsRequest,
-            LoadGenericTableCredentialsResponse,
         },
     },
     config::{MatchedEngines, TrinoEngineConfig, TrustedEngine},

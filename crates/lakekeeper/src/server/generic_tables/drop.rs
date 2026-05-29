@@ -5,10 +5,10 @@ use http::StatusCode;
 use crate::{
     api::{
         ApiContext, ErrorModel,
+        data::v1::generic_tables::GenericTableParameters,
         endpoints::EndpointFlat,
         iceberg::types::DropParams,
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
-        v1::generic_tables::GenericTableParameters,
     },
     request_metadata::RequestMetadata,
     server::require_warehouse_id,

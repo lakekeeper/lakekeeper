@@ -221,11 +221,11 @@ pub(crate) async fn create_generic_table<T: Authorizer>(
     prefix: impl Into<String>,
     ns_name: impl Into<String>,
     name: impl Into<String>,
-) -> crate::api::Result<crate::api::v1::generic_tables::LoadGenericTableResponse> {
+) -> crate::api::Result<crate::api::data::v1::generic_tables::LoadGenericTableResponse> {
     use crate::{
         api::{
+            data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
             iceberg::v1::namespace::NamespaceParameters,
-            v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
         },
         service::GenericTableFormat,
     };

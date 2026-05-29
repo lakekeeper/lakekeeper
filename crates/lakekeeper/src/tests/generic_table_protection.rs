@@ -10,14 +10,14 @@ use uuid::Uuid;
 use crate::{
     api::{
         ApiContext,
+        data::v1::generic_tables::{
+            GenericTableParameters, GenericTableService as _, ListGenericTablesQuery,
+        },
         iceberg::{
             types::{DropParams, Prefix},
             v1::{DataAccessMode, namespace::NamespaceParameters},
         },
         management::v1::{ApiServer, generic_table::GenericTableManagementService as _},
-        v1::generic_tables::{
-            GenericTableParameters, GenericTableService as _, ListGenericTablesQuery,
-        },
     },
     implementations::postgres::{PostgresBackend, SecretsState},
     server::CatalogServer,

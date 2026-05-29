@@ -277,10 +277,10 @@ async fn test_soft_deletion(pool: PgPool) {
 #[sqlx::test]
 async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
     use crate::api::{
-        iceberg::types::DropParams,
-        v1::generic_tables::{
+        data::v1::generic_tables::{
             GenericTableParameters, GenericTableService as _, ListGenericTablesQuery,
         },
+        iceberg::types::DropParams,
     };
 
     let storage_profile = crate::tests::memory_io_profile();

@@ -5,9 +5,9 @@ use http::StatusCode;
 use crate::{
     WarehouseId,
     api::{
+        data::v1::generic_tables::{RenameGenericTableRequest, RenameGenericTableTarget},
         endpoints::EndpointFlat,
         iceberg::v1::{ApiContext, ErrorModel, Prefix, Result, TableIdent},
-        v1::generic_tables::{RenameGenericTableRequest, RenameGenericTableTarget},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},

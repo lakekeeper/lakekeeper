@@ -3,10 +3,10 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     api::{
         ApiContext,
-        iceberg::v1::namespace::NamespaceParameters,
-        v1::generic_tables::{
+        data::v1::generic_tables::{
             GenericTableIdentifier, ListGenericTablesQuery, ListGenericTablesResponse,
         },
+        iceberg::v1::namespace::NamespaceParameters,
     },
     request_metadata::RequestMetadata,
     server::require_warehouse_id,

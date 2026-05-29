@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::{
     api::{
         RequestMetadata,
+        data::v1::generic_tables::{CreateGenericTableRequest, RenameGenericTableRequest},
         iceberg::{types::DropParams, v1::DataAccessMode},
-        v1::generic_tables::{CreateGenericTableRequest, RenameGenericTableRequest},
     },
     service::{
         GenericTableInfo, NamespaceWithParent, ResolvedWarehouse,

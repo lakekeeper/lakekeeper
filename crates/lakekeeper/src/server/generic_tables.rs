@@ -14,15 +14,15 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use crate::{
     api::{
         ApiContext,
-        iceberg::{
-            types::{DropParams, Prefix},
-            v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
-        },
-        v1::generic_tables::{
+        data::v1::generic_tables::{
             CreateGenericTableRequest, GenericTableParameters, GenericTableService,
             ListGenericTablesQuery, ListGenericTablesResponse, LoadGenericTableCredentialsRequest,
             LoadGenericTableCredentialsResponse, LoadGenericTableResponse,
             RenameGenericTableRequest,
+        },
+        iceberg::{
+            types::{DropParams, Prefix},
+            v1::{DataAccess, DataAccessMode, namespace::NamespaceParameters},
         },
     },
     request_metadata::RequestMetadata,
@@ -190,13 +190,13 @@ pub(crate) mod test {
     use crate::{
         api::{
             ApiContext,
+            data::v1::generic_tables::{
+                CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
+                ListGenericTablesQuery, RenameGenericTableRequest, RenameGenericTableTarget,
+            },
             iceberg::{
                 types::DropParams,
                 v1::{DataAccessMode, namespace::NamespaceParameters},
-            },
-            v1::generic_tables::{
-                CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
-                ListGenericTablesQuery, RenameGenericTableRequest, RenameGenericTableTarget,
             },
         },
         implementations::postgres::{

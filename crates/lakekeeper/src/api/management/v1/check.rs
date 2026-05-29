@@ -3089,7 +3089,7 @@ mod tests {
     #[sqlx::test]
     async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
         use crate::{
-            api::v1::generic_tables::{GenericTableService as _, ListGenericTablesQuery},
+            api::data::v1::generic_tables::{GenericTableService as _, ListGenericTablesQuery},
             service::authz::AllowAllAuthorizer,
         };
 

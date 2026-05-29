@@ -1416,10 +1416,10 @@ mod openfga_integration_tests {
 
         use lakekeeper::{
             api::{
-                iceberg::v1::namespace::NamespaceParameters,
-                v1::generic_tables::{
+                data::v1::generic_tables::{
                     CreateGenericTableRequest, GenericTableService as _, ListGenericTablesQuery,
                 },
+                iceberg::v1::namespace::NamespaceParameters,
             },
             service::{GenericTableFormat, GenericTableId},
         };

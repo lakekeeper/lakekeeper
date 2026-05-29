@@ -6,13 +6,13 @@ use crate::{
     WarehouseId,
     api::{
         ApiContext,
+        data::v1::generic_tables::{
+            GenericTableParameters, LoadGenericTableCredentialsRequest,
+            LoadGenericTableCredentialsResponse,
+        },
         iceberg::{
             types::ReferencingView,
             v1::{DataAccess, Result},
-        },
-        v1::generic_tables::{
-            GenericTableParameters, LoadGenericTableCredentialsRequest,
-            LoadGenericTableCredentialsResponse,
         },
     },
     request_metadata::RequestMetadata,

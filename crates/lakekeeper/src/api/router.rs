@@ -106,7 +106,7 @@ pub async fn new_full_router<
 ) -> anyhow::Result<Router> {
     let v1_routes = new_v1_full_router::<crate::server::CatalogServer<C, A, S>, State<A, C, S>>();
 
-    let generic_table_routes = crate::api::v1::generic_tables::router::<
+    let generic_table_routes = crate::api::data::v1::generic_tables::router::<
         crate::server::CatalogServer<C, A, S>,
         State<A, C, S>,
     >();
