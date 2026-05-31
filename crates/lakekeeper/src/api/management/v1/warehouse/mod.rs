@@ -115,7 +115,7 @@ pub struct CreateWarehouseRequest {
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<Vec<i32>>))]
     pub allowed_format_versions: Option<Vec<FormatVersion>>,
     /// Default Iceberg table format version applied when a create-table request
-    /// does not specify one. Must be a member of `allowed_format_versions`. When
+    /// does not specify one. Must be a member of `allowed-format-versions`. When
     /// omitted, resolves to v2 if allowed, otherwise the highest allowed version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(default, setter(strip_option))]
@@ -249,7 +249,7 @@ pub struct UpdateWarehouseFormatVersionPolicyRequest {
     #[cfg_attr(feature = "open-api", schema(value_type=Vec<i32>))]
     pub allowed_format_versions: Vec<FormatVersion>,
     /// Default Iceberg table format version applied when a create-table request
-    /// does not specify one. Must be a member of `allowed_format_versions`. When
+    /// does not specify one. Must be a member of `allowed-format-versions`. When
     /// omitted, resolves to v2 if allowed, otherwise the highest allowed version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]

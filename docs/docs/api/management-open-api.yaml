@@ -4434,7 +4434,7 @@ components:
           format: int32
           description: |-
             Default Iceberg table format version applied when a create-table request
-            does not specify one. Must be a member of `allowed_format_versions`. When
+            does not specify one. Must be a member of `allowed-format-versions`. When
             omitted, resolves to v2 if allowed, otherwise the highest allowed version.
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
@@ -8412,7 +8412,7 @@ components:
           format: int32
           description: |-
             Default Iceberg table format version applied when a create-table request
-            does not specify one. Must be a member of `allowed_format_versions`. When
+            does not specify one. Must be a member of `allowed-format-versions`. When
             omitted, resolves to v2 if allowed, otherwise the highest allowed version.
     UpdateWarehouseStorageRequest:
       type: object
