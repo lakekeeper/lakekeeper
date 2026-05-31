@@ -27,9 +27,9 @@ use crate::{
         SYSTEM_ROLE_PROVIDER_ID, SetWarehouseDeletionProfileError,
         SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
-        WarehouseAlreadyExists, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
-        WarehouseNotEmpty, WarehouseProtected, WarehouseStatus, WarehouseVersion,
-        registered_system_roles, storage::StorageProfile,
+        WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
+        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
+        WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 
@@ -90,8 +90,7 @@ pub(crate) async fn create_warehouse(
     storage_profile: StorageProfile,
     tabular_delete_profile: TabularDeleteProfile,
     storage_secret_id: Option<SecretId>,
-    allowed_format_versions: AllowedFormatVersions,
-    default_format_version: Option<FormatVersion>,
+    format_version_policy: WarehouseFormatVersionPolicy,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let storage_profile_ser =
@@ -102,13 +101,11 @@ pub(crate) async fn create_warehouse(
         .map(|dur| dur.num_seconds());
     let prof = DbTabularDeleteProfile::from(tabular_delete_profile);
 
-    let allowed_format_versions_db = allowed_format_versions
-        .as_slice()
-        .iter()
-        .copied()
-        .map(format_version_to_db)
-        .collect::<Vec<_>>();
-    let default_format_version_db = default_format_version.map(format_version_to_db);
+    let allowed_format_versions_db =
+        format_version_versions_to_db(&format_version_policy.allowed_format_versions);
+    let default_format_version_db = format_version_policy
+        .default_format_version
+        .map(format_version_to_db);
 
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
@@ -699,17 +696,11 @@ pub(crate) async fn set_warehouse_protection(
 
 pub(crate) async fn set_warehouse_format_version_policy(
     warehouse_id: WarehouseId,
-    allowed_format_versions: &AllowedFormatVersions,
-    default_format_version: Option<FormatVersion>,
+    policy: &WarehouseFormatVersionPolicy,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
-    let allowed_format_versions_db = allowed_format_versions
-        .as_slice()
-        .iter()
-        .copied()
-        .map(format_version_to_db)
-        .collect::<Vec<_>>();
-    let default_format_version_db = default_format_version.map(format_version_to_db);
+    let allowed_format_versions_db = format_version_versions_to_db(&policy.allowed_format_versions);
+    let default_format_version_db = policy.default_format_version.map(format_version_to_db);
 
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
@@ -856,6 +847,16 @@ fn format_version_to_db(version: FormatVersion) -> i16 {
     version as i16
 }
 
+/// Convert an [`AllowedFormatVersions`] set to a `smallint[]` for storage.
+fn format_version_versions_to_db(allowed: &AllowedFormatVersions) -> Vec<i16> {
+    allowed
+        .as_slice()
+        .iter()
+        .copied()
+        .map(format_version_to_db)
+        .collect()
+}
+
 pub(crate) async fn get_warehouse_stats(
     conn: PgPool,
     warehouse_id: WarehouseId,
@@ -989,6 +990,7 @@ pub(crate) mod test {
                 expiration_seconds: chrono::Duration::seconds(5),
             },
             secret_id,
+            WarehouseFormatVersionPolicy::default(),
             t.transaction(),
         )
         .await

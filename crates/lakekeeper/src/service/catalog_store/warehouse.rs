@@ -79,7 +79,11 @@ pub struct AllowedFormatVersions(Vec<FormatVersion>);
 impl Default for AllowedFormatVersions {
     /// All format versions supported by Lakekeeper.
     fn default() -> Self {
-        Self(vec![FormatVersion::V1, FormatVersion::V2, FormatVersion::V3])
+        Self(vec![
+            FormatVersion::V1,
+            FormatVersion::V2,
+            FormatVersion::V3,
+        ])
     }
 }
 
@@ -152,6 +156,18 @@ impl From<EmptyAllowedFormatVersionsError> for ErrorModel {
             .stack(err.stack)
             .build()
     }
+}
+
+/// Per-warehouse Iceberg table format version policy: which versions may be
+/// created in / upgraded to, and the default applied when a create-table request
+/// omits one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WarehouseFormatVersionPolicy {
+    /// Versions that may be created in, or upgraded to, within the warehouse.
+    pub allowed_format_versions: AllowedFormatVersions,
+    /// Default version used when a create-table request omits one. When `None`,
+    /// resolves to `V2` if allowed, otherwise the highest allowed version.
+    pub default_format_version: Option<FormatVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,8 +622,7 @@ where
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
-        allowed_format_versions: AllowedFormatVersions,
-        default_format_version: Option<FormatVersion>,
+        format_version_policy: WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
         let warehouse = Self::create_warehouse_impl(
@@ -616,8 +631,7 @@ where
             storage_profile,
             tabular_delete_profile,
             storage_secret_id,
-            allowed_format_versions,
-            default_format_version,
+            format_version_policy,
             transaction,
         )
         .await?;
@@ -859,19 +873,72 @@ where
     /// Set the per-warehouse Iceberg table format version policy.
     async fn set_warehouse_format_version_policy(
         warehouse_id: WarehouseId,
-        allowed_format_versions: &AllowedFormatVersions,
-        default_format_version: Option<FormatVersion>,
+        policy: &WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<Arc<ResolvedWarehouse>, SetWarehouseFormatVersionPolicyError> {
-        Self::set_warehouse_format_version_policy_impl(
-            warehouse_id,
-            allowed_format_versions,
-            default_format_version,
-            transaction,
-        )
-        .await
-        .map(Arc::new)
+        Self::set_warehouse_format_version_policy_impl(warehouse_id, policy, transaction)
+            .await
+            .map(Arc::new)
     }
 }
 
 impl<T> CatalogWarehouseOps for T where T: CatalogStore {}
+
+#[cfg(test)]
+mod allowed_format_versions_tests {
+    use iceberg::spec::FormatVersion;
+
+    use super::AllowedFormatVersions;
+
+    #[test]
+    fn try_new_rejects_empty() {
+        assert!(AllowedFormatVersions::try_new([]).is_err());
+    }
+
+    #[test]
+    fn try_new_dedups_and_sorts() {
+        let allowed = AllowedFormatVersions::try_new([
+            FormatVersion::V3,
+            FormatVersion::V2,
+            FormatVersion::V3,
+        ])
+        .unwrap();
+        assert_eq!(allowed.as_slice(), &[FormatVersion::V2, FormatVersion::V3]);
+    }
+
+    #[test]
+    fn contains_and_max() {
+        let allowed =
+            AllowedFormatVersions::try_new([FormatVersion::V1, FormatVersion::V2]).unwrap();
+        assert!(allowed.contains(FormatVersion::V1));
+        assert!(!allowed.contains(FormatVersion::V3));
+        assert_eq!(allowed.max(), FormatVersion::V2);
+    }
+
+    #[test]
+    fn resolve_default_prefers_configured() {
+        let allowed = AllowedFormatVersions::default();
+        assert_eq!(
+            allowed.resolve_default(Some(FormatVersion::V1)),
+            FormatVersion::V1
+        );
+    }
+
+    #[test]
+    fn resolve_default_falls_back_to_v2_when_allowed() {
+        let allowed = AllowedFormatVersions::try_new([
+            FormatVersion::V1,
+            FormatVersion::V2,
+            FormatVersion::V3,
+        ])
+        .unwrap();
+        assert_eq!(allowed.resolve_default(None), FormatVersion::V2);
+    }
+
+    #[test]
+    fn resolve_default_falls_back_to_max_when_v2_disallowed() {
+        let allowed =
+            AllowedFormatVersions::try_new([FormatVersion::V1, FormatVersion::V3]).unwrap();
+        assert_eq!(allowed.resolve_default(None), FormatVersion::V3);
+    }
+}

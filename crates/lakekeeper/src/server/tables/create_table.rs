@@ -28,8 +28,8 @@ use crate::{
         tabular::determine_tabular_location,
     },
     service::{
-        CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps, State, TableCreation,
-        TableId, TabularId, Transaction,
+        AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
+        State, TableCreation, TableId, TabularId, Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         events::{
             APIEventContext,
@@ -264,7 +264,12 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         ))
     };
 
-    let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
+    let table_metadata = create_table_request_into_table_metadata(
+        table_id,
+        request.clone(),
+        &warehouse.allowed_format_versions,
+        warehouse.default_format_version,
+    )?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let (table_info, staged_table_id) = C::create_table(
@@ -404,6 +409,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 pub(crate) fn create_table_request_into_table_metadata(
     table_id: TableId,
     request: CreateTableRequest,
+    allowed_format_versions: &AllowedFormatVersions,
+    default_format_version: Option<FormatVersion>,
 ) -> Result<TableMetadata> {
     let CreateTableRequest {
         name: _,
@@ -426,7 +433,7 @@ pub(crate) fn create_table_request_into_table_metadata(
         )
     })?;
 
-    let format_version = properties
+    let requested_format_version = properties
         .as_mut()
         .and_then(|props| props.remove(TableProperties::PROPERTY_FORMAT_VERSION))
         .map(|s| match s.as_str() {
@@ -439,8 +446,17 @@ pub(crate) fn create_table_request_into_table_metadata(
                 None,
             )),
         })
-        .transpose()?
-        .unwrap_or(FormatVersion::V2);
+        .transpose()?;
+
+    // When a version is requested explicitly it must be permitted by the
+    // warehouse policy; when omitted, fall back to the warehouse default.
+    let format_version = match requested_format_version {
+        Some(version) => {
+            ensure_format_version_allowed(version, allowed_format_versions)?;
+            version
+        }
+        None => allowed_format_versions.resolve_default(default_format_version),
+    };
 
     let table_metadata = TableMetadataBuilder::new(
         schema,
@@ -463,4 +479,29 @@ pub(crate) fn create_table_request_into_table_metadata(
     .metadata;
 
     Ok(table_metadata)
+}
+
+/// Reject a format version that is not permitted by the warehouse policy.
+pub(crate) fn ensure_format_version_allowed(
+    version: FormatVersion,
+    allowed_format_versions: &AllowedFormatVersions,
+) -> Result<()> {
+    if allowed_format_versions.contains(version) {
+        return Ok(());
+    }
+    let allowed = allowed_format_versions
+        .as_slice()
+        .iter()
+        .map(|v| (*v as u8).to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(ErrorModel::bad_request(
+        format!(
+            "Table format version 'v{}' is not allowed in this warehouse. Allowed versions: [{allowed}]",
+            version as u8
+        ),
+        "FormatVersionNotAllowed",
+        None,
+    )
+    .into())
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        ",
+  "query": "UPDATE warehouse\n            SET allowed_format_versions = $1, default_format_version = $2\n            WHERE warehouse_id = $3\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                updated_at,\n                version\n            ",
   "describe": {
     "columns": [
       {
@@ -124,6 +124,28 @@
       },
       {
         "ordinal": 9,
+        "name": "allowed_format_versions",
+        "type_info": "Int2Array",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "allowed_format_versions"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "default_format_version",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "default_format_version"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -134,7 +156,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -147,8 +169,9 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "Int2Array",
+        "Int2",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -161,9 +184,11 @@
       false,
       true,
       false,
+      false,
+      true,
       true,
       false
     ]
   },
-  "hash": "5bd88e2962ade07ae621b69644240f5c5e48aefc4990b3804bf23c8ee6c9df53"
+  "hash": "db6577afb97ae72b4f57435efa39b05513553216923d8ba1dc5132ec08fd376e"
 }

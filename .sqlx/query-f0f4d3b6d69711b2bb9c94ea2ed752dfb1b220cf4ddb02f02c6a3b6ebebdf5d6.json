@@ -135,7 +135,8 @@
                 "generic-table-v1-load-generic-table-credentials",
                 "management-v1-get-generic-table-actions",
                 "management-v1-get-generic-table-protection",
-                "management-v1-set-generic-table-protection"
+                "management-v1-set-generic-table-protection",
+                "management-v1-update-warehouse-format-version-policy"
               ]
             }
           }

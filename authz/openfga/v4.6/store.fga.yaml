@@ -604,6 +604,7 @@ tests:
           can_change_ownership: true
           can_get_endpoint_statistics: true
           can_set_protection: true
+          can_set_format_version_policy: true
       - user: user:warehouse_1_owner
         object: namespace:namespace_1
         assertions:
@@ -794,6 +795,7 @@ tests:
           can_change_ownership: false
           can_get_endpoint_statistics: false
           can_set_protection: false
+          can_set_format_version_policy: false
       - user: user:select_table_3
         object: namespace:namespace_1
         assertions:
