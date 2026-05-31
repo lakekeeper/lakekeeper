@@ -1265,7 +1265,7 @@ async fn test_delete_system_roles_via_trait(pool: PgPool) {
     assert_eq!(again.len(), 0);
 }
 
-/// `upsert_system_roles` rejects duplicate source_ids in a single batch
+/// `upsert_system_roles` rejects duplicate `source_ids` in a single batch
 /// with `RoleSourceIdConflict`. Without this check, Postgres would raise
 /// a `cardinality_violation` (`ON CONFLICT DO UPDATE` can't touch the
 /// same row twice) and surface it as an opaque backend error.
