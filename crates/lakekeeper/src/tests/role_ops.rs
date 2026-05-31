@@ -15,9 +15,9 @@ use crate::{
     implementations::postgres::PostgresBackend,
     service::{
         ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogListRolesByIdFilter,
-        CatalogRoleOps, CatalogStore, OnRoleConflict, RoleId, RoleProviderId, RoleSourceId,
-        SYSTEM_ROLE_PROVIDER_ID, Transaction, authn::Actor, authz::AllowAllAuthorizer,
-        role_cache::ROLE_CACHE,
+        CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId,
+        SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction, authn::Actor,
+        authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
     },
     tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
@@ -957,14 +957,9 @@ async fn seed_test_system_role(
         <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
             .await
             .unwrap();
-    let created = PostgresBackend::create_roles(
-        project_id,
-        vec![request],
-        OnRoleConflict::Fail,
-        tx.transaction(),
-    )
-    .await
-    .unwrap();
+    let created = PostgresBackend::create_roles(project_id, vec![request], tx.transaction())
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     created[0].id()
 }
@@ -1143,4 +1138,166 @@ async fn test_role_response_provider_id_distinguishes_system_from_customer(pool:
     .unwrap();
     assert_eq!(role.provider_id.as_str(), "system");
     assert_eq!(role.source_id.as_str(), "example_role");
+}
+
+fn system_role_spec(source_id: &'static str, name: &'static str) -> SystemRoleSpec {
+    SystemRoleSpec {
+        source_id: RoleSourceId::try_new(source_id).unwrap(),
+        name,
+        description: "test system role",
+    }
+}
+
+/// `upsert_system_roles` inserts new specs and refreshes only the rows that
+/// actually changed. The same call twice in a row returns an empty Vec.
+#[sqlx::test]
+async fn test_upsert_system_roles_via_trait(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+
+    // First call: inserts both rows.
+    let specs = vec![
+        system_role_spec("svc_admin", "Service Admin"),
+        system_role_spec("svc_user", "Service User"),
+    ];
+    let cap = SystemRoleSeederCap::new();
+
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let inserted = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(inserted.len(), 2);
+
+    // Second call with identical specs: no-op upsert, empty Vec.
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let nochange = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(nochange.len(), 0, "idempotent re-seed must be a no-op");
+
+    // Third call with one changed name: only the changed row is returned.
+    let refreshed = vec![
+        SystemRoleSpec {
+            source_id: RoleSourceId::try_new("svc_admin").unwrap(),
+            name: "Renamed Admin",
+            description: "test system role",
+        },
+        system_role_spec("svc_user", "Service User"),
+    ];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let changed =
+        PostgresBackend::upsert_system_roles(project_id, &refreshed, cap, tx.transaction())
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].name, "Renamed Admin");
+    assert_eq!(changed[0].ident.source_id().as_str(), "svc_admin");
+}
+
+/// `delete_system_roles` removes rows by `source_id` and is idempotent: a
+/// second call returns an empty Vec.
+#[sqlx::test]
+async fn test_delete_system_roles_via_trait(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let cap = SystemRoleSeederCap::new();
+
+    // Seed one row.
+    let specs = vec![system_role_spec("retired_role", "Retired")];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // First delete: returns one row.
+    let source_id = RoleSourceId::try_new("retired_role").unwrap();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let deleted =
+        PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, tx.transaction())
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(deleted.len(), 1);
+
+    // Second delete: idempotent, no error.
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let again =
+        PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, tx.transaction())
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(again.len(), 0);
+}
+
+/// `upsert_system_roles` rejects duplicate `source_ids` in a single batch
+/// with `RoleSourceIdConflict`. Without this check, Postgres would raise
+/// a `cardinality_violation` (`ON CONFLICT DO UPDATE` can't touch the
+/// same row twice) and surface it as an opaque backend error.
+#[sqlx::test]
+async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let cap = SystemRoleSeederCap::new();
+
+    let specs = vec![
+        system_role_spec("dup", "First"),
+        system_role_spec("dup", "Second"),
+    ];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let err = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::service::CreateRoleError::RoleSourceIdConflict(_)
+        ),
+        "expected RoleSourceIdConflict, got: {err:?}"
+    );
 }

@@ -36,6 +36,8 @@ mod identifier;
 
 pub use identifier::{generic::*, project::*, role::*};
 pub use post_migration_hooks::run_post_migration_hooks;
+#[cfg(any(test, all(feature = "test-utils", feature = "sqlx-postgres")))]
+pub(crate) use post_migration_hooks::upsert_system_roles_in_all_projects;
 
 // ---------------- State ----------------
 #[derive(Clone, Debug)]

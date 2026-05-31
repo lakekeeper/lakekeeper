@@ -176,13 +176,19 @@ pub enum OnRoleConflict {
     /// `created_at`, and monotonic `version` are preserved (version only
     /// bumps when name/description actually change).
     ///
+    /// **Storage-layer primitive — not reachable from the public
+    /// service-layer trait.** Production callers seeding catalog-managed
+    /// system roles go through
+    /// [`crate::service::CatalogRoleOps::upsert_system_roles`], which is
+    /// gated by the [`crate::service::SystemRoleSeederCap`] token. This
+    /// variant exists only for [`CatalogStore::create_roles_impl`] to
+    /// dispatch on, so backend implementors can match the conflict mode
+    /// when implementing the trait.
+    ///
     /// The SQL's `WHERE ... IS DISTINCT FROM ...` predicate skips no-op
     /// updates entirely, so the returned `Vec<Role>` reflects only rows
     /// that were **inserted or actually changed** — its length may be
-    /// less than the request count. Use this for catalog-managed seeding
-    /// paths where the **code** is the authoritative source of truth and
-    /// a redeploy may legitimately ship a refined display name or
-    /// description (e.g. catalog-managed system roles).
+    /// less than the request count.
     UpdateMetadata,
 }
 

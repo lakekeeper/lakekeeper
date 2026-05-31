@@ -15,18 +15,17 @@ use crate::{
         },
     },
     implementations::postgres::{
+        PostgresBackend,
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
-        role::create_roles,
     },
     service::{
-        AllowedFormatVersions, CatalogCreateRoleRequest, CatalogCreateWarehouseError,
-        CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
-        CatalogListWarehousesError, CatalogRenameWarehouseError, DatabaseIntegrityError,
-        GetProjectResponse, OnRoleConflict, ProjectIdNotFoundError, ResolvedWarehouse, RoleId,
-        SYSTEM_ROLE_PROVIDER_ID, SetWarehouseDeletionProfileError,
+        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
+        CatalogRenameWarehouseError, CatalogRoleOps, DatabaseIntegrityError, GetProjectResponse,
+        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
         SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
+        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
         WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
         WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
         WarehouseVersion, registered_system_roles, storage::StorageProfile,
@@ -194,10 +193,17 @@ pub(crate) async fn rename_project(
     Ok(())
 }
 
+// `'static` on the inner Transaction lifetime is required so the call to
+// `PostgresBackend::upsert_system_roles` below matches the trait's
+// `Transaction<'_>` GAT, which for `PostgresBackend` resolves to
+// `&mut sqlx::Transaction<'static, sqlx::Postgres>`. The only caller
+// (`<PostgresBackend as CatalogStore>::create_project` in catalog.rs)
+// already passes a `'static`-conn transaction, so this tightening is a
+// no-op at every call site.
 pub(crate) async fn create_project(
     project_id: &ProjectId,
     project_name: String,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> crate::service::Result<()> {
     let Some(_project_id) = sqlx::query_scalar!(
         r#"
@@ -223,35 +229,20 @@ pub(crate) async fn create_project(
 
     // Seed system roles from the process-wide registry, if any. Empty in
     // default OSS (no extension registered). Atomic with the project
-    // insert; conflicts can't occur here because the project is fresh.
+    // insert; the seeder path goes through the cap-gated trait method so
+    // `create_project` and the post-migration backfill share one code path.
     let specs = registered_system_roles();
     if !specs.is_empty() {
-        let requests: Vec<CatalogCreateRoleRequest<'_>> = specs
-            .iter()
-            .map(|spec| {
-                CatalogCreateRoleRequest::builder()
-                    .role_id(RoleId::new_random())
-                    .role_name(spec.name)
-                    .description(Some(spec.description))
-                    .source_id(&spec.source_id)
-                    .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
-                    .build()
-            })
-            .collect();
-        create_roles(
-            project_id,
-            requests,
-            OnRoleConflict::Fail,
-            &mut **transaction,
-        )
-        .await
-        .map_err(|e| {
-            ErrorModel::internal(
-                format!("Failed to seed registered system roles: {e}"),
-                "SystemRoleSeedFailed",
-                Some(Box::new(e)),
-            )
-        })?;
+        let cap = SystemRoleSeederCap::new();
+        PostgresBackend::upsert_system_roles(project_id, specs, cap, transaction)
+            .await
+            .map_err(|e| {
+                ErrorModel::internal(
+                    "Failed to seed registered system roles",
+                    "SystemRoleSeedFailed",
+                    Some(Box::new(e)),
+                )
+            })?;
     }
 
     Ok(())

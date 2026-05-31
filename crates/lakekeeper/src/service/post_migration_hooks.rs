@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 
+use anyhow::Context;
+
 use crate::{
     CONFIG,
     api::management::v1::tasks::{ListTasksRequest, TaskStatus},
     service::{
-        CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, CatalogTaskOps, OnRoleConflict,
-        RoleId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSpec, Transaction, install_system_role_registry,
-        registered_system_roles,
+        CatalogRoleOps, CatalogStore, CatalogTaskOps, SystemRoleSeederCap, SystemRoleSpec,
+        Transaction, install_system_role_registry, registered_system_roles,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, TaskFilter,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
@@ -33,14 +34,11 @@ pub async fn run_post_migration_hooks<C: CatalogStore>(
         // This is a non-critical hook, so we log the error but do not fail the migration.
         tracing::error!("Failed to initialize cron tasks in post-migration hook: {e:?}");
     }
-    if let Err(e) = backfill_registered_system_roles::<C>(state).await {
-        // Backfill failure leaves existing projects missing the rows that
-        // an extension's policy may depend on. Log loudly; do not abort
-        // startup — the catalog core continues to function.
-        tracing::error!(
-            "Failed to backfill registered catalog-managed system roles in post-migration hook: {e:?}"
-        );
-    }
+    backfill_registered_system_roles::<C>(state)
+        .await
+        .with_context(
+            || "Failed to backfill registered catalog-managed system roles in post-migration hook",
+        )?;
     Ok(())
 }
 
@@ -112,8 +110,12 @@ async fn backfill_registered_system_roles<C: CatalogStore>(state: C::State) -> a
 /// Inner loop of [`backfill_registered_system_roles`], parameterized on
 /// `roles` so tests can drive it with an explicit fixture instead of the
 /// process-wide registry (whose `OnceLock` would pollute other tests in
-/// the same binary). Public callers should always go through
-/// [`backfill_registered_system_roles`].
+/// the same binary).
+///
+/// `pub(crate)` for production use by [`backfill_registered_system_roles`].
+/// Downstream test crates reach this via the `pub` wrapper exported from
+/// [`crate::tests::upsert_system_roles_in_all_projects`], gated on the
+/// `test-utils` feature.
 pub(crate) async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
     state: C::State,
     roles: &[SystemRoleSpec],
@@ -135,34 +137,18 @@ pub(crate) async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to list projects"))?;
 
+    let cap = SystemRoleSeederCap::new();
     let mut total_upserted = 0usize;
 
     for project in &projects {
-        let requests: Vec<CatalogCreateRoleRequest<'_>> = roles
-            .iter()
-            .map(|spec| {
-                CatalogCreateRoleRequest::builder()
-                    .role_id(RoleId::new_random())
-                    .role_name(spec.name)
-                    .description(Some(spec.description))
-                    .source_id(&spec.source_id)
-                    .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
-                    .build()
-            })
-            .collect();
-        let upserted = C::create_roles(
-            &project.project_id,
-            requests,
-            OnRoleConflict::UpdateMetadata,
-            t.transaction(),
-        )
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(e).context(format!(
-                "Failed to seed registered system roles for project {}",
-                project.project_id,
-            ))
-        })?;
+        let upserted = C::upsert_system_roles(&project.project_id, roles, cap, t.transaction())
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(e).context(format!(
+                    "Failed to seed registered system roles for project {}",
+                    project.project_id,
+                ))
+            })?;
         total_upserted += upserted.len();
     }
 
@@ -235,7 +221,7 @@ mod tests {
     use crate::{
         ProjectId,
         implementations::postgres::{CatalogState, PostgresBackend, PostgresTransaction},
-        service::RoleSourceId,
+        service::{RoleSourceId, SYSTEM_ROLE_PROVIDER_ID},
     };
 
     fn spec(source_id: &str, name: &'static str, description: &'static str) -> SystemRoleSpec {
@@ -387,5 +373,74 @@ mod tests {
             .await
             .unwrap();
         assert!(list_system_roles(&pool, &p1).await.is_empty());
+    }
+
+    /// Locks in the OSS no-impact contract: `run_post_migration_hooks`
+    /// with an empty `Vec` returns `Ok` AND seeds no system-role rows in
+    /// any existing project. We create a project first so the assertion
+    /// catches a hypothetical regression where the hook silently mutates
+    /// data on the OSS path.
+    ///
+    /// Note: the `OnceLock` registry may have been populated by a prior
+    /// test in this process; the empty install is rejected and ignored.
+    /// If the prior install had specs, backfill against this fresh DB's
+    /// project would seed those — so the assertion would fail under
+    /// registry pollution. In the current test binary that's not the
+    /// case (the only tests installing specs use the cap-gated helper
+    /// directly, not `run_post_migration_hooks`).
+    #[sqlx::test]
+    async fn test_run_post_migration_hooks_oss_no_registry_is_ok(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let p1 = ProjectId::new_random();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::create_project(&p1, "OSS-NoOp".to_string(), t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        run_post_migration_hooks::<PostgresBackend>(state, Vec::new())
+            .await
+            .unwrap();
+
+        assert!(
+            list_system_roles(&pool, &p1).await.is_empty(),
+            "OSS path must not create any system-role rows"
+        );
+    }
+
+    /// Backfill is now fatal: a failure inside
+    /// [`upsert_system_roles_in_all_projects`] propagates via `?`.  We
+    /// inject the failure by closing the pool before the helper starts,
+    /// which causes the first `begin_write` to return `PoolClosed`.
+    ///
+    /// This indirectly proves the new `?` in `run_post_migration_hooks`
+    /// fires: that wrapper differs from the old one only in dropping the
+    /// `if let Err(e) = ...` swallow in favour of `?`, so propagation here
+    /// implies propagation there.
+    ///
+    /// **Why not test `run_post_migration_hooks` directly?** That would
+    /// require installing the `OnceLock` registry with a non-empty spec
+    /// list, which leaks into every other test in the same binary (the
+    /// installer is process-wide and rejects the second install). Either
+    /// every sibling test must accept the polluted registry, or this
+    /// would need its own integration-test binary. The indirect test
+    /// here was chosen as the lighter trade-off — re-introducing the
+    /// `Err` swallow in `run_post_migration_hooks` is a code-review
+    /// concern, guarded by the documented `?` at line 37 and by the
+    /// commit-message convention.
+    #[sqlx::test]
+    async fn test_upsert_system_roles_in_all_projects_propagates_errors(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        pool.close().await;
+
+        let specs = vec![spec("svc_admin", "Service Admin", "X")];
+        let result = upsert_system_roles_in_all_projects::<PostgresBackend>(state, &specs).await;
+        assert!(
+            result.is_err(),
+            "closed pool must propagate as Err, got: {result:?}"
+        );
     }
 }
