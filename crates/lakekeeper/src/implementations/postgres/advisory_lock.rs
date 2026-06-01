@@ -7,7 +7,10 @@
 //! The lock key namespace is the caller's responsibility — pick a stable
 //! arbitrary `i64` and document its scope at the call site.
 
-use crate::implementations::postgres::CatalogState;
+use crate::{
+    implementations::postgres::CatalogState,
+    service::maintenance::{MaintenanceLockGuard, MaintenanceLockGuardSealed},
+};
 
 /// Holds an exclusive Postgres session-level advisory lock for the lifetime
 /// of the value. Release happens on `Drop`.
@@ -20,6 +23,9 @@ use crate::implementations::postgres::CatalogState;
 pub struct PostgresAdvisoryLock {
     _conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
 }
+
+impl MaintenanceLockGuardSealed for PostgresAdvisoryLock {}
+impl MaintenanceLockGuard for PostgresAdvisoryLock {}
 
 impl PostgresAdvisoryLock {
     /// Try to acquire the advisory lock identified by `key`.

@@ -34,8 +34,9 @@
 //!
 //! # Operational notes (deletion mode)
 //!
-//! * The advisory lock blocks concurrent reconciles. It does **not** block
-//!   API writes — operators should run during low-traffic windows.
+//! * The caller-provided lock guard serializes concurrent reconciles for
+//!   the chosen backend. It does **not** block API writes — operators
+//!   should run during low-traffic windows.
 //! * Total runtime scales with OpenFGA store size at ~80k tuples/sec for
 //!   the global Read scan, plus catalog read time.
 //!
@@ -70,7 +71,7 @@ use lakekeeper::{
         ArcProjectId, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
         CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId, NamespaceId,
         ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
-        authz::NamespaceParent,
+        authz::NamespaceParent, maintenance::MaintenanceLockGuard,
     },
 };
 use openfga_client::client::{
@@ -96,6 +97,11 @@ const READ_PAGE_SIZE: i32 = 100;
 /// `lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire`)
 /// when calling [`reconcile_hierarchy_tuples_from_catalog`] in
 /// `AddMissingAndDeleteDrift` mode.
+///
+/// **Contract identifier only.** This key is the agreed-upon namespace
+/// between callers of `reconcile_hierarchy_tuples_from_catalog` and the
+/// lock backend; do not reuse it for unrelated locks. New maintenance
+/// flows should pick their own distinct `i64`.
 pub const RECONCILE_LOCK_KEY: i64 = 0x5f8e_2d63_a4b1_00ff;
 
 // ============================================================================
@@ -194,12 +200,13 @@ where
 /// deletion. Generic over the catalog backend.
 ///
 /// The caller passes a `lock_guard` that it owns for the duration of the
-/// call; this module never inspects it and drops it when the function
-/// returns. Use it to serialize concurrent reconciles — e.g. acquire a
+/// call; this module never inspects it and the guard drops at function
+/// exit. Use it to serialize concurrent reconciles — e.g. acquire a
 /// Postgres advisory lock with
 /// `lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire(
 /// state, RECONCILE_LOCK_KEY)` and pass the guard in. Single-replica
-/// deployments without a meaningful concurrency story may pass `()`.
+/// deployments may pass [`lakekeeper::service::maintenance::NoMaintenanceLock`]
+/// as an explicit opt-out.
 ///
 /// When `dry_run` is true, no OpenFGA writes or deletes occur — the report
 /// counts what *would* have been changed.
@@ -208,7 +215,7 @@ where
 /// * Catalog or OpenFGA call fails.
 pub async fn reconcile_hierarchy_tuples_from_catalog<C>(
     catalog_state: C::State,
-    lock_guard: impl Send + 'static,
+    lock_guard: impl MaintenanceLockGuard,
     sink: &BasicOpenFgaClient,
     server_id: ServerId,
     mode: ReconcileMode,
@@ -217,6 +224,7 @@ pub async fn reconcile_hierarchy_tuples_from_catalog<C>(
 where
     C: CatalogStore,
 {
+    let _lock_guard = lock_guard;
     tracing::info!("reconcile: starting (mode={mode:?}, server_id={server_id}, dry_run={dry_run})");
     let mut report = ReconcileReport {
         dry_run,
@@ -235,7 +243,6 @@ where
     write_missing_from_index(&idx, sink, &mut report, dry_run).await?;
 
     log_done(&report, "reconcile");
-    drop(lock_guard);
     Ok(report)
 }
 
