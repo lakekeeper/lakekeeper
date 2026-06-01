@@ -60,7 +60,7 @@ jobs:
           print(f'version={v}')
           " >> "$GITHUB_OUTPUT"
       - name: Setup Rust ${{ steps.msrv.outputs.version }}
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
         env:
@@ -78,7 +78,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-machete
@@ -111,7 +111,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install sqlx-cli and migrate database
@@ -134,7 +134,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: rustfmt
           toolchain: ${{ env.RUST_TOOLCHAIN }},nightly
@@ -158,7 +158,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -179,7 +179,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           components: clippy
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -191,9 +191,9 @@ jobs:
         run: just update-generic-table-openapi
       - name: Fail on diff
         run: git diff -I ".*version.*" -w --ignore-blank-lines --exit-code Cargo.lock docs/docs/api/
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 22
+          node-version: 24
       - name: Build TS Client
         run: npx @hey-api/openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 
@@ -270,7 +270,7 @@ jobs:
           docker exec minio /usr/bin/mc alias set local http://localhost:9000 minio-root-user minio-root-password
           docker exec minio /usr/bin/mc mb local/tests
 
-      - uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
+      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         if: ${{ env.AZURE_CLIENT_ID != '' }}
         with:
           creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
@@ -282,7 +282,7 @@ jobs:
         shell: bash
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
@@ -337,7 +337,7 @@ jobs:
         run: docker run -d -p 35081:8081 openfga/openfga:v1.14 run
 
       - name: Test
-        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         with:
           max_attempts: 2
           timeout_minutes: 25
