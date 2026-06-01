@@ -24,7 +24,7 @@ mod test {
             tasks::{
                 QueueRegistration, QueueScope, ScheduleTaskMetadata, SpecializedTask,
                 TaskConfig as QueueConfigTrait, TaskData, TaskEntity, TaskExecutionDetails,
-                TaskInput, TaskQueueName, TaskQueueRegistry, WarehouseTaskEntityId,
+                TaskInput, TaskQueueName, TaskQueueRegistry, UserScheduling, WarehouseTaskEntityId,
             },
         },
     };
@@ -73,7 +73,7 @@ mod test {
 
         let task_queue_registry = TaskQueueRegistry::new();
         task_queue_registry
-            .register_queue::<Config>(QueueRegistration {
+            .register_queue::<Config, TestTaskData>(QueueRegistration {
                 queue_name: &QUEUE_NAME,
                 worker_fn: Arc::new(move |_| {
                     let ctx = ctx_clone.clone();
@@ -100,6 +100,7 @@ mod test {
                 }),
                 num_workers: 1,
                 scope: QueueScope::Warehouse,
+                user_scheduling: UserScheduling::Disabled,
             })
             .await;
         let mut transaction =

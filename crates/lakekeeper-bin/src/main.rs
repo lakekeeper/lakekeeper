@@ -110,6 +110,9 @@ enum Commands {
     #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
+    #[cfg(feature = "open-api")]
+    /// Get the `OpenAPI` specification of the Generic Table API as yaml
+    GenericTableOpenapi {},
     /// OpenFGA authorizer maintenance operations.
     Openfga {
         #[command(subcommand)]
@@ -259,6 +262,11 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("{}", doc.to_yaml()?);
         }
+        #[cfg(feature = "open-api")]
+        Some(Commands::GenericTableOpenapi {}) => {
+            let doc = lakekeeper::api::data::v1::generic_tables::api_doc();
+            println!("{}", doc.to_yaml()?);
+        }
         None => {
             if CONFIG_BIN.debug.auto_serve {
                 print_info();
@@ -344,15 +352,27 @@ async fn openfga_reconcile(
     let authorizer =
         lakekeeper_authz_openfga::new_authorizer_from_default_config(server_id).await?;
 
-    tracing::info!("openfga reconcile: starting (mode={mode:?}, dry_run={dry_run})");
-    let report = lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog(
-        catalog_state,
-        authorizer.client(),
-        server_id,
-        mode,
-        dry_run,
+    let lock = lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire(
+        &catalog_state,
+        lakekeeper_authz_openfga::RECONCILE_LOCK_KEY,
     )
-    .await?;
+    .await?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "openfga reconcile: another reconcile is already running (advisory lock {:#x} held)",
+            lakekeeper_authz_openfga::RECONCILE_LOCK_KEY
+        )
+    })?;
+    let report =
+        lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            catalog_state,
+            lock,
+            authorizer.client(),
+            server_id,
+            mode,
+            dry_run,
+        )
+        .await?;
 
     let action = if report.dry_run { "would" } else { "did" };
     println!();
@@ -403,7 +423,8 @@ async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Authorizer migration complete.");
     tracing::info!("Running post-migration hooks...");
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool.clone());
-    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state).await?;
+    lakekeeper::service::run_post_migration_hooks::<PostgresBackend>(catalog_state, Vec::new())
+        .await?;
     tracing::info!("Post-migration hooks complete.");
 
     Ok(())

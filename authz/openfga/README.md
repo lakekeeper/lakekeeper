@@ -4,15 +4,51 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.1`
+## `v4.6`
 
 ```
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-- Add `can_get_tasks` and `can_control_tasks` permissions to `table` and `view`.
-- Add `can_get_all_tasks` and `can_control_all_tasks` permission to `warehouse`.
+Cumulative changes since `v4.0`. All backwards-compatible: existing tuples authorize the same actions, no tuple rewrites needed.
+
+Types:
+
+- Drop the deprecated `table` and `view` types (superseded by `lakekeeper_table` / `lakekeeper_view` in `v4.0`). Tuples on the old types become orphans but are harmless.
+- Add `lakekeeper_generic_table` type for the Generic Table API.
+
+`lakekeeper_view`:
+
+- Add `select` relation, split from `describe`. `describe` now derives from `select` (which derives from `modify`), so existing `modify`/`describe` tuples grant the same effective permissions.
+- Add `can_select` action and `can_grant_select` grant action.
+
+`lakekeeper_table` and `lakekeeper_view`:
+
+- Add `can_set_protection`.
+- Add `can_get_tasks` and `can_control_tasks`.
+
+`namespace`:
+
+- Replace `table` / `view` with `lakekeeper_generic_table` in the `child` relation type set (alongside `lakekeeper_table` / `lakekeeper_view`).
+- Add `can_create_generic_table`, `can_list_generic_tables`, `can_set_protection`.
+
+`warehouse`:
+
+- Add `can_set_protection`, `can_set_format_version_policy`.
+- Add `can_get_endpoint_statistics`.
+- Add `can_get_all_tasks`, `can_control_all_tasks`.
+
+`project`:
+
+- Add `can_get_endpoint_statistics`.
+- Add `can_get_project_tasks`, `can_control_project_tasks`.
+- Add `can_get_task_queue_config`, `can_modify_task_queue_config`.
+- Tighten `can_grant_data_admin`: now requires `security_admin` (was `data_admin`). Existing tuples are unchanged, but only `security_admin` / server-`admin` can grant `data_admin` going forward.
+
+`role`:
+
+- Broaden `can_read_assignments` to `can_list_roles from project` (was `can_read`).
 
 ## `v4.0`
 

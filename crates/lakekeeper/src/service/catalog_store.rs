@@ -7,7 +7,7 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
+    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
     storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
@@ -72,6 +72,8 @@ pub use role_assignment::*;
 mod idempotency;
 pub(crate) mod role_assignments_cache;
 pub use idempotency::*;
+pub mod generic_table;
+pub use generic_table::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -160,6 +162,36 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub provider_id: &'a RoleProviderId,
 }
 
+/// How [`CatalogStore::create_roles_impl`] should handle a row that already
+/// exists with the same `(project_id, provider_id, source_id)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnRoleConflict {
+    /// Fail the entire batch with [`crate::service::RoleSourceIdConflict`].
+    /// Default — matches the standard customer-facing `POST /role`
+    /// semantics.
+    #[default]
+    Fail,
+    /// Upsert: insert if absent, or update the row's mutable metadata
+    /// (`name`, `description`) to the requested values. The existing `id`,
+    /// `created_at`, and monotonic `version` are preserved (version only
+    /// bumps when name/description actually change).
+    ///
+    /// **Storage-layer primitive — not reachable from the public
+    /// service-layer trait.** Production callers seeding catalog-managed
+    /// system roles go through
+    /// [`crate::service::CatalogRoleOps::upsert_system_roles`], which is
+    /// gated by the [`crate::service::SystemRoleSeederCap`] token. This
+    /// variant exists only for [`CatalogStore::create_roles_impl`] to
+    /// dispatch on, so backend implementors can match the conflict mode
+    /// when implementing the trait.
+    ///
+    /// The SQL's `WHERE ... IS DISTINCT FROM ...` predicate skips no-op
+    /// updates entirely, so the returned `Vec<Role>` reflects only rows
+    /// that were **inserted or actually changed** — its length may be
+    /// less than the request count.
+    UpdateMetadata,
+}
+
 #[async_trait::async_trait]
 pub trait CatalogStore
 where
@@ -242,6 +274,7 @@ where
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        format_version_policy: WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
@@ -317,6 +350,13 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError>;
+
+    /// Set the per-warehouse Iceberg table format version policy.
+    async fn set_warehouse_format_version_policy_impl(
+        warehouse_id: WarehouseId,
+        policy: &WarehouseFormatVersionPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
@@ -510,10 +550,46 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ViewInfo, CommitViewError>;
 
+    // ---------------- Generic Table Management ----------------
+    async fn create_generic_table_impl<'a>(
+        creation: GenericTableCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, CreateGenericTableError>;
+
+    async fn load_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
+    async fn load_generic_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
+    async fn list_generic_tables_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>;
+
+    async fn drop_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableId, DropGenericTableError>;
+
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Role>, CreateRoleError>;
 
@@ -540,10 +616,16 @@ where
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;
 
-    /// Returns the list of deleted role ids.
+    /// Delete role rows matching `filter`, optionally scoped to a single
+    /// project. Mirrors [`Self::list_roles_impl`] so the same filter type
+    /// drives both reads and writes. Returns the IDs of deleted rows.
+    ///
+    /// The implementation must refuse to run when `project_id` is `None`
+    /// **and** every filter is `None` — that combination would erase every
+    /// role row across every project.
     async fn delete_roles_impl<'a>(
-        project_id: &ProjectId,
-        role_id_filter: Option<&[RoleId]>,
+        project_id: Option<&ProjectId>,
+        filter: CatalogListRolesByIdFilter<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 

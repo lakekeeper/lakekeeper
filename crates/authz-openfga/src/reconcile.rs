@@ -1,15 +1,15 @@
-//! Reconcile structural OpenFGA tuples against the Postgres catalog.
+//! Reconcile structural OpenFGA tuples against the catalog.
 //!
-//! Two public entry points:
+//! Two public entry points, both generic over the [`CatalogStore`] backend:
 //!
 //! * [`rebuild_hierarchy_tuples_from_catalog`] — additive only. Reads the
 //!   catalog, idempotently writes any hierarchy tuple the catalog implies.
-//!   Never deletes. Generic over the [`CatalogStore`] backend. Safe under
-//!   concurrent writes (no lock acquired).
+//!   Never deletes. Safe under concurrent writes (no lock required).
 //! * [`reconcile_hierarchy_tuples_from_catalog`] — additive **plus** drift
-//!   deletion. Acquires a Postgres advisory lock to prevent concurrent
-//!   reconciles. Postgres-only by signature because the lock and per-delete
-//!   revalidation use sqlx directly.
+//!   deletion. The caller passes a lock guard to serialize concurrent
+//!   reconciles; this module is agnostic to which lock primitive backs it.
+//!   For Postgres deployments use [`lakekeeper::implementations::postgres::PostgresAdvisoryLock`]
+//!   with [`RECONCILE_LOCK_KEY`]; single-replica deployments may pass `()`.
 //!
 //! The shape of every emitted tuple comes from the `hierarchy_tuples_for_*`
 //! helpers in [`crate::tuples`] — the same helpers the authorizer's
@@ -34,8 +34,9 @@
 //!
 //! # Operational notes (deletion mode)
 //!
-//! * The advisory lock blocks concurrent reconciles. It does **not** block
-//!   API writes — operators should run during low-traffic windows.
+//! * The caller-provided lock guard serializes concurrent reconciles for
+//!   the chosen backend. It does **not** block API writes — operators
+//!   should run during low-traffic windows.
 //! * Total runtime scales with OpenFGA store size at ~80k tuples/sec for
 //!   the global Read scan, plus catalog read time.
 //!
@@ -66,11 +67,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use lakekeeper::{
     ProjectId, WarehouseId,
     api::iceberg::v1::{ListNamespacesQuery, NamespaceIdent, PageToken, PaginationQuery},
-    implementations::postgres::CatalogState,
     service::{
         ArcProjectId, CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps,
-        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, NamespaceId, ServerId, TableId,
-        TabularId, TabularListFlags, Transaction, ViewId, authz::NamespaceParent,
+        CatalogStore, CatalogTabularOps, CatalogWarehouseOps, GenericTableId, NamespaceId,
+        ServerId, TableId, TabularId, TabularListFlags, Transaction, ViewId,
+        authz::NamespaceParent, maintenance::MaintenanceLockGuard,
     },
 };
 use openfga_client::client::{
@@ -81,8 +82,9 @@ use crate::{
     FgaType,
     entities::OpenFgaEntity,
     tuples::{
-        hierarchy_tuples_for_namespace, hierarchy_tuples_for_project, hierarchy_tuples_for_role,
-        hierarchy_tuples_for_table, hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
+        hierarchy_tuples_for_generic_table, hierarchy_tuples_for_namespace,
+        hierarchy_tuples_for_project, hierarchy_tuples_for_role, hierarchy_tuples_for_table,
+        hierarchy_tuples_for_view, hierarchy_tuples_for_warehouse,
     },
 };
 
@@ -90,9 +92,17 @@ use crate::{
 const WRITE_BATCH_SIZE: usize = 100;
 /// OpenFGA hard-caps Read page size at 100 (proto-level).
 const READ_PAGE_SIZE: i32 = 100;
-/// Postgres advisory lock key. Stable arbitrary value; the lock is scoped
-/// to "reconcile-with-deletion".
-const RECONCILE_LOCK_KEY: i64 = 0x5f8e_2d63_a4b1_00ff;
+/// Lock scope for OpenFGA reconcile-with-deletion. Pass this to the
+/// backend's lock primitive (e.g.
+/// `lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire`)
+/// when calling [`reconcile_hierarchy_tuples_from_catalog`] in
+/// `AddMissingAndDeleteDrift` mode.
+///
+/// **Contract identifier only.** This key is the agreed-upon namespace
+/// between callers of `reconcile_hierarchy_tuples_from_catalog` and the
+/// lock backend; do not reuse it for unrelated locks. New maintenance
+/// flows should pick their own distinct `i64`.
+pub const RECONCILE_LOCK_KEY: i64 = 0x5f8e_2d63_a4b1_00ff;
 
 // ============================================================================
 // Public types
@@ -183,41 +193,45 @@ where
 }
 
 // ============================================================================
-// Public entry: additive + delete drift (Postgres-specific)
+// Public entry: additive + delete drift
 // ============================================================================
 
 /// Reconcile structural tuples against the catalog, with optional drift
-/// deletion. Postgres-only because of the advisory lock and per-delete
-/// revalidation.
+/// deletion. Generic over the catalog backend.
+///
+/// The caller passes a `lock_guard` that it owns for the duration of the
+/// call; this module never inspects it and the guard drops at function
+/// exit. Use it to serialize concurrent reconciles — e.g. acquire a
+/// Postgres advisory lock with
+/// `lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire(
+/// state, RECONCILE_LOCK_KEY)` and pass the guard in. Single-replica
+/// deployments may pass [`lakekeeper::service::maintenance::NoMaintenanceLock`]
+/// as an explicit opt-out.
 ///
 /// When `dry_run` is true, no OpenFGA writes or deletes occur — the report
-/// counts what *would* have been changed. The advisory lock is still
-/// acquired so a dry-run reads a stable snapshot relative to other
-/// reconciles.
+/// counts what *would* have been changed.
 ///
 /// # Errors
 /// * Catalog or OpenFGA call fails.
-/// * Advisory lock is already held by another reconcile.
-pub async fn reconcile_hierarchy_tuples_from_catalog(
-    catalog_state: CatalogState,
+pub async fn reconcile_hierarchy_tuples_from_catalog<C>(
+    catalog_state: C::State,
+    lock_guard: impl MaintenanceLockGuard,
     sink: &BasicOpenFgaClient,
     server_id: ServerId,
     mode: ReconcileMode,
     dry_run: bool,
-) -> anyhow::Result<ReconcileReport> {
+) -> anyhow::Result<ReconcileReport>
+where
+    C: CatalogStore,
+{
+    let _lock_guard = lock_guard;
     tracing::info!("reconcile: starting (mode={mode:?}, server_id={server_id}, dry_run={dry_run})");
     let mut report = ReconcileReport {
         dry_run,
         ..ReconcileReport::default()
     };
 
-    let _lock = AdvisoryLock::acquire(&catalog_state).await?;
-
-    let idx = CatalogIndex::build::<lakekeeper::implementations::postgres::PostgresBackend>(
-        &catalog_state,
-        server_id,
-    )
-    .await?;
+    let idx = CatalogIndex::build::<C>(&catalog_state, server_id).await?;
     log_index(&idx);
 
     if matches!(mode, ReconcileMode::AddMissingAndDeleteDrift) {
@@ -250,6 +264,7 @@ struct CatalogIndex {
     namespaces: HashMap<NamespaceId, NamespaceParent>,
     tables: HashMap<TableId, (WarehouseId, NamespaceId)>,
     views: HashMap<ViewId, (WarehouseId, NamespaceId)>,
+    generic_tables: HashMap<GenericTableId, (WarehouseId, NamespaceId)>,
     roles: HashMap<lakekeeper::service::RoleId, ProjectId>,
 }
 
@@ -265,6 +280,7 @@ impl CatalogIndex {
             namespaces: HashMap::new(),
             tables: HashMap::new(),
             views: HashMap::new(),
+            generic_tables: HashMap::new(),
             roles: HashMap::new(),
         };
 
@@ -352,6 +368,9 @@ impl CatalogIndex {
                     }
                     TabularId::View(v) => {
                         idx.views.insert(v, (warehouse_id, ns_id));
+                    }
+                    TabularId::GenericTable(g) => {
+                        idx.generic_tables.insert(g, (warehouse_id, ns_id));
                     }
                 }
             }
@@ -479,6 +498,12 @@ impl CatalogIndex {
                     .map(ViewId::new)
                     .map(|v| self.views.contains_key(&v))
             }
+            FgaType::GenericTable => {
+                let (_, g) = id.split_once('/')?;
+                parse_uuid(g)
+                    .map(GenericTableId::new)
+                    .map(|g| self.generic_tables.contains_key(&g))
+            }
             FgaType::User | FgaType::ModelVersion | FgaType::AuthModelId => None,
         }
     }
@@ -526,11 +551,15 @@ fn is_managed_structural(tuple: &TupleKey) -> bool {
             )
             | (FgaType::Namespace, "namespace", FgaType::Warehouse)
             | (
-                FgaType::Namespace | FgaType::Table | FgaType::View,
+                FgaType::Namespace | FgaType::Table | FgaType::View | FgaType::GenericTable,
                 "child",
                 FgaType::Namespace
             )
-            | (FgaType::Namespace, "parent", FgaType::Table | FgaType::View)
+            | (
+                FgaType::Namespace,
+                "parent",
+                FgaType::Table | FgaType::View | FgaType::GenericTable
+            )
     )
 }
 
@@ -573,6 +602,14 @@ async fn write_missing_from_index(
     for (view_id, (wh, ns)) in &idx.views {
         writer
             .push("view", hierarchy_tuples_for_view(*wh, *view_id, *ns))
+            .await?;
+    }
+    for (gt_id, (wh, ns)) in &idx.generic_tables {
+        writer
+            .push(
+                "generic_table",
+                hierarchy_tuples_for_generic_table(*wh, *gt_id, *ns),
+            )
             .await?;
     }
     for (role_id, project) in &idx.roles {
@@ -688,6 +725,11 @@ fn build_expected_set(idx: &CatalogIndex) -> HashSet<(String, String, String)> {
             push(t, &mut expected);
         }
     }
+    for (gt_id, (wh, ns)) in &idx.generic_tables {
+        for t in hierarchy_tuples_for_generic_table(*wh, *gt_id, *ns) {
+            push(t, &mut expected);
+        }
+    }
     for (role_id, project) in &idx.roles {
         for t in hierarchy_tuples_for_role(project, *role_id) {
             push(t, &mut expected);
@@ -711,37 +753,6 @@ async fn flush_deletes(
     report.tuples_deleted += n as u64;
     report.delete_requests += 1;
     Ok(())
-}
-
-// ============================================================================
-// Postgres advisory lock
-// ============================================================================
-
-/// Holds an exclusive Postgres session-level advisory lock for the duration
-/// of a reconcile run. Released when the held connection is dropped.
-struct AdvisoryLock {
-    /// Keep the connection alive — release happens on drop.
-    _conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
-}
-
-impl AdvisoryLock {
-    async fn acquire(state: &CatalogState) -> anyhow::Result<Self> {
-        let mut conn =
-            state.write_pool().acquire().await.map_err(|e| {
-                anyhow::anyhow!("reconcile: failed to acquire pool conn for lock: {e}")
-            })?;
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(RECONCILE_LOCK_KEY)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|e| anyhow::anyhow!("reconcile: pg_try_advisory_lock failed: {e}"))?;
-        if !acquired {
-            anyhow::bail!(
-                "reconcile: another reconcile is already running (advisory lock {RECONCILE_LOCK_KEY:#x} held)"
-            );
-        }
-        Ok(Self { _conn: conn })
-    }
 }
 
 // ============================================================================
@@ -805,12 +816,13 @@ impl<'a> BatchWriter<'a> {
 
 fn log_index(idx: &CatalogIndex) {
     tracing::info!(
-        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} roles",
+        "reconcile: catalog index built — {} projects, {} warehouses, {} namespaces, {} tables, {} views, {} generic_tables, {} roles",
         idx.projects.len(),
         idx.warehouses.len(),
         idx.namespaces.len(),
         idx.tables.len(),
         idx.views.len(),
+        idx.generic_tables.len(),
         idx.roles.len()
     );
 }
@@ -843,7 +855,7 @@ mod openfga_integration_tests {
                 role::{CreateRoleRequest, Service as RoleService},
             },
         },
-        implementations::postgres::PostgresBackend,
+        implementations::postgres::{CatalogState, PostgresAdvisoryLock, PostgresBackend},
         server::{CatalogServer, NAMESPACE_ID_PROPERTY},
         service::{
             NamespaceIdent, RoleId,
@@ -1206,8 +1218,14 @@ mod openfga_integration_tests {
         assert!(state_before.contains(&ident(&stale_forward)));
         assert!(state_before.contains(&ident(&stale_inverse)));
 
-        let report = reconcile_hierarchy_tuples_from_catalog(
-            pg_state(&pool),
+        let state = pg_state(&pool);
+        let lock = PostgresAdvisoryLock::try_acquire(&state, RECONCILE_LOCK_KEY)
+            .await
+            .expect("acquire lock")
+            .expect("lock free");
+        let report = reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            state,
+            lock,
             &authorizer.client,
             server_id,
             ReconcileMode::AddMissingAndDeleteDrift,
@@ -1268,8 +1286,14 @@ mod openfga_integration_tests {
             .await
             .unwrap();
 
-        reconcile_hierarchy_tuples_from_catalog(
-            pg_state(&pool),
+        let state = pg_state(&pool);
+        let lock = PostgresAdvisoryLock::try_acquire(&state, RECONCILE_LOCK_KEY)
+            .await
+            .expect("acquire lock")
+            .expect("lock free");
+        reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            state,
+            lock,
             &authorizer.client,
             server_id,
             ReconcileMode::AddMissingAndDeleteDrift,
@@ -1287,46 +1311,6 @@ mod openfga_integration_tests {
             state_after.contains(&ident(&both_orphan)),
             "both-endpoints-unknown tuple must be preserved (no anchor)"
         );
-    }
-
-    #[sqlx::test]
-    async fn test_reconcile_advisory_lock_is_exclusive(pool: sqlx::PgPool) {
-        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
-        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
-        let server_id = authorizer.server_id();
-        let _ = populate(&authorizer, &pool, &operator_id).await;
-        let state = pg_state(&pool);
-
-        // Hold the lock manually using a dedicated session connection.
-        let mut conn = state.write_pool().acquire().await.unwrap();
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(RECONCILE_LOCK_KEY)
-            .fetch_one(&mut *conn)
-            .await
-            .unwrap();
-        assert!(acquired, "test setup: must acquire lock");
-
-        let result = reconcile_hierarchy_tuples_from_catalog(
-            state.clone(),
-            &authorizer.client,
-            server_id,
-            ReconcileMode::AddMissingAndDeleteDrift,
-            false,
-        )
-        .await;
-
-        assert!(
-            result.is_err(),
-            "must error when lock is held by another session"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("another reconcile is already running"),
-            "expected lock-contention error message; got: {err}"
-        );
-
-        // Release: drop conn (advisory_lock is session-scoped so it's released on close).
-        drop(conn);
     }
 
     #[sqlx::test]
@@ -1354,8 +1338,14 @@ mod openfga_integration_tests {
 
         let state_before = read_all_tuples(&authorizer.client).await;
 
-        let report = reconcile_hierarchy_tuples_from_catalog(
-            pg_state(&pool),
+        let state = pg_state(&pool);
+        let lock = PostgresAdvisoryLock::try_acquire(&state, RECONCILE_LOCK_KEY)
+            .await
+            .expect("acquire lock")
+            .expect("lock free");
+        let report = reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            state,
+            lock,
             &authorizer.client,
             server_id,
             ReconcileMode::AddMissingAndDeleteDrift,
@@ -1374,6 +1364,205 @@ mod openfga_integration_tests {
         assert_eq!(
             state_before, state_after,
             "dry run must not mutate the OpenFGA store"
+        );
+    }
+
+    // ---- Generic-table regressions --------------------------------------
+
+    #[sqlx::test]
+    async fn test_rebuild_restores_missing_generic_table_parent_edge(pool: sqlx::PgPool) {
+        use std::collections::HashMap;
+
+        use lakekeeper::{
+            api::{
+                data::v1::generic_tables::{
+                    CreateGenericTableRequest, GenericTableService as _, ListGenericTablesQuery,
+                },
+                iceberg::v1::namespace::NamespaceParameters,
+            },
+            service::{GenericTableFormat, GenericTableId},
+        };
+
+        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
+        let server_id = authorizer.server_id();
+
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .authorizer(authorizer.clone())
+            .user_id(Some(operator_id.clone()))
+            .build()
+            .setup()
+            .await;
+
+        let ns_name = "ns_gt".to_string();
+        let create_ns = CatalogServer::create_namespace(
+            Some(Prefix::from(warehouse.warehouse_id.to_string())),
+            CreateNamespaceRequest {
+                namespace: NamespaceIdent::from_vec(vec![ns_name.clone()]).unwrap(),
+                properties: None,
+            },
+            ctx.clone(),
+            RequestMetadata::test_user(operator_id.clone()),
+        )
+        .await
+        .unwrap();
+        let ns_id = NamespaceId::from_str_or_internal(
+            create_ns
+                .properties
+                .as_ref()
+                .unwrap()
+                .get(NAMESPACE_ID_PROPERTY)
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Create generic table via the full server path so authz tuples are
+        // written through `authorizer.create_generic_table`.
+        CatalogServer::create_generic_table(
+            NamespaceParameters {
+                prefix: Some(Prefix::from(warehouse.warehouse_id.to_string())),
+                namespace: NamespaceIdent::from_vec(vec![ns_name.clone()]).unwrap(),
+            },
+            CreateGenericTableRequest {
+                name: "my_gt".to_string(),
+                format: GenericTableFormat::Unknown("lance".to_string()),
+                base_location: None,
+                doc: None,
+                properties: HashMap::default(),
+                schema: None,
+                statistics: None,
+            },
+            ctx.clone(),
+            RequestMetadata::test_user(operator_id.clone()),
+        )
+        .await
+        .unwrap();
+
+        // The id isn't returned from create; list to discover it.
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: Some(Prefix::from(warehouse.warehouse_id.to_string())),
+                namespace: NamespaceIdent::from_vec(vec![ns_name.clone()]).unwrap(),
+            },
+            ListGenericTablesQuery::default(),
+            ctx.clone(),
+            RequestMetadata::test_user(operator_id.clone()),
+        )
+        .await
+        .unwrap();
+        let gt_id: GenericTableId = listed
+            .identifiers
+            .iter()
+            .find(|i| i.name == "my_gt")
+            .and_then(|i| i.id)
+            .expect("generic table id present in list response");
+
+        // Delete one hierarchy edge — rebuild must restore it.
+        let parent_edge =
+            crate::tuples::hierarchy_tuples_for_generic_table(warehouse.warehouse_id, gt_id, ns_id)
+                .into_iter()
+                .next()
+                .unwrap();
+        authorizer
+            .client
+            .write(
+                None,
+                Some(vec![TupleKeyWithoutCondition {
+                    user: parent_edge.user.clone(),
+                    relation: parent_edge.relation.clone(),
+                    object: parent_edge.object.clone(),
+                }]),
+            )
+            .await
+            .unwrap();
+        let state_after_delete = read_all_tuples(&authorizer.client).await;
+        assert!(!state_after_delete.contains(&ident(&parent_edge)));
+
+        rebuild_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            pg_state(&pool),
+            &authorizer.client,
+            server_id,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let state_after_rebuild = read_all_tuples(&authorizer.client).await;
+        assert!(
+            state_after_rebuild.contains(&ident(&parent_edge)),
+            "rebuild must restore the generic-table parent edge"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_reconcile_deletes_drifted_generic_table_parent_edge(pool: sqlx::PgPool) {
+        let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+        let (_svc_client, authorizer) = authorizer_for_empty_store().await;
+        let server_id = authorizer.server_id();
+        let (warehouse, root_ns_id, _child, _role) =
+            populate(&authorizer, &pool, &operator_id).await;
+
+        // Inject a stale namespace→generic_table parent edge with a generic_table
+        // id that does not exist in the catalog.
+        let bogus_gt_uuid = Uuid::now_v7();
+        let stale_forward = TupleKey {
+            user: format!("namespace:{root_ns_id}"),
+            relation: "parent".to_string(),
+            object: format!(
+                "lakekeeper_generic_table:{}/{bogus_gt_uuid}",
+                warehouse.warehouse_id
+            ),
+            condition: None,
+        };
+        let stale_inverse = TupleKey {
+            user: stale_forward.object.clone(),
+            relation: "child".to_string(),
+            object: stale_forward.user.clone(),
+            condition: None,
+        };
+        authorizer
+            .client
+            .write(
+                Some(vec![stale_forward.clone(), stale_inverse.clone()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let state_before = read_all_tuples(&authorizer.client).await;
+        assert!(state_before.contains(&ident(&stale_forward)));
+        assert!(state_before.contains(&ident(&stale_inverse)));
+
+        let state = pg_state(&pool);
+        let lock = PostgresAdvisoryLock::try_acquire(&state, RECONCILE_LOCK_KEY)
+            .await
+            .expect("acquire lock")
+            .expect("lock free");
+        let report = reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            state,
+            lock,
+            &authorizer.client,
+            server_id,
+            ReconcileMode::AddMissingAndDeleteDrift,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            report.tuples_deleted >= 2,
+            "expected both forward and inverse stale generic-table edges to be deleted; report={report:?}"
+        );
+
+        let state_after = read_all_tuples(&authorizer.client).await;
+        assert!(
+            !state_after.contains(&ident(&stale_forward)),
+            "stale forward generic-table edge must be deleted"
+        );
+        assert!(
+            !state_after.contains(&ident(&stale_inverse)),
+            "stale inverse generic-table edge must be deleted"
         );
     }
 }

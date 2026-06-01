@@ -127,6 +127,22 @@ impl EventDispatcher {
         dispatch_event!(self, view_loaded, event);
     }
 
+    pub(crate) async fn generic_table_created(&self, event: types::CreateGenericTableEvent) {
+        dispatch_event!(self, generic_table_created, event);
+    }
+
+    pub(crate) async fn generic_table_dropped(&self, event: types::DropGenericTableEvent) {
+        dispatch_event!(self, generic_table_dropped, event);
+    }
+
+    pub(crate) async fn generic_table_loaded(&self, event: types::LoadGenericTableEvent) {
+        dispatch_event!(self, generic_table_loaded, event);
+    }
+
+    pub(crate) async fn generic_table_renamed(&self, event: types::RenameGenericTableEvent) {
+        dispatch_event!(self, generic_table_renamed, event);
+    }
+
     pub(crate) async fn tabular_undropped(&self, event: types::UndropTabularEvent) {
         dispatch_event!(self, tabular_undropped, event);
     }
@@ -156,6 +172,13 @@ impl EventDispatcher {
         event: types::UpdateWarehouseDeleteProfileEvent,
     ) {
         dispatch_event!(self, warehouse_delete_profile_updated, event);
+    }
+
+    pub(crate) async fn warehouse_format_version_policy_updated(
+        &self,
+        event: types::UpdateWarehouseFormatVersionPolicyEvent,
+    ) {
+        dispatch_event!(self, warehouse_format_version_policy_updated, event);
     }
 
     pub(crate) async fn warehouse_storage_updated(
@@ -330,6 +353,40 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    // ===== Generic Table Events =====
+
+    /// Invoked after a generic table has been successfully created
+    async fn generic_table_created(
+        &self,
+        _event: types::CreateGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully dropped
+    async fn generic_table_dropped(
+        &self,
+        _event: types::DropGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table's metadata has been successfully loaded
+    async fn generic_table_loaded(
+        &self,
+        _event: types::LoadGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully renamed
+    async fn generic_table_renamed(
+        &self,
+        _event: types::RenameGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     // ===== Tabular Events =====
 
     /// Invoked after tables or views have been successfully undeleted
@@ -373,6 +430,14 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn warehouse_delete_profile_updated(
         &self,
         _event: types::UpdateWarehouseDeleteProfileEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after warehouse format version policy has been successfully updated
+    async fn warehouse_format_version_policy_updated(
+        &self,
+        _event: types::UpdateWarehouseFormatVersionPolicyEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

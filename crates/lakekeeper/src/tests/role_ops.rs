@@ -7,14 +7,17 @@ use crate::{
         iceberg::v1::PaginationQuery,
         management::v1::{
             ApiServer,
-            role::{CreateRoleRequest, Service as _, UpdateRoleRequest},
+            role::{
+                CreateRoleRequest, Service as _, UpdateRoleRequest, UpdateRoleSourceSystemRequest,
+            },
         },
     },
     implementations::postgres::PostgresBackend,
     service::{
         ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogListRolesByIdFilter,
-        CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId, Transaction,
-        authn::Actor, authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
+        CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId,
+        SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction, authn::Actor,
+        authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
     },
     tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
@@ -894,4 +897,407 @@ async fn test_list_roles_cache_source_id_filter(pool: PgPool) {
     // Only role_a matches the source_id filter
     assert_eq!(result.roles.len(), 1);
     assert_eq!(result.roles[0].id(), role_a.id());
+}
+
+// ==================== System role rejection tests ====================
+
+/// `create_role` rejects requests with `provider_id = "system"`.
+#[sqlx::test]
+async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let err = ApiServer::create_role(
+        CreateRoleRequest {
+            name: "my-attempted-system-role".to_string(),
+            description: None,
+            project_id: Some((*warehouse_resp.project_id).clone()),
+            provider_id: Some((*SYSTEM_ROLE_PROVIDER_ID).clone()),
+            source_id: Some("custom-admin".parse().unwrap()),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "RoleProviderIdReserved");
+    assert_eq!(err.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+}
+
+/// Create a system role directly via the catalog layer (bypasses the
+/// `reject_system_provider` API guard). Used as fixture by tests that need
+/// an existing system row to verify the immutability guards.
+async fn seed_test_system_role(
+    ctx: &crate::api::ApiContext<
+        crate::service::State<
+            AllowAllAuthorizer,
+            PostgresBackend,
+            crate::implementations::postgres::SecretsState,
+        >,
+    >,
+    project_id: &ProjectId,
+    source_id: &str,
+) -> RoleId {
+    let source: RoleSourceId = source_id.parse().unwrap();
+    let name = format!("Test {source_id}");
+    let request = CatalogCreateRoleRequest::builder()
+        .role_id(RoleId::new_random())
+        .role_name(&name)
+        .source_id(&source)
+        .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+        .build();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let created = PostgresBackend::create_roles(project_id, vec![request], tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    created[0].id()
+}
+
+/// `delete_role` rejects a system role with `SystemRoleImmutable`.
+#[sqlx::test]
+async fn test_delete_role_rejects_system_role(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let role_id = seed_test_system_role(&ctx, &warehouse_resp.project_id, "test_admin").await;
+
+    let err = ApiServer::delete_role(
+        ctx.clone(),
+        request_metadata_with_project(&warehouse_resp.project_id),
+        role_id,
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(err.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+
+    // Row is still present.
+    let still_there = PostgresBackend::get_role_by_id(
+        &warehouse_resp.project_id,
+        role_id,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(still_there.id(), role_id);
+}
+
+/// `update_role` rejects a system role with `SystemRoleImmutable`.
+#[sqlx::test]
+async fn test_update_role_rejects_system_role(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let role_id = seed_test_system_role(&ctx, &warehouse_resp.project_id, "test_admin").await;
+
+    let err = ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(&warehouse_resp.project_id),
+        role_id,
+        UpdateRoleRequest {
+            name: "Renamed".to_string(),
+            description: Some("nope".to_string()),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "SystemRoleImmutable");
+    assert_eq!(err.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+}
+
+/// `update_role_source_system` rejects when the target role is a system role.
+#[sqlx::test]
+async fn test_update_role_source_system_rejects_system_target(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let role_id = seed_test_system_role(&ctx, &warehouse_resp.project_id, "test_admin").await;
+
+    let err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(&warehouse_resp.project_id),
+        role_id,
+        UpdateRoleSourceSystemRequest {
+            provider_id: "oidc".parse().unwrap(),
+            source_id: "moved-out".parse().unwrap(),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "SystemRoleImmutable");
+}
+
+/// `update_role_source_system` rejects when the *new* `provider_id` is `system`.
+#[sqlx::test]
+async fn test_update_role_source_system_rejects_system_provider(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    // Create a customer role that we'll try to rebind into the system namespace.
+    let role = db_create_role(
+        &ctx,
+        &warehouse_resp.project_id,
+        "customer-role",
+        "src-customer",
+    )
+    .await;
+
+    let err = ApiServer::update_role_source_system(
+        ctx.clone(),
+        request_metadata_with_project(&warehouse_resp.project_id),
+        role.id(),
+        UpdateRoleSourceSystemRequest {
+            provider_id: (*SYSTEM_ROLE_PROVIDER_ID).clone(),
+            source_id: "smuggled".parse().unwrap(),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.r#type, "RoleProviderIdReserved");
+}
+
+/// The `Role` API response surfaces a system role's identity via
+/// `provider-id = "system"`. Customer-created roles default to
+/// `provider-id = "lakekeeper"`.
+#[sqlx::test]
+async fn test_role_response_provider_id_distinguishes_system_from_customer(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    // Customer role via the API: defaults to provider-id = "lakekeeper".
+    let customer = ApiServer::create_role(
+        CreateRoleRequest {
+            name: "my-customer-role".to_string(),
+            description: None,
+            project_id: Some((*warehouse_resp.project_id).clone()),
+            provider_id: None,
+            source_id: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(customer.provider_id.as_str(), "lakekeeper");
+
+    // System role seeded via the catalog (bypassing the API guard):
+    // provider-id = "system".
+    let system_role_id =
+        seed_test_system_role(&ctx, &warehouse_resp.project_id, "example_role").await;
+    let role = ApiServer::get_role(
+        ctx.clone(),
+        request_metadata_with_project(&warehouse_resp.project_id),
+        system_role_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(role.provider_id.as_str(), "system");
+    assert_eq!(role.source_id.as_str(), "example_role");
+}
+
+fn system_role_spec(source_id: &'static str, name: &'static str) -> SystemRoleSpec {
+    SystemRoleSpec {
+        source_id: RoleSourceId::try_new(source_id).unwrap(),
+        name,
+        description: "test system role",
+    }
+}
+
+/// `upsert_system_roles` inserts new specs and refreshes only the rows that
+/// actually changed. The same call twice in a row returns an empty Vec.
+#[sqlx::test]
+async fn test_upsert_system_roles_via_trait(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+
+    // First call: inserts both rows.
+    let specs = vec![
+        system_role_spec("svc_admin", "Service Admin"),
+        system_role_spec("svc_user", "Service User"),
+    ];
+    let cap = SystemRoleSeederCap::new();
+
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let inserted = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(inserted.len(), 2);
+
+    // Second call with identical specs: no-op upsert, empty Vec.
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let nochange = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(nochange.len(), 0, "idempotent re-seed must be a no-op");
+
+    // Third call with one changed name: only the changed row is returned.
+    let refreshed = vec![
+        SystemRoleSpec {
+            source_id: RoleSourceId::try_new("svc_admin").unwrap(),
+            name: "Renamed Admin",
+            description: "test system role",
+        },
+        system_role_spec("svc_user", "Service User"),
+    ];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let changed =
+        PostgresBackend::upsert_system_roles(project_id, &refreshed, cap, tx.transaction())
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].name, "Renamed Admin");
+    assert_eq!(changed[0].ident.source_id().as_str(), "svc_admin");
+}
+
+/// `delete_system_roles` removes rows by `source_id` and is idempotent: a
+/// second call returns an empty Vec.
+#[sqlx::test]
+async fn test_delete_system_roles_via_trait(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let cap = SystemRoleSeederCap::new();
+
+    // Seed one row.
+    let specs = vec![system_role_spec("retired_role", "Retired")];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // First delete: returns one row.
+    let source_id = RoleSourceId::try_new("retired_role").unwrap();
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let deleted =
+        PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, tx.transaction())
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(deleted.len(), 1);
+
+    // Second delete: idempotent, no error.
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let again =
+        PostgresBackend::delete_system_roles(project_id, &[&source_id], cap, tx.transaction())
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(again.len(), 0);
+}
+
+/// `upsert_system_roles` rejects duplicate `source_ids` in a single batch
+/// with `RoleSourceIdConflict`. Without this check, Postgres would raise
+/// a `cardinality_violation` (`ON CONFLICT DO UPDATE` can't touch the
+/// same row twice) and surface it as an opaque backend error.
+#[sqlx::test]
+async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+    let cap = SystemRoleSeederCap::new();
+
+    let specs = vec![
+        system_role_spec("dup", "First"),
+        system_role_spec("dup", "Second"),
+    ];
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let err = PostgresBackend::upsert_system_roles(project_id, &specs, cap, tx.transaction())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::service::CreateRoleError::RoleSourceIdConflict(_)
+        ),
+        "expected RoleSourceIdConflict, got: {err:?}"
+    );
 }

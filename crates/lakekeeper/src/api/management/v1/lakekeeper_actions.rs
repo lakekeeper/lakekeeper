@@ -10,18 +10,20 @@ use crate::{
     api::{ApiContext, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogWarehouseOps, NamespaceId, Result, RoleId, SecretStore, State, TableId,
-        TabularListFlags, UserId, ViewId, WarehouseStatus,
+        CatalogWarehouseOps, GenericTableId, NamespaceId, Result, RoleId, SecretStore, State,
+        TableId, TabularListFlags, UserId, ViewId, WarehouseStatus,
         authn::UserIdRef,
         authz::{
-            ActionOnTable, ActionOnView, AuthZCannotSeeNamespace, AuthZCannotSeeRole,
-            AuthZCannotSeeTable, AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, AuthZCannotSeeGenericTable,
+            AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps,
             AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
             AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogUserAction,
-            CatalogViewAction, CatalogWarehouseAction, RequireProjectActionError,
-            RequireRoleActionError, RoleAssignee, UserOrRole, UserOrRoleId,
+            AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
+            CatalogTableAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            RequireProjectActionError, RequireRoleActionError, RoleAssignee, UserOrRole,
+            UserOrRoleId, fetch_warehouse_namespace_generic_table_by_id,
             fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
             refresh_warehouse_and_namespace_if_needed,
         },
@@ -125,6 +127,10 @@ action_response!(
 );
 action_response!(GetLakekeeperTableActionsResponse, CatalogTableAction);
 action_response!(GetLakekeeperViewActionsResponse, CatalogViewAction);
+action_response!(
+    GetLakekeeperGenericTableActionsResponse,
+    CatalogGenericTableAction
+);
 action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
 
 /// Resolve an API-level principal (which may contain only a `RoleId`) into the authz `UserOrRole`
@@ -865,6 +871,127 @@ async fn authorize_get_view_actions<C: CatalogStore>(
 
     if !can_see {
         return Err(AuthZCannotSeeView::new_forbidden(warehouse_id, view_id).into());
+    }
+
+    Ok(allowed_actions)
+}
+
+pub(super) async fn get_allowed_generic_table_actions<
+    A: Authorizer,
+    C: CatalogStore,
+    S: SecretStore,
+>(
+    context: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+    query: GetAccessQuery,
+    warehouse_id: WarehouseId,
+    generic_table_id: GenericTableId,
+) -> Result<Vec<CatalogGenericTableAction>> {
+    let for_user_api = query.try_parse()?.principal;
+
+    let mut event_ctx = APIEventContext::for_generic_table(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        warehouse_id,
+        generic_table_id,
+        IntrospectPermissions {},
+    );
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_generic_table_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        warehouse_id,
+        generic_table_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_generic_table_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    warehouse_id: WarehouseId,
+    generic_table_id: GenericTableId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogGenericTableAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
+    let actions = CatalogGenericTableAction::variants();
+    let can_see_permission = CatalogGenericTableAction::IncludeInList;
+
+    let (warehouse, namespace, info) = fetch_warehouse_namespace_generic_table_by_id::<C, _>(
+        &authorizer,
+        warehouse_id,
+        generic_table_id,
+        TabularListFlags::all(),
+        catalog_state.clone(),
+    )
+    .await?;
+
+    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
+        &warehouse,
+        namespace,
+        &info,
+        AuthZCannotSeeGenericTable::new_forbidden(warehouse_id, generic_table_id),
+        &authorizer,
+        catalog_state,
+    )
+    .await?;
+
+    let parents_map = namespace
+        .parents
+        .into_iter()
+        .map(|ns| (ns.namespace_id(), ns))
+        .collect();
+
+    let results = authorizer
+        .are_allowed_generic_table_actions_vec(
+            request_metadata,
+            &warehouse,
+            &parents_map,
+            &actions
+                .iter()
+                .map(|action| {
+                    (
+                        &namespace.namespace,
+                        ActionOnGenericTable {
+                            info: &info,
+                            action: action.clone(),
+                            user: for_user.as_ref(),
+                            is_delegated_execution: false,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await?
+        .into_inner();
+
+    let mut can_see = false;
+    let allowed_actions = results
+        .iter()
+        .zip(actions)
+        .filter_map(|(allowed, action)| {
+            if *allowed {
+                if action == &can_see_permission {
+                    can_see = true;
+                }
+                Some(action.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !can_see {
+        return Err(
+            AuthZCannotSeeGenericTable::new_forbidden(warehouse_id, generic_table_id).into(),
+        );
     }
 
     Ok(allowed_actions)

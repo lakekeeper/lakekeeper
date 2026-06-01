@@ -1,2 +1,11 @@
 [build]
 rustflags = ["--cfg", "tracing_unstable", "--cfg", "tokio_unstable"]
+
+# Force sqlx macros to read from `.sqlx/` instead of opening a DB connection per
+# query when DATABASE_URL is set (e.g. via crates/lakekeeper/.env). `cargo sqlx
+# prepare` explicitly sets SQLX_OFFLINE=false on its cargo subprocess
+# (sqlx-cli prepare.rs), and cargo's [env] table defers to inherited values when
+# `force = false` (the default), so `just sqlx-prepare` still regenerates the
+# cache against the live database.
+[env]
+SQLX_OFFLINE = "true"

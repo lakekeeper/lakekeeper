@@ -452,6 +452,58 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
     ```
 We are now able to login and bootstrap Lakekeeper.
 
+## Multiple OIDC Providers
+
+For scenarios where you need to authenticate tokens from multiple identity providers simultaneously—such as Okta for human users and EKS OIDC for Kubernetes service accounts—Lakekeeper supports configuring multiple OIDC providers.
+
+When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
+
+### Configuration
+
+Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI`, which remains the primary provider (`idp_id = "oidc"`).
+
+```bash
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__URI=https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__SUBJECT_CLAIMS=sub
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__URI=https://oidc.eks.us-east-1.amazonaws.com/id/XYZ789GHI012
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__SUBJECT_CLAIMS=sub
+```
+
+### User Identity Format
+
+User IDs include the provider's `IDP_ID` as a prefix: `{idp_id}~{subject}`. For example:
+- `okta~user@example.com` for a user from Okta
+- `eksclustera~system:serviceaccount:namespace:my-app` for a Kubernetes service account
+
+This allows you to distinguish users from different identity providers when granting permissions.
+
+### UI Login
+
+The Lakekeeper UI can redirect to only one OIDC provider for SSO — the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Providers added under `LAKEKEEPER__OPENID_PROVIDERS` are used for API token validation only. If `LAKEKEEPER__OPENID_PROVIDER_URI` is not set, the UI login button is disabled by design; clients must obtain tokens out-of-band and call the API directly.
+
+### Resilient Initialization
+
+By default, Lakekeeper refuses to start if a configured provider's OIDC/JWKS configuration cannot be loaded. Set `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting with the remaining authenticators. The primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI` always requires a successful connection on startup.
+
+### When to Use Multiple Providers
+
+Common use cases include:
+
+- **Okta/Entra + EKS OIDC**: Human users authenticate via corporate IdP, while Kubernetes workloads use EKS OIDC tokens
+- **Multi-cluster Kubernetes**: Different EKS/GKE clusters each have their own OIDC provider
+- **Migration scenarios**: Gradually migrating from one IdP to another while both remain active
+
+See the [Configuration Reference](./configuration.md#multiple-oidc-providers) for the full list of available options per provider.
+
+**Identity continuity note:** Existing user IDs are formatted as `oidc~<subject>` from the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Do not move that provider into `LAKEKEEPER__OPENID_PROVIDERS` under a different `IDP_ID` (e.g., `okta`), or existing role/user assignments will no longer match.
+
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:
 

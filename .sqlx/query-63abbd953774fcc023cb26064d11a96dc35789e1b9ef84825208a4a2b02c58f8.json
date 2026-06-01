@@ -48,7 +48,8 @@
                 "namespace",
                 "role",
                 "user",
-                "server"
+                "server",
+                "generic-table"
               ]
             }
           }
@@ -208,7 +209,8 @@
                       "namespace",
                       "role",
                       "user",
-                      "server"
+                      "server",
+                      "generic-table"
                     ]
                   }
                 }

@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.12.3](https://github.com/lakekeeper/lakekeeper/compare/v0.12.2...v0.12.3) (2026-05-26)
+
+
+### Features
+
+* add LAKEKEEPER__UI__ENABLE_SURVEYS opt-out flag ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **migrations:** atomic core + extension migrations ([aa734bf](https://github.com/lakekeeper/lakekeeper/commit/aa734bffcacd98566aa670f62341a4455833496c))
+* **role:** accept Into&lt;Arc&lt;RoleProviderId&gt;&gt; in RoleIdent::new ([#1758](https://github.com/lakekeeper/lakekeeper/issues/1758)) ([60ac97d](https://github.com/lakekeeper/lakekeeper/commit/60ac97d652d105be8a4fca99f2ecc84bdebf5430))
+* RoleIdent cheap cloning / inner Arc for provider ([#1757](https://github.com/lakekeeper/lakekeeper/issues/1757)) ([78b3009](https://github.com/lakekeeper/lakekeeper/commit/78b3009fefab629d151c0ffd25a5baa5275fcd31))
+* **role:** reserve `system` provider for catalog-managed roles ([#1776](https://github.com/lakekeeper/lakekeeper/issues/1776)) ([0441112](https://github.com/lakekeeper/lakekeeper/commit/044111241dd1c15fd955323575b692756f7c1ae9))
+* **server:** add read-only maintenance mode ([#1765](https://github.com/lakekeeper/lakekeeper/issues/1765)) ([5279d69](https://github.com/lakekeeper/lakekeeper/commit/5279d69dcaa29e78a8b435a8fb9b36d109c47978))
+* **ui:** "Export for GitHub" button and dialog in Server Overview — copies / downloads a JSON support bundle (server info + UI config, no tokens) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** "Export for GitHub" item in AppBar help menu ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** Feedback button at the right of the AppBar with 1-10 rating, discovery source select (incl. "Other"), and 2000-char improvements field; pre-fills a mailto draft to info@vakamo.com ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** Show role provider id in overfiew (v0.14.3) ([c7c2c1b](https://github.com/lakekeeper/lakekeeper/commit/c7c2c1b836f60937e8788df4bab7b3dc2e88e14e))
+* **ui:** two-column Server Information + Console layout in Server Settings ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** User Surveys row in UI Configuration (toggle from VITE_ENABLE_USER_SURVEYS) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **users:** drop unique-email constraint ([#1755](https://github.com/lakekeeper/lakekeeper/issues/1755)) ([bfd2812](https://github.com/lakekeeper/lakekeeper/commit/bfd2812fa3b9f8ec30824340d465a15c9f5cc546))
+
+
+### Bug Fixes
+
+* **ci:** hashicorp/vault non-root entrypoint ([0ea1f47](https://github.com/lakekeeper/lakekeeper/commit/0ea1f4735f45de1b425063f8c401895a99f35614))
+* inconsistency between link text and target ([#1753](https://github.com/lakekeeper/lakekeeper/issues/1753)) ([d01dd94](https://github.com/lakekeeper/lakekeeper/commit/d01dd94720fe6bff9ac73efba763896dab710be5))
+* **kv2:** replace stale vault health status ([#1773](https://github.com/lakekeeper/lakekeeper/issues/1773)) ([4176ad5](https://github.com/lakekeeper/lakekeeper/commit/4176ad5d2368a630d44fb5313ceba8c3fdb2245f))
+* **postgres/migrations:** rewrite namespace trigger so pg_restore can replay it ([#1781](https://github.com/lakekeeper/lakekeeper/issues/1781)) ([14f224d](https://github.com/lakekeeper/lakekeeper/commit/14f224d63181725483184ee21be7aa15926abd3e))
+* **stats:** assert relative deltas to tolerate bucket straddling ([0ea1f47](https://github.com/lakekeeper/lakekeeper/commit/0ea1f4735f45de1b425063f8c401895a99f35614))
+* table property removal lost when no properties remain ([#1767](https://github.com/lakekeeper/lakekeeper/issues/1767)) ([3055b0a](https://github.com/lakekeeper/lakekeeper/commit/3055b0a6c888b752b2b6c014d6e8bbc743acd96f))
+* **ui:** show Lakekeeper Version (drop Enterprise Version row when running OSS edition) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **view:** preserve protection during view commits ([#1770](https://github.com/lakekeeper/lakekeeper/issues/1770)) ([bf4c409](https://github.com/lakekeeper/lakekeeper/commit/bf4c40907bfddefe6590bbd52af5bb8bc5d5c3ef))
+* **view:** respect force=true in soft-delete warehouses on drop ([#1779](https://github.com/lakekeeper/lakekeeper/issues/1779)) ([c1b4357](https://github.com/lakekeeper/lakekeeper/commit/c1b4357b0efd659ea9a4920d5c31964b4ef62aae))
+
+
+### Documentation
+
+* **example:** add Firebolt section to documented engines ([#1759](https://github.com/lakekeeper/lakekeeper/issues/1759)) ([ab030b1](https://github.com/lakekeeper/lakekeeper/commit/ab030b10cf74ce47f3bab66bc18a8f1ec0cc9d2b))
+* **role-provider:** document Search and Branching LDAP modes ([05cce57](https://github.com/lakekeeper/lakekeeper/commit/05cce5797d3321ce30c59e034f19a3861c39cd88))
+
+
+### Miscellaneous Chores
+
+* Bridge lakekeeper-io to Iceberg Storage trait ([#1734](https://github.com/lakekeeper/lakekeeper/issues/1734)) ([a152365](https://github.com/lakekeeper/lakekeeper/commit/a15236583a61f0ef50ccb0228d0b3b7833df3ab9))
+* Bump MSRV to 1.94 ([aa734bf](https://github.com/lakekeeper/lakekeeper/commit/aa734bffcacd98566aa670f62341a4455833496c))
+* **deps:** bump @lakekeeper/console-components to v0.6.2 (Renovate batches: eslint, vue-router / vue-tsc / eslint-plugin-vue, sql-formatter, @codemirror/view; README typos; @hey-api/openapi-ts 0.97 SDK regen) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **deps:** sqlx v0.9.0 ([aa734bf](https://github.com/lakekeeper/lakekeeper/commit/aa734bffcacd98566aa670f62341a4455833496c))
+* **docs:** Improve remove orphan file docs ([79b9d46](https://github.com/lakekeeper/lakekeeper/commit/79b9d4630cc8804cc483c2d85ba2ed0430ac110a))
+* **docs:** Update plus OpenAPI (remove orphan files) ([bf77a59](https://github.com/lakekeeper/lakekeeper/commit/bf77a590f4fe27f07d42d44534a1518c8f87fd65))
+* **refactor:** split TabularRow into core and properties variants ([#1777](https://github.com/lakekeeper/lakekeeper/issues/1777)) ([30a9259](https://github.com/lakekeeper/lakekeeper/commit/30a925901f79e8e8b6b8520999c674f79a20a785))
+* **ui:** dependencies page reads installed lib version from node_modules (no longer needs a sibling repo checkout) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* Update dependencies ([#1754](https://github.com/lakekeeper/lakekeeper/issues/1754)) ([bd2c57c](https://github.com/lakekeeper/lakekeeper/commit/bd2c57cac9b36ff6f036c590c5a7e39197ec966d))
+
 ## [0.12.2](https://github.com/lakekeeper/lakekeeper/compare/v0.12.1...v0.12.2) (2026-05-10)
 
 

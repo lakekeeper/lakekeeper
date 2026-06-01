@@ -54,7 +54,7 @@ mod test {
             },
         },
         service::{
-            ArcProjectId, CatalogTaskOps,
+            ArcProjectId, CatalogTaskOps, WarehouseFormatVersionPolicy,
             storage::{MemoryProfile, StorageProfile},
             tasks::{
                 ScheduleTaskMetadata, SpecializedTask, TaskConfig, TaskData, TaskEntity,
@@ -153,6 +153,7 @@ mod test {
             storage_profile,
             tabular_delete_profile,
             None,
+            WarehouseFormatVersionPolicy::default(),
             &mut tx,
         )
         .await

@@ -44,7 +44,7 @@ use crate::{
             get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
             mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
             table::{commit_table_transaction, create_table},
-            view::{create_view, load_view},
+            view::{commit_existing_view, create_view, load_view},
         },
         tasks::{
             cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
@@ -53,7 +53,9 @@ use crate::{
             resolve_tasks, set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
-        warehouse::{get_warehouse_stats, set_warehouse_protection},
+        warehouse::{
+            get_warehouse_stats, set_warehouse_format_version_policy, set_warehouse_protection,
+        },
     },
     service::{
         ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
@@ -64,21 +66,25 @@ use crate::{
         CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
         CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
         ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
-        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
-        CreateViewError, DropTabularError, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListNamespacesQuery, ListRoleMembersResult,
-        ListRolesError, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
-        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
-        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
-        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
+        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
+        DropTabularError, GenericTableCreation, GenericTableId, GenericTableInfo,
+        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, GetTaskDetailsError, ListGenericTablesError, ListNamespacesQuery,
+        ListRoleMembersResult, ListRolesError, ListRolesResponse, ListTabularsError,
+        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
+        LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
+        NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask,
+        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
         SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
         TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
         TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
         UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
-        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId, WarehouseStatus,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
+        WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -307,9 +313,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: crate::service::OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Role>, CreateRoleError> {
-        create_roles(project_id, roles_to_create, &mut **transaction).await
+        create_roles(project_id, roles_to_create, on_conflict, &mut **transaction).await
     }
 
     async fn update_role_impl<'a>(
@@ -348,11 +355,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn delete_roles_impl<'a>(
-        project_id: &ProjectId,
-        role_id_filter: Option<&[RoleId]>,
+        project_id: Option<&ProjectId>,
+        filter: crate::service::CatalogListRolesByIdFilter<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError> {
-        delete_roles(project_id, role_id_filter, &mut **transaction).await
+        delete_roles(project_id, filter, &mut **transaction).await
     }
 
     async fn search_role_impl(
@@ -502,6 +509,7 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        format_version_policy: WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
         create_warehouse(
@@ -510,6 +518,7 @@ impl CatalogStore for super::PostgresBackend {
             storage_profile,
             tabular_delete_profile,
             storage_secret_id,
+            format_version_policy,
             transaction,
         )
         .await
@@ -672,7 +681,6 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn commit_view_impl<'a>(
         ViewCommit {
-            view_ident,
             namespace_id,
             warehouse_id,
             previous_view,
@@ -680,24 +688,15 @@ impl CatalogStore for super::PostgresBackend {
         }: ViewCommit<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ViewInfo, CommitViewError> {
-        drop_tabular(
-            warehouse_id,
-            ViewId::from(previous_view.metadata.uuid()).into(),
-            true,
-            Some(&previous_view.metadata_location),
-            transaction,
-        )
-        .await?;
-        create_view(
+        commit_existing_view(
             warehouse_id,
             namespace_id,
             &new_view.metadata_location,
+            &previous_view.metadata_location,
             transaction,
-            &view_ident.name,
             &new_view.metadata,
         )
         .await
-        .map_err(Into::into)
     }
 
     async fn search_tabular_impl(
@@ -751,6 +750,14 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
+    }
+
+    async fn set_warehouse_format_version_policy_impl(
+        warehouse_id: WarehouseId,
+        policy: &WarehouseFormatVersionPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
+        set_warehouse_format_version_policy(warehouse_id, policy, transaction).await
     }
 
     async fn pick_new_task_impl(
@@ -898,5 +905,76 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool> {
         Self::try_insert_idempotency_key_impl(warehouse_id, info, transaction).await
+    }
+
+    // ---------------- Generic Table Management ----------------
+    async fn create_generic_table_impl<'a>(
+        creation: GenericTableCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, CreateGenericTableError> {
+        super::tabular::generic_table::create_generic_table(creation, transaction).await
+    }
+
+    async fn load_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError> {
+        super::tabular::generic_table::load_generic_table(
+            warehouse_id,
+            namespace_id,
+            table_name,
+            transaction,
+        )
+        .await
+    }
+
+    async fn load_generic_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: crate::service::GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError> {
+        super::tabular::generic_table::load_generic_table_by_id(
+            warehouse_id,
+            generic_table_id,
+            transaction,
+        )
+        .await
+    }
+
+    async fn list_generic_tables_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>
+    {
+        super::tabular::generic_table::list_generic_tables(
+            warehouse_id,
+            namespace_id,
+            namespace_ident,
+            page_size,
+            page_token,
+            transaction,
+        )
+        .await
+    }
+
+    async fn drop_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableId, DropGenericTableError> {
+        super::tabular::generic_table::drop_generic_table(
+            warehouse_id,
+            namespace_id,
+            table_name,
+            transaction,
+        )
+        .await
     }
 }

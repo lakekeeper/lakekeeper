@@ -39,6 +39,26 @@ Keep in mind that some tests are excluded by the `default-filter` in `.config/ne
 There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
 If you made any changes to SQL queries, please follow [Working with SQLx](#working-with-sqlx) before submitting your PR.
 
+### Required tools for OpenAPI regeneration
+
+The `just update-management-openapi` and `just update-generic-table-openapi` recipes — plus several `add-*-to-rest-openapi` recipes — require **Go yq** ([mikefarah/yq](https://github.com/mikefarah/yq)).
+
+The Python `yq` (kislyuk) shipped via `pip install yq` is **not compatible**: it uses different flags (`-y -i` instead of `-i`) and its YAML emitter formats lists differently, which produces large whitespace-only diffs.
+
+Install Go yq:
+
+```bash
+# macOS
+brew install yq
+
+# Linux (download the static binary)
+curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
+  -o ~/.local/bin/yq && chmod +x ~/.local/bin/yq
+
+# Verify (must say "mikefarah" in the version output)
+yq --version
+```
+
 ## Code structure
 
 ### What is where?

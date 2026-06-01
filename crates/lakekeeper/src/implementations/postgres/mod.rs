@@ -1,3 +1,4 @@
+mod advisory_lock;
 mod bootstrap;
 mod catalog;
 pub(crate) mod dbutils;
@@ -16,6 +17,7 @@ pub(crate) mod warehouse;
 
 use std::{str::FromStr, sync::Arc};
 
+pub use advisory_lock::PostgresAdvisoryLock;
 use anyhow::anyhow;
 use async_trait::async_trait;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;

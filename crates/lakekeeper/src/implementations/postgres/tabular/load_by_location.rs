@@ -15,8 +15,8 @@ use crate::{
         },
     },
     service::{
-        GetTabularInfoByLocationError, InternalParseLocationError, TableInfo, ViewInfo,
-        ViewOrTableInfo,
+        GenericTabularInfo, GetTabularInfoByLocationError, InternalParseLocationError, TableInfo,
+        ViewInfo, ViewOrTableInfo,
         storage::{StorageProfile, join_location},
     },
 };
@@ -69,12 +69,17 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
         ),
         selected_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE "typ: TabularType" = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE "typ: TabularType" = 'generic-table'
         )
         SELECT t.*,
                vp.view_properties_keys,
                vp.view_properties_values,
                tp.keys as table_properties_keys,
-               tp.values as table_properties_values
+               tp.values as table_properties_values,
+               gtp.keys as generic_table_properties_keys,
+               gtp.values as generic_table_properties_values
         FROM selected_tabulars t
         LEFT JOIN (SELECT view_id,
                     ARRAY_AGG(key)   AS view_properties_keys,
@@ -88,6 +93,12 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON t.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON t.tabular_id = gtp.generic_table_id
         "#,
         *warehouse_id,
         partial_locations.as_slice(),
@@ -108,7 +119,10 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
         }
     };
 
-    if !list_flags.include_staged && row.metadata_location.is_none() {
+    if !list_flags.include_staged
+        && row.metadata_location.is_none()
+        && row.typ != TabularType::GenericTable
+    {
         return Ok(None);
     }
 
@@ -151,6 +165,23 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
             updated_at: row.updated_at,
             location,
             properties: prepare_properties(row.table_properties_keys, row.table_properties_values),
+            warehouse_version: row.warehouse_version.into(),
+            namespace_version: row.namespace_version.into(),
+        }
+        .into(),
+        TabularType::GenericTable => GenericTabularInfo {
+            namespace_id: row.namespace_id.into(),
+            tabular_ident,
+            warehouse_id,
+            tabular_id: row.tabular_id.into(),
+            protected: row.protected,
+            metadata_location,
+            updated_at: row.updated_at,
+            location,
+            properties: prepare_properties(
+                row.generic_table_properties_keys,
+                row.generic_table_properties_values,
+            ),
             warehouse_version: row.warehouse_version.into(),
             namespace_version: row.namespace_version.into(),
         }

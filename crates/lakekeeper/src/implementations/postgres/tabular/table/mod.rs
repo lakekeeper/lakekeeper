@@ -773,8 +773,8 @@ pub(crate) mod tests {
         },
         server::tables::create_table::create_table_request_into_table_metadata,
         service::{
-            CreateTableError, NamedEntity, NamespaceId, RenameTabularError, TableCreation,
-            TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
+            AllowedFormatVersions, CreateTableError, NamedEntity, NamespaceId, RenameTabularError,
+            TableCreation, TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
             tasks::{
                 ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -896,7 +896,13 @@ pub(crate) mod tests {
         };
         let table_id = table_id.unwrap_or_else(|| Uuid::now_v7().into());
 
-        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
         let schema = table_metadata.current_schema_id();
         let table_metadata = table_metadata
             .into_builder(None)
@@ -974,7 +980,13 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
 
-        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
 
         let request = TableCreation {
             warehouse_id,
@@ -1057,8 +1069,13 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         let staged_table_id = uuid::Uuid::now_v7().into();
-        let table_metadata =
-            create_table_request_into_table_metadata(staged_table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            staged_table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
 
         let request = TableCreation {
             warehouse_id,
@@ -1105,8 +1122,13 @@ pub(crate) mod tests {
         // We can overwrite the table with a regular create
         let (request, metadata_location) = create_request(Some(false), None);
 
-        let table_metadata =
-            create_table_request_into_table_metadata(staged_table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            staged_table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
 
         let request = TableCreation {
             warehouse_id,

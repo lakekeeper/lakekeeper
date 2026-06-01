@@ -3,7 +3,7 @@ use crate::{
     WarehouseId,
     implementations::postgres::{
         dbutils::DBErrorHandler,
-        tabular::{FromTabularRowError, TabularRow},
+        tabular::{FromTabularRowError, TabularRowWithProperties},
     },
     service::{SetTabularProtectionError, TabularId, TabularNotFound, ViewOrTableInfo},
 };
@@ -32,7 +32,7 @@ pub(crate) async fn set_tabular_protected(
     let tabular_type = TabularType::from(tabular_id);
 
     let row = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH selected_tabular AS (
             SELECT tabular_id, namespace_id, typ
@@ -45,6 +45,9 @@ pub(crate) async fn set_tabular_protected(
         ),
         selected_tables AS (
             SELECT tabular_id FROM selected_tabular WHERE typ = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM selected_tabular WHERE typ = 'generic-table'
         ),
         ns AS (
             SELECT namespace_name, version as namespace_version
@@ -79,7 +82,9 @@ pub(crate) async fn set_tabular_protected(
                vp.view_properties_keys,
                vp.view_properties_values,
                tp.keys as table_properties_keys,
-               tp.values as table_properties_values
+               tp.values as table_properties_values,
+               gtp.keys as generic_table_properties_keys,
+               gtp.values as generic_table_properties_values
         FROM updated_tabular ut
         LEFT JOIN (SELECT view_id,
                     ARRAY_AGG(key)   AS view_properties_keys,
@@ -93,6 +98,12 @@ pub(crate) async fn set_tabular_protected(
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON ut.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON ut.tabular_id = gtp.generic_table_id
         "#,
         *warehouse_id,
         *tabular_id,

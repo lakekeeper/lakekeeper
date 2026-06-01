@@ -248,7 +248,6 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     C::commit_view(
         ViewCommit {
-            view_ident: &ctx.view_info.tabular_ident,
             previous_view: &previous_view,
             namespace_id: ctx.view_info.namespace_id,
             warehouse_id: ctx.view_info.warehouse_id,
@@ -704,6 +703,7 @@ mod test_check_protected_properties {
 #[cfg(test)]
 mod test {
     use chrono::Utc;
+    use http::StatusCode;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CommitViewRequest;
     use maplit::hashmap;
@@ -713,9 +713,16 @@ mod test {
 
     use crate::{
         WarehouseId,
-        api::iceberg::v1::{DataAccess, Prefix, ViewParameters, views},
-        server::views::{create::test::create_view, test::setup},
-        tests::create_view_request,
+        api::{
+            iceberg::{
+                types::DropParams,
+                v1::{DataAccess, Prefix, ViewParameters, views},
+            },
+            management::v1::{ApiServer as ManagementApiServer, view::ViewManagementService},
+        },
+        request_metadata::RequestMetadata,
+        server::views::{create::test::create_view, drop::drop_view, test::setup},
+        tests::{create_view_request, random_request_metadata},
     };
 
     #[sqlx::test]
@@ -769,6 +776,82 @@ mod test {
                 "spark.query-column-names".to_string() => "id".to_string(),
             }
         );
+    }
+
+    #[sqlx::test]
+    async fn test_commit_view_preserves_protection(pool: PgPool) {
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
+        let prefix = whi.to_string();
+        let view_name = "myview";
+        let view_ident = TableIdent::from_strs(
+            namespace
+                .clone()
+                .inner()
+                .into_iter()
+                .chain([view_name.into()]),
+        )
+        .unwrap();
+        let view = Box::pin(create_view(
+            api_context.clone(),
+            namespace.clone(),
+            create_view_request(Some(view_name), None),
+            Some(prefix.clone()),
+        ))
+        .await
+        .unwrap();
+
+        ManagementApiServer::set_view_protection(
+            view.metadata.uuid().into(),
+            whi,
+            true,
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let rq: CommitViewRequest = spark_commit_update_request(whi, Some(view.metadata.uuid()));
+        let res = Box::pin(super::commit_view(
+            ViewParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                view: view_ident.clone(),
+            },
+            rq,
+            api_context.clone(),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            RequestMetadata::new_unauthenticated(),
+        ))
+        .await
+        .unwrap();
+
+        let protection = ManagementApiServer::get_view_protection(
+            res.metadata.uuid().into(),
+            whi,
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert!(protection.protected);
+
+        let err = drop_view(
+            ViewParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                view: view_ident,
+            },
+            DropParams {
+                purge_requested: true,
+                force: false,
+            },
+            api_context,
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect_err("protected view should remain protected after commit");
+        assert_eq!(err.error.code, StatusCode::CONFLICT);
     }
 
     #[sqlx::test]

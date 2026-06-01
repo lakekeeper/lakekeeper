@@ -415,6 +415,103 @@ impl EventListener for CloudEventsPublisher {
         Ok(())
     }
 
+    async fn generic_table_created(
+        &self,
+        event: types::CreateGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::CreateGenericTableEvent {
+            namespace,
+            generic_table,
+            request_metadata,
+            request,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "createGenericTable",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(generic_table.generic_table_id),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
+                warehouse_id: namespace.warehouse.warehouse_id,
+                name: generic_table.name.clone(),
+                namespace: namespace.namespace.namespace_ident().to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `createGenericTable` event")?;
+        Ok(())
+    }
+
+    async fn generic_table_dropped(
+        &self,
+        event: types::DropGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::DropGenericTableEvent {
+            generic_table,
+            drop_params: _drop_params,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "dropGenericTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(generic_table.generic_table.generic_table_id),
+                warehouse_id: generic_table.warehouse.warehouse_id,
+                name: generic_table.generic_table.name.clone(),
+                namespace: generic_table.generic_table.namespace_ident.to_string(),
+                prefix: generic_table.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `dropGenericTable` event")?;
+        Ok(())
+    }
+
+    async fn generic_table_renamed(
+        &self,
+        event: types::RenameGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::RenameGenericTableEvent {
+            source_generic_table,
+            destination_namespace: _,
+            request,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "renameGenericTable",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(
+                    source_generic_table.generic_table.generic_table_id,
+                ),
+                warehouse_id: source_generic_table.warehouse.warehouse_id,
+                name: source_generic_table.generic_table.name.clone(),
+                namespace: source_generic_table
+                    .generic_table
+                    .namespace_ident
+                    .to_url_string(),
+                prefix: source_generic_table.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `renameGenericTable` event")?;
+        Ok(())
+    }
+
     async fn tabular_undropped(&self, event: types::UndropTabularEvent) -> anyhow::Result<()> {
         let types::UndropTabularEvent {
             warehouse,

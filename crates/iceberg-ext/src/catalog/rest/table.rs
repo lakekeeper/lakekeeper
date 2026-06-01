@@ -16,12 +16,12 @@ use crate::{
     spec::{Schema, SortOrder, UnboundPartitionSpec},
 };
 
-#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StorageCredential {
     pub prefix: String,
     pub config: std::collections::HashMap<String, String>,
 }
-#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoadCredentialsResponse {
     pub storage_credentials: Vec<StorageCredential>,

@@ -12,7 +12,8 @@ use crate::{
     service::{
         ArcProjectId, CachePolicy, CatalogBackendError, CatalogCreateRoleRequest, CatalogStore,
         InvalidPaginationToken, ProjectIdNotFoundError, ResultCountMismatch, RoleId, RoleIdent,
-        RoleProviderId, RoleSourceId, Transaction,
+        RoleProviderId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec,
+        Transaction,
         catalog_store::{
             define_version_newtype,
             role_cache::{role_cache_get_by_id, role_cache_get_by_ident, role_cache_insert},
@@ -346,13 +347,46 @@ define_transparent_error! {
     ]
 }
 
+// --------------------------- SYSTEM ROLE ERROR ----------------------
+//
+// Raised when a customer-facing role-management endpoint is invoked against a
+// catalog-managed system role (e.g. `workspace_admin`, `workspace_user`).
+// System roles are seeded per project and are not modifiable via the API —
+// they only change when the catalog itself reseeds them.
+
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Cannot modify or delete a catalog-managed system role. System roles are seeded by the catalog and are immutable through the role-management API."
+)]
+pub struct SystemRoleImmutable {
+    pub stack: Vec<String>,
+}
+impl SystemRoleImmutable {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(SystemRoleImmutable);
+impl From<SystemRoleImmutable> for ErrorModel {
+    fn from(err: SystemRoleImmutable) -> Self {
+        ErrorModel::builder()
+            .r#type("SystemRoleImmutable")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 // --------------------------- DELETE ERROR ---------------------------
 define_transparent_error! {
     pub enum DeleteRoleError,
     stack_message: "Error deleting role in catalog",
     variants: [
         CatalogBackendError,
-        RoleIdNotFoundInProject
+        RoleIdNotFoundInProject,
+        SystemRoleImmutable
     ]
 }
 
@@ -365,6 +399,7 @@ define_transparent_error! {
         RoleSourceIdConflict,
         RoleNameAlreadyExists,
         RoleIdNotFoundInProject,
+        SystemRoleImmutable,
     ]
 }
 
@@ -489,6 +524,18 @@ pub trait CatalogRoleOps
 where
     Self: CatalogStore,
 {
+    /// Create a single role. Fails on conflict — see [`crate::service::OnRoleConflict::Fail`].
+    /// Use [`Self::create_roles`] for batch creation that also fails on conflict, or
+    /// [`Self::upsert_system_roles`] for the cap-gated catalog-managed seeder path.
+    ///
+    /// **Customer-facing — system role rejection lives at the API layer.**
+    /// New non-API callers must replicate the `is_system()` check before
+    /// calling this. The trait default does NOT pre-check, by design —
+    /// adding a read-then-check at this layer would cost a DB roundtrip on
+    /// the hot path while only covering scenarios that don't exist today.
+    /// If a new non-API mutator surface appears (SCIM sync, bulk import,
+    /// replication), either gate it at its own entry point or move the
+    /// check into `create_roles_impl` via a SQL-side filter.
     async fn create_role<'a>(
         project_id: &ProjectId,
         role_to_create: CatalogCreateRoleRequest<'_>,
@@ -503,26 +550,98 @@ where
         Ok(roles.into_iter().next().expect("length checked above"))
     }
 
+    /// Create a batch of roles. Hardcodes [`crate::service::OnRoleConflict::Fail`]:
+    /// any conflicting `(project_id, provider_id, source_id)` aborts the batch.
+    /// To seed catalog-managed system roles (which require `UpdateMetadata`
+    /// semantics), go through [`Self::upsert_system_roles`] — the cap-gated
+    /// path.
+    ///
+    /// **Customer-facing — system role rejection lives at the API layer.**
+    /// See [`Self::create_role`] for the rationale.
     async fn create_roles<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Arc<Role>>, CreateRoleError> {
-        let roles = Self::create_roles_impl(project_id, roles_to_create, transaction)
-            .await?
-            .into_iter()
-            .map(Arc::new)
-            .collect::<Vec<_>>();
+        let roles = Self::create_roles_impl(
+            project_id,
+            roles_to_create,
+            crate::service::OnRoleConflict::Fail,
+            transaction,
+        )
+        .await?
+        .into_iter()
+        .map(Arc::new)
+        .collect::<Vec<_>>();
         Ok(roles)
     }
 
+    /// Upsert the registered system roles for `project_id`. Idempotent —
+    /// pre-existing rows have their `name` / `description` refreshed
+    /// only if they actually changed (the underlying SQL uses
+    /// `IS DISTINCT FROM`). The returned `Vec` includes only rows that
+    /// were inserted or updated; no-ops are omitted, so callers can
+    /// detect "nothing changed" by checking `Vec::is_empty()`.
+    ///
+    /// Hard-codes `provider_id = "system"` and
+    /// [`crate::service::OnRoleConflict::UpdateMetadata`] internally. The
+    /// [`SystemRoleSeederCap`] token gates this — only upstream code
+    /// can mint one, so downstream binaries cannot reach this path
+    /// except via the trusted entry points (`serve`,
+    /// `run_post_migration_hooks`, `create_project`).
+    async fn upsert_system_roles<'a>(
+        project_id: &ProjectId,
+        specs: &[SystemRoleSpec],
+        _cap: SystemRoleSeederCap,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<Arc<Role>>, CreateRoleError> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut seen = HashSet::with_capacity(specs.len());
+        for spec in specs {
+            if !seen.insert(&spec.source_id) {
+                return Err(RoleSourceIdConflict::new().into());
+            }
+        }
+        let requests: Vec<CatalogCreateRoleRequest<'_>> = specs
+            .iter()
+            .map(|spec| {
+                CatalogCreateRoleRequest::builder()
+                    .role_id(RoleId::new_random())
+                    .role_name(spec.name)
+                    .description(Some(spec.description))
+                    .source_id(&spec.source_id)
+                    .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+                    .build()
+            })
+            .collect();
+        let roles = Self::create_roles_impl(
+            project_id,
+            requests,
+            crate::service::OnRoleConflict::UpdateMetadata,
+            transaction,
+        )
+        .await?
+        .into_iter()
+        .map(Arc::new)
+        .collect::<Vec<_>>();
+        Ok(roles)
+    }
+
+    /// **Customer-facing — system role rejection lives at the API layer.**
+    /// See [`Self::create_role`] for the rationale. To delete catalog-managed
+    /// system roles, use the capability-gated [`Self::delete_system_roles`].
     async fn delete_role<'a>(
         project_id: &ArcProjectId,
         role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), DeleteRoleError> {
-        let deleted_roles =
-            Self::delete_roles_impl(project_id, Some(&[role_id]), transaction).await?;
+        let role_ids = [role_id];
+        let filter = CatalogListRolesByIdFilter::builder()
+            .role_ids(Some(&role_ids))
+            .build();
+        let deleted_roles = Self::delete_roles_impl(Some(project_id), filter, transaction).await?;
         if deleted_roles.is_empty() {
             Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into())
         } else {
@@ -530,7 +649,37 @@ where
         }
     }
 
+    /// Delete catalog-managed system roles for `project_id` matching
+    /// `source_ids`. Used by extension migrations cleaning up retired
+    /// specs — see the doc comment on
+    /// [`crate::service::install_system_role_registry`] for the
+    /// release procedure.
+    ///
+    /// Hard-codes `provider_id = "system"`. The
+    /// [`SystemRoleSeederCap`] token gates this — see its docs.
+    async fn delete_system_roles<'a>(
+        project_id: &ProjectId,
+        source_ids: &[&RoleSourceId],
+        _cap: SystemRoleSeederCap,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<RoleId>, CatalogBackendError> {
+        if source_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let providers = [&*SYSTEM_ROLE_PROVIDER_ID];
+        let filter = CatalogListRolesByIdFilter::builder()
+            .provider_ids(Some(&providers))
+            .source_ids(Some(source_ids))
+            .build();
+        Self::delete_roles_impl(Some(project_id), filter, transaction).await
+    }
+
     /// If description is None, the description must be removed.
+    ///
+    /// **Customer-facing — system role rejection lives at the API layer.**
+    /// See [`Self::create_role`] for the rationale. There is no cap-gated
+    /// update analogue today — updating a system role means re-running
+    /// the seeder with a refreshed spec via [`Self::upsert_system_roles`].
     async fn update_role<'a>(
         project_id: &ProjectId,
         role_id: RoleId,
@@ -544,6 +693,9 @@ where
     }
 
     /// Update the external ID of the role.
+    ///
+    /// **Customer-facing — system role rejection lives at the API layer.**
+    /// See [`Self::create_role`] for the rationale.
     async fn set_role_source_system<'a>(
         project_id: &ProjectId,
         role_id: RoleId,

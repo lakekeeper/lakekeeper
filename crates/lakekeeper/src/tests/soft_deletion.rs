@@ -273,3 +273,140 @@ async fn test_soft_deletion(pool: PgPool) {
     .tabulars;
     assert_eq!(deleted_tabulars.len(), 9);
 }
+
+#[sqlx::test]
+async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
+    use crate::api::{
+        data::v1::generic_tables::{
+            GenericTableParameters, GenericTableService as _, ListGenericTablesQuery,
+        },
+        iceberg::types::DropParams,
+    };
+
+    let storage_profile = crate::tests::memory_io_profile();
+    let authorizer = AllowAllAuthorizer::default();
+
+    let (api_context, warehouse) = crate::tests::setup(
+        pool.clone(),
+        storage_profile,
+        None,
+        authorizer,
+        TabularDeleteProfile::Soft {
+            expiration_seconds: chrono::Duration::seconds(300),
+        },
+        None,
+        1,
+        None,
+    )
+    .await;
+
+    let prefix = warehouse.warehouse_id.to_string();
+    let ns_name = format!("test_namespace_{}", Uuid::now_v7());
+
+    crate::tests::create_ns(api_context.clone(), prefix.clone(), ns_name.clone()).await;
+
+    let gt_name = "my_gt";
+    crate::tests::create_generic_table(
+        api_context.clone(),
+        prefix.clone(),
+        ns_name.clone(),
+        gt_name,
+    )
+    .await
+    .unwrap();
+
+    let listed = CatalogServer::list_generic_tables(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(ns_name.clone()),
+        },
+        ListGenericTablesQuery::default(),
+        api_context.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    let gt_id = listed
+        .identifiers
+        .iter()
+        .find(|i| i.name == gt_name)
+        .and_then(|i| i.id)
+        .expect("generic table id should be returned by list");
+
+    // Soft-delete via drop
+    CatalogServer::drop_generic_table(
+        GenericTableParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(ns_name.clone()),
+            table_name: gt_name.to_string(),
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        api_context.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+
+    // Active list excludes the dropped generic table.
+    let listed = CatalogServer::list_generic_tables(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(ns_name.clone()),
+        },
+        ListGenericTablesQuery::default(),
+        api_context.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert!(!listed.identifiers.iter().any(|i| i.name == gt_name));
+
+    // The dropped GT appears in the soft-deleted listing.
+    let deleted = ApiServer::list_soft_deleted_tabulars(
+        warehouse.warehouse_id,
+        ListDeletedTabularsQuery::default(),
+        api_context.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap()
+    .tabulars;
+    assert!(
+        deleted.iter().any(|t| t.name == gt_name && t.id == *gt_id),
+        "expected dropped generic table in soft-deleted listing: {deleted:?}",
+    );
+
+    // Undrop: the GT is listable again, with the same id.
+    ApiServer::undrop_tabulars(
+        warehouse.warehouse_id,
+        random_request_metadata(),
+        UndropTabularsRequest {
+            targets: vec![TabularId::GenericTable(gt_id)],
+        },
+        api_context.clone(),
+    )
+    .await
+    .unwrap();
+
+    let listed = CatalogServer::list_generic_tables(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: NamespaceIdent::new(ns_name.clone()),
+        },
+        ListGenericTablesQuery::default(),
+        api_context.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        listed
+            .identifiers
+            .iter()
+            .any(|i| i.name == gt_name && i.id == Some(gt_id)),
+        "undropped generic table should reappear in list with the same id",
+    );
+}

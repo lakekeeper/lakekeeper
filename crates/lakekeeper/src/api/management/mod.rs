@@ -2,6 +2,7 @@
 
 pub mod v1 {
     pub mod check;
+    pub mod generic_table;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
@@ -26,15 +27,17 @@ pub mod v1 {
         response::{IntoResponse, Response},
         routing::{get, post, put},
     };
+    use generic_table::GenericTableManagementService as _;
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
     use lakekeeper_actions::{
-        GetLakekeeperNamespaceActionsResponse, GetLakekeeperProjectActionsResponse,
-        GetLakekeeperRoleActionsResponse, GetLakekeeperServerActionsResponse,
-        GetLakekeeperTableActionsResponse, GetLakekeeperUserActionsResponse,
-        GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+        GetLakekeeperGenericTableActionsResponse, GetLakekeeperNamespaceActionsResponse,
+        GetLakekeeperProjectActionsResponse, GetLakekeeperRoleActionsResponse,
+        GetLakekeeperServerActionsResponse, GetLakekeeperTableActionsResponse,
+        GetLakekeeperUserActionsResponse, GetLakekeeperViewActionsResponse,
+        GetLakekeeperWarehouseActionsResponse, get_allowed_generic_table_actions,
         get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
         get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
         get_allowed_view_actions, get_allowed_warehouse_actions,
@@ -63,8 +66,8 @@ pub mod v1 {
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
         RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
-        WarehouseStatisticsResponse,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
+        UpdateWarehouseStorageRequest, WarehouseStatisticsResponse,
     };
 
     /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
@@ -119,7 +122,10 @@ pub mod v1 {
                     UpdateRoleSourceSystemRequest,
                 },
                 tabular::{SearchTabularRequest, SearchTabularResponse},
-                task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
+                task_queue::{
+                    GetTaskQueueConfigResponse, ScheduleTaskRequest, ScheduleTaskResponse,
+                    SetTaskQueueConfigRequest,
+                },
                 tasks::{
                     ControlTasksRequest, GetProjectTaskDetailsResponse, GetTaskDetailsQuery,
                     GetTaskDetailsResponseRef, ListProjectTasksRequest, ListProjectTasksResponse,
@@ -131,8 +137,8 @@ pub mod v1 {
         },
         request_metadata::RequestMetadata,
         service::{
-            Actor, CatalogStore, CreateOrUpdateUserResponse, NamespaceId, RoleId, SecretStore,
-            State, TableId, TabularId, ViewId,
+            Actor, CatalogStore, CreateOrUpdateUserResponse, GenericTableId, NamespaceId, RoleId,
+            SecretStore, State, TableId, TabularId, ViewId,
             authn::UserId,
             authz::Authorizer,
             tasks::{TaskId, TaskQueueName},
@@ -1001,6 +1007,41 @@ pub mod v1 {
         .await
     }
 
+    /// Update Format Version Policy
+    ///
+    /// Configures which Iceberg table format versions may be created in, or
+    /// upgraded to, within a warehouse, and the default version applied when a
+    /// create-table request does not specify one.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::UpdateWarehouseFormatVersionPolicy.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = UpdateWarehouseFormatVersionPolicyRequest,
+        responses(
+            (status = 200, body = GetWarehouseResponse, description = "Format version policy updated successfully"),
+        (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn update_warehouse_format_version_policy<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateWarehouseFormatVersionPolicyRequest>,
+    ) -> Result<GetWarehouseResponse> {
+        ApiServer::<C, A, S>::update_warehouse_format_version_policy(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Deactivate Warehouse
     ///
     /// Temporarily disables access to a warehouse without deleting its data.
@@ -1539,6 +1580,104 @@ pub mod v1 {
         ))
     }
 
+    /// Get allowed actions for a generic table
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "warehouse",
+    path = ManagementV1Endpoint::GetGenericTableActions.path(),
+    params(GetAccessQuery, ("warehouse_id" = Uuid,),("generic_table_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperGenericTableActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_generic_table_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperGenericTableActionsResponse>)> {
+        let relations = get_allowed_generic_table_actions::<A, C, S>(
+            api_context,
+            metadata,
+            query,
+            warehouse_id,
+            generic_table_id,
+        )
+        .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperGenericTableActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
+    }
+
+    /// Get Generic Table Protection
+    ///
+    /// Retrieves whether a generic table is protected from deletion.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::GetGenericTableProtection.path(),
+        params(("warehouse_id" = Uuid,),("generic_table_id" = Uuid,)),
+        responses(
+            (status = 200, body = ProtectionResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_generic_table_protection<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path((warehouse_id, generic_table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::get_generic_table_protection(
+            GenericTableId::from(generic_table_id),
+            warehouse_id.into(),
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Set Generic Table Protection
+    ///
+    /// Configures whether a generic table should be protected from deletion.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetGenericTableProtection.path(),
+        params(("warehouse_id" = Uuid,),("generic_table_id" = Uuid,)),
+        responses(
+            (status = 200, body = ProtectionResponse, description = "Generic table protection set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_generic_table_protection<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path((warehouse_id, generic_table_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(SetProtectionRequest { protected }): Json<SetProtectionRequest>,
+    ) -> Result<ProtectionResponse> {
+        ApiServer::<C, A, S>::set_generic_table_protection(
+            GenericTableId::from(generic_table_id),
+            warehouse_id.into(),
+            protected,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Get Namespace Protection
     ///
     /// Retrieves whether a namespace is protected from deletion.
@@ -1791,6 +1930,50 @@ pub mod v1 {
             .await?;
         Ok(StatusCode::NO_CONTENT)
     }
+
+    /// Schedule a task for an entity.
+    ///
+    /// Pre-checks run against the warehouse config and target entity
+    /// properties before the task is enqueued. A failure surfaces as `400`
+    /// with a specific error code (see the operator guide for the full set
+    /// of pre-check codes).
+    ///
+    /// When a task is already active for the same (warehouse, entity,
+    /// queue) triple, the call returns `409 TaskAlreadyActive` with the
+    /// existing `task-id` in the body — chain to `POST /task/control`
+    /// with `run-now` or `run-at` to retime it without an extra
+    /// `task/list` round-trip.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tasks",
+        path = ManagementV1Endpoint::ScheduleTask.path(),
+        params(("warehouse_id" = Uuid,), ("queue_name" = String,)),
+        request_body = ScheduleTaskRequest,
+        responses(
+            (status = 200, body = ScheduleTaskResponse, description = "Task scheduled"),
+            (status = 400, body = IcebergErrorResponse, description = "Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future)."),
+            (status = 404, body = IcebergErrorResponse, description = "Target entity not found in this warehouse."),
+            (status = 409, body = IcebergErrorResponse, description = "A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn schedule_task<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path((warehouse_id, queue_name)): Path<(uuid::Uuid, String)>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<ScheduleTaskRequest>,
+    ) -> Result<ScheduleTaskResponse> {
+        let queue_name = TaskQueueName::from(queue_name);
+        ApiServer::<C, A, S>::schedule_task(
+            warehouse_id.into(),
+            &queue_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Set the configuration for a Project-level Task Queue.
     ///
     /// These configurations are global per project and shared across all instances of this kind of task.
@@ -1988,6 +2171,7 @@ pub mod v1 {
             match ident {
                 TabularId::Table(_) => TabularType::Table,
                 TabularId::View(_) => TabularType::View,
+                TabularId::GenericTable(_) => TabularType::GenericTable,
             }
         }
     }
@@ -1999,6 +2183,7 @@ pub mod v1 {
     pub enum TabularType {
         Table,
         View,
+        GenericTable,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]
@@ -2124,6 +2309,10 @@ pub mod v1 {
                     post(update_warehouse_delete_profile),
                 )
                 .route(
+                    "/warehouse/{warehouse_id}/format-version-policy",
+                    post(update_warehouse_format_version_policy),
+                )
+                .route(
                     ManagementV1Endpoint::GetWarehouseActions.path_in_management_v1(),
                     get(get_warehouse_actions),
                 )
@@ -2142,6 +2331,14 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetViewActions.path_in_management_v1(),
                     get(get_view_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetGenericTableActions.path_in_management_v1(),
+                    get(get_generic_table_actions),
+                )
+                .route(
+                    ManagementV1Endpoint::GetGenericTableProtection.path_in_management_v1(),
+                    get(get_generic_table_protection).post(set_generic_table_protection),
                 )
                 .route(
                     ManagementV1Endpoint::GetNamespaceProtection.path_in_management_v1(),
@@ -2170,6 +2367,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ControlTasks.path_in_management_v1(),
                     post(control_tasks),
+                )
+                .route(
+                    ManagementV1Endpoint::ScheduleTask.path_in_management_v1(),
+                    post(schedule_task),
                 )
                 .route(
                     ManagementV1Endpoint::SetProjectTaskQueueConfig.path_in_management_v1(),

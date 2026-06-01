@@ -23,7 +23,10 @@ use veil::Redact;
 
 use crate::{
     WarehouseId,
-    service::{ArcProjectId, UserId},
+    service::{
+        ArcProjectId, UserId,
+        authn::{K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
+    },
 };
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
@@ -72,6 +75,17 @@ fn get_config() -> DynAppConfig {
     let mut config = config
         .extract::<DynAppConfig>()
         .expect("Valid Configuration");
+
+    validate_openid_provider_ids(&config);
+
+    if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
+        tracing::warn!(
+            "LAKEKEEPER__OPENID_PROVIDERS is set but LAKEKEEPER__OPENID_PROVIDER_URI is not. \
+             API authentication will work, but the UI login button is disabled — the UI \
+             redirects only to the primary provider. Set LAKEKEEPER__OPENID_PROVIDER_URI to \
+             enable UI login."
+        );
+    }
 
     // Ensure base_uri has a trailing slash
     if let Some(base_uri) = config.base_uri.as_mut() {
@@ -147,6 +161,36 @@ fn get_config() -> DynAppConfig {
     }
 
     config
+}
+
+fn validate_openid_provider_ids(config: &DynAppConfig) {
+    // Grammar `[a-z0-9-]+` (same shape as `RoleProviderId`). Lowercase-only
+    // means env-var (which figment lowercases) and YAML/TOML keys agree on
+    // one canonical form, so case-collisions, control characters, the
+    // `~` separator, and case-insensitive reserved-name aliases are all
+    // forbidden by the grammar — no separate checks needed.
+    for idp_id in config.openid_providers.keys() {
+        assert!(
+            !idp_id.is_empty(),
+            "Invalid OIDC provider: IdP ID must not be empty"
+        );
+        assert!(
+            idp_id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "Invalid OIDC provider '{idp_id}': IdP ID must match `[a-z0-9-]+`"
+        );
+        // Reserved names — direct equality is sufficient because the grammar
+        // already excludes any case variant.
+        assert!(
+            idp_id != K8S_IDP_ID,
+            "Invalid OIDC provider '{idp_id}': IdP ID '{K8S_IDP_ID}' is reserved"
+        );
+        assert!(
+            idp_id != OIDC_IDP_ID,
+            "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
+        );
+    }
 }
 
 /// Identifies who is trusted to act as this engine from a specific `IdP`.
@@ -435,9 +479,14 @@ pub struct DynAppConfig {
     )]
     pub openid_subject_claim: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
-    /// The field should contain an array of strings or a single string.
+    /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
+    /// Multiple OIDC providers keyed by identity provider ID.
+    /// When set, each provider gets its own JWKS authenticator and is added
+    /// in addition to the single-provider configuration (`openid_provider_uri`).
+    #[serde(default)]
+    pub openid_providers: HashMap<String, OidcProviderConfig>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
@@ -629,7 +678,9 @@ where
     format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
-fn deserialize_comma_separated<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+pub(crate) fn deserialize_comma_separated<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -644,7 +695,7 @@ where
     .transpose()
 }
 
-fn serialize_comma_separated<S>(
+pub(crate) fn serialize_comma_separated<S>(
     value: &Option<Vec<String>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -1063,6 +1114,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             openid_roles_claim: None,
+            openid_providers: HashMap::new(),
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
@@ -1102,7 +1154,15 @@ impl DynAppConfig {
         self.default_tabular_expiration_delay_seconds
     }
 
+    /// Is any authentication active? Used by /info to reject anonymous.
     pub fn authn_enabled(&self) -> bool {
+        self.openid_provider_uri.is_some()
+            || !self.openid_providers.is_empty()
+            || self.enable_kubernetes_authentication
+    }
+
+    /// Does the UI have an SSO target? Used by the UI config.
+    pub fn ui_login_enabled(&self) -> bool {
         self.openid_provider_uri.is_some()
     }
 
@@ -1893,6 +1953,138 @@ mod test {
     }
 
     #[test]
+    fn test_openid_providers_not_set() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.openid_providers.is_empty());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_structured_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__AUDIENCE",
+                "lakekeeper,warehouse",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__ADDITIONAL_ISSUERS",
+                "https://issuer.example.com",
+            );
+            jail.set_env("LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SCOPE", "openid");
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "sub,oid",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__ROLES_CLAIM",
+                "resource_access.lakekeeper.roles",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__REQUIRE_CONNECTED_ON_STARTUP",
+                "false",
+            );
+
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert_eq!(provider.uri.as_str(), "https://company.okta.com/");
+            assert_eq!(
+                provider.audience,
+                Some(vec!["lakekeeper".to_string(), "warehouse".to_string()])
+            );
+            assert_eq!(
+                provider.additional_issuers,
+                Some(vec!["https://issuer.example.com".to_string()])
+            );
+            assert_eq!(provider.scope, Some("openid".to_string()));
+            assert_eq!(
+                provider.subject_claims,
+                Some(vec!["sub".to_string(), "oid".to_string()])
+            );
+            assert_eq!(
+                provider.roles_claim,
+                Some("resource_access.lakekeeper.roles".to_string())
+            );
+            assert!(!provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_provider_require_connected_defaults_to_true() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert!(provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID must match `[a-z0-9-]+`")]
+    fn test_openid_provider_id_rejects_separator() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA~PROD__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID must match `[a-z0-9-]+`")]
+    fn test_openid_provider_id_rejects_underscore() {
+        // Underscores were tolerated by the old check but excluded by the new
+        // grammar — pin that behavior since the doc still mentioned `my_provider`
+        // before the grammar was tightened.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__MY_PROVIDER__URI",
+                "https://example.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID 'kubernetes' is reserved")]
+    fn test_openid_provider_id_rejects_kubernetes() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__KUBERNETES__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID 'oidc' is reserved")]
+    fn test_openid_provider_id_rejects_oidc() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OIDC__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_user_assignments_cache() {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
@@ -2385,5 +2577,160 @@ mod test {
         // Audience matches even though subject doesn't
         let auds: HashSet<&str> = ["trino"].into_iter().collect();
         assert!(id.matches(&auds, Some("other")));
+    }
+
+    #[test]
+    fn test_openid_providers_single() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://okta.example.com",
+            );
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert_eq!(config.openid_providers.len(), 1);
+            assert_eq!(provider.uri.as_str(), "https://okta.example.com/");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_multiple() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__AUDIENCE",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "sub",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__EKS-PROD__URI",
+                "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__EKS-PROD__AUDIENCE",
+                "sts.amazonaws.com",
+            );
+
+            let config = get_config();
+            assert_eq!(config.openid_providers.len(), 2);
+
+            let okta = config.openid_providers.get("okta").unwrap();
+            assert_eq!(
+                okta.audience,
+                Some(vec!["https://company.okta.com".to_string()])
+            );
+            assert_eq!(okta.subject_claims, Some(vec!["sub".to_string()]));
+
+            let eks = config.openid_providers.get("eks-prod").unwrap();
+            assert_eq!(eks.audience, Some(vec!["sts.amazonaws.com".to_string()]));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_with_all_fields() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__URI",
+                "https://login.microsoftonline.com/tenant-id/v2.0",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__AUDIENCE",
+                "api://my-app,second-audience",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__ADDITIONAL_ISSUERS",
+                "https://sts.windows.net/tenant-id/",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__SCOPE",
+                "lakekeeper",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__SUBJECT_CLAIMS",
+                "oid,sub",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__ROLES_CLAIM",
+                "groups",
+            );
+
+            let config = get_config();
+            assert_eq!(config.openid_providers.len(), 1);
+
+            let provider = config.openid_providers.get("entra").unwrap();
+            assert_eq!(
+                provider.audience,
+                Some(vec![
+                    "api://my-app".to_string(),
+                    "second-audience".to_string()
+                ])
+            );
+            assert_eq!(
+                provider.additional_issuers,
+                Some(vec!["https://sts.windows.net/tenant-id/".to_string()])
+            );
+            assert_eq!(provider.scope, Some("lakekeeper".to_string()));
+            assert_eq!(
+                provider.subject_claims,
+                Some(vec!["oid".to_string(), "sub".to_string()])
+            );
+            assert_eq!(provider.roles_claim, Some("groups".to_string()));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_openid_providers() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://okta.example.com",
+            );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_kubernetes_only() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ENABLE_KUBERNETES_AUTHENTICATION", "true");
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_single_provider() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDER_URI",
+                "https://keycloak.example.com/realms/test",
+            );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_disabled_by_default() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.authn_enabled());
+            Ok(())
+        });
     }
 }
