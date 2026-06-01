@@ -41,7 +41,7 @@ RUN cargo build --release --all-features --locked --bin lakekeeper
 FROM gcr.io/distroless/cc-debian12:nonroot AS base
 
 
-FROM busybox:1.37.0 AS cleaner
+FROM busybox:1.38.0 AS cleaner
 # small diversion through busybox to remove some files
 # (no rm in distroless)
 
