@@ -7,7 +7,7 @@ FROM busybox:1.37.0 AS cleaner
 
 COPY --from=base / /clean
 
-RUN rm -r /clean/usr/lib/*-linux-gnu/libgomp*  \
+RUN rm -rf /clean/usr/lib/*-linux-gnu/libgomp*  \
        /clean/usr/lib/*-linux-gnu/libssl*  \
        /clean/usr/lib/*-linux-gnu/libstdc++* \
        /clean/usr/lib/*-linux-gnu/engines-3 \
