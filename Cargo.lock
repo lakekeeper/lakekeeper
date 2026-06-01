@@ -3703,6 +3703,7 @@ dependencies = [
  "bytes",
  "chrono",
  "cloudevents-sdk",
+ "crc",
  "derive_more",
  "fastrand 2.3.0",
  "figment",

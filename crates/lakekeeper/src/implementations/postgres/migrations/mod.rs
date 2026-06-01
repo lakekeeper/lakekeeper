@@ -33,6 +33,21 @@ mod split_table_metadata;
 
 const CORE_MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 
+/// Lock scope for concurrent-migration prevention.
+///
+/// Bit-identical to sqlx's private `generate_lock_id` in
+/// `sqlx-postgres::migrate` (CRC32-IEEE of the database name multiplied
+/// by an arbitrary constant). Keeping the formula in sync means a
+/// rolling upgrade between a lakekeeper version using sqlx's session-
+/// scoped `pg_advisory_lock` and one using our transaction-scoped
+/// `pg_advisory_xact_lock` still serializes on the same i64 key, so
+/// concurrent migrations across the rollover are mutually exclusive.
+fn migration_lock_id(database_name: &str) -> i64 {
+    const CRC_IEEE: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+    // 0x3d32ad9e: same magic constant sqlx uses, "chosen by fair dice roll".
+    0x3d32_ad9e * i64::from(CRC_IEEE.checksum(database_name.as_bytes()))
+}
+
 /// A registered extension migration source.
 ///
 /// Extensions implement features on top of the lakekeeper catalog and often
@@ -204,8 +219,21 @@ pub async fn migrate(
         .await
         .map_err(|e| e.error)?;
     let transaction = trx.transaction();
-    // Application advisory lock to prevent concurrent migrations.
-    transaction.lock().await?;
+
+    // Transaction-scoped advisory lock to prevent concurrent migrations.
+    // Postgres auto-releases on COMMIT or ROLLBACK — including when the
+    // transaction is aborted by a failing SQL statement, which is the
+    // dominant migration-failure mode. The session-scoped equivalent
+    // (sqlx's `transaction.lock()` -> `pg_advisory_lock`) would leak
+    // the lock on that path because `pg_advisory_unlock` is rejected
+    // with `25P02 in_failed_sql_transaction` on a poisoned transaction.
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&mut **transaction)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(migration_lock_id(&db_name))
+        .execute(&mut **transaction)
+        .await?;
 
     // 1. Pre-flight per source: ensure tracker table, dirty-check, list applied.
     //    Done before the apply loop so we can look up already-applied state per
@@ -277,9 +305,9 @@ pub async fn migrate(
 
     let server_id = get_or_set_server_id(&mut **transaction).await?;
 
-    // Unlock the migrator to allow other migrators to run — but do nothing
-    // as we already migrated.
-    transaction.unlock().await?;
+    // No manual unlock needed: `trx.commit()` (or any ROLLBACK if we
+    // returned `Err` above) releases the transaction-scoped advisory
+    // lock automatically.
     trx.commit().await.map_err(|e| anyhow::anyhow!(e.error))?;
     Ok(server_id)
 }
@@ -751,6 +779,49 @@ mod tests {
             !table_exists(&pool, "ext_demo_sqlx_migrations").await,
             "extension tracker table must not exist after rollback"
         );
+    }
+
+    /// Regression test for the migration-lock leak fixed by switching from
+    /// session-scoped `pg_advisory_lock` to transaction-scoped
+    /// `pg_advisory_xact_lock`. The fixture migration triggers a SQL error,
+    /// which poisons the outer transaction and would prevent any session-
+    /// level unlock from running. With the xact-scoped lock, `ROLLBACK`
+    /// releases the lock automatically — so no advisory lock should remain
+    /// held and a follow-up `migrate()` call must not block.
+    #[sqlx::test(migrations = false)]
+    async fn test_migration_lock_released_on_sql_failure(pool: PgPool) {
+        let ext = ExtensionMigrations::builder()
+            .name("demo")
+            .migrator(sqlx::migrate!(
+                "./tests/extension_migrations_fixture_invalid"
+            ))
+            .build();
+        let result = migrate(&pool, vec![ext]).await;
+        assert!(
+            result.is_err(),
+            "test setup: failing-fixture migration must error, got: {result:?}"
+        );
+
+        let advisory_locks_held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks \
+             WHERE locktype = 'advisory' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            advisory_locks_held, 0,
+            "advisory lock must be released after a failed migration; \
+             a non-zero count means the lock leaked"
+        );
+
+        // End-to-end: a follow-up migration must not block on the prior
+        // failure's lock. If the lock had leaked, this would hang for the
+        // length of the test runner's timeout.
+        migrate_core_only(&pool)
+            .await
+            .expect("follow-up migration must succeed after a failed prior attempt");
     }
 
     /// Core never creates `ext_*` objects: upstream's prefix reservation must
