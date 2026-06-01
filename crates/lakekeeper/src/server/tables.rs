@@ -30,7 +30,7 @@ pub(crate) use authorize_load::*;
 
 use super::{
     CatalogServer,
-    commit_tables::apply_commit,
+    commit_tables::{apply_commit, ensure_format_version_upgrades_allowed},
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
@@ -1565,6 +1565,10 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                     TabularNotFound::new(warehouse_id, TableIdentOrId::from(table_ident.clone()))
                         .append_detail("Table metadata not returned from table load".to_string())
                 })?;
+            ensure_format_version_upgrades_allowed(
+                &change.updates,
+                &warehouse.allowed_format_versions,
+            )?;
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,

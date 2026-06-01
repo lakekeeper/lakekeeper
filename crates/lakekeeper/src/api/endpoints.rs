@@ -216,6 +216,7 @@ generate_endpoints! {
         DeleteWarehouse(DELETE, "/management/v1/warehouse/{warehouse_id}"),
         RenameWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/rename"),
         UpdateWarehouseDeleteProfile(POST, "/management/v1/warehouse/{warehouse_id}/delete-profile"),
+        UpdateWarehouseFormatVersionPolicy(POST, "/management/v1/warehouse/{warehouse_id}/format-version-policy"),
         DeactivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/deactivate"),
         ActivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/activate"),
         UpdateStorageProfile(POST, "/management/v1/warehouse/{warehouse_id}/storage"),

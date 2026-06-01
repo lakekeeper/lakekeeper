@@ -259,6 +259,19 @@ impl EventListener for WarehouseCacheEventListener {
         Ok(())
     }
 
+    async fn warehouse_format_version_policy_updated(
+        &self,
+        event: events::UpdateWarehouseFormatVersionPolicyEvent,
+    ) -> anyhow::Result<()> {
+        let events::UpdateWarehouseFormatVersionPolicyEvent {
+            request: _request,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
     async fn warehouse_storage_updated(
         &self,
         event: events::UpdateWarehouseStorageEvent,
@@ -315,6 +328,8 @@ mod tests {
             status: WarehouseStatus::Active,
             tabular_delete_profile: TabularDeleteProfile::Hard {},
             protected: false,
+            allowed_format_versions: crate::service::AllowedFormatVersions::default(),
+            default_format_version: None,
             updated_at,
             version: version.into(),
         })

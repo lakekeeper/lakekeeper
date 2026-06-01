@@ -3,6 +3,7 @@ mod undrop;
 use std::sync::Arc;
 
 use futures::{FutureExt, StreamExt as _};
+use iceberg::spec::FormatVersion;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -34,9 +35,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo,
+        AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags,
+        Transaction, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -106,6 +107,20 @@ pub struct CreateWarehouseRequest {
     #[serde(default)]
     #[builder(default)]
     pub delete_profile: TabularDeleteProfile,
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+    /// Defaults to all supported versions when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<Vec<i32>>))]
+    pub allowed_format_versions: Option<Vec<FormatVersion>>,
+    /// Default Iceberg table format version applied when a create-table request
+    /// does not specify one. Must be a member of `allowed-format-versions`. When
+    /// omitted, resolves to v2 if allowed, otherwise the highest allowed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
+    pub default_format_version: Option<FormatVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
@@ -225,6 +240,22 @@ pub struct UpdateWarehouseDeleteProfileRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct UpdateWarehouseFormatVersionPolicyRequest {
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+    #[cfg_attr(feature = "open-api", schema(value_type=Vec<i32>))]
+    pub allowed_format_versions: Vec<FormatVersion>,
+    /// Default Iceberg table format version applied when a create-table request
+    /// does not specify one. Must be a member of `allowed-format-versions`. When
+    /// omitted, resolves to v2 if allowed, otherwise the highest allowed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
+    pub default_format_version: Option<FormatVersion>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -263,6 +294,16 @@ pub struct GetWarehouseResponse {
     pub status: WarehouseStatus,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse.
+    #[cfg_attr(feature = "open-api", schema(value_type=Vec<i32>))]
+    pub allowed_format_versions: Vec<FormatVersion>,
+    /// Default Iceberg table format version applied when a create-table request
+    /// does not specify one. When absent, resolves to v2 if allowed, otherwise
+    /// the highest allowed version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
+    pub default_format_version: Option<FormatVersion>,
     /// Last updated timestamp.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -346,8 +387,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             mut storage_profile,
             storage_credential,
             delete_profile,
+            allowed_format_versions,
+            default_format_version,
         } = request;
         let project_id = request_metadata.require_project_id(project_id)?;
+        let format_version_policy =
+            validate_format_version_policy(allowed_format_versions, default_format_version)?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -432,6 +477,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             storage_profile,
             delete_profile,
             secret_id,
+            format_version_policy,
             transaction.transaction(),
         )
         .await?;
@@ -792,6 +838,68 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
+
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
+    }
+
+    async fn update_warehouse_format_version_policy(
+        warehouse_id: WarehouseId,
+        request: UpdateWarehouseFormatVersionPolicyRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetWarehouseResponse> {
+        let policy = validate_format_version_policy(
+            Some(request.allowed_format_versions.clone()),
+            request.default_format_version,
+        )?;
+
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::SetFormatVersionPolicy,
+        );
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let authz_result = authorizer
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let updated_warehouse = C::set_warehouse_format_version_policy(
+            warehouse_id,
+            &policy,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.commit().await?;
+
+        event_ctx.emit_warehouse_format_version_policy_updated(
+            Arc::new(request),
+            updated_warehouse.clone(),
+        );
 
         let credential_type =
             resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
@@ -1468,6 +1576,8 @@ impl GetWarehouseResponse {
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
+            allowed_format_versions: warehouse.allowed_format_versions.to_vec(),
+            default_format_version: warehouse.default_format_version,
             updated_at: warehouse.updated_at,
         }
     }
@@ -1519,6 +1629,37 @@ fn validate_warehouse_name(warehouse_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a warehouse format version policy and convert it into domain types.
+///
+/// `allowed` defaults to all supported versions when `None`. The policy is
+/// rejected if the allowed set is empty or if `default` is not a member of it.
+fn validate_format_version_policy(
+    allowed: Option<Vec<FormatVersion>>,
+    default: Option<FormatVersion>,
+) -> Result<WarehouseFormatVersionPolicy> {
+    let allowed_format_versions = match allowed {
+        Some(versions) => AllowedFormatVersions::try_new(versions).map_err(ErrorModel::from)?,
+        None => AllowedFormatVersions::default(),
+    };
+
+    if default.is_some_and(|default| !allowed_format_versions.contains(default)) {
+        return Err(ErrorModel::bad_request(
+            format!(
+                "default_format_version '{}' is not in allowed_format_versions",
+                default.expect("default is Some") as u8
+            ),
+            "DefaultFormatVersionNotAllowed",
+            None,
+        )
+        .into());
+    }
+
+    Ok(WarehouseFormatVersionPolicy {
+        allowed_format_versions,
+        default_format_version: default,
+    })
+}
+
 #[cfg(test)]
 mod test {
     use super::{GetWarehouseResponse, StorageCredentialType, resolve_credential_type};
@@ -1539,6 +1680,8 @@ mod test {
             status: WarehouseStatus::Active,
             tabular_delete_profile: super::TabularDeleteProfile::Hard {},
             protected: false,
+            allowed_format_versions: crate::service::AllowedFormatVersions::default(),
+            default_format_version: None,
             updated_at: None,
             version: crate::service::WarehouseVersion::from(0),
         }

@@ -2825,6 +2825,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/format-version-policy:
+    post:
+      tags:
+        - warehouse
+      summary: Update Format Version Policy
+      description: |-
+        Configures which Iceberg table format versions may be created in, or
+        upgraded to, within a warehouse, and the default version applied when a
+        create-table request does not specify one.
+      operationId: update_warehouse_format_version_policy
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseFormatVersionPolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: Format version policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions:
     get:
       tags:
@@ -4380,6 +4416,26 @@ components:
         - warehouse-name
         - storage-profile
       properties:
+        allowed-format-versions:
+          type:
+            - array
+            - 'null'
+          items:
+            type: integer
+            format: int32
+          description: |-
+            Iceberg table format versions that may be created in, or upgraded to,
+            within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+            Defaults to all supported versions when omitted.
+        default-format-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Default Iceberg table format version applied when a create-table request
+            does not specify one. Must be a member of `allowed-format-versions`. When
+            omitted, resolves to v2 if allowed, otherwise the highest allowed version.
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
           description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
@@ -5239,7 +5295,25 @@ components:
         - delete-profile
         - status
         - protected
+        - allowed-format-versions
       properties:
+        allowed-format-versions:
+          type: array
+          items:
+            type: integer
+            format: int32
+          description: |-
+            Iceberg table format versions that may be created in, or upgraded to,
+            within this warehouse.
+        default-format-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Default Iceberg table format version applied when a create-table request
+            does not specify one. When absent, resolves to v2 if allowed, otherwise
+            the highest allowed version.
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
           description: Delete profile used for the warehouse.
@@ -6172,6 +6246,14 @@ components:
               type: string
               enum:
                 - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_format_version_policy
         - type: object
           required:
             - action
@@ -8310,6 +8392,28 @@ components:
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
+    UpdateWarehouseFormatVersionPolicyRequest:
+      type: object
+      required:
+        - allowed-format-versions
+      properties:
+        allowed-format-versions:
+          type: array
+          items:
+            type: integer
+            format: int32
+          description: |-
+            Iceberg table format versions that may be created in, or upgraded to,
+            within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+        default-format-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Default Iceberg table format version applied when a create-table request
+            does not specify one. Must be a member of `allowed-format-versions`. When
+            omitted, resolves to v2 if allowed, otherwise the highest allowed version.
     UpdateWarehouseStorageRequest:
       type: object
       required:
@@ -8526,6 +8630,7 @@ components:
         - get_all_tasks
         - control_all_tasks
         - set_protection
+        - set_format_version_policy
         - get_endpoint_statistics
     WarehouseAssignment:
       oneOf:

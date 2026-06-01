@@ -66,8 +66,8 @@ pub mod v1 {
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
         RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
-        WarehouseStatisticsResponse,
+        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
+        UpdateWarehouseStorageRequest, WarehouseStatisticsResponse,
     };
 
     /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
@@ -999,6 +999,41 @@ pub mod v1 {
         Json(request): Json<UpdateWarehouseDeleteProfileRequest>,
     ) -> Result<GetWarehouseResponse> {
         ApiServer::<C, A, S>::update_warehouse_delete_profile(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Update Format Version Policy
+    ///
+    /// Configures which Iceberg table format versions may be created in, or
+    /// upgraded to, within a warehouse, and the default version applied when a
+    /// create-table request does not specify one.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::UpdateWarehouseFormatVersionPolicy.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = UpdateWarehouseFormatVersionPolicyRequest,
+        responses(
+            (status = 200, body = GetWarehouseResponse, description = "Format version policy updated successfully"),
+        (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn update_warehouse_format_version_policy<
+        C: CatalogStore,
+        A: Authorizer + Clone,
+        S: SecretStore,
+    >(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateWarehouseFormatVersionPolicyRequest>,
+    ) -> Result<GetWarehouseResponse> {
+        ApiServer::<C, A, S>::update_warehouse_format_version_policy(
             warehouse_id.into(),
             request,
             api_context,
@@ -2272,6 +2307,10 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/delete-profile",
                     post(update_warehouse_delete_profile),
+                )
+                .route(
+                    "/warehouse/{warehouse_id}/format-version-policy",
+                    post(update_warehouse_format_version_policy),
                 )
                 .route(
                     ManagementV1Endpoint::GetWarehouseActions.path_in_management_v1(),

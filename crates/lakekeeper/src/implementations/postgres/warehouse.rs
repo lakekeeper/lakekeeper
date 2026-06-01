@@ -1,5 +1,6 @@
 use std::{collections::HashSet, ops::Deref, sync::Arc};
 
+use iceberg::spec::FormatVersion;
 use sqlx::{PgPool, types::Json};
 
 use super::CatalogState;
@@ -14,20 +15,20 @@ use crate::{
         },
     },
     implementations::postgres::{
+        PostgresBackend,
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
-        role::create_roles,
     },
     service::{
-        CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
-        CatalogRenameWarehouseError, DatabaseIntegrityError, GetProjectResponse, OnRoleConflict,
-        ProjectIdNotFoundError, ResolvedWarehouse, RoleId, SYSTEM_ROLE_PROVIDER_ID,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
-        WarehouseAlreadyExists, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
-        WarehouseNotEmpty, WarehouseProtected, WarehouseStatus, WarehouseVersion,
-        registered_system_roles, storage::StorageProfile,
+        CatalogRenameWarehouseError, CatalogRoleOps, DatabaseIntegrityError, GetProjectResponse,
+        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
+        WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
+        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
+        WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 
@@ -62,6 +63,8 @@ pub(super) async fn set_warehouse_deletion_profile<
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
             "#,
@@ -86,6 +89,7 @@ pub(crate) async fn create_warehouse(
     storage_profile: StorageProfile,
     tabular_delete_profile: TabularDeleteProfile,
     storage_secret_id: Option<SecretId>,
+    format_version_policy: WarehouseFormatVersionPolicy,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let storage_profile_ser =
@@ -95,6 +99,12 @@ pub(crate) async fn create_warehouse(
         .expiration_seconds()
         .map(|dur| dur.num_seconds());
     let prof = DbTabularDeleteProfile::from(tabular_delete_profile);
+
+    let allowed_format_versions_db =
+        format_version_versions_to_db(&format_version_policy.allowed_format_versions);
+    let default_format_version_db = format_version_policy
+        .default_format_version
+        .map(format_version_to_db);
 
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
@@ -106,8 +116,10 @@ pub(crate) async fn create_warehouse(
                                    storage_secret_id,
                                    status,
                                    tabular_expiration_seconds,
-                                   tabular_delete_mode)
-                                VALUES ($1, $2, $3, $4, 'active', $5, $6)
+                                   tabular_delete_mode,
+                                   allowed_format_versions,
+                                   default_format_version)
+                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
                                 RETURNING
                                     project_id,
                                     warehouse_id,
@@ -118,6 +130,8 @@ pub(crate) async fn create_warehouse(
                                     tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                                     tabular_expiration_seconds,
                                     protected,
+                                    allowed_format_versions,
+                                    default_format_version,
                                     updated_at,
                                     version),
             whs AS (INSERT INTO warehouse_statistics (number_of_views,
@@ -132,7 +146,9 @@ pub(crate) async fn create_warehouse(
         storage_profile_ser,
         storage_secret_id.map(|id| id.into_uuid()),
         num_secs,
-        prof as _
+        prof as _,
+        &allowed_format_versions_db,
+        default_format_version_db
     )
     .fetch_one(&mut **transaction)
     .await
@@ -177,10 +193,17 @@ pub(crate) async fn rename_project(
     Ok(())
 }
 
+// `'static` on the inner Transaction lifetime is required so the call to
+// `PostgresBackend::upsert_system_roles` below matches the trait's
+// `Transaction<'_>` GAT, which for `PostgresBackend` resolves to
+// `&mut sqlx::Transaction<'static, sqlx::Postgres>`. The only caller
+// (`<PostgresBackend as CatalogStore>::create_project` in catalog.rs)
+// already passes a `'static`-conn transaction, so this tightening is a
+// no-op at every call site.
 pub(crate) async fn create_project(
     project_id: &ProjectId,
     project_name: String,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> crate::service::Result<()> {
     let Some(_project_id) = sqlx::query_scalar!(
         r#"
@@ -206,35 +229,20 @@ pub(crate) async fn create_project(
 
     // Seed system roles from the process-wide registry, if any. Empty in
     // default OSS (no extension registered). Atomic with the project
-    // insert; conflicts can't occur here because the project is fresh.
+    // insert; the seeder path goes through the cap-gated trait method so
+    // `create_project` and the post-migration backfill share one code path.
     let specs = registered_system_roles();
     if !specs.is_empty() {
-        let requests: Vec<CatalogCreateRoleRequest<'_>> = specs
-            .iter()
-            .map(|spec| {
-                CatalogCreateRoleRequest::builder()
-                    .role_id(RoleId::new_random())
-                    .role_name(spec.name)
-                    .description(Some(spec.description))
-                    .source_id(&spec.source_id)
-                    .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
-                    .build()
-            })
-            .collect();
-        create_roles(
-            project_id,
-            requests,
-            OnRoleConflict::Fail,
-            &mut **transaction,
-        )
-        .await
-        .map_err(|e| {
-            ErrorModel::internal(
-                format!("Failed to seed registered system roles: {e}"),
-                "SystemRoleSeedFailed",
-                Some(Box::new(e)),
-            )
-        })?;
+        let cap = SystemRoleSeederCap::new();
+        PostgresBackend::upsert_system_roles(project_id, specs, cap, transaction)
+            .await
+            .map_err(|e| {
+                ErrorModel::internal(
+                    "Failed to seed registered system roles",
+                    "SystemRoleSeedFailed",
+                    Some(Box::new(e)),
+                )
+            })?;
     }
 
     Ok(())
@@ -315,6 +323,8 @@ struct WarehouseRecord {
     tabular_delete_mode: DbTabularDeleteProfile,
     tabular_expiration_seconds: Option<i64>,
     protected: bool,
+    allowed_format_versions: Vec<i16>,
+    default_format_version: Option<i16>,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
     version: i64,
 }
@@ -328,6 +338,12 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             value.tabular_expiration_seconds,
         )?;
 
+        let allowed_format_versions = db_to_allowed_format_versions(value.allowed_format_versions)?;
+        let default_format_version = value
+            .default_format_version
+            .map(format_version_from_db)
+            .transpose()?;
+
         Ok(ResolvedWarehouse {
             warehouse_id: value.warehouse_id.into(),
             name: value.warehouse_name,
@@ -337,6 +353,8 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             status: value.status,
             tabular_delete_profile,
             protected: value.protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at: value.updated_at,
             version: WarehouseVersion::from(value.version),
         })
@@ -366,6 +384,8 @@ pub(crate) async fn list_warehouses<
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
             FROM warehouse
@@ -403,6 +423,8 @@ pub(super) async fn get_warehouse_by_name(
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at,
             version
         FROM warehouse
@@ -443,6 +465,8 @@ pub(crate) async fn get_warehouse_by_id<
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at,
             version
         FROM warehouse
@@ -564,6 +588,8 @@ pub(crate) async fn rename_warehouse(
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at,
             version
         "#,
@@ -601,6 +627,8 @@ pub(crate) async fn set_warehouse_status(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
         "#,
@@ -638,10 +666,55 @@ pub(crate) async fn set_warehouse_protection(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
             "#,
         protected,
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
+
+    Ok(warehouse.try_into()?)
+}
+
+pub(crate) async fn set_warehouse_format_version_policy(
+    warehouse_id: WarehouseId,
+    policy: &WarehouseFormatVersionPolicy,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
+    let allowed_format_versions_db = format_version_versions_to_db(&policy.allowed_format_versions);
+    let default_format_version_db = policy.default_format_version.map(format_version_to_db);
+
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
+            SET allowed_format_versions = $1, default_format_version = $2
+            WHERE warehouse_id = $3
+            RETURNING
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                allowed_format_versions,
+                default_format_version,
+                updated_at,
+                version
+            "#,
+        &allowed_format_versions_db,
+        default_format_version_db,
         *warehouse_id
     )
     .fetch_optional(&mut **transaction)
@@ -681,6 +754,8 @@ pub(crate) async fn update_storage_profile(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
         "#,
@@ -731,6 +806,46 @@ fn db_to_api_tabular_delete_profile(
         }
         DbTabularDeleteProfile::Hard => Ok(TabularDeleteProfile::Hard {}),
     }
+}
+
+/// Convert a stored `smallint` to an Iceberg [`FormatVersion`].
+fn format_version_from_db(value: i16) -> Result<FormatVersion, DatabaseIntegrityError> {
+    match value {
+        1 => Ok(FormatVersion::V1),
+        2 => Ok(FormatVersion::V2),
+        3 => Ok(FormatVersion::V3),
+        other => Err(DatabaseIntegrityError::new(format!(
+            "Invalid table format version '{other}' stored for warehouse."
+        ))),
+    }
+}
+
+/// Convert a stored `smallint[]` to [`AllowedFormatVersions`].
+fn db_to_allowed_format_versions(
+    values: Vec<i16>,
+) -> Result<AllowedFormatVersions, DatabaseIntegrityError> {
+    let versions = values
+        .into_iter()
+        .map(format_version_from_db)
+        .collect::<Result<Vec<_>, _>>()?;
+    AllowedFormatVersions::try_new(versions).map_err(|_| {
+        DatabaseIntegrityError::new("Stored allowed_format_versions for warehouse is empty.")
+    })
+}
+
+/// Convert an Iceberg [`FormatVersion`] to a `smallint` for storage.
+fn format_version_to_db(version: FormatVersion) -> i16 {
+    version as i16
+}
+
+/// Convert an [`AllowedFormatVersions`] set to a `smallint[]` for storage.
+fn format_version_versions_to_db(allowed: &AllowedFormatVersions) -> Vec<i16> {
+    allowed
+        .as_slice()
+        .iter()
+        .copied()
+        .map(format_version_to_db)
+        .collect()
 }
 
 pub(crate) async fn get_warehouse_stats(
@@ -866,6 +981,7 @@ pub(crate) mod test {
                 expiration_seconds: chrono::Duration::seconds(5),
             },
             secret_id,
+            WarehouseFormatVersionPolicy::default(),
             t.transaction(),
         )
         .await

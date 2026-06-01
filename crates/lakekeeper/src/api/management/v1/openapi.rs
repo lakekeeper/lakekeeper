@@ -118,6 +118,7 @@ use crate::{
         super::update_storage_profile,
         super::update_user,
         super::update_warehouse_delete_profile,
+        super::update_warehouse_format_version_policy,
         super::whoami,
     ),
     modifiers(&SecurityAddon)

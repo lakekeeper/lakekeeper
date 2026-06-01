@@ -38,6 +38,39 @@ pub static SYSTEM_ROLE_PROVIDER_ID: LazyLock<RoleProviderId> = LazyLock::new(|| 
         .expect("SYSTEM_ROLE_PROVIDER_NAME must validate as a RoleProviderId")
 });
 
+/// Zero-size capability proving the caller is in a position to
+/// upsert or delete catalog-managed system roles. Only upstream code
+/// can construct it (the `pub(crate) const fn new` constructor). The
+/// two trusted construction sites are
+/// [`crate::implementations::postgres::warehouse::create_project`]
+/// (atomic with project creation) and
+/// [`crate::service::post_migration_hooks::upsert_system_roles_in_all_projects`]
+/// (post-migration backfill).
+///
+/// Downstream binaries cannot construct one and therefore cannot
+/// invoke [`crate::service::CatalogRoleOps::upsert_system_roles`] or
+/// [`crate::service::CatalogRoleOps::delete_system_roles`] directly.
+/// To add or remove system roles, declare them via the
+/// `Vec<SystemRoleSpec>` passed into `serve()` and
+/// `run_post_migration_hooks()` — the trusted entry points construct
+/// the token internally.
+///
+/// ```compile_fail
+/// use lakekeeper::service::SystemRoleSeederCap;
+/// // pub(crate) constructor is inaccessible to external crates.
+/// let _cap = SystemRoleSeederCap::new();
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct SystemRoleSeederCap(());
+
+impl SystemRoleSeederCap {
+    /// Constructs the capability token. `pub(crate)` so only upstream
+    /// code can mint one.
+    pub(crate) const fn new() -> Self {
+        Self(())
+    }
+}
+
 /// Specification for one catalog-managed system role; one spec produces one
 /// row in the `role` table per project when the seed/backfill machinery
 /// runs. Upstream defines the type only — extensions own the concrete set
@@ -996,6 +1029,13 @@ mod tests {
     fn system_role_provider_id_lazy_matches_literal() {
         assert_eq!(SYSTEM_ROLE_PROVIDER_ID.as_str(), SYSTEM_ROLE_PROVIDER_NAME);
         assert!(SYSTEM_ROLE_PROVIDER_ID.is_system());
+    }
+
+    #[test]
+    fn system_role_seeder_cap_is_zst() {
+        // Catches accidental fields on the capability token — the
+        // gate-by-construction guarantee assumes zero runtime cost.
+        assert_eq!(std::mem::size_of::<SystemRoleSeederCap>(), 0);
     }
 
     #[test]

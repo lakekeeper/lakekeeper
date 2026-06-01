@@ -162,6 +162,18 @@ pub enum RequireWarehouseActionError {
     DatabaseIntegrityError(DatabaseIntegrityError),
 }
 
+impl RequireWarehouseActionError {
+    /// `true` if the failure is "the caller cannot see this warehouse" (existent or
+    /// not), as opposed to a forbidden action on a warehouse the caller *can* see.
+    /// Name-keyed endpoints use this to mask the failure as a generic not-found so a
+    /// name lookup can't become an existence/UUID oracle. Kept next to the variants so
+    /// the predicate can't drift if the enum changes.
+    #[must_use]
+    pub fn is_warehouse_hidden(&self) -> bool {
+        matches!(self, Self::AuthZCannotUseWarehouseId(_))
+    }
+}
+
 impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {

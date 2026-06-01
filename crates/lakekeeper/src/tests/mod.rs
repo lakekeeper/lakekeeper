@@ -69,6 +69,21 @@ pub fn memory_io_profile() -> StorageProfile {
     crate::service::storage::MemoryProfile::default().into()
 }
 
+/// Test-only public reach into [`crate::service::post_migration_hooks`]'s
+/// `pub(crate)` backfill helper. Downstream test crates
+/// drive specific spec lists through this wrapper to
+/// avoid installing the process-wide registry (`OnceLock`), which would
+/// pollute every other test in the same binary.
+///
+/// Production callers must go through
+/// [`crate::service::run_post_migration_hooks`].
+pub async fn upsert_system_roles_in_all_projects<C: crate::service::CatalogStore>(
+    state: C::State,
+    roles: &[crate::service::SystemRoleSpec],
+) -> anyhow::Result<()> {
+    crate::service::upsert_system_roles_in_all_projects::<C>(state, roles).await
+}
+
 #[derive(Debug)]
 pub struct TestWarehouseResponse {
     pub warehouse_id: WarehouseId,
@@ -215,6 +230,8 @@ pub(crate) async fn setup_with_registry<T: Authorizer>(
             storage_profile,
             storage_credential,
             delete_profile,
+            allowed_format_versions: None,
+            default_format_version: None,
         },
         api_context.clone(),
         metadata.clone(),
@@ -231,6 +248,8 @@ pub(crate) async fn setup_with_registry<T: Authorizer>(
                 storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,
+                allowed_format_versions: None,
+                default_format_version: None,
             },
             api_context.clone(),
             metadata.clone(),

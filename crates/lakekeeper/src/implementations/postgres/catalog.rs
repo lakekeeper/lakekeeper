@@ -53,7 +53,9 @@ use crate::{
             resolve_tasks, set_task_queue_config,
         },
         user::{create_or_update_user, delete_user, list_users, search_user},
-        warehouse::{get_warehouse_stats, set_warehouse_protection},
+        warehouse::{
+            get_warehouse_stats, set_warehouse_format_version_policy, set_warehouse_protection,
+        },
     },
     service::{
         ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
@@ -75,13 +77,14 @@ use crate::{
         NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask,
         ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleProviderId, SearchRoleResponse,
         SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseId,
-        WarehouseStatus,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
+        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
+        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
+        WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -506,6 +509,7 @@ impl CatalogStore for super::PostgresBackend {
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        format_version_policy: WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
         create_warehouse(
@@ -514,6 +518,7 @@ impl CatalogStore for super::PostgresBackend {
             storage_profile,
             tabular_delete_profile,
             storage_secret_id,
+            format_version_policy,
             transaction,
         )
         .await
@@ -745,6 +750,14 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError> {
         set_warehouse_protection(warehouse_id, protect, transaction).await
+    }
+
+    async fn set_warehouse_format_version_policy_impl(
+        warehouse_id: WarehouseId,
+        policy: &WarehouseFormatVersionPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
+        set_warehouse_format_version_policy(warehouse_id, policy, transaction).await
     }
 
     async fn pick_new_task_impl(
