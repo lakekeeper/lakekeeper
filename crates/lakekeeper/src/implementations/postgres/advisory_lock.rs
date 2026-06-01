@@ -17,6 +17,15 @@
 //! task to run and the server to notice — but for a maintenance flow
 //! that already runs at human cadence, the window is irrelevant.
 //!
+//! ## Pool footprint
+//!
+//! The guard holds one pool connection for its entire lifetime. The
+//! protected operation typically needs at least one additional
+//! connection (catalog reads, transactions). Ensure the pool's
+//! `max_connections` is at least 2 — small or single-connection pools
+//! will self-deadlock when the operation tries to acquire its second
+//! connection while the lock conn is held.
+//!
 //! The lock key namespace is the caller's responsibility — pick a stable
 //! arbitrary `i64` and document its scope at the call site.
 
