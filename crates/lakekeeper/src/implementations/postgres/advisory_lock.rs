@@ -9,7 +9,7 @@
 
 use crate::{
     implementations::postgres::CatalogState,
-    service::maintenance::{MaintenanceLockGuard, MaintenanceLockGuardSealed},
+    service::maintenance::{MaintenanceLockGuard, sealed::Sealed as MaintenanceLockGuardSealed},
 };
 
 /// Holds an exclusive Postgres session-level advisory lock for the lifetime

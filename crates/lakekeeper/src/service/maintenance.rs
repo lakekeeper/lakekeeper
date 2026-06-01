@@ -8,7 +8,13 @@
 //! disable concurrency control) a compile error at the function
 //! boundary.
 
-mod sealed {
+/// Sealing module for [`MaintenanceLockGuard`]. The trait `Sealed` is
+/// `pub` so other modules in the lakekeeper crate can implement it for
+/// their lock primitives (e.g.
+/// [`crate::implementations::postgres::PostgresAdvisoryLock`]), but the
+/// `sealed` module is `pub(crate)` — downstream crates cannot reach it
+/// and therefore cannot satisfy the supertrait of `MaintenanceLockGuard`.
+pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
@@ -29,8 +35,3 @@ pub struct NoMaintenanceLock;
 
 impl sealed::Sealed for NoMaintenanceLock {}
 impl MaintenanceLockGuard for NoMaintenanceLock {}
-
-// Crate-internal re-export so other modules in the lakekeeper crate
-// (e.g. `implementations::postgres::advisory_lock`) can opt their lock
-// types into the sealed marker without needing a public seal API.
-pub(crate) use sealed::Sealed as MaintenanceLockGuardSealed;
