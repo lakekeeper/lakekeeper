@@ -7,17 +7,16 @@ FROM busybox:1.37.0 AS cleaner
 
 COPY --from=base / /clean
 
-RUN rm -rf /clean/usr/lib/*-linux-gnu/libgomp*  \
+RUN rm -r /clean/usr/lib/*-linux-gnu/libgomp*  \
        /clean/usr/lib/*-linux-gnu/libssl*  \
        /clean/usr/lib/*-linux-gnu/libstdc++* \
        /clean/usr/lib/*-linux-gnu/engines-3 \
-       /clean/usr/lib/*-linux-gnu/ossl-modules \
        /clean/usr/lib/*-linux-gnu/libcrypto.so.3 \
        /clean/usr/lib/*-linux-gnu/gconv \
        /clean/var/lib/dpkg/status.d/libgomp1*  \
        /clean/var/lib/dpkg/status.d/libssl3*  \
        /clean/var/lib/dpkg/status.d/libstdc++6* \
-       /clean/usr/share/doc/libssl3 \
+       /clean/usr/share/doc/libssl3* \
        /clean/usr/share/doc/libstdc++6 \
        /clean/usr/share/doc/libgomp1
 
