@@ -1,8 +1,21 @@
 //! Postgres session-level advisory lock as a generic mutex primitive.
 //!
 //! Used by maintenance flows (currently: OpenFGA reconcile-with-deletion)
-//! to prevent two long-running mutation passes from racing. The lock is
-//! session-scoped: it is released when the held `PoolConnection` drops.
+//! to prevent two long-running mutation passes from racing.
+//!
+//! The lock is session-scoped (`pg_try_advisory_lock`) and stays held
+//! for the lifetime of the postgres backend session. To release on
+//! `Drop`, the held [`sqlx::pool::PoolConnection`] is marked
+//! `close_on_drop` at acquire time — when the guard goes out of scope,
+//! sqlx spawns a task to terminate the connection, the server detects
+//! the closed socket, and `PostgreSQL` releases every advisory lock the
+//! session held. (Returning the connection to the pool would leave the
+//! lock held and let a re-entrant acquire on the same recycled
+//! connection silently succeed.)
+//!
+//! Release is async-deferred — bounded by the time it takes the close
+//! task to run and the server to notice — but for a maintenance flow
+//! that already runs at human cadence, the window is irrelevant.
 //!
 //! The lock key namespace is the caller's responsibility — pick a stable
 //! arbitrary `i64` and document its scope at the call site.
@@ -48,6 +61,11 @@ impl PostgresAdvisoryLock {
             .await
             .map_err(|e| anyhow::anyhow!("advisory lock: pg_try_advisory_lock failed: {e}"))?;
         if acquired {
+            // Terminate the postgres session when the guard drops, so the
+            // session-level advisory lock is released. Otherwise the
+            // connection would be returned to the pool with the lock
+            // still held (and re-entrant on subsequent acquires).
+            conn.close_on_drop();
             Ok(Some(Self { _conn: conn }))
         } else {
             Ok(None)
@@ -108,12 +126,22 @@ mod tests {
             assert!(lock.is_some());
         }
 
-        let reacquire = PostgresAdvisoryLock::try_acquire(&state, TEST_KEY)
-            .await
-            .expect("query ok");
-        assert!(
-            reacquire.is_some(),
-            "lock must be re-acquirable after previous guard dropped"
-        );
+        // Release is async-deferred: the dropped PoolConnection spawns a
+        // close task, and `PostgreSQL` releases the lock once it sees the
+        // socket close. Poll up to a few seconds before failing.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let attempt = PostgresAdvisoryLock::try_acquire(&state, TEST_KEY)
+                .await
+                .expect("query ok");
+            if attempt.is_some() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock not released within 5s after guard drop"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 }
