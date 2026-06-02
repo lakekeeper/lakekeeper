@@ -27,13 +27,18 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       vault:
-        image: hashicorp/vault:latest
+        # Recent vault images run as non-root and hard-require IPC_LOCK; the
+        # old SKIP_SETCAP escape hatch is now ignored. Granting the capability
+        # via `options: --cap-add IPC_LOCK` is the supported workaround. Pin
+        # to a specific patch so an image refresh can't break CI again.
+        image: hashicorp/vault:1.21.4
         ports:
           - 8200:8200
         env:
           VAULT_DEV_ROOT_TOKEN_ID: myroot
           VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
         options: >-
+          --cap-add IPC_LOCK
           --health-cmd "vault status -address http://localhost:8200"
           --health-interval 10s
           --health-timeout 5s
@@ -63,7 +68,7 @@ jobs:
           docker run -d --name seaweedfs -p 8333:8333 \
             -e "AWS_ACCESS_KEY_ID=some_access_key1" \
             -e "AWS_SECRET_ACCESS_KEY=some_secret_key1" \
-            chrislusf/seaweedfs:latest server -s3 -ip.bind=0.0.0.0
+            chrislusf/seaweedfs:4.31 server -s3 -ip.bind=0.0.0.0
 
       - name: Wait for SeaweedFS S3 to be healthy
         shell: bash
@@ -159,7 +164,9 @@ jobs:
           vault write -address "${VAULT_ADDR}" auth/userpass/users/test password=test policies=app
 
       - name: Setup openfga
-        run: docker run -d -p 35081:8081 openfga/openfga:v1.8 run
+        # v1.11+ required: reconcile/rebuild calls write_with_options(idempotent),
+        # which relies on the on_duplicate/on_missing fields added in v1.11.
+        run: docker run -d -p 35081:8081 openfga/openfga:v1.14 run
 
       - name: Test
         uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
