@@ -296,7 +296,7 @@ pub(crate) async fn search_role<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     Ok(SearchRoleResponse { roles })
 }
 
-pub(crate) async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
+pub async fn list_roles<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     project_id: Option<&ProjectId>,
     filter: CatalogListRolesByIdFilter<'_>,
     PaginationQuery {

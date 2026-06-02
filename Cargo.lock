@@ -3853,6 +3853,7 @@ dependencies = [
  "lakekeeper-storage-postgres",
  "maplit",
  "mockall",
+ "pastey",
  "pretty_assertions",
  "serde",
  "serde_json",

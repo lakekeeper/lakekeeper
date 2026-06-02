@@ -200,7 +200,7 @@ pub(crate) async fn rename_project(
 // (`<PostgresBackend as CatalogStore>::create_project` in catalog.rs)
 // already passes a `'static`-conn transaction, so this tightening is a
 // no-op at every call site.
-pub(crate) async fn create_project(
+pub async fn create_project(
     project_id: &ProjectId,
     project_name: String,
     transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,

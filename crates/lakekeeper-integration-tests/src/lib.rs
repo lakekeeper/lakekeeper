@@ -14,7 +14,47 @@
 //! tests can use them without a dev-dep cycle.
 
 mod internal_helper;
+mod pagination_macro; // exports `impl_pagination_tests!` via `#[macro_export]`
 pub use internal_helper::*;
+// `pastey` is needed at the macro call sites because `impl_pagination_tests!`
+// expands to `paste! { ... }`. Re-export it so downstream test files don't
+// need to add a direct dep.
+pub use pastey;
+
+/// 6-argument wrapper around [`setup`] that defaults `number_of_warehouses=1`
+/// and `project_id=None`. Preserves the original `crate::server::test::setup`
+/// signature for tests extracted from lakekeeper that pre-date the
+/// num-warehouses / project-id arguments.
+#[allow(clippy::too_many_arguments)]
+pub async fn setup_simple<T: lakekeeper::service::authz::Authorizer>(
+    pool: sqlx::PgPool,
+    storage_profile: lakekeeper::service::storage::StorageProfile,
+    storage_credential: Option<lakekeeper::service::storage::StorageCredential>,
+    authorizer: T,
+    delete_profile: lakekeeper::api::management::v1::warehouse::TabularDeleteProfile,
+    user_id: Option<lakekeeper::service::UserId>,
+) -> (
+    lakekeeper::api::ApiContext<
+        lakekeeper::service::State<
+            T,
+            lakekeeper_storage_postgres::PostgresBackend,
+            lakekeeper_storage_postgres::SecretsState,
+        >,
+    >,
+    TestWarehouseResponse,
+) {
+    setup(
+        pool,
+        storage_profile,
+        storage_credential,
+        authorizer,
+        delete_profile,
+        user_id,
+        1,
+        None,
+    )
+    .await
+}
 pub use lakekeeper_storage_postgres::test_utils::{
     SetupTestCatalog, TestWarehouseResponse, get_api_context, get_api_context_with_registry,
     memory_io_profile, random_request_metadata, s3_compatible_profile, setup, setup_with_registry,

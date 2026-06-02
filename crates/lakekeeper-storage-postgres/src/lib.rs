@@ -15,13 +15,13 @@ pub(crate) mod idempotency;
 pub mod migrations;
 pub(crate) mod namespace;
 mod pagination;
-pub(crate) mod role;
+pub mod role;
 pub(crate) mod role_assignment;
 pub(crate) mod secrets;
 pub mod tabular;
 pub mod tasks;
 pub(crate) mod user;
-pub(crate) mod warehouse;
+pub mod warehouse;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_utils;
