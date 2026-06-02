@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use axum::{Json, Router, extract::DefaultBodyLimit, response::IntoResponse, routing::get};
 use axum_extra::{either::Either, middleware::option_layer};
 use axum_prometheus::PrometheusMetricLayer;
-use http::{HeaderName, HeaderValue, Method, header};
+use http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use limes::Authenticator;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -37,7 +37,7 @@ use crate::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
         authn::{AuthMiddlewareState, auth_middleware_fn},
         authz::Authorizer,
-        health::ServiceHealthProvider,
+        health::{HealthState, HealthStatus, ServiceHealthProvider},
         tasks::QueueApiConfig,
     },
 };
@@ -158,7 +158,7 @@ pub async fn new_full_router<
             "/health",
             get(|| async move {
                 let health = service_health_provider.collect_health().await;
-                Json(health).into_response()
+                health_response(health)
             }),
         );
 
@@ -210,6 +210,15 @@ pub async fn new_full_router<
     } else {
         router
     })
+}
+
+fn health_response(health: HealthState) -> axum::response::Response {
+    let status = match health.health {
+        HealthStatus::Healthy => StatusCode::OK,
+        HealthStatus::Unhealthy | HealthStatus::Unknown => StatusCode::SERVICE_UNAVAILABLE,
+    };
+
+    (status, Json(health)).into_response()
 }
 
 async fn print_request_body(
@@ -413,6 +422,74 @@ pub async fn serve(
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
+    use axum::{Router, body::Body, http::Request, routing::get};
+    use http::StatusCode;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    use crate::{
+        config::MaintenanceMode,
+        service::health::{Health, HealthState, HealthStatus},
+    };
+
+    fn test_health_state(health: HealthStatus) -> HealthState {
+        HealthState {
+            health,
+            services: HashMap::from([(
+                "catalog".to_string(),
+                vec![Health::now("read_pool", health)],
+            )]),
+            maintenance_mode: MaintenanceMode::default(),
+        }
+    }
+
+    async fn request_health(health: HealthStatus) -> (StatusCode, HealthState) {
+        let app = Router::new().route(
+            "/health",
+            get(move || async move { super::health_response(test_health_state(health)) }),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: HealthState = serde_json::from_slice(&body).unwrap();
+
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_returns_ok_for_healthy_state() {
+        let (status, body) = request_health(HealthStatus::Healthy).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.health, HealthStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_returns_service_unavailable_for_unhealthy_state() {
+        let (status, body) = request_health(HealthStatus::Unhealthy).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.health, HealthStatus::Unhealthy);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_returns_service_unavailable_for_unknown_state() {
+        let (status, body) = request_health(HealthStatus::Unknown).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.health, HealthStatus::Unknown);
+    }
 
     #[cfg(feature = "open-api")]
     #[test]

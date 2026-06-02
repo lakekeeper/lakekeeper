@@ -4494,8 +4494,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openfga-client"
-version = "0.5.1"
-source = "git+https://github.com/vakamo-labs/openfga-client.git?rev=6121e38#6121e38ce39601c15b330dddcf8654a35c2d796c"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22be391bcd60909699e7b40f58605e1a76fc1e375336f1401b0aa5a54011ba9d"
 dependencies = [
  "async-stream",
  "futures",
@@ -4580,7 +4581,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

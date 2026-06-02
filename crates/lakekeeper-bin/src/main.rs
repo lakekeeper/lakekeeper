@@ -82,7 +82,7 @@ enum Commands {
         )]
         force_start: bool,
     },
-    /// Check the health of the server
+    /// Check the health endpoint of the server
     Healthcheck {
         #[clap(
             default_value = "false",
@@ -219,11 +219,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Healthcheck {
             check_all,
-            mut check_db,
-            mut check_server,
+            check_db,
+            check_server,
         }) => {
-            check_db |= check_all;
-            check_server |= check_all;
+            let (check_db, check_server) =
+                healthcheck::normalize_checks(check_all, check_db, check_server);
             healthcheck::health(check_db, check_server).await?;
         }
         Some(Commands::Version {}) => {
