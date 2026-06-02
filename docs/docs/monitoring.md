@@ -55,7 +55,7 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 
 **Health probe behavior.** Role provider health is intentionally *excluded* from the `/health` endpoint. The periodic health-check loop still calls `update_health` on every cycle (to drive reconnection attempts and keep `lakekeeper_role_provider_up` current), but an unreachable provider does **not** cause the pod to fail its liveness or readiness probe. Lakekeeper continues serving the roles it last synced to Postgres (`stale_fallback`), so authorization keeps working during a provider outage — at the cost of potentially stale group memberships.
 
-This contrasts with the Postgres connection: if Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below).
+This contrasts with the Postgres connection: if Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`; it returns `503 Service Unavailable` when the aggregate state is `error` or `unknown`.
 
 !!! tip "Alerting on role provider health"
     Alert on `lakekeeper_role_provider_up == 0` to detect provider outages early. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms that Lakekeeper is actively falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` with a healthy provider indicates a separate Postgres write problem — investigate database connectivity or permissions.
@@ -92,7 +92,20 @@ Postgres is Lakekeeper's primary backend. Use [postgres_exporter](https://github
 If you run Postgres via the [CloudNativePG](https://cloudnative-pg.io/) operator, its built-in per-instance exporter (port `9187`, metrics prefixed `cnpg_collector_*`) covers WAL file counts and size, archive status, sync replica state, and basic liveness — complementing `postgres_exporter` for those signals. Connection pool slots, query latency, and replication lag are available as [user-defined custom queries](https://cloudnative-pg.io/documentation/current/monitoring/#user-defined-metrics) in CloudNativePG; disk and IOPS still require `node_exporter` or cloud provider metrics.
 
 !!! warning
-    Lakekeeper's liveness probe checks the database connection. If Postgres becomes unreachable or runs out of connections, the pod will fail its health check and be marked unhealthy.
+    Lakekeeper's `/health` endpoint checks the database connection. If Postgres becomes unreachable or runs out of connections, `/health` returns `503 Service Unavailable`, so standard Kubernetes HTTP probes fail and the pod is marked unhealthy or unready.
+
+Use `/health` for readiness probes when traffic should only be sent to pods with a healthy Postgres connection. It is also suitable as a liveness probe if your deployment wants Kubernetes to restart pods whose database-dependent health remains unhealthy.
+
+```yaml title="Example Kubernetes probes"
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8181
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8181
+```
 
 ## Kubernetes and Resource Monitoring
 

@@ -22,7 +22,15 @@ pub trait HealthExt: Send + Sync + 'static {
                 break;
             }
 
-            self.update_health().await;
+            if tokio::time::timeout(refresh_interval, self.update_health())
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    timeout_seconds = refresh_interval.as_secs_f64(),
+                    "Health check timed out"
+                );
+            }
 
             // Jitter is a random value between 0 and 500 milliseconds (inclusive)
             let jitter = fastrand::u64(0..=500);
@@ -185,4 +193,56 @@ pub struct HealthState {
     /// restart, before running database migrations.
     #[serde(default)]
     pub maintenance_mode: crate::config::MaintenanceMode,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::pending,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use super::{Health, HealthExt};
+    use crate::CancellationToken;
+
+    #[derive(Debug, Default)]
+    struct HangingProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HealthExt for HangingProvider {
+        async fn health(&self) -> Vec<Health> {
+            Vec::new()
+        }
+
+        async fn update_health(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            pending::<()>().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn update_health_loop_exits_after_a_provider_update_times_out() {
+        let provider = Arc::new(HangingProvider::default());
+        let cancellation_token = CancellationToken::new();
+        let handle = tokio::spawn(
+            provider
+                .clone()
+                .update_health_loop(Duration::from_millis(1), cancellation_token.clone()),
+        );
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancellation_token.cancel();
+
+        tokio::time::timeout(Duration::from_millis(50), handle)
+            .await
+            .expect("health update loop should not remain stuck on a provider update")
+            .expect("health update loop task should not panic");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    }
 }
