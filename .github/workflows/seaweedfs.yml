@@ -102,6 +102,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: some_access_key1
           AWS_SECRET_ACCESS_KEY: some_secret_key1
+          AWS_DEFAULT_REGION: local
           AWS_EC2_METADATA_DISABLED: true
         run: |
           aws s3api create-bucket --bucket tests --endpoint-url http://127.0.0.1:8333
