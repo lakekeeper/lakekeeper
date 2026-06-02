@@ -55,15 +55,12 @@ sqlx = { workspace = true, features = [
     "migrate",
 ] }
 strum = { workspace = true }
-strum_macros = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-veil = { workspace = true }
 
 [dev-dependencies]
 fastrand = { workspace = true }

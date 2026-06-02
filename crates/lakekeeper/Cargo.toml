@@ -41,7 +41,6 @@ sqlx-postgres = ["dep:sqlx"]
 
 [dependencies]
 anyhow = { workspace = true }
-async-channel = { workspace = true }
 async-nats = { workspace = true, optional = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
@@ -55,7 +54,6 @@ axum-prometheus = { workspace = true }
 azure_core = { workspace = true }
 azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
-base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
@@ -107,7 +105,6 @@ tower-http = { workspace = true, optional = true, features = [
     "cors",
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
-tryhard = { workspace = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
 url = { workspace = true }
@@ -116,8 +113,6 @@ utoipa = { workspace = true, features = ["uuid"], optional = true }
 utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
 valuable = { workspace = true, features = ["derive"] }
-vaultrs = "0.8"
-vaultrs-login = "0.2.4"
 veil = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
