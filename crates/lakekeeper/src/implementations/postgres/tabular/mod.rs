@@ -1,3 +1,4 @@
+pub(crate) mod generic_table;
 mod load_by_location;
 mod protection;
 pub mod table;
@@ -23,8 +24,9 @@ use crate::{
     service::{
         CatalogSearchTabularInfo, CatalogSearchTabularResponse, ClearTabularDeletedAtError,
         ConcurrentUpdateError, CreateTabularError, DropTabularError, ExpirationTaskInfo,
-        GetTabularInfoError, InternalParseLocationError, InvalidNamespaceIdentifier,
-        ListTabularsError, LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
+        GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
+        InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
+        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
         TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
@@ -32,11 +34,12 @@ use crate::{
     },
 };
 
-#[derive(Debug, sqlx::Type, Copy, Clone, strum::Display)]
+#[derive(Debug, sqlx::Type, Copy, Clone, PartialEq, Eq, strum::Display)]
 #[sqlx(type_name = "tabular_type", rename_all = "kebab-case")]
 pub(crate) enum TabularType {
     Table,
     View,
+    GenericTable,
 }
 
 impl From<crate::api::management::v1::TabularType> for TabularType {
@@ -44,6 +47,7 @@ impl From<crate::api::management::v1::TabularType> for TabularType {
         match typ {
             crate::api::management::v1::TabularType::Table => TabularType::Table,
             crate::api::management::v1::TabularType::View => TabularType::View,
+            crate::api::management::v1::TabularType::GenericTable => TabularType::GenericTable,
         }
     }
 }
@@ -63,8 +67,15 @@ impl From<FromTabularRowError> for GetTabularInfoError {
     }
 }
 
+/// Tabular row without per-tabular-type properties.
+///
+/// Used by writes (create / commit / rename) that already know the new
+/// property map from the in-memory metadata and would otherwise have to pad
+/// the SELECT with `NULL::text[]` columns just to satisfy the row decoder.
+/// Reads that genuinely return properties from the DB use
+/// [`TabularRowWithProperties`] instead.
 #[derive(Debug, FromRow)]
-struct TabularRow {
+pub(super) struct TabularRowCore {
     tabular_id: Uuid,
     warehouse_version: i64,
     namespace_name: Vec<String>,
@@ -80,16 +91,20 @@ struct TabularRow {
     typ: TabularType,
     fs_location: String,
     fs_protocol: String,
-    view_properties_keys: Option<Vec<String>>,
-    view_properties_values: Option<Vec<String>>,
-    table_properties_keys: Option<Vec<String>>,
-    table_properties_values: Option<Vec<String>>,
 }
 
-impl TabularRow {
-    fn try_into_table_or_view(
+impl TabularRowCore {
+    pub(super) fn try_into_table_or_view(
         self,
         warehouse_id: WarehouseId,
+    ) -> Result<ViewOrTableInfo, FromTabularRowError> {
+        self.try_into_table_or_view_with_properties(warehouse_id, HashMap::new())
+    }
+
+    fn try_into_table_or_view_with_properties(
+        self,
+        warehouse_id: WarehouseId,
+        properties: HashMap<String, String>,
     ) -> Result<ViewOrTableInfo, FromTabularRowError> {
         let namespace = parse_namespace_identifier_from_vec(
             &self.namespace_name,
@@ -116,10 +131,7 @@ impl TabularRow {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
-                properties: prepare_properties(
-                    self.table_properties_keys,
-                    self.table_properties_values,
-                ),
+                properties,
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
@@ -132,16 +144,88 @@ impl TabularRow {
                 metadata_location,
                 updated_at: self.updated_at,
                 location,
-                properties: prepare_properties(
-                    self.view_properties_keys,
-                    self.view_properties_values,
-                ),
+                properties,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+            }),
+            TabularType::GenericTable => ViewOrTableInfo::GenericTable(GenericTabularInfo {
+                namespace_id: self.namespace_id.into(),
+                tabular_ident,
+                warehouse_id,
+                tabular_id: self.tabular_id.into(),
+                protected: self.protected,
+                metadata_location,
+                updated_at: self.updated_at,
+                location,
+                properties,
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
         };
 
         Ok(view_or_table_info)
+    }
+}
+
+/// Tabular row that also carries the table/view property arrays selected via
+/// LEFT JOIN. Use this for queries that need to hydrate properties from the DB
+/// (e.g. listing / lookup / rename). Writes that overlay properties from
+/// in-memory metadata should use [`TabularRowCore`] instead.
+#[derive(Debug, FromRow)]
+pub(super) struct TabularRowWithProperties {
+    tabular_id: Uuid,
+    warehouse_version: i64,
+    namespace_name: Vec<String>,
+    namespace_version: i64,
+    namespace_id: Uuid,
+    tabular_name: String,
+    updated_at: Option<chrono::DateTime<Utc>>,
+    metadata_location: Option<String>,
+    protected: bool,
+    #[sqlx(rename = "typ: TabularType")]
+    typ: TabularType,
+    fs_location: String,
+    fs_protocol: String,
+    view_properties_keys: Option<Vec<String>>,
+    view_properties_values: Option<Vec<String>>,
+    table_properties_keys: Option<Vec<String>>,
+    table_properties_values: Option<Vec<String>>,
+    generic_table_properties_keys: Option<Vec<String>>,
+    generic_table_properties_values: Option<Vec<String>>,
+}
+
+impl TabularRowWithProperties {
+    pub(super) fn try_into_table_or_view(
+        self,
+        warehouse_id: WarehouseId,
+    ) -> Result<ViewOrTableInfo, FromTabularRowError> {
+        let properties = match self.typ {
+            TabularType::Table => {
+                prepare_properties(self.table_properties_keys, self.table_properties_values)
+            }
+            TabularType::View => {
+                prepare_properties(self.view_properties_keys, self.view_properties_values)
+            }
+            TabularType::GenericTable => prepare_properties(
+                self.generic_table_properties_keys,
+                self.generic_table_properties_values,
+            ),
+        };
+        let core = TabularRowCore {
+            tabular_id: self.tabular_id,
+            warehouse_version: self.warehouse_version,
+            namespace_name: self.namespace_name,
+            namespace_version: self.namespace_version,
+            namespace_id: self.namespace_id,
+            tabular_name: self.tabular_name,
+            updated_at: self.updated_at,
+            metadata_location: self.metadata_location,
+            protected: self.protected,
+            typ: self.typ,
+            fs_location: self.fs_location,
+            fs_protocol: self.fs_protocol,
+        };
+        core.try_into_table_or_view_with_properties(warehouse_id, properties)
     }
 }
 
@@ -173,13 +257,17 @@ where
                     t_ids.push(**id);
                     t_typs.push(TabularType::View);
                 }
+                TabularId::GenericTable(id) => {
+                    t_ids.push(**id);
+                    t_typs.push(TabularType::GenericTable);
+                }
             }
             (t_ids, t_typs)
         },
     );
 
     let rows = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH q AS (
             SELECT id, typ FROM UNNEST($2::uuid[], $3::tabular_type[]) u(id, typ)
@@ -203,13 +291,16 @@ where
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
             WHERE w.status = 'active'
                 AND (t.deleted_at is NULL OR $4)
-                AND (t.metadata_location is not NULL OR $5)
+                AND (t.metadata_location is not NULL OR $5 OR t.typ = 'generic-table')
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
         ),
         selected_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'
         )
         SELECT st.tabular_id,
                st.warehouse_version,
@@ -226,7 +317,9 @@ where
                vp.view_properties_keys,
                vp.view_properties_values,
                tp.keys as table_properties_keys,
-               tp.values as table_properties_values
+               tp.values as table_properties_values,
+               gtp.keys as generic_table_properties_keys,
+               gtp.values as generic_table_properties_values
         FROM selected_tabulars st
         LEFT JOIN (SELECT view_id,
                     ARRAY_AGG(key)   AS view_properties_keys,
@@ -240,6 +333,12 @@ where
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
         "#,
         *warehouse_id,
         t_ids.as_slice() as _,
@@ -278,12 +377,12 @@ pub(crate) async fn get_tabular_infos_by_idents<'e, 'c: 'e, E>(
     tabulars: &[TabularIdentBorrowed<'_>],
     list_flags: crate::service::TabularListFlags,
     catalog_state: E,
-) -> Result<Vec<ViewOrTableInfo>, GetTabularInfoError>
+) -> Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError>
 where
     E: 'e + sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
     if tabulars.is_empty() {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
     let (ns_names, t_names, t_typs) = tabulars.iter().fold(
         (
@@ -307,7 +406,7 @@ where
 
     // For columns with collation, the query must return the value as in input `tables`.
     let rows = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH selected_tabulars AS (
             SELECT t.tabular_id,
@@ -340,13 +439,16 @@ where
             WHERE in_t.name IS NOT NULL AND in_ns.name IS NOT NULL
                 AND w.status = 'active'
                 AND (t.deleted_at is NULL OR $5)
-                AND (t.metadata_location is not NULL OR $6)
+                AND (t.metadata_location is not NULL OR $6 OR t.typ = 'generic-table')
         ),
         selected_views AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
         ),
         selected_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'
         )
         SELECT st.tabular_id,
                st.warehouse_version,
@@ -363,7 +465,9 @@ where
                vp.view_properties_keys,
                vp.view_properties_values,
                tp.keys as table_properties_keys,
-               tp.values as table_properties_values
+               tp.values as table_properties_values,
+               gtp.keys as generic_table_properties_keys,
+               gtp.values as generic_table_properties_values
         FROM selected_tabulars st
         LEFT JOIN (SELECT view_id,
                     ARRAY_AGG(key)   AS view_properties_keys,
@@ -377,6 +481,12 @@ where
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
         "#,
         *warehouse_id,
         ns_names_json as _,
@@ -392,8 +502,8 @@ where
     let result = rows
         .into_iter()
         .map(|row| {
-            let view_or_table_info = row.try_into_table_or_view(warehouse_id)?;
-            Ok(view_or_table_info)
+            let info = row.try_into_table_or_view(warehouse_id)?;
+            Ok((info.tabular_ident().clone(), info))
         })
         .collect::<Result<_, GetTabularInfoError>>()?;
     Ok(result)
@@ -432,6 +542,46 @@ impl From<FromTabularRowError> for CreateTabularError {
     }
 }
 
+/// Errors with `LocationAlreadyTaken` if any other tabular in `warehouse_id`
+/// occupies `location` (or a path that this location would shadow).
+///
+/// Shared between `create_tabular` (where it backstops the table-level unique
+/// constraint on `(warehouse_id, name, namespace_id)` for location uniqueness)
+/// and `view::commit_existing_view` (where there is no analogous constraint
+/// because commits don't go through INSERT).
+pub(crate) async fn ensure_location_available(
+    warehouse_id: Uuid,
+    self_tabular_id: Uuid,
+    location: &Location,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), CreateTabularError> {
+    let partial_locations = get_partial_fs_locations(location)?;
+    let fs_location = location.authority_and_path();
+    let taken = sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+               SELECT 1
+               FROM tabular ta
+               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
+                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
+               ) AND tabular_id != $3
+           ) as "exists!""#,
+        warehouse_id,
+        &partial_locations,
+        self_tabular_id,
+        fs_location,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Error checking for conflicting locations")
+    })?;
+    if taken {
+        return Err(LocationAlreadyTaken::new(location.clone()).into());
+    }
+    Ok(())
+}
+
 pub(crate) async fn create_tabular(
     CreateTabular {
         id,
@@ -446,17 +596,21 @@ pub(crate) async fn create_tabular(
 ) -> Result<ViewOrTableInfo, CreateTabularError> {
     let fs_protocol = location.scheme();
     let fs_location = location.authority_and_path();
-    let partial_locations = get_partial_fs_locations(location)?;
+
+    // Check location availability before the INSERT so a collision raises
+    // `LocationAlreadyTaken` cleanly instead of inserting a row we'll have to
+    // rely on transaction rollback to undo.
+    ensure_location_available(warehouse_id, id, location, transaction).await?;
 
     let tabular_id = sqlx::query_as!(
-        TabularRow,
+        TabularRowCore,
         r#"
         WITH inserted AS (
             INSERT INTO tabular (tabular_id, name, namespace_id, tabular_namespace_name, warehouse_id, typ, metadata_location, fs_protocol, fs_location)
             SELECT $1, $2, $3, n.namespace_name, $4, $5, $6, $7, $8
             FROM namespace n
             WHERE n.namespace_id = $3 AND n.warehouse_id = $4
-            RETURNING 
+            RETURNING
                 tabular_id,
                 namespace_id,
                 name as tabular_name,
@@ -479,11 +633,7 @@ pub(crate) async fn create_tabular(
                i.protected,
                i.typ as "typ: TabularType",
                i.fs_location,
-               i.fs_protocol,
-               NULL::text[] as view_properties_keys,
-               NULL::text[] as view_properties_values,
-               NULL::text[] as table_properties_keys,
-               NULL::text[] as table_properties_values
+               i.fs_protocol
         FROM inserted i
         INNER JOIN warehouse w ON w.warehouse_id = $4
         INNER JOIN namespace n ON n.namespace_id = $3 AND n.warehouse_id = $4
@@ -509,29 +659,6 @@ pub(crate) async fn create_tabular(
             _ => e.into_catalog_backend_error().into(),
         }
     })?;
-
-    let location_is_taken = sqlx::query_scalar!(
-        r#"SELECT EXISTS (
-               SELECT 1
-               FROM tabular ta
-               WHERE ta.warehouse_id = $1 AND (fs_location = ANY($2) OR
-                      (length($4) < length(fs_location) AND ((TRIM(TRAILING '/' FROM fs_location) || '/') LIKE $4 || '/%'))
-               ) AND tabular_id != $3
-           ) as "exists!""#,
-        warehouse_id,
-        &partial_locations,
-        id,
-        fs_location
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|e| {
-        e.into_catalog_backend_error().append_detail("Error checking for conflicting locations")
-    })?;
-
-    if location_is_taken {
-        return Err(LocationAlreadyTaken::new(location.clone()).into());
-    }
 
     let tabular_info = tabular_id.try_into_table_or_view(warehouse_id.into())?;
 
@@ -563,6 +690,8 @@ struct TabularRowWithDeletion {
     view_properties_values: Option<Vec<String>>,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
+    generic_table_properties_keys: Option<Vec<String>>,
+    generic_table_properties_values: Option<Vec<String>>,
 }
 
 impl TabularRowWithDeletion {
@@ -570,7 +699,7 @@ impl TabularRowWithDeletion {
         self,
         warehouse_id: WarehouseId,
     ) -> Result<ViewOrTableDeletionInfo, FromTabularRowError> {
-        let row = TabularRow {
+        let row = TabularRowWithProperties {
             tabular_id: self.tabular_id,
             namespace_name: self.namespace_name,
             namespace_id: self.namespace_id,
@@ -587,6 +716,8 @@ impl TabularRowWithDeletion {
             view_properties_values: self.view_properties_values,
             table_properties_keys: self.table_properties_keys,
             table_properties_values: self.table_properties_values,
+            generic_table_properties_keys: self.generic_table_properties_keys,
+            generic_table_properties_values: self.generic_table_properties_values,
         };
 
         let tabular_info = row.try_into_table_or_view(warehouse_id)?;
@@ -611,6 +742,13 @@ impl TabularRowWithDeletion {
             .into(),
             ViewOrTableInfo::View(view_info) => ViewDeletionInfo {
                 tabular: view_info,
+                expiration_task,
+                deleted_at: self.deleted_at,
+                created_at: self.created_at,
+            }
+            .into(),
+            ViewOrTableInfo::GenericTable(generic_table_info) => GenericTableDeletionInfo {
+                tabular: generic_table_info,
                 expiration_task,
                 deleted_at: self.deleted_at,
                 created_at: self.created_at,
@@ -684,16 +822,16 @@ where
             FROM tabular t
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
-            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view') AND queue_name = 'tabular_expiration' AND tt.warehouse_id = $1)
+            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name = 'tabular_expiration' AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
             WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
                 AND (t.typ = $3 OR $3 IS NULL)
-                -- active tables are tables that are not staged (metadata_location is set) and not deleted
+                -- active tabulars: not deleted AND (has metadata_location OR is generic-table)
                 AND (
-                    (t.deleted_at IS NULL AND t.metadata_location IS NOT NULL AND $4) OR   -- include_active
-                    (t.deleted_at IS NOT NULL AND $5) OR                                   -- include_deleted  
-                    (t.metadata_location IS NULL AND $6)                                   -- include_staged
+                    (t.deleted_at IS NULL AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table') AND $4) OR   -- include_active
+                    (t.deleted_at IS NOT NULL AND $5) OR                                   -- include_deleted
+                    (t.metadata_location IS NULL AND t.typ != 'generic-table' AND $6)      -- include_staged
                 )
                 AND ((t.created_at > $7 OR $7 IS NULL) OR (t.created_at = $7 AND t.tabular_id > $8))
             ORDER BY t.created_at, t.tabular_id ASC
@@ -704,6 +842,9 @@ where
         ),
         selected_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'
         )
         SELECT st.tabular_id,
                st.tabular_name,
@@ -724,7 +865,9 @@ where
                vp.view_properties_keys,
                vp.view_properties_values,
                tp.keys as table_properties_keys,
-               tp.values as table_properties_values
+               tp.values as table_properties_values,
+               gtp.keys as generic_table_properties_keys,
+               gtp.values as generic_table_properties_values
         FROM selected_tabulars st
         LEFT JOIN (SELECT view_id,
                     ARRAY_AGG(key)   AS view_properties_keys,
@@ -738,7 +881,18 @@ where
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
+        ORDER BY st.created_at, st.tabular_id ASC
         "#,
+        // The CTE has ORDER BY but PostgreSQL does not preserve row order through
+        // JOINs. Without the outer ORDER BY, the last row (used to derive the
+        // next-page cursor) may not be the maximum (created_at, tabular_id),
+        // causing the next page to re-fetch already-returned rows.
         *warehouse_id,
         namespace_id.map(|n| *n),
         typ as _,
@@ -791,6 +945,8 @@ struct PostgresSearchTabularInfo {
     view_properties_values: Option<Vec<String>>,
     table_properties_keys: Option<Vec<String>>,
     table_properties_values: Option<Vec<String>>,
+    generic_table_properties_keys: Option<Vec<String>>,
+    generic_table_properties_values: Option<Vec<String>>,
 }
 
 impl PostgresSearchTabularInfo {
@@ -847,6 +1003,22 @@ impl PostgresSearchTabularInfo {
                     self.view_properties_values,
                 ),
             }),
+            TabularType::GenericTable => ViewOrTableInfo::GenericTable(GenericTabularInfo {
+                namespace_id: self.namespace_id.into(),
+                tabular_ident,
+                warehouse_id,
+                tabular_id: self.tabular_id.into(),
+                protected: self.protected,
+                metadata_location,
+                updated_at: self.updated_at,
+                location,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+                properties: prepare_properties(
+                    self.generic_table_properties_keys,
+                    self.generic_table_properties_values,
+                ),
+            }),
         };
 
         Ok(CatalogSearchTabularInfo {
@@ -892,7 +1064,7 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
-                    AND t.metadata_location IS NOT NULL
+                    AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table')
                     AND (t.tabular_id = $2 OR t.namespace_id = $2)
                 ORDER BY (t.tabular_id = $2) DESC
                 LIMIT 10
@@ -902,6 +1074,9 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
             ),
             selected_tables AS (
                 SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+            ),
+            selected_generic_tables AS (
+                SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'
             )
             SELECT st.tabular_id,
                 st.namespace_id,
@@ -919,7 +1094,9 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 vp.view_properties_keys,
                 vp.view_properties_values,
                 tp.keys as table_properties_keys,
-                tp.values as table_properties_values
+                tp.values as table_properties_values,
+                gtp.keys as generic_table_properties_keys,
+                gtp.values as generic_table_properties_values
             FROM selected_tabulars st
             LEFT JOIN (SELECT view_id,
                         ARRAY_AGG(key)   AS view_properties_keys,
@@ -933,6 +1110,12 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                     FROM table_properties
                     WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                     GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+            LEFT JOIN (SELECT generic_table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM generic_table_properties
+                    WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                    GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
             "#,
             *warehouse_id,
             id,
@@ -968,7 +1151,7 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 WHERE t.warehouse_id = $1
                     AND w.status = 'active'
                     AND t.deleted_at IS NULL
-                    AND t.metadata_location IS NOT NULL
+                    AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table')
                 ORDER BY distance ASC
                 LIMIT 10
             ),
@@ -981,6 +1164,9 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
             ),
             selected_tables AS (
                 SELECT tabular_id FROM filtered_tabulars WHERE typ = 'table'
+            ),
+            selected_generic_tables AS (
+                SELECT tabular_id FROM filtered_tabulars WHERE typ = 'generic-table'
             )
             SELECT st.tabular_id,
                 st.namespace_id,
@@ -998,7 +1184,9 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                 vp.view_properties_keys,
                 vp.view_properties_values,
                 tp.keys as table_properties_keys,
-                tp.values as table_properties_values
+                tp.values as table_properties_values,
+                gtp.keys as generic_table_properties_keys,
+                gtp.values as generic_table_properties_values
             FROM filtered_tabulars st
             LEFT JOIN (SELECT view_id,
                         ARRAY_AGG(key)   AS view_properties_keys,
@@ -1012,6 +1200,12 @@ pub(crate) async fn search_tabular<'e, 'c: 'e, E: sqlx::Executor<'c, Database = 
                     FROM table_properties
                     WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                     GROUP BY table_id) tp ON st.tabular_id = tp.table_id
+            LEFT JOIN (SELECT generic_table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM generic_table_properties
+                    WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                    GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
             ORDER BY distance ASC
             "#,
             *warehouse_id,
@@ -1059,7 +1253,7 @@ pub(crate) async fn rename_tabular(
 
     let row = if source_namespace == dest_namespace {
         sqlx::query_as!(
-            TabularRow,
+            TabularRowWithProperties,
             r#"
             WITH locked_tabular AS (
                 SELECT tabular_id, name, namespace_id, typ
@@ -1067,7 +1261,7 @@ pub(crate) async fn rename_tabular(
                 WHERE tabular_id = $2
                     AND warehouse_id = $4
                     AND typ = $3
-                    AND metadata_location IS NOT NULL
+                    AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND deleted_at IS NULL
                 FOR UPDATE
             ),
@@ -1087,7 +1281,7 @@ pub(crate) async fn rename_tabular(
                 SELECT 1
                 FROM tabular t
                 JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
-                WHERE t.name = $1
+                WHERE t.name = $1 AND t.tabular_id != $2
                 FOR UPDATE
             ),
             updated AS (
@@ -1116,6 +1310,9 @@ pub(crate) async fn rename_tabular(
             ),
             selected_tables AS (
                 SELECT tabular_id FROM updated WHERE typ = 'table'
+            ),
+            selected_generic_tables AS (
+                SELECT tabular_id FROM updated WHERE typ = 'generic-table'
             )
             SELECT u.tabular_id,
                 w.version as warehouse_version,
@@ -1132,7 +1329,9 @@ pub(crate) async fn rename_tabular(
                 vp.view_properties_keys,
                 vp.view_properties_values,
                 tp.keys as table_properties_keys,
-                tp.values as table_properties_values
+                tp.values as table_properties_values,
+                gtp.keys as generic_table_properties_keys,
+                gtp.values as generic_table_properties_values
             FROM updated u
             INNER JOIN warehouse w ON w.warehouse_id = $4
             INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $4
@@ -1148,6 +1347,12 @@ pub(crate) async fn rename_tabular(
                     FROM table_properties
                     WHERE warehouse_id = $4 AND table_id in (SELECT tabular_id FROM selected_tables)
                     GROUP BY table_id) tp ON u.tabular_id = tp.table_id
+            LEFT JOIN (SELECT generic_table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM generic_table_properties
+                    WHERE warehouse_id = $4 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                    GROUP BY generic_table_id) gtp ON u.tabular_id = gtp.generic_table_id
             "#,
             &**dest_name,
             *source_id,
@@ -1164,7 +1369,7 @@ pub(crate) async fn rename_tabular(
         })?
     } else {
         sqlx::query_as!(
-            TabularRow,
+            TabularRowWithProperties,
             r#"
             WITH locked_tabular AS (
                 SELECT tabular_id, name, namespace_id, typ
@@ -1172,7 +1377,7 @@ pub(crate) async fn rename_tabular(
                 WHERE tabular_id = $4
                     AND warehouse_id = $2
                     AND typ = $5
-                    AND metadata_location IS NOT NULL
+                    AND (metadata_location IS NOT NULL OR typ = 'generic-table')
                     AND name = $6
                     AND deleted_at IS NULL
                 FOR UPDATE
@@ -1227,6 +1432,9 @@ pub(crate) async fn rename_tabular(
             ),
             selected_tables AS (
                 SELECT tabular_id FROM updated WHERE typ = 'table'
+            ),
+            selected_generic_tables AS (
+                SELECT tabular_id FROM updated WHERE typ = 'generic-table'
             )
             SELECT u.tabular_id,
                 w.version as warehouse_version,
@@ -1243,7 +1451,9 @@ pub(crate) async fn rename_tabular(
                 vp.view_properties_keys,
                 vp.view_properties_values,
                 tp.keys as table_properties_keys,
-                tp.values as table_properties_values
+                tp.values as table_properties_values,
+                gtp.keys as generic_table_properties_keys,
+                gtp.values as generic_table_properties_values
             FROM updated u
             INNER JOIN warehouse w ON w.warehouse_id = $2
             INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $2
@@ -1259,6 +1469,12 @@ pub(crate) async fn rename_tabular(
                     FROM table_properties
                     WHERE warehouse_id = $2 AND table_id in (SELECT tabular_id FROM selected_tables)
                     GROUP BY table_id) tp ON u.tabular_id = tp.table_id
+            LEFT JOIN (SELECT generic_table_id,
+                        ARRAY_AGG(key) as keys,
+                        ARRAY_AGG(value) as values
+                    FROM generic_table_properties
+                    WHERE warehouse_id = $2 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                    GROUP BY generic_table_id) gtp ON u.tabular_id = gtp.generic_table_id
             "#,
             &**dest_name,
             *warehouse_id,
@@ -1303,6 +1519,7 @@ impl From<TabularType> for crate::api::management::v1::TabularType {
         match typ {
             TabularType::Table => crate::api::management::v1::TabularType::Table,
             TabularType::View => crate::api::management::v1::TabularType::View,
+            TabularType::GenericTable => crate::api::management::v1::TabularType::GenericTable,
         }
     }
 }
@@ -1338,7 +1555,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             SELECT task_id, entity_id, scheduled_for
             FROM task ta
             JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
-            WHERE ta.entity_type in ('table', 'view')
+            WHERE ta.entity_type in ('table', 'view', 'generic-table')
                 AND ta.warehouse_id = $2
                 AND ta.queue_name = 'tabular_expiration'
             FOR UPDATE OF ta
@@ -1370,6 +1587,9 @@ pub(crate) async fn clear_tabular_deleted_at(
         ),
         selected_tables AS (
             SELECT tabular_id FROM updated WHERE typ = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM updated WHERE typ = 'generic-table'
         )
         SELECT u.tabular_id,
             u.namespace_name,
@@ -1390,7 +1610,9 @@ pub(crate) async fn clear_tabular_deleted_at(
             vp.view_properties_keys,
             vp.view_properties_values,
             tp.keys as table_properties_keys,
-            tp.values as table_properties_values
+            tp.values as table_properties_values,
+            gtp.keys as generic_table_properties_keys,
+            gtp.values as generic_table_properties_values
         FROM updated u
         INNER JOIN warehouse w ON w.warehouse_id = $2
         INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = $2
@@ -1406,6 +1628,12 @@ pub(crate) async fn clear_tabular_deleted_at(
                 FROM table_properties
                 WHERE warehouse_id = $2 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON u.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $2 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON u.tabular_id = gtp.generic_table_id
         "#,
         &tabular_ids_uuid,
         *warehouse_id,
@@ -1460,10 +1688,10 @@ pub(crate) async fn mark_tabular_as_deleted(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ViewOrTableInfo, MarkTabularAsDeletedError> {
     let r = sqlx::query_as!(
-        TabularRow,
+        TabularRowWithProperties,
         r#"
         WITH locked_tabular AS (
-            SELECT 
+            SELECT
                 tabular_id,
                 namespace_id,
                 name,
@@ -1507,8 +1735,11 @@ pub(crate) async fn mark_tabular_as_deleted(
         ),
         selected_tables AS (
             SELECT tabular_id FROM result_tabulars WHERE typ = 'table'
+        ),
+        selected_generic_tables AS (
+            SELECT tabular_id FROM result_tabulars WHERE typ = 'generic-table'
         )
-        SELECT 
+        SELECT
             rt.tabular_id,
             w.version as warehouse_version,
             rt.namespace_name,
@@ -1524,7 +1755,9 @@ pub(crate) async fn mark_tabular_as_deleted(
             vp.view_properties_keys,
             vp.view_properties_values,
             tp.keys as table_properties_keys,
-            tp.values as table_properties_values
+            tp.values as table_properties_values,
+            gtp.keys as generic_table_properties_keys,
+            gtp.values as generic_table_properties_values
         FROM result_tabulars rt
         INNER JOIN warehouse w ON w.warehouse_id = $1
         INNER JOIN namespace n ON n.namespace_id = rt.namespace_id AND n.warehouse_id = $1
@@ -1540,6 +1773,12 @@ pub(crate) async fn mark_tabular_as_deleted(
                 FROM table_properties
                 WHERE warehouse_id = $1 AND table_id in (SELECT tabular_id FROM selected_tables)
                 GROUP BY table_id) tp ON rt.tabular_id = tp.table_id
+        LEFT JOIN (SELECT generic_table_id,
+                    ARRAY_AGG(key) as keys,
+                    ARRAY_AGG(value) as values
+                FROM generic_table_properties
+                WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
+                GROUP BY generic_table_id) gtp ON rt.tabular_id = gtp.generic_table_id
         "#,
         *warehouse_id,
         *tabular_id,
@@ -1644,6 +1883,7 @@ impl<'a, 'b> From<&'b TabularIdentBorrowed<'a>> for TabularType {
         match ident {
             TabularIdentBorrowed::Table(_) => TabularType::Table,
             TabularIdentBorrowed::View(_) => TabularType::View,
+            TabularIdentBorrowed::GenericTable(_) => TabularType::GenericTable,
         }
     }
 }
@@ -1653,6 +1893,7 @@ impl<'a> From<&'a TabularId> for TabularType {
         match ident {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
+            TabularId::GenericTable(_) => TabularType::GenericTable,
         }
     }
 }
@@ -1662,6 +1903,7 @@ impl From<TabularId> for TabularType {
         match ident {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
+            TabularId::GenericTable(_) => TabularType::GenericTable,
         }
     }
 }

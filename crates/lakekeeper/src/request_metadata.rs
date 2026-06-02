@@ -15,12 +15,15 @@ use limes::Authentication;
 use uuid::Uuid;
 
 use crate::{
-    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId,
+    CONFIG, DEFAULT_PROJECT_ID, ProjectId, WarehouseId, XXHashSet,
     api::iceberg::v1::namespace::NamespaceIdentUrl,
+    config::MatchedEngines,
     service::{
-        TabularId,
+        ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
+        authz::UserOrRole,
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
+        idempotency::IdempotencyKey,
     },
 };
 
@@ -59,17 +62,71 @@ impl UserAgent {
     }
 }
 
+/// Source of an authorization decision, surfaced in audit events as
+/// `privilege_source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivilegeSource {
+    /// In-process caller via [`RequestMetadata::new_lakekeeper_internal`].
+    /// Full bypass including data-plane actions.
+    Internal,
+    /// Principal listed in `LAKEKEEPER__INSTANCE_ADMINS`. Control-plane bypass
+    /// only; data-plane actions still route through the configured authorizer.
+    InstanceAdmin,
+    /// Decision came from the configured authorizer (OpenFGA, Cedar, `AllowAll`, ...).
+    Authorizer,
+}
+
+impl PrivilegeSource {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "internal",
+            Self::InstanceAdmin => "instance_admin",
+            Self::Authorizer => "authorizer",
+        }
+    }
+}
+
 /// A struct to hold metadata about a request.
 #[derive(Debug, Clone)]
 pub struct RequestMetadata {
     request_id: Uuid,
-    project_id: Option<ProjectId>,
+    project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
+    token_roles: Option<TokenRoles>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
     request_method: Method,
     user_agent: Option<UserAgent>,
+    engines: MatchedEngines,
+    idempotency_key: Option<IdempotencyKey>,
+    is_instance_admin: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenRoles {
+    project_id: ArcProjectId,
+    roles: XXHashSet<Arc<RoleIdent>>,
+}
+
+impl TokenRoles {
+    #[must_use]
+    pub fn new(project_id: ArcProjectId, roles: XXHashSet<Arc<RoleIdent>>) -> Self {
+        Self { project_id, roles }
+    }
+}
+
+impl TokenRoles {
+    #[must_use]
+    pub fn project_id(&self) -> &ArcProjectId {
+        &self.project_id
+    }
+
+    #[must_use]
+    pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
+        &self.roles
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -114,6 +171,48 @@ impl RequestMetadata {
         self
     }
 
+    /// Mark the request as originating from an instance admin (principal listed in
+    /// `LAKEKEEPER__INSTANCE_ADMINS`). Set by the authn middleware after the actor
+    /// has been resolved; never flipped after request entry.
+    #[cfg_attr(not(feature = "router"), allow(dead_code))]
+    pub(crate) fn set_instance_admin(&mut self, is_instance_admin: bool) -> &mut Self {
+        self.is_instance_admin = is_instance_admin;
+        self
+    }
+
+    /// Whether the authenticated principal is an instance admin. Instance admins are
+    /// configured via `LAKEKEEPER__INSTANCE_ADMINS` and bypass authorization for all
+    /// control-plane actions (but not for `CatalogTableAction::ReadData` /
+    /// `WriteData`). Only ever `true` for `Actor::Principal`; role-assumed requests
+    /// do not inherit this.
+    #[must_use]
+    pub fn is_instance_admin(&self) -> bool {
+        self.is_instance_admin
+    }
+
+    /// Set the matched trusted engines for this request.
+    pub fn set_engines(&mut self, engines: MatchedEngines) -> &mut Self {
+        self.engines = engines;
+        self
+    }
+
+    /// Trusted engines matched for this request.
+    #[must_use]
+    pub fn engines(&self) -> &MatchedEngines {
+        &self.engines
+    }
+
+    /// Idempotency key from the `Idempotency-Key` request header, if present.
+    #[must_use]
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.idempotency_key.as_ref()
+    }
+
+    pub fn set_token_roles(&mut self, token_roles: TokenRoles) -> &mut Self {
+        self.token_roles = Some(token_roles);
+        self
+    }
+
     #[must_use]
     pub fn user_agent(&self) -> Option<&UserAgent> {
         self.user_agent.as_ref()
@@ -141,6 +240,11 @@ impl RequestMetadata {
     }
 
     #[must_use]
+    pub fn token_roles(&self) -> Option<&TokenRoles> {
+        self.token_roles.as_ref()
+    }
+
+    #[must_use]
     pub fn new_lakekeeper_internal(request_id: Uuid) -> Self {
         Self {
             request_id,
@@ -151,14 +255,56 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            engines: MatchedEngines::default(),
+            token_roles: None,
+            idempotency_key: None,
+            is_instance_admin: false,
         }
     }
 
     // If this grants admin-level privileges:
     #[must_use]
     #[inline]
-    pub fn has_admin_privileges(&self) -> bool {
+    pub fn is_lakekeeper_internal(&self) -> bool {
         matches!(self.actor, InternalActor::LakekeeperInternal)
+    }
+
+    /// Source of the authz decision for this request, for audit logging.
+    #[must_use]
+    pub fn privilege_source(&self) -> PrivilegeSource {
+        if self.is_lakekeeper_internal() {
+            PrivilegeSource::Internal
+        } else if self.is_instance_admin {
+            PrivilegeSource::InstanceAdmin
+        } else {
+            PrivilegeSource::Authorizer
+        }
+    }
+
+    /// Whether this request should bypass control-plane authorization checks
+    /// against the given target. Returns `true` when:
+    ///
+    /// * the caller holds bypass privileges — in-process
+    ///   (`LakekeeperInternal`) or a configured instance admin, **and**
+    /// * `for_user` is `None`, i.e. the request is not being made *on behalf
+    ///   of* a different principal.
+    ///
+    /// Callers that query "what can user X do?" pass `Some(&X)` so that the
+    /// bypass does not incorrectly auto-approve delegated checks. Callers
+    /// should first normalize `for_user` to `None` when it resolves to the
+    /// acting principal itself (see existing pattern at the `_vec` call
+    /// sites).
+    ///
+    /// Data-plane actions (`CatalogTableAction::ReadData` / `WriteData`) are
+    /// NOT covered by this for instance admins — those checks must route
+    /// through the configured authorizer even when this returns `true`. Use
+    /// `is_lakekeeper_internal()` for the in-process variant (which
+    /// additionally bypasses data-plane) and `is_instance_admin()` to detect
+    /// the instance-admin case specifically.
+    #[must_use]
+    #[inline]
+    pub fn bypasses_control_plane_authz(&self, for_user: Option<&UserOrRole>) -> bool {
+        for_user.is_none() && (self.is_lakekeeper_internal() || self.is_instance_admin)
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -173,11 +319,30 @@ impl RequestMetadata {
             matched_path: None,
             request_method: Method::default(),
             user_agent: None,
+            engines: MatchedEngines::default(),
+            token_roles: None,
+            idempotency_key: None,
+            is_instance_admin: false,
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_project_id(&mut self, project_id: ProjectId) -> &mut Self {
+        self.project_id = Some(Arc::new(project_id));
+        self
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_idempotency_key(
+        &mut self,
+        key: crate::service::idempotency::IdempotencyKey,
+    ) -> &mut Self {
+        self.idempotency_key = Some(key);
+        self
+    }
+
     #[must_use]
-    pub fn preferred_project_id(&self) -> Option<ProjectId> {
+    pub fn preferred_project_id(&self) -> Option<ArcProjectId> {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
@@ -202,7 +367,19 @@ impl RequestMetadata {
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            engines: MatchedEngines::default(),
+            token_roles: None,
+            idempotency_key: None,
+            is_instance_admin: false,
         }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_instance_admin(user_id: crate::service::UserId) -> Self {
+        let mut md = Self::test_user(user_id);
+        md.is_instance_admin = true;
+        md
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -211,6 +388,8 @@ impl RequestMetadata {
         user_id: crate::service::UserId,
         role_id: crate::service::RoleId,
     ) -> Self {
+        use crate::service::Role;
+
         Self {
             request_id: Uuid::now_v7(),
             authentication: Some(
@@ -226,13 +405,17 @@ impl RequestMetadata {
             base_url: "http://localhost:8181".to_string(),
             actor: Actor::Role {
                 principal: user_id,
-                assumed_role: role_id,
+                assumed_role: Arc::new(Role::new_random_with_id(role_id)),
             }
             .into(),
             matched_path: None,
             request_method: Method::default(),
             project_id: None,
             user_agent: None,
+            engines: MatchedEngines::default(),
+            token_roles: None,
+            idempotency_key: None,
+            is_instance_admin: false,
         }
     }
 
@@ -242,7 +425,7 @@ impl RequestMetadata {
         authentication: Option<Authentication>,
         base_url: Option<String>,
         actor: Actor,
-        project_id: Option<ProjectId>,
+        project_id: Option<ArcProjectId>,
         matched_path: Option<Arc<str>>,
         request_method: Method,
     ) -> Self {
@@ -255,6 +438,10 @@ impl RequestMetadata {
             matched_path,
             request_method,
             user_agent: None,
+            engines: MatchedEngines::default(),
+            token_roles: None,
+            idempotency_key: None,
+            is_instance_admin: false,
         }
     }
 
@@ -298,8 +485,9 @@ impl RequestMetadata {
     pub fn require_project_id(
         &self,
         user_project: Option<ProjectId>,
-    ) -> Result<ProjectId, ProjectIdMissing> {
+    ) -> Result<ArcProjectId, ProjectIdMissing> {
         user_project
+            .map(Arc::new)
             .or(self.preferred_project_id())
             .ok_or(ProjectIdMissing)
     }
@@ -398,7 +586,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
     let project_id = match project_id {
         Ok(ident) => ident,
         Err(err) => {
-            return iceberg_ext::catalog::rest::IcebergErrorResponse::from(err).into_response();
+            return err.into_response();
         }
     };
 
@@ -414,15 +602,28 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         .and_then(|hv| hv.to_str().ok())
         .map(UserAgent::parse);
 
+    let idempotency_key = if CONFIG.idempotency.enabled {
+        match IdempotencyKey::from_headers(&headers) {
+            Ok(key) => key,
+            Err(err) => return err.into_response(),
+        }
+    } else {
+        None
+    };
+
     request.extensions_mut().insert(RequestMetadata {
         request_id,
         authentication: None,
+        token_roles: None,
         base_url: base_uri,
         actor: Actor::Anonymous.into(),
-        project_id,
+        project_id: project_id.map(Arc::new),
         matched_path,
         request_method,
         user_agent,
+        engines: MatchedEngines::default(),
+        idempotency_key,
+        is_instance_admin: false,
     });
     next.run(request).await
 }
@@ -514,10 +715,51 @@ pub fn determine_base_uri(headers: &HeaderMap) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod test {
     use http::{HeaderMap, header::HeaderValue};
 
     use super::*;
+
+    #[test]
+    fn test_bypass_matrix() {
+        use crate::service::{UserId, authz::UserOrRole};
+
+        let alice = UserId::try_from("oidc~alice").unwrap();
+        let bob = UserOrRole::User(UserId::try_from("oidc~bob").unwrap());
+
+        // Anonymous: no bypass.
+        let md = RequestMetadata::new_unauthenticated();
+        assert!(!md.is_lakekeeper_internal());
+        assert!(!md.is_instance_admin());
+        assert!(!md.bypasses_control_plane_authz(None));
+        assert!(!md.bypasses_control_plane_authz(Some(&bob)));
+
+        // Lakekeeper-internal: full bypass when acting as self …
+        let md = RequestMetadata::new_lakekeeper_internal(Uuid::now_v7());
+        assert!(md.is_lakekeeper_internal());
+        assert!(!md.is_instance_admin());
+        assert!(md.bypasses_control_plane_authz(None));
+        // … but NOT when querying on behalf of another principal.
+        assert!(!md.bypasses_control_plane_authz(Some(&bob)));
+
+        // Normal authenticated user: no bypass regardless of for_user.
+        let md = RequestMetadata::test_user(alice.clone());
+        assert!(!md.is_lakekeeper_internal());
+        assert!(!md.is_instance_admin());
+        assert!(!md.bypasses_control_plane_authz(None));
+        assert!(!md.bypasses_control_plane_authz(Some(&bob)));
+
+        // Instance admin: control-plane bypass when acting as self, no bypass
+        // when querying on behalf of another principal. Data-plane still
+        // routes through the configured authorizer — the caller is
+        // responsible for excluding data-plane actions.
+        let md = RequestMetadata::test_instance_admin(alice);
+        assert!(!md.is_lakekeeper_internal());
+        assert!(md.is_instance_admin());
+        assert!(md.bypasses_control_plane_authz(None));
+        assert!(!md.bypasses_control_plane_authz(Some(&bob)));
+    }
 
     #[test]
     fn test_determine_host_without_host_header_with_config_provided_base_uri() {

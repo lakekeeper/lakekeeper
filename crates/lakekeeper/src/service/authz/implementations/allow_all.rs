@@ -8,15 +8,17 @@ use axum::Router;
 use utoipa::OpenApi;
 
 use crate::{
-    api::{ApiContext, iceberg::v1::Result, management::v1::role::Role},
+    api::{ApiContext, iceberg::v1::Result},
     request_metadata::RequestMetadata,
     service::{
-        AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, NamespaceId,
-        NamespaceWithParent, ProjectId, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, ViewId, WarehouseId,
+        ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
+        CatalogStore, GenericTableId, NamespaceId, NamespaceWithParent, ProjectId,
+        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, ViewId,
+        WarehouseId,
         authn::UserId,
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CatalogNamespaceAction,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
+            AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
             ListProjectsResponse, NamespaceParent, UserOrRole,
@@ -62,6 +64,7 @@ impl Authorizer for AllowAllAuthorizer {
     type NamespaceAction = CatalogNamespaceAction;
     type TableAction = CatalogTableAction;
     type ViewAction = CatalogViewAction;
+    type GenericTableAction = CatalogGenericTableAction;
     type UserAction = CatalogUserAction;
     type RoleAction = CatalogRoleAction;
 
@@ -85,9 +88,9 @@ impl Authorizer for AllowAllAuthorizer {
     async fn check_assume_role_impl(
         &self,
         _principal: &UserId,
-        _assumed_role: RoleId,
+        _assumed_role: &Role,
         _request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         Ok(true)
     }
 
@@ -102,14 +105,14 @@ impl Authorizer for AllowAllAuthorizer {
     async fn list_projects_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         Ok(ListProjectsResponse::All)
     }
 
     async fn can_search_users_impl(
         &self,
         _metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         Ok(true)
     }
 
@@ -144,7 +147,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; projects_with_actions.len()])
     }
@@ -169,30 +172,45 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![true; actions.len()])
     }
 
-    async fn are_allowed_table_actions_impl(
+    async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         _metadata: &RequestMetadata,
-        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(
             &NamespaceWithParent,
-            &impl AuthZTableInfo,
-            Self::TableAction,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
         Ok(vec![true; actions.len()])
     }
 
-    async fn are_allowed_view_actions_impl(
+    async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         _metadata: &RequestMetadata,
-        _for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; views_with_actions.len()])
+        Ok(vec![true; actions.len()])
+    }
+
+    async fn are_allowed_generic_table_actions_impl<
+        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+    >(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
+        )],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        Ok(vec![true; actions.len()])
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {
@@ -203,7 +221,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _role_id: RoleId,
-        _parent_project_id: ProjectId,
+        _parent_project_id: ArcProjectId,
     ) -> Result<()> {
         Ok(())
     }
@@ -287,6 +305,24 @@ impl Authorizer for AllowAllAuthorizer {
     }
 
     async fn delete_view(&self, _warehouse_id: WarehouseId, _view_id: ViewId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn create_generic_table(
+        &self,
+        _metadata: &RequestMetadata,
+        _warehouse_id: WarehouseId,
+        _generic_table_id: GenericTableId,
+        _parent: NamespaceId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn delete_generic_table(
+        &self,
+        _warehouse_id: WarehouseId,
+        _generic_table_id: GenericTableId,
+    ) -> Result<()> {
         Ok(())
     }
 }

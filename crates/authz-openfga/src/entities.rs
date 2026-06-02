@@ -1,9 +1,12 @@
 use std::str::FromStr;
 
-use lakekeeper::service::{
-    NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
-    authn::{Actor, UserId},
-    authz::RoleAssignee,
+use lakekeeper::{
+    api::management::v1::check::RoleAssignee,
+    service::{
+        GenericTableId, NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
+        authn::{Actor, UserId},
+        authz::{RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole},
+    },
 };
 
 use crate::{
@@ -46,11 +49,37 @@ impl OpenFgaEntity for RoleId {
 
 impl OpenFgaEntity for RoleAssignee {
     fn to_openfga(&self) -> String {
-        format!("{}#assignee", self.role().to_openfga())
+        format!("{}#assignee", self.role_id().to_openfga())
     }
 
     fn openfga_type(&self) -> FgaType {
         FgaType::Role
+    }
+}
+
+impl OpenFgaEntity for AuthzRoleAssignee {
+    fn to_openfga(&self) -> String {
+        format!("{}#assignee", self.role().id.to_openfga())
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::Role
+    }
+}
+
+impl OpenFgaEntity for AuthzUserOrRole {
+    fn to_openfga(&self) -> String {
+        match self {
+            AuthzUserOrRole::User(user) => user.to_openfga(),
+            AuthzUserOrRole::Role(role) => role.to_openfga(),
+        }
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        match self {
+            AuthzUserOrRole::User(_) => FgaType::User,
+            AuthzUserOrRole::Role(_) => FgaType::Role,
+        }
     }
 }
 
@@ -141,7 +170,7 @@ impl OpenFgaEntity for Actor {
             Actor::Role {
                 principal: _,
                 assumed_role,
-            } => format!("{fga_type}:{assumed_role}#assignee"),
+            } => format!("{}#assignee", assumed_role.id().to_openfga()),
         }
     }
 
@@ -223,6 +252,16 @@ impl OpenFgaEntity for (WarehouseId, TableId) {
     }
 }
 
+impl OpenFgaEntity for (WarehouseId, GenericTableId) {
+    fn to_openfga(&self) -> String {
+        format!("{}:{}/{}", self.openfga_type(), self.0, self.1)
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        FgaType::GenericTable
+    }
+}
+
 impl OpenFgaEntity for NamespaceId {
     fn to_openfga(&self) -> String {
         format!("{}:{self}", self.openfga_type())
@@ -255,7 +294,7 @@ mod test {
     fn test_user_id_pre_0_9_can_be_parsed() {
         // Previously allowed characters up to 0.8: "-", "_", alphanumeric
         let user_id = "oidc~abc-def_ghi";
-        let openfga_id = format!("user:{user_id}",);
+        let openfga_id = format!("user:{user_id}");
         let parsed = UserId::parse_from_openfga(openfga_id.as_str()).unwrap();
         assert_eq!(parsed.to_openfga(), openfga_id);
         assert_eq!(parsed.openfga_type(), FgaType::User);

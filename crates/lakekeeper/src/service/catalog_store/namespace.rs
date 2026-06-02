@@ -5,7 +5,7 @@ use std::{
 
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel, IcebergErrorResponse};
+use iceberg_ext::catalog::rest::{CreateNamespaceRequest, ErrorModel};
 use lakekeeper_io::Location;
 
 use crate::{
@@ -24,6 +24,7 @@ use crate::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
             namespace_cache_insert_multiple,
         },
+        storage::storage_layout::NamespaceNameContext,
         tasks::TaskId,
     },
 };
@@ -44,9 +45,40 @@ pub struct Namespace {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct NamespaceWithParent {
+    /// Canonical (stored) namespace data. Always in the case that was used at creation time.
     pub namespace: Arc<Namespace>,
     pub parent: Option<(NamespaceId, NamespaceVersion)>,
+    /// User-requested namespace ident for this row. When a caller looks up a namespace
+    /// by name (e.g. `foo.bar`), the DB matches case-insensitively (via ICU collation)
+    /// but the response should carry the caller's case. This field stores the caller's
+    /// case for the leaf AND for any parent levels that were derived from the request.
+    ///
+    /// When `None`, `namespace_ident()` returns the canonical case. Caches always store
+    /// canonical (this field is stripped before insert) so that ID-based lookups
+    /// return deterministic case independent of which earlier caller populated the cache.
+    pub requested_ident: Option<NamespaceIdent>,
 }
+impl NamespaceWithParent {
+    #[cfg(feature = "test-utils")]
+    #[must_use]
+    pub fn test_default(namespace_id: NamespaceId, warehouse_id: WarehouseId) -> Self {
+        Self {
+            namespace: Arc::new(Namespace {
+                namespace_ident: iceberg::NamespaceIdent::new("test".to_string()),
+                namespace_id,
+                warehouse_id,
+                protected: false,
+                properties: None,
+                created_at: chrono::Utc::now(),
+                updated_at: Some(chrono::Utc::now()),
+                version: 0.into(),
+            }),
+            parent: None,
+            requested_ident: None,
+        }
+    }
+}
+
 pub trait AuthZNamespaceInfo: Send + Sync {
     fn namespace(&self) -> &Namespace;
     fn namespace_id(&self) -> NamespaceId {
@@ -72,9 +104,33 @@ impl NamespaceWithParent {
         self.namespace.namespace_id
     }
 
+    /// Returns the user-requested ident if set; otherwise the canonical (stored) ident.
     #[must_use]
     pub fn namespace_ident(&self) -> &NamespaceIdent {
+        self.requested_ident
+            .as_ref()
+            .unwrap_or(&self.namespace.namespace_ident)
+    }
+
+    /// Returns the canonical (stored, creation-time) ident, ignoring any user-requested override.
+    #[must_use]
+    pub fn canonical_ident(&self) -> &NamespaceIdent {
         &self.namespace.namespace_ident
+    }
+
+    /// Returns a copy with `requested_ident` set to `ident`. Used to overlay the caller's
+    /// case on a canonical entry fetched from the cache.
+    #[must_use]
+    pub fn with_requested_ident(&self, ident: NamespaceIdent) -> Self {
+        Self {
+            namespace: self.namespace.clone(),
+            parent: self.parent,
+            requested_ident: if ident == self.namespace.namespace_ident {
+                None
+            } else {
+                Some(ident)
+            },
+        }
     }
 
     #[must_use]
@@ -164,6 +220,36 @@ impl NamespaceHierarchy {
         self.namespace.namespace_ident()
     }
 
+    /// Returns a copy of this hierarchy with the user's requested case applied to
+    /// the leaf and every parent level. Each level gets a prefix of `user_ident`
+    /// corresponding to its depth.
+    ///
+    /// Used when the hierarchy came from the cache (which always stores canonical
+    /// case) but we want to return the caller's case. The DB path already sets
+    /// `requested_ident` correctly, so this is a no-op for DB-sourced hierarchies
+    /// when `user_ident` matches what was passed to the SQL.
+    #[must_use]
+    pub fn with_user_ident(mut self, user_ident: &NamespaceIdent) -> Self {
+        let parts = user_ident.as_ref();
+        // Leaf depth equals full length of user_ident.
+        if parts.len() == self.namespace.namespace.namespace_ident.len() {
+            self.namespace = self.namespace.with_requested_ident(user_ident.clone());
+        }
+        // Each parent is one level shallower than its child. self.parents[0] is
+        // the direct parent of the leaf, self.parents[1] is the grandparent, etc.
+        for (i, parent) in self.parents.iter_mut().enumerate() {
+            let depth = parts.len().saturating_sub(i + 1);
+            if depth == 0 || depth != parent.namespace.namespace_ident.len() {
+                // Depth mismatch: don't substitute (shouldn't normally happen).
+                continue;
+            }
+            if let Ok(prefix_ident) = NamespaceIdent::from_vec(parts[..depth].to_vec()) {
+                *parent = parent.with_requested_ident(prefix_ident);
+            }
+        }
+        self
+    }
+
     #[must_use]
     pub fn namespace_id(&self) -> NamespaceId {
         self.namespace.namespace_id()
@@ -210,9 +296,27 @@ impl NamespaceHierarchy {
                     version: 0.into(),
                 }),
                 parent: None,
+                requested_ident: None,
             },
             parents: Vec::new(),
         }
+    }
+}
+
+impl TryFrom<&NamespaceWithParent> for NamespaceNameContext {
+    type Error = ErrorModel;
+
+    fn try_from(value: &NamespaceWithParent) -> Result<Self, Self::Error> {
+        Ok(Self {
+            name: value
+                .namespace_ident()
+                .last()
+                .ok_or_else(|| {
+                    ErrorModel::internal("Namespace must have a name", "NamespaceNameMissing", None)
+                })?
+                .clone(),
+            uuid: value.namespace_id().into(),
+        })
     }
 }
 
@@ -699,8 +803,13 @@ fn add_hierarchy_to_cache_map(
     });
 }
 
-/// Generic helper to get namespaces with caching, conflict detection, and optional refetch
-async fn get_namespaces_with_cache<'a, SOT, S, K, F>(
+/// Generic helper to get namespaces with caching, conflict detection, and optional refetch.
+///
+/// `apply_user_case_on_cache_hit` overlays the caller's case onto a cache-hit hierarchy
+/// using the lookup key. For by-ident lookups it applies the caller's case; for by-id
+/// lookups it is the identity function (no case to apply). This keeps cache semantics
+/// consistent with the DB path (which sets `requested_ident` via the SQL COALESCE).
+async fn get_namespaces_with_cache<'a, SOT, S, K, F, Apply>(
     warehouse_id: WarehouseId,
     keys: &[K],
     get_from_cache: impl Fn(&K) -> F,
@@ -716,12 +825,14 @@ async fn get_namespaces_with_cache<'a, SOT, S, K, F>(
                 + 'b,
         >,
     >,
+    apply_user_case_on_cache_hit: Apply,
     state_or_transaction: &mut SOT,
 ) -> Result<HashMap<NamespaceId, NamespaceWithParent>, CatalogGetNamespaceError>
 where
     S: CatalogStore,
     K: Clone + Eq + std::hash::Hash,
     F: std::future::Future<Output = Option<NamespaceHierarchy>>,
+    Apply: Fn(&K, NamespaceHierarchy) -> NamespaceHierarchy,
     SOT: StateOrTransaction<S::State, <S::Transaction as Transaction<S::State>>::Transaction<'a>>,
 {
     // Step 1: Deduplicate and get from cache
@@ -738,6 +849,8 @@ where
     for key in &keys {
         match get_from_cache(key).await {
             Some(hierarchy) => {
+                // Overlay caller's case onto the canonical cache entry.
+                let hierarchy = apply_user_case_on_cache_hit(key, hierarchy);
                 add_hierarchy_to_cache_map(hierarchy, &mut namespaces_from_cache);
             }
             None => missing_keys.push(key.clone()),
@@ -812,12 +925,23 @@ where
         };
 
         if let Some(cached_namespace) = cached {
-            return Ok(Some(cached_namespace));
+            // Cache always stores canonical case. If the lookup was by name, overlay
+            // the caller's case onto the returned hierarchy so the response reflects
+            // the caller's request — not whatever case a previous caller used.
+            let result = match &namespace {
+                NamespaceIdentOrId::Name(user_ident) => {
+                    cached_namespace.with_user_ident(user_ident)
+                }
+                NamespaceIdentOrId::Id(_) => cached_namespace,
+            };
+            return Ok(Some(result));
         }
 
         let namespaces =
             fetch_namespace::<Self, _>(warehouse_id, namespace, &mut state_or_transaction).await?;
         namespace_cache_insert_multiple(namespaces.clone()).await;
+        // DB rows already carry `requested_ident` per the SQL's COALESCE against
+        // requested_parent_paths, so no further substitution is needed here.
         let namespace_hierarchy = build_namespace_hierarchy_from_vec(&namespaces);
         Ok(namespace_hierarchy)
     }
@@ -835,7 +959,7 @@ where
                 <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
             >,
     {
-        get_namespaces_with_cache::<SOT, Self, _, _>(
+        get_namespaces_with_cache::<SOT, Self, _, _, _>(
             warehouse_id,
             namespaces,
             |namespace_id| namespace_cache_get_by_id(*namespace_id),
@@ -844,6 +968,8 @@ where
                     async move { Self::get_namespaces_by_id_impl(wh_id, &ns_ids, state).await },
                 )
             },
+            // By-id: no user-provided case; return canonical as-is.
+            |_, hierarchy| hierarchy,
             &mut state_or_transaction,
         )
         .await
@@ -862,7 +988,7 @@ where
                 <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
             >,
     {
-        get_namespaces_with_cache::<SOT, Self, _, _>(
+        get_namespaces_with_cache::<SOT, Self, _, _, _>(
             warehouse_id,
             namespaces,
             |namespace_ident| namespace_cache_get_by_ident(namespace_ident, warehouse_id),
@@ -873,6 +999,10 @@ where
                     Self::get_namespaces_by_ident_impl(wh_id, &ns_ids_refs, state).await
                 })
             },
+            // By-ident: overlay the caller's case from the lookup key onto the
+            // cached canonical hierarchy. This ensures cache-hit responses carry
+            // the same case as DB-fetched responses.
+            |user_ident, hierarchy| hierarchy.with_user_ident(user_ident),
             &mut state_or_transaction,
         )
         .await

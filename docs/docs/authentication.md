@@ -20,7 +20,7 @@ Users are automatically added to Lakekeeper after successful Authentication (use
 If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`.
 Lakekeeper determines the ID of users in the following order:
 
-1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this field is used and must be present.
+1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this value (or comma-separated list of values) is tried in order and the first claim present in the token is used. Setting only one claim, that claim must be present.
 1. If `oid` is present, it is used. The main motivation to prefer the `oid` over the `sub` is that the `sub` field is not unique across applications, while the `oid` is. (See for example [Entra-ID](https://learn.microsoft.com/en-us/entra/identity-platform/id-token-claims-reference)). Lakekeeper needs to the same IDs as query engines in order to share Permissions.
 1. If the `sub` field is present, use it, otherwise fail.
 
@@ -266,11 +266,19 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
     LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from App 1 (lakekeeper-ui)>"
     LAKEKEEPER__UI__OPENID_SCOPE="openid profile api://<Client ID from App 2>/lakekeeper"
     LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS="https://sts.windows.net/<Tenant ID>/"
-    // The additional issuer URL is required as https://login.microsoftonline.com/<Tenant ID>/v2.0/.well-known/openid-configuration
-    // shows https://login.microsoftonline.com as the issuer but actually
-    // issues tokens for https://sts.windows.net/. This is a well-known
-    // problem in Entra ID.
     ```
+
+    !!! info "Why is `OPENID_ADDITIONAL_ISSUERS` needed?"
+        Entra ID issues **v1** or **v2** access tokens depending on the `accessTokenAcceptedVersion` property in the **resource API's** app manifest (App 2). The token version determines the `iss` (issuer) claim in the JWT:
+
+        | Token Version | `accessTokenAcceptedVersion` | Issuer (`iss`) claim |
+        |---|---|---|
+        | v1 | `null` (default) or `1` | `https://sts.windows.net/<Tenant ID>/` |
+        | v2 | `2` | `https://login.microsoftonline.com/<Tenant ID>/v2.0` |
+
+        Even when using the v2.0 provider URI, Entra may still issue **v1 tokens** with the `sts.windows.net` issuer if `accessTokenAcceptedVersion` is not explicitly set to `2` in App 2's manifest. This is a common source of authentication failures.
+
+        **Recommended:** Set `accessTokenAcceptedVersion` to `2` in App 2's manifest (or use `requested_access_token_version = 2` in Terraform as shown above). The `OPENID_ADDITIONAL_ISSUERS` setting is provided as a fallback to accept v1 tokens without changing your app registration.
 
 === "Terraform"
 
@@ -440,8 +448,61 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
     LAKEKEEPER__OPENID_AUDIENCE="<Client ID from Client 1>"
     LAKEKEEPER__UI__OPENID_CLIENT_ID="<Client ID from Client 1>"
     LAKEKEEPER__UI__OPENID_SCOPE="openid profile"
+    LAKEKEEPER__UI__OPENID_TOKEN_TYPE="id_token"
     ```
 We are now able to login and bootstrap Lakekeeper.
+
+## Multiple OIDC Providers
+
+For scenarios where you need to authenticate tokens from multiple identity providers simultaneously—such as Okta for human users and EKS OIDC for Kubernetes service accounts—Lakekeeper supports configuring multiple OIDC providers.
+
+When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
+
+### Configuration
+
+Configure each provider under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI`, which remains the primary provider (`idp_id = "oidc"`).
+
+```bash
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__URI=https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERA__SUBJECT_CLAIMS=sub
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__URI=https://oidc.eks.us-east-1.amazonaws.com/id/XYZ789GHI012
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__SUBJECT_CLAIMS=sub
+```
+
+### User Identity Format
+
+User IDs include the provider's `IDP_ID` as a prefix: `{idp_id}~{subject}`. For example:
+- `okta~user@example.com` for a user from Okta
+- `eksclustera~system:serviceaccount:namespace:my-app` for a Kubernetes service account
+
+This allows you to distinguish users from different identity providers when granting permissions.
+
+### UI Login
+
+The Lakekeeper UI can redirect to only one OIDC provider for SSO — the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Providers added under `LAKEKEEPER__OPENID_PROVIDERS` are used for API token validation only. If `LAKEKEEPER__OPENID_PROVIDER_URI` is not set, the UI login button is disabled by design; clients must obtain tokens out-of-band and call the API directly.
+
+### Resilient Initialization
+
+By default, Lakekeeper refuses to start if a configured provider's OIDC/JWKS configuration cannot be loaded. Set `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting with the remaining authenticators. The primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI` always requires a successful connection on startup.
+
+### When to Use Multiple Providers
+
+Common use cases include:
+
+- **Okta/Entra + EKS OIDC**: Human users authenticate via corporate IdP, while Kubernetes workloads use EKS OIDC tokens
+- **Multi-cluster Kubernetes**: Different EKS/GKE clusters each have their own OIDC provider
+- **Migration scenarios**: Gradually migrating from one IdP to another while both remain active
+
+See the [Configuration Reference](./configuration.md#multiple-oidc-providers) for the full list of available options per provider.
+
+**Identity continuity note:** Existing user IDs are formatted as `oidc~<subject>` from the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Do not move that provider into `LAKEKEEPER__OPENID_PROVIDERS` under a different `IDP_ID` (e.g., `okta`), or existing role/user assignments will no longer match.
 
 ## Kubernetes
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:

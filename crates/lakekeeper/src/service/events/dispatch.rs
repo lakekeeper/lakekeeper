@@ -4,18 +4,19 @@ use std::{
 };
 
 use futures::TryFutureExt;
+use tokio::sync::RwLock;
 
 use super::types;
 
 /// Macro to dispatch events to all listeners with error logging.
 ///
-/// Reduces boilerplate by handling the common pattern of:
-/// - Cloning the event for each listener
-/// - Calling the listener method
-/// - Logging errors without propagating them
+/// Snapshots the listener list (acquiring + releasing the read lock) *before*
+/// awaiting any futures, so no lock guard is held across an `.await` point.
 macro_rules! dispatch_event {
-    ($self:ident, $method:ident, $event:expr) => {
-        futures::future::join_all($self.0.iter().map(|listener| {
+    ($self:ident, $method:ident, $event:expr) => {{
+        // Snapshot under the lock, then drop the guard before any await.
+        let listeners: Vec<Arc<dyn EventListener>> = $self.0.read().await.clone();
+        futures::future::join_all(listeners.iter().map(|listener| {
             listener.$method($event.clone()).map_err(|e| {
                 tracing::warn!(
                     "Listener '{}' encountered error on {}: {e:?}",
@@ -25,41 +26,59 @@ macro_rules! dispatch_event {
             })
         }))
         .await;
-    };
+    }};
 }
 
-/// Collection of event listeners that are invoked after successful operations
+/// Collection of event listeners invoked after successful operations.
+///
+/// Cloning an `EventDispatcher` produces a second handle that shares the same
+/// underlying listener list — listeners appended to either handle are visible
+/// to both. This allows a sub-system (e.g. `CachedRoleProvider`) to receive a
+/// clone *before* the full listener set is assembled, and still dispatch to
+/// every listener that is registered later.
 #[derive(Clone)]
-pub struct EventDispatcher(pub(crate) Vec<Arc<dyn EventListener>>);
+pub struct EventDispatcher(pub(crate) Arc<RwLock<Vec<Arc<dyn EventListener>>>>);
 
 impl core::fmt::Debug for EventDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Listeners").field(&self.0.len()).finish()
+        // Avoid blocking in Debug; show pointer identity instead of contents.
+        f.debug_tuple("EventDispatcher")
+            .field(&Arc::as_ptr(&self.0))
+            .finish()
     }
 }
 
 impl EventDispatcher {
     #[must_use]
     pub fn new(listeners: Vec<Arc<dyn EventListener>>) -> Self {
-        Self(listeners)
+        Self(Arc::new(RwLock::new(listeners)))
     }
 
-    pub fn append(&mut self, listener: Arc<dyn EventListener>) -> &mut Self {
-        self.0.push(listener);
-        self
+    /// Register an additional listener.
+    ///
+    /// Because all clones share the same inner list, this is visible to every
+    /// clone of this dispatcher regardless of when the clone was made.
+    pub async fn append(&self, listener: Arc<dyn EventListener>) {
+        self.0.write().await.push(listener);
     }
 }
 
 impl Display for EventDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EventDispatcher with [")?;
-        for (idx, hook) in self.0.iter().enumerate() {
-            if idx > 0 {
-                write!(f, ", ")?;
+        // Best-effort non-blocking display; skip listing if lock is contended.
+        match self.0.try_read() {
+            Ok(listeners) => {
+                write!(f, "EventDispatcher with [")?;
+                for (idx, hook) in listeners.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{hook}")?;
+                }
+                write!(f, "]")
             }
-            write!(f, "{hook}")?;
+            Err(_) => write!(f, "EventDispatcher(locked)"),
         }
-        write!(f, "]")
     }
 }
 
@@ -108,6 +127,22 @@ impl EventDispatcher {
         dispatch_event!(self, view_loaded, event);
     }
 
+    pub(crate) async fn generic_table_created(&self, event: types::CreateGenericTableEvent) {
+        dispatch_event!(self, generic_table_created, event);
+    }
+
+    pub(crate) async fn generic_table_dropped(&self, event: types::DropGenericTableEvent) {
+        dispatch_event!(self, generic_table_dropped, event);
+    }
+
+    pub(crate) async fn generic_table_loaded(&self, event: types::LoadGenericTableEvent) {
+        dispatch_event!(self, generic_table_loaded, event);
+    }
+
+    pub(crate) async fn generic_table_renamed(&self, event: types::RenameGenericTableEvent) {
+        dispatch_event!(self, generic_table_renamed, event);
+    }
+
     pub(crate) async fn tabular_undropped(&self, event: types::UndropTabularEvent) {
         dispatch_event!(self, tabular_undropped, event);
     }
@@ -137,6 +172,13 @@ impl EventDispatcher {
         event: types::UpdateWarehouseDeleteProfileEvent,
     ) {
         dispatch_event!(self, warehouse_delete_profile_updated, event);
+    }
+
+    pub(crate) async fn warehouse_format_version_policy_updated(
+        &self,
+        event: types::UpdateWarehouseFormatVersionPolicyEvent,
+    ) {
+        dispatch_event!(self, warehouse_format_version_policy_updated, event);
     }
 
     pub(crate) async fn warehouse_storage_updated(
@@ -182,6 +224,33 @@ impl EventDispatcher {
 
     pub(crate) async fn authorization_succeeded(&self, event: types::AuthorizationSucceededEvent) {
         dispatch_event!(self, authorization_succeeded, event);
+    }
+
+    // ===== Role Events =====
+
+    pub(crate) async fn role_created(&self, event: types::CreateRoleEvent) {
+        dispatch_event!(self, role_created, event);
+    }
+
+    pub(crate) async fn role_deleted(&self, event: types::DeleteRoleEvent) {
+        dispatch_event!(self, role_deleted, event);
+    }
+
+    pub(crate) async fn role_updated(&self, event: types::UpdateRoleEvent) {
+        dispatch_event!(self, role_updated, event);
+    }
+
+    // ===== Role Assignment Sync Events =====
+
+    pub(crate) async fn role_members_synced(&self, event: types::RoleMembersSyncedEvent) {
+        dispatch_event!(self, role_members_synced, event);
+    }
+
+    pub(crate) async fn user_role_assignments_synced(
+        &self,
+        event: types::UserRoleAssignmentsSyncedEvent,
+    ) {
+        dispatch_event!(self, user_role_assignments_synced, event);
     }
 
     pub(crate) async fn namespace_metadata_loaded(
@@ -284,6 +353,40 @@ pub trait EventListener: Send + Sync + Debug + Display {
         Ok(())
     }
 
+    // ===== Generic Table Events =====
+
+    /// Invoked after a generic table has been successfully created
+    async fn generic_table_created(
+        &self,
+        _event: types::CreateGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully dropped
+    async fn generic_table_dropped(
+        &self,
+        _event: types::DropGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table's metadata has been successfully loaded
+    async fn generic_table_loaded(
+        &self,
+        _event: types::LoadGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a generic table has been successfully renamed
+    async fn generic_table_renamed(
+        &self,
+        _event: types::RenameGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     // ===== Tabular Events =====
 
     /// Invoked after tables or views have been successfully undeleted
@@ -327,6 +430,14 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn warehouse_delete_profile_updated(
         &self,
         _event: types::UpdateWarehouseDeleteProfileEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after warehouse format version policy has been successfully updated
+    async fn warehouse_format_version_policy_updated(
+        &self,
+        _event: types::UpdateWarehouseFormatVersionPolicyEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -424,6 +535,47 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn authorization_succeeded(
         &self,
         _event: types::authorization::AuthorizationSucceededEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Role Events =====
+
+    /// Invoked after a role has been successfully created
+    async fn role_created(&self, _event: types::CreateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a role has been successfully deleted
+    async fn role_deleted(&self, _event: types::DeleteRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a role has been successfully updated
+    async fn role_updated(&self, _event: types::UpdateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Role Assignment Sync Events =====
+
+    /// Invoked after a role's member list has been successfully synced by an
+    /// external provider.
+    ///
+    /// Use this hook for cache invalidation, audit trails, and observability.
+    async fn role_members_synced(
+        &self,
+        _event: types::RoleMembersSyncedEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a user's role assignments have been successfully synced
+    /// by an external provider for one `(project_id, provider_id)` scope.
+    ///
+    /// Use this hook for cache invalidation, audit trails, and observability.
+    async fn user_role_assignments_synced(
+        &self,
+        _event: types::UserRoleAssignmentsSyncedEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

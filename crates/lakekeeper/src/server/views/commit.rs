@@ -1,5 +1,10 @@
-use std::{collections::BTreeMap, str::FromStr as _, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    str::FromStr as _,
+    sync::Arc,
+};
 
+use http::StatusCode;
 use iceberg::spec::{ViewFormatVersion, ViewMetadata, ViewMetadataBuilder};
 use iceberg_ext::catalog::{ViewRequirement, rest::ViewUpdate};
 use lakekeeper_io::Location;
@@ -7,10 +12,14 @@ use uuid::Uuid;
 
 use crate::{
     SecretId,
-    api::iceberg::v1::{
-        ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
-        ViewParameters,
+    api::{
+        endpoints::EndpointFlat,
+        iceberg::v1::{
+            ApiContext, CommitViewRequest, DataAccessMode, ErrorModel, LoadViewResult, Result,
+            ViewParameters, views::LoadViewRequest,
+        },
     },
+    config::MatchedEngines,
     request_metadata::RequestMetadata,
     server::{
         compression_codec::CompressionCodec,
@@ -23,14 +32,15 @@ use crate::{
         views::validate_view_updates,
     },
     service::{
-        AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogStore, CatalogView, CatalogViewOps,
-        InternalParseLocationError, State, TabularListFlags, Transaction, ViewCommit, ViewId,
-        ViewInfo,
+        AuthZViewInfo, CONCURRENT_UPDATE_ERROR_TYPE, CatalogIdempotencyOps, CatalogStore,
+        CatalogView, CatalogViewOps, InternalParseLocationError, State, TabularListFlags,
+        Transaction, ViewCommit, ViewId, ViewInfo,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         events::{APIEventContext, ViewEventTransition, context::ResolvedView},
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions, StorageProfile},
+        storage::{StoragePermissions, StorageProfile},
     },
 };
 
@@ -48,20 +58,43 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
 
-    let CommitViewRequest {
-        identifier,
-        requirements,
-        updates,
-    } = &request;
-
-    let view_ident = determine_table_ident(&parameters.view, identifier.as_ref())?;
+    let view_ident = determine_table_ident(&parameters.view, request.identifier.as_ref())?;
     validate_table_or_view_ident(&view_ident)?;
-    validate_view_updates(updates)?;
+    validate_view_updates(&request.updates)?;
 
-    // ------------------- AUTHZ -------------------
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            return super::load::load_view::<C, A, S>(
+                parameters,
+                LoadViewRequest {
+                    data_access,
+                    referenced_by: None,
+                },
+                state,
+                request_metadata,
+            )
+            .await;
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz.clone();
 
-    let (property_updates, property_removals) = parse_view_property_updates(updates);
+    let (property_updates, property_removals) = parse_view_property_updates(&request.updates);
+
+    // Security: Trusted engine properties (e.g. `trino.run-as-owner`) determine the
+    // DEFINER/INVOKER security model. Only the corresponding trusted engine may set or
+    // remove these properties — otherwise a user could escalate privileges.
+    validate_trusted_engine_property_changes(
+        &property_updates,
+        &property_removals,
+        &request_metadata,
+    )?;
+
     let action = CatalogViewAction::Commit {
         updated_properties: Arc::new(property_updates.clone()),
         removed_properties: Arc::new(property_removals.clone()),
@@ -95,7 +128,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
 
     // ------------------- BUSINESS LOGIC -------------------
     // Verify assertions
-    check_requirements(requirements.as_ref(), view_id)?;
+    check_requirements(request.requirements.as_ref(), view_id)?;
 
     let storage_profile = &warehouse.storage_profile;
     let storage_secret_id = warehouse.storage_secret_id;
@@ -114,6 +147,7 @@ pub(crate) async fn commit_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
             },
             &state,
             event_ctx.request_metadata(),
+            idempotency_key.as_ref(),
         )
         .await;
 
@@ -159,7 +193,9 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     ctx: CommitViewContext<'_>,
     state: &ApiContext<State<A, C, S>>,
     request_metadata: &RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
 ) -> Result<(LoadViewResult, ViewEventTransition)> {
+    let warehouse_id = ctx.view_info.warehouse_id;
     let mut t = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
 
     // These operations need fresh data on each retry
@@ -212,7 +248,6 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
     C::commit_view(
         ViewCommit {
-            view_ident: &ctx.view_info.tabular_ident,
             previous_view: &previous_view,
             namespace_id: ctx.view_info.namespace_id,
             warehouse_id: ctx.view_info.warehouse_id,
@@ -264,6 +299,37 @@ async fn try_commit_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             ctx.view_info,
         )
         .await?;
+
+    // Insert idempotency key in the same transaction.
+    if let Some(key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1ReplaceView)
+                .http_status(StatusCode::OK)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        // Best-effort cleanup: delete the metadata file we wrote before rollback.
+        let _ = remove_all(&file_io, &new_view.metadata_location)
+            .await
+            .inspect_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to clean up metadata file after idempotency rollback"
+                );
+            });
+        return Err(ErrorModel::request_in_progress().into());
+    }
 
     // Commit transaction
     t.commit().await?;
@@ -414,9 +480,230 @@ pub(crate) fn parse_view_property_updates(
     (property_updates, property_removals)
 }
 
+/// Checks that none of the given property keys correspond to a trusted engine's
+/// owner property unless the request comes from that engine.
+///
+/// These properties control delegated execution and are a privilege escalation
+/// vector if modifiable by untrusted users.
+fn check_protected_properties<'a>(
+    property_keys: impl Iterator<Item = &'a str>,
+    protected_properties: &HashSet<String>,
+    matched_engines: &MatchedEngines,
+) -> Result<()> {
+    if protected_properties.is_empty() {
+        return Ok(());
+    }
+
+    for key in property_keys {
+        // Case-insensitive match: a key that differs only in casing from a
+        // protected property is still rejected unless the caller is the owning
+        // engine *and* uses the exact configured casing. Engines read these
+        // properties with fixed casing, so a case variant would silently have
+        // no effect on the security model while misleading readers.
+        let matches_protected = protected_properties
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(key));
+
+        if matches_protected && !matched_engines.owns_property(key) {
+            return Err(ErrorModel::builder()
+                .code(StatusCode::FORBIDDEN.as_u16())
+                .r#type("ProtectedPropertyModification")
+                .message(format!(
+                    "Property '{key}' controls the view security model and may only be modified by the corresponding trusted engine using the exact configured property key"
+                ))
+                .build()
+                .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_trusted_engine_property_changes(
+    property_updates: &BTreeMap<String, String>,
+    property_removals: &[String],
+    request_metadata: &RequestMetadata,
+) -> Result<()> {
+    let all_keys = property_updates
+        .keys()
+        .map(String::as_str)
+        .chain(property_removals.iter().map(String::as_str));
+    check_protected_properties(
+        all_keys,
+        &crate::config::CONFIG.protected_properties,
+        request_metadata.engines(),
+    )
+}
+
+pub(super) fn validate_trusted_engine_properties_on_create(
+    properties: &std::collections::HashMap<String, String>,
+    request_metadata: &RequestMetadata,
+) -> Result<()> {
+    check_protected_properties(
+        properties.keys().map(String::as_str),
+        &crate::config::CONFIG.protected_properties,
+        request_metadata.engines(),
+    )
+}
+
+#[cfg(test)]
+mod test_check_protected_properties {
+    use std::collections::{HashMap, HashSet};
+
+    use super::check_protected_properties;
+    use crate::config::{MatchedEngines, TrinoEngineConfig, TrustedEngine};
+
+    fn protected() -> HashSet<String> {
+        ["trino.run-as-owner".to_string()].into_iter().collect()
+    }
+
+    #[test]
+    fn allows_unrelated_property() {
+        let result = check_protected_properties(
+            ["some.other.property"].into_iter(),
+            &protected(),
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_protected_property_from_non_engine() {
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &protected(),
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_protected_property_from_wrong_engine() {
+        let other_matched = MatchedEngines::single(TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "other.property".to_string(),
+            identities: HashMap::new(),
+        }));
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &protected(),
+            &other_matched,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_protected_property_from_correct_engine() {
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &protected(),
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn allows_all_properties_when_no_engines_configured() {
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &HashSet::new(),
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_when_one_of_many_properties_is_protected() {
+        let result = check_protected_properties(
+            ["safe.prop", "trino.run-as-owner", "another.safe"].into_iter(),
+            &protected(),
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_case_variant_of_protected_property_from_non_engine() {
+        let result = check_protected_properties(
+            ["Trino.Run-As-Owner"].into_iter(),
+            &protected(),
+            &MatchedEngines::default(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_case_variant_of_protected_property_from_correct_engine() {
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["TRINO.RUN-AS-OWNER"].into_iter(),
+            &protected(),
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_exact_casing_configured_by_admin() {
+        let protected: HashSet<String> = ["Trino.Run-As-Owner".to_string()].into_iter().collect();
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "Trino.Run-As-Owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["Trino.Run-As-Owner"].into_iter(),
+            &protected,
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_lowercase_when_admin_configured_mixed_case() {
+        let protected: HashSet<String> = ["Trino.Run-As-Owner".to_string()].into_iter().collect();
+        let trino = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "Trino.Run-As-Owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let result = check_protected_properties(
+            ["trino.run-as-owner"].into_iter(),
+            &protected,
+            &MatchedEngines::single(trino),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_property_when_any_matched_engine_owns_it() {
+        let trino_a = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let trino_b = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "spark.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        });
+        let protected: HashSet<String> = ["trino.run-as-owner", "spark.run-as-owner"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let matched = MatchedEngines::new(vec![trino_a, trino_b]);
+        let result =
+            check_protected_properties(["trino.run-as-owner"].into_iter(), &protected, &matched);
+        assert!(result.is_ok());
+    }
+}
+
 #[cfg(test)]
 mod test {
     use chrono::Utc;
+    use http::StatusCode;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CommitViewRequest;
     use maplit::hashmap;
@@ -426,9 +713,16 @@ mod test {
 
     use crate::{
         WarehouseId,
-        api::iceberg::v1::{DataAccess, Prefix, ViewParameters, views},
-        server::views::{create::test::create_view, test::setup},
-        tests::create_view_request,
+        api::{
+            iceberg::{
+                types::DropParams,
+                v1::{DataAccess, Prefix, ViewParameters, views},
+            },
+            management::v1::{ApiServer as ManagementApiServer, view::ViewManagementService},
+        },
+        request_metadata::RequestMetadata,
+        server::views::{create::test::create_view, drop::drop_view, test::setup},
+        tests::{create_view_request, random_request_metadata},
     };
 
     #[sqlx::test]
@@ -482,6 +776,82 @@ mod test {
                 "spark.query-column-names".to_string() => "id".to_string(),
             }
         );
+    }
+
+    #[sqlx::test]
+    async fn test_commit_view_preserves_protection(pool: PgPool) {
+        let (api_context, namespace, whi, _) = setup(pool, None).await;
+        let prefix = whi.to_string();
+        let view_name = "myview";
+        let view_ident = TableIdent::from_strs(
+            namespace
+                .clone()
+                .inner()
+                .into_iter()
+                .chain([view_name.into()]),
+        )
+        .unwrap();
+        let view = Box::pin(create_view(
+            api_context.clone(),
+            namespace.clone(),
+            create_view_request(Some(view_name), None),
+            Some(prefix.clone()),
+        ))
+        .await
+        .unwrap();
+
+        ManagementApiServer::set_view_protection(
+            view.metadata.uuid().into(),
+            whi,
+            true,
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+
+        let rq: CommitViewRequest = spark_commit_update_request(whi, Some(view.metadata.uuid()));
+        let res = Box::pin(super::commit_view(
+            ViewParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                view: view_ident.clone(),
+            },
+            rq,
+            api_context.clone(),
+            DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            },
+            RequestMetadata::new_unauthenticated(),
+        ))
+        .await
+        .unwrap();
+
+        let protection = ManagementApiServer::get_view_protection(
+            res.metadata.uuid().into(),
+            whi,
+            api_context.clone(),
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert!(protection.protected);
+
+        let err = drop_view(
+            ViewParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                view: view_ident,
+            },
+            DropParams {
+                purge_requested: true,
+                force: false,
+            },
+            api_context,
+            RequestMetadata::new_unauthenticated(),
+        )
+        .await
+        .expect_err("protected view should remain protected after commit");
+        assert_eq!(err.error.code, StatusCode::CONFLICT);
     }
 
     #[sqlx::test]

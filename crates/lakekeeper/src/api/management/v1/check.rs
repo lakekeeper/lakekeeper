@@ -7,30 +7,106 @@ use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use unicase::UniCase;
 
 use crate::{
     ProjectId, WarehouseId,
-    api::{ApiContext, RequestMetadata, Result},
+    api::{ApiContext, RequestMetadata, Result, iceberg::v1::PaginationQuery},
     request_metadata::ProjectIdMissing,
     service::{
-        BasicTabularInfo, CachePolicy, CatalogGetNamespaceError, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, NamespaceId, NamespaceVersion, NamespaceWithParent,
-        ResolvedWarehouse, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
-        TabularListFlags, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
+        ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
+        CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
+        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
+        RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
+        TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogNamespaceAction, CatalogProjectAction,
+            ActionDescriptor, ActionOnGenericTable, ActionOnTable, ActionOnTableOrView,
+            ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
+            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
             MustUse, RequireNamespaceActionError, RequireTableActionError,
-            RequireWarehouseActionError, UserOrRole,
+            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
-        events::{APIEventContext, context::IntrospectPermissions},
+        events::{
+            APIEventContext, Authorization,
+            context::{
+                ENTITY_TYPE_GENERIC_TABLE, ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT,
+                ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE, ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE,
+                EntityDescriptor, FIELD_NAME_GENERIC_TABLE, FIELD_NAME_GENERIC_TABLE_ID,
+                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
+                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID,
+                FIELD_NAME_WAREHOUSE_ID, IntrospectPermissions,
+            },
+        },
         namespace_cache::namespace_ident_to_cache_key,
     },
 };
+
+#[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+/// Identifies a user or a role
+pub enum UserOrRole {
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleUser"))]
+    /// Id of the user
+    User(UserId),
+    #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+    #[cfg_attr(feature = "open-api", schema(title = "UserOrRoleRole"))]
+    /// Id of the role
+    Role(RoleAssignee),
+}
+
+#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+/// Assignees to a role
+pub struct RoleAssignee(RoleId);
+
+impl RoleAssignee {
+    #[must_use]
+    pub fn from_role(role: RoleId) -> Self {
+        RoleAssignee(role)
+    }
+
+    #[must_use]
+    pub fn role_id(&self) -> RoleId {
+        self.0
+    }
+}
+
+impl RoleId {
+    #[must_use]
+    pub fn into_api_assignee(self) -> RoleAssignee {
+        RoleAssignee::from_role(self)
+    }
+}
+
+impl From<&AuthzUserOrRole> for UserOrRole {
+    fn from(value: &AuthzUserOrRole) -> Self {
+        match value {
+            AuthzUserOrRole::User(user_id) => UserOrRole::User(user_id.clone()),
+            AuthzUserOrRole::Role(role_assignee) => {
+                UserOrRole::Role(role_assignee.role().id().into_api_assignee())
+            }
+        }
+    }
+}
+
+impl AuthzUserOrRole {
+    #[must_use]
+    pub fn api_user_or_role(&self) -> UserOrRole {
+        match self {
+            AuthzUserOrRole::User(user_id) => UserOrRole::User(user_id.clone()),
+            AuthzUserOrRole::Role(role_assignee) => {
+                UserOrRole::Role(role_assignee.role().id().into_api_assignee())
+            }
+        }
+    }
+}
 
 #[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -67,21 +143,24 @@ impl NamespaceIdentOrUuid {
 #[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
-/// Identifier for a table or view, either a UUID or its name and namespace
+/// Identifier for a tabular (table, view, or generic table) — either a UUID
+/// or its name and namespace. Wire format primary names are `table-id` and
+/// `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
+/// accepted as input aliases for client ergonomics.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     IdInWarehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
-        #[serde(alias = "view_id")]
+        #[serde(alias = "view_id", alias = "generic_table_id")]
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
-        /// Name of the table or view
-        #[serde(alias = "view")]
+        /// Name of the table, view, or generic table.
+        #[serde(alias = "view", alias = "generic_table")]
         table: String,
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
@@ -134,6 +213,11 @@ pub(crate) enum CatalogActionCheckOperation {
         #[serde(flatten)]
         view: TabularIdentOrUuid,
     },
+    GenericTable {
+        action: CatalogGenericTableAction,
+        #[serde(flatten)]
+        generic_table: TabularIdentOrUuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -182,10 +266,162 @@ pub struct CatalogActionsBatchCheckResult {
     allowed: bool,
 }
 
+/// Convert a request-side `UserOrRole` (which only carries identifiers) to
+/// the service-level [`UserOrRoleId`] used in audit `Authorization` entries.
+/// This avoids forcing a Role lookup just for logging.
+fn principal_for_audit(identity: &UserOrRole) -> UserOrRoleId {
+    match identity {
+        UserOrRole::User(id) => UserOrRoleId::User(id.clone()),
+        UserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role_id()),
+    }
+}
+
+impl CatalogActionCheckOperation {
+    /// Map this operation to the `(entity, action)` pair that the audit layer
+    /// records. The shape mirrors what other audit events emit for the same
+    /// resource type, so consumers see one uniform schema across single-check
+    /// and batch-check events.
+    ///
+    /// `ambient_project_id` is the request-scoped fallback used for `Project`
+    /// operations whose request body did not specify a `project_id` — the
+    /// same value [`RequestMetadata::require_project_id`] would resolve.
+    /// Passing it ensures every project audit entry carries
+    /// `FIELD_NAME_PROJECT_ID`, matching what the actual authorization check
+    /// runs against.
+    fn to_audit_entity_action(
+        &self,
+        ambient_project_id: Option<&ProjectId>,
+    ) -> (EntityDescriptor, ActionDescriptor) {
+        match self {
+            CatalogActionCheckOperation::Server { action } => (
+                EntityDescriptor::new(ENTITY_TYPE_SERVER),
+                action.action_descriptor(),
+            ),
+            CatalogActionCheckOperation::Project { action, project_id } => {
+                let mut entity = EntityDescriptor::new(ENTITY_TYPE_PROJECT);
+                if let Some(pid) = project_id.as_ref().or(ambient_project_id) {
+                    entity = entity.field(FIELD_NAME_PROJECT_ID, pid);
+                }
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::Warehouse {
+                action,
+                warehouse_id,
+            } => (
+                EntityDescriptor::new(ENTITY_TYPE_WAREHOUSE)
+                    .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id),
+                action.action_descriptor(),
+            ),
+            CatalogActionCheckOperation::Namespace { action, namespace } => {
+                let entity = match namespace {
+                    NamespaceIdentOrUuid::Id {
+                        namespace_id,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE_ID, namespace_id),
+                    NamespaceIdentOrUuid::Name {
+                        namespace,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_NAMESPACE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string()),
+                };
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::Table { action, table } => {
+                let entity = match table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_TABLE_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_TABLE, table),
+                };
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::View { action, view } => {
+                let entity = match view {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_VIEW_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_VIEW)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_VIEW, table),
+                };
+                (entity, action.action_descriptor())
+            }
+            CatalogActionCheckOperation::GenericTable {
+                action,
+                generic_table,
+            } => {
+                let entity = match generic_table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_GENERIC_TABLE_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_GENERIC_TABLE, table),
+                };
+                (entity, action.action_descriptor())
+            }
+        }
+    }
+}
+
+/// Convert a single batch-check tuple into an [`Authorization`] suitable for
+/// the audit `authorizations` array. Self-contained: each entry carries its
+/// own id, principal, entity, action, and decision.
+///
+/// `index` is the position of this tuple in the request array; it's used as
+/// a stable fallback `id` when the client did not supply one. This mirrors
+/// the API response's index-as-id convention so every audit entry can be
+/// correlated 1:1 with the corresponding response entry, and so individual
+/// decisions can be pinpointed in the logs even when no client id was set.
+fn check_to_authorization(
+    item: &CatalogActionCheckItem,
+    index: usize,
+    ambient_project_id: Option<&ProjectId>,
+    allowed: Option<bool>,
+) -> Authorization {
+    let (entity, action) = item.operation.to_audit_entity_action(ambient_project_id);
+    Authorization {
+        id: Some(item.id.clone().unwrap_or_else(|| index.to_string())),
+        for_principal: item.identity.as_ref().map(principal_for_audit),
+        action,
+        entity,
+        allowed,
+    }
+}
+
 // Type aliases for complex grouped check types
 type ServerChecksMap = HashMap<Option<UserOrRole>, Vec<(usize, CatalogServerAction)>>;
 type ProjectChecksMap =
-    HashMap<ProjectId, HashMap<Option<UserOrRole>, Vec<(usize, CatalogProjectAction)>>>;
+    HashMap<ArcProjectId, HashMap<Option<UserOrRole>, Vec<(usize, CatalogProjectAction)>>>;
 type WarehouseChecksMap =
     HashMap<(WarehouseId, Option<UserOrRole>), Vec<(usize, CatalogWarehouseAction)>>;
 type NamespaceChecksByIdMap = HashMap<
@@ -196,7 +432,11 @@ type NamespaceChecksByIdentMap = HashMap<
     (WarehouseId, Option<UserOrRole>),
     HashMap<NamespaceIdent, Vec<(usize, CatalogNamespaceAction)>>,
 >;
-type TabularActionPair = (Option<CatalogTableAction>, Option<CatalogViewAction>);
+type TabularActionPair = (
+    Option<CatalogTableAction>,
+    Option<CatalogViewAction>,
+    Option<CatalogGenericTableAction>,
+);
 type TabularChecksByIdMap =
     HashMap<(WarehouseId, Option<UserOrRole>), HashMap<TabularId, Vec<(usize, TabularActionPair)>>>;
 type TabularChecksByIdentMap = HashMap<
@@ -320,7 +560,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (Some(action), None)));
+                            .push((i, (Some(action), None, None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -335,7 +575,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (Some(action), None)));
+                            .push((i, (Some(action), None, None)));
                     }
                 }
             }
@@ -353,7 +593,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (None, Some(action))));
+                            .push((i, (None, Some(action), None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -368,7 +608,45 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (None, Some(action))));
+                            .push((i, (None, Some(action), None)));
+                    }
+                }
+            }
+            CatalogActionCheckOperation::GenericTable {
+                action,
+                generic_table,
+            } => {
+                grouped
+                    .seen_warehouse_ids
+                    .insert(generic_table.warehouse_id());
+                match generic_table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => {
+                        let tabular_id = TabularId::GenericTable(table_id.into());
+                        grouped
+                            .tabular_checks_by_id
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_id)
+                            .or_default()
+                            .push((i, (None, None, Some(action))));
+                    }
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table: gt_name,
+                        warehouse_id,
+                    } => {
+                        let tabular_ident =
+                            TabularIdentOwned::GenericTable(TableIdent::new(namespace, gt_name));
+                        grouped
+                            .tabular_checks_by_ident
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_ident)
+                            .or_default()
+                            .push((i, (None, None, Some(action))));
                     }
                 }
             }
@@ -432,7 +710,8 @@ async fn fetch_tabulars<C: CatalogStore>(
                         TabularListFlags::all(),
                         catalog_state,
                     )
-                    .await,
+                    .await
+                    .map(|m| m.into_values().collect()),
                 )
             });
             count += 1;
@@ -517,6 +796,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 }
                 ViewOrTableInfo::View(info) => {
                     TabularIdentOwned::View(info.tabular_ident().clone())
+                }
+                ViewOrTableInfo::GenericTable(info) => {
+                    TabularIdentOwned::GenericTable(info.tabular_ident().clone())
                 }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
@@ -619,18 +901,49 @@ async fn fetch_warehouses<A: Authorizer, C: CatalogStore>(
 }
 
 /// Convert optional table/view actions into `ActionOnTableOrView`
-fn convert_tabular_action(
-    tabular_info: &ViewOrTableInfo,
+fn convert_tabular_action<'a, 'u>(
+    tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
-) -> Option<ActionOnTableOrView<'_, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>> {
+    generic_table_action: Option<CatalogGenericTableAction>,
+    user: Option<&'u AuthzUserOrRole>,
+) -> Option<
+    ActionOnTableOrView<
+        'a,
+        'u,
+        TableInfo,
+        ViewInfo,
+        CatalogTableAction,
+        CatalogViewAction,
+        GenericTabularInfo,
+        CatalogGenericTableAction,
+    >,
+> {
     match tabular_info {
-        ViewOrTableInfo::Table(table_info) => {
-            table_action.map(|action| ActionOnTableOrView::Table((table_info, action)))
-        }
-        ViewOrTableInfo::View(view_info) => {
-            view_action.map(|action| ActionOnTableOrView::View((view_info, action)))
-        }
+        ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
+            ActionOnTableOrView::Table(ActionOnTable {
+                info: table_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::View(view_info) => view_action.map(|action| {
+            ActionOnTableOrView::View(ActionOnView {
+                info: view_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::GenericTable(gt_info) => generic_table_action.map(|action| {
+            ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                info: gt_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
     }
 }
 
@@ -679,7 +992,7 @@ async fn fetch_namespaces<C: CatalogStore>(
 ) -> Result<
     (
         HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
-        HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
+        HashMap<(WarehouseId, Vec<String>), NamespaceId>,
     ),
     AuthZError,
 > {
@@ -809,20 +1122,93 @@ async fn fetch_namespaces<C: CatalogStore>(
     Ok((namespaces_by_id, namespace_ident_lookup))
 }
 
+/// Fetch `Arc<Role>` for every `Role(RoleId)` identity referenced in the check items.
+/// Returns an error if any requested role ID is not found in the catalog.
+async fn fetch_identity_roles<C: CatalogStore>(
+    checks: &[CatalogActionCheckItem],
+    catalog_state: C::State,
+) -> Result<HashMap<RoleId, ArcRole>, AuthZError> {
+    let mut role_ids: Vec<RoleId> = checks
+        .iter()
+        .filter_map(|c| {
+            if let Some(UserOrRole::Role(r)) = c.identity.as_ref() {
+                Some(r.role_id())
+            } else {
+                None
+            }
+        })
+        .collect();
+    role_ids.sort_unstable();
+    role_ids.dedup();
+
+    if role_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let filter = CatalogListRolesByIdFilter::builder()
+        .role_ids(Some(&role_ids))
+        .build();
+    let response = C::list_roles_across_projects(
+        filter,
+        PaginationQuery::new_with_page_size(i64::try_from(role_ids.len()).unwrap_or(i64::MAX)),
+        catalog_state,
+    )
+    .await?;
+
+    let role_map: HashMap<RoleId, ArcRole> =
+        response.roles.into_iter().map(|r| (r.id(), r)).collect();
+
+    for rid in &role_ids {
+        if !role_map.contains_key(rid) {
+            return Err(GetRoleAcrossProjectsError::from(RoleIdNotFound::new(*rid)).into());
+        }
+    }
+    Ok(role_map)
+}
+
+/// Convert an API-level `UserOrRole` (which carries only a `RoleId`) into the
+/// internal `AuthzUserOrRole` (which carries the full `Arc<Role>`).
+/// Unreachable if a role ID is not present in `roles` — callers must pre-populate
+/// the map via `fetch_identity_roles`.
+fn resolve_identity(
+    identity: Option<UserOrRole>,
+    roles: &HashMap<RoleId, ArcRole>,
+) -> Option<AuthzUserOrRole> {
+    match identity {
+        None => None,
+        Some(UserOrRole::User(id)) => Some(AuthzUserOrRole::User(id)),
+        Some(UserOrRole::Role(rid)) => {
+            let arc_role = roles
+                .get(&rid.role_id())
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "role {rid:?} missing from pre-fetched map — bug in fetch_identity_roles"
+                    )
+                })
+                .clone();
+            Some(AuthzUserOrRole::Role(AuthZRoleAssignee::from_role(
+                arc_role,
+            )))
+        }
+    }
+}
+
 /// Spawn server authorization check tasks
 fn spawn_server_checks<A: Authorizer>(
     authz_tasks: &mut AuthzTaskJoinSet,
     server_checks: ServerChecksMap,
     authorizer: &A,
     metadata: &RequestMetadata,
+    roles: &HashMap<RoleId, ArcRole>,
 ) {
     for (for_user, actions) in server_checks {
+        let authz_for_user = resolve_identity(for_user, roles);
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         authz_tasks.spawn(async move {
             let (original_indices, actions): (Vec<_>, Vec<_>) = actions.into_iter().unzip();
             let allowed = authorizer
-                .are_allowed_server_actions_vec(&metadata, for_user.as_ref(), &actions)
+                .are_allowed_server_actions_vec(&metadata, authz_for_user.as_ref(), &actions)
                 .await?;
             Ok::<_, AuthZError>((original_indices, allowed))
         });
@@ -835,9 +1221,11 @@ fn spawn_project_checks<A: Authorizer>(
     project_checks: ProjectChecksMap,
     authorizer: &A,
     metadata: &RequestMetadata,
+    roles: &HashMap<RoleId, ArcRole>,
 ) {
     for (project_id, user_map) in project_checks {
         for (for_user, actions) in user_map {
+            let authz_for_user = resolve_identity(for_user, roles);
             let authorizer = authorizer.clone();
             let metadata = metadata.clone();
             let project_id = project_id.clone();
@@ -849,7 +1237,7 @@ fn spawn_project_checks<A: Authorizer>(
                 let allowed = authorizer
                     .are_allowed_project_actions_vec(
                         &metadata,
-                        for_user.as_ref(),
+                        authz_for_user.as_ref(),
                         &projects_with_actions,
                     )
                     .await?;
@@ -866,8 +1254,10 @@ fn spawn_warehouse_checks<A: Authorizer>(
     warehouses: &HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
     authorizer: &A,
     metadata: &RequestMetadata,
+    roles: &HashMap<RoleId, ArcRole>,
 ) {
     for ((warehouse_id, for_user), actions) in warehouse_checks {
+        let authz_for_user = resolve_identity(for_user, roles);
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
 
@@ -880,7 +1270,7 @@ fn spawn_warehouse_checks<A: Authorizer>(
                 let allowed = authorizer
                     .are_allowed_warehouse_actions_vec(
                         &metadata,
-                        for_user.as_ref(),
+                        authz_for_user.as_ref(),
                         &warehouses_with_actions,
                     )
                     .await?;
@@ -890,17 +1280,34 @@ fn spawn_warehouse_checks<A: Authorizer>(
     }
 }
 
+/// Parameters for namespace check spawning by ID
+struct NamespaceCheckByIdParams<'a, A: Authorizer> {
+    authz_tasks: &'a mut AuthzTaskJoinSet,
+    namespace_checks_by_id: NamespaceChecksByIdMap,
+    warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
+    namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
+    authorizer: &'a A,
+    metadata: &'a RequestMetadata,
+    error_on_not_found: bool,
+    roles: &'a HashMap<RoleId, ArcRole>,
+}
+
 /// Spawn namespace authorization check tasks (by ID)
 fn spawn_namespace_checks_by_id<A: Authorizer>(
-    authz_tasks: &mut AuthzTaskJoinSet,
-    namespace_checks_by_id: NamespaceChecksByIdMap,
-    warehouses: &HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
-    namespaces_by_id: &HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
-    authorizer: &A,
-    metadata: &RequestMetadata,
-    error_on_not_found: bool,
+    params: NamespaceCheckByIdParams<'_, A>,
 ) -> Result<(), AuthZError> {
+    let NamespaceCheckByIdParams {
+        authz_tasks,
+        namespace_checks_by_id,
+        warehouses,
+        namespaces_by_id,
+        authorizer,
+        metadata,
+        error_on_not_found,
+        roles,
+    } = params;
     for ((warehouse_id, for_user), actions) in namespace_checks_by_id {
+        let authz_for_user = resolve_identity(for_user, roles);
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
 
@@ -950,7 +1357,7 @@ fn spawn_namespace_checks_by_id<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_namespace_actions_vec(
                     &metadata,
-                    for_user.as_ref(),
+                    authz_for_user.as_ref(),
                     &warehouse,
                     &parent_namespaces,
                     &namespace_with_actions,
@@ -968,10 +1375,11 @@ struct NamespaceCheckByIdentParams<'a, A: Authorizer> {
     namespace_checks_by_ident: NamespaceChecksByIdentMap,
     warehouses: &'a HashMap<WarehouseId, Arc<ResolvedWarehouse>>,
     namespaces_by_id: &'a HashMap<WarehouseId, HashMap<NamespaceId, NamespaceWithParent>>,
-    namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<UniCase<String>>), NamespaceId>,
+    namespace_ident_lookup: &'a HashMap<(WarehouseId, Vec<String>), NamespaceId>,
     authorizer: &'a A,
     metadata: &'a RequestMetadata,
     error_on_not_found: bool,
+    roles: &'a HashMap<RoleId, ArcRole>,
 }
 
 /// Spawn namespace authorization check tasks (by ident)
@@ -987,8 +1395,10 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
         authorizer,
         metadata,
         error_on_not_found,
+        roles,
     } = params;
     for ((warehouse_id, for_user), actions) in namespace_checks_by_ident {
+        let authz_for_user = resolve_identity(for_user, roles);
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
 
@@ -1056,7 +1466,7 @@ fn spawn_namespace_checks_by_ident<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_namespace_actions_vec(
                     &metadata,
-                    for_user.as_ref(),
+                    authz_for_user.as_ref(),
                     &warehouse,
                     &parent_namespaces,
                     &namespace_with_actions,
@@ -1078,6 +1488,7 @@ struct TabularCheckByIdParams<'a, A: Authorizer> {
     authorizer: &'a A,
     metadata: &'a RequestMetadata,
     error_on_not_found: bool,
+    roles: &'a HashMap<RoleId, ArcRole>,
 }
 
 /// Spawn tabular authorization check tasks (by ID)
@@ -1093,8 +1504,10 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
         authorizer,
         metadata,
         error_on_not_found,
+        roles,
     } = params;
     for ((warehouse_id, for_user), actions) in tabular_checks_by_id {
+        let authz_for_user = resolve_identity(for_user, roles);
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         let tabular_infos_by_id = tabular_infos_by_id.clone();
@@ -1126,6 +1539,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::View(view_id) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *view_id).into());
                             }
+                            TabularId::GenericTable(gt_id) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1149,8 +1565,8 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone()) {
+                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1167,7 +1583,6 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_tabular_actions_vec(
                     &metadata,
-                    for_user.as_ref(),
                     &warehouse,
                     parent_namespaces,
                     &tabular_with_actions,
@@ -1189,6 +1604,7 @@ struct TabularCheckByIdentParams<'a, A: Authorizer> {
     authorizer: &'a A,
     metadata: &'a RequestMetadata,
     error_on_not_found: bool,
+    roles: &'a HashMap<RoleId, ArcRole>,
 }
 
 /// Spawn tabular authorization check tasks (by ident)
@@ -1204,8 +1620,10 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
         authorizer,
         metadata,
         error_on_not_found,
+        roles,
     } = params;
     for ((warehouse_id, for_user), actions) in tabular_checks_by_ident {
+        let authz_for_user = resolve_identity(for_user, roles);
         let authorizer = authorizer.clone();
         let metadata = metadata.clone();
         let tabular_infos_by_ident = tabular_infos_by_ident.clone();
@@ -1237,6 +1655,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             TabularIdentOwned::View(view_ident) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, view_ident.clone()).into());
                             }
+                            TabularIdentOwned::GenericTable(gt_ident) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1260,8 +1681,8 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone()) {
+                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1278,7 +1699,6 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
             let allowed = authorizer
                 .are_allowed_tabular_actions_vec(
                     &metadata,
-                    for_user.as_ref(),
                     &warehouse,
                     parent_namespaces,
                     &tabular_with_actions,
@@ -1311,7 +1731,7 @@ async fn collect_authz_results(
             )
             .into());
         }
-        for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec.into_iter()) {
+        for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec) {
             results[i].allowed = is_allowed;
         }
     }
@@ -1346,12 +1766,16 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
         ));
     }
 
-    let event_ctx = APIEventContext::new(
+    let mut event_ctx = APIEventContext::new(
         Arc::new(metadata),
         api_context.v1_state.events,
         (authorizer.server_id(), checks.clone()),
         IntrospectPermissions {},
     );
+
+    // Keep the input tuples so we can pair them with their decisions and
+    // attach one structured `Authorization` per tuple to the audit event.
+    let checks_for_audit = checks.clone();
 
     let authz_result = spawn_check_and_collect_results::<C, _>(
         checks,
@@ -1362,11 +1786,40 @@ pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStor
     )
     .await;
 
+    // Build one structured `Authorization` per input tuple. Each entry carries
+    // its own `id`, `for-principal`, `entity`, `action` and (when the batch
+    // produced decisions) the `allowed` flag — so the single
+    // `introspect_permissions` audit event records both *what was asked* and
+    // *what was answered*, in the same shape as every other audit event, with
+    // no index-zipping required by log consumers. Order matches the input.
+    let audit_decisions: Option<&[CatalogActionsBatchCheckResult]> =
+        authz_result.as_ref().ok().map(Vec::as_slice);
+    // Resolve the ambient project once so `Project` checks that omit
+    // `project_id` in the request body still record a fully-populated
+    // entity (matching what the authorizer actually evaluated).
+    let ambient_project_id = event_ctx.request_metadata().preferred_project_id();
+    let ambient_project_id_ref = ambient_project_id.as_deref();
+    let authorizations: Vec<Authorization> = checks_for_audit
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let allowed = audit_decisions.and_then(|r| r.get(i)).map(|r| r.allowed);
+            check_to_authorization(c, i, ambient_project_id_ref, allowed)
+        })
+        .collect();
+    // For an empty batch (`POST {"checks": []}`) `set_authorizations`
+    // intentionally treats this as "unset" so the emit-path's synthesised
+    // default fires instead, recording a single
+    // "server / introspect_permissions / allowed" row — meaningful as
+    // "the call succeeded but checked nothing".
+    event_ctx.set_authorizations(authorizations);
+
     let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
 
     Ok(CatalogActionsBatchCheckResponse { results })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     checks: Vec<CatalogActionCheckItem>,
     catalog_state: C::State,
@@ -1374,6 +1827,11 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     metadata: &RequestMetadata,
     error_on_not_found: bool,
 ) -> Result<Vec<CatalogActionsBatchCheckResult>, AuthZError> {
+    // 0. Resolve all role IDs referenced in identity fields to full Arc<Role>.
+    //    Single batched catalog call; errors if any identity role ID is unknown.
+    //    Must be called before group_checks consumes `checks`.
+    let roles = fetch_identity_roles::<C>(&checks, catalog_state.clone()).await?;
+
     let (grouped, mut results) = group_checks(checks, metadata)?;
     let GroupedChecks {
         server_checks,
@@ -1386,7 +1844,6 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
         seen_warehouse_ids,
     } = grouped;
 
-    // Load required entities
     // 1. Tabulars (which gives us min required warehouse & namespace versions)
     let (
         tabular_infos_by_ident,
@@ -1427,10 +1884,22 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     let mut authz_tasks = tokio::task::JoinSet::new();
 
     // Server checks
-    spawn_server_checks(&mut authz_tasks, server_checks, &authorizer, metadata);
+    spawn_server_checks(
+        &mut authz_tasks,
+        server_checks,
+        &authorizer,
+        metadata,
+        &roles,
+    );
 
     // Project checks
-    spawn_project_checks(&mut authz_tasks, project_checks, &authorizer, metadata);
+    spawn_project_checks(
+        &mut authz_tasks,
+        project_checks,
+        &authorizer,
+        metadata,
+        &roles,
+    );
 
     // Warehouse checks
     spawn_warehouse_checks(
@@ -1439,18 +1908,20 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
         &warehouses,
         &authorizer,
         metadata,
+        &roles,
     );
 
     // Namespace checks by ID
-    spawn_namespace_checks_by_id(
-        &mut authz_tasks,
+    spawn_namespace_checks_by_id(NamespaceCheckByIdParams {
+        authz_tasks: &mut authz_tasks,
         namespace_checks_by_id,
-        &warehouses,
-        &namespaces_by_id,
-        &authorizer,
+        warehouses: &warehouses,
+        namespaces_by_id: &namespaces_by_id,
+        authorizer: &authorizer,
         metadata,
         error_on_not_found,
-    )?;
+        roles: &roles,
+    })?;
 
     // Namespace checks by ident
     spawn_namespace_checks_by_ident(NamespaceCheckByIdentParams {
@@ -1462,6 +1933,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
         authorizer: &authorizer,
         metadata,
         error_on_not_found,
+        roles: &roles,
     })?;
 
     // Tabular checks by ID
@@ -1474,6 +1946,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
         authorizer: &authorizer,
         metadata,
         error_on_not_found,
+        roles: &roles,
     })?;
 
     // Tabular checks by ident
@@ -1486,6 +1959,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
         authorizer: &authorizer,
         metadata,
         error_on_not_found,
+        roles: &roles,
     })?;
 
     collect_authz_results(&mut authz_tasks, &mut results).await?;
@@ -1516,7 +1990,7 @@ mod tests {
                 CatalogWarehouseAction, tests::HidingAuthorizer,
             },
         },
-        tests::create_table_request,
+        tests::{create_generic_table, create_table_request},
     };
 
     #[sqlx::test]
@@ -1582,7 +2056,10 @@ mod tests {
                 id: Some("server-check-1".to_string()),
                 identity: None,
                 operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject,
+                    action: CatalogServerAction::CreateProject {
+                        name: None,
+                        project_id: None,
+                    },
                 },
             }],
             error_on_not_found: false,
@@ -1627,6 +2104,8 @@ mod tests {
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
                     action: CatalogNamespaceAction::CreateTable {
+                        name: None,
+                        table_id: None,
                         properties: Arc::default(),
                     },
                     namespace: NamespaceIdentOrUuid::Id {
@@ -1656,6 +2135,8 @@ mod tests {
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
                     action: CatalogNamespaceAction::CreateTable {
+                        name: None,
+                        table_id: None,
                         properties: Arc::default(),
                     },
                     namespace: NamespaceIdentOrUuid::Name {
@@ -1734,7 +2215,10 @@ mod tests {
                     id: Some("batch-1".to_string()),
                     identity: None,
                     operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject,
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
                     },
                 },
                 CatalogActionCheckItem {
@@ -1877,6 +2361,8 @@ mod tests {
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
                     action: CatalogNamespaceAction::CreateTable {
+                        name: None,
+                        table_id: None,
                         properties: Arc::default(),
                     },
                     namespace: NamespaceIdentOrUuid::Id {
@@ -1902,6 +2388,8 @@ mod tests {
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
                     action: CatalogNamespaceAction::CreateTable {
+                        name: None,
+                        table_id: None,
                         properties: Arc::default(),
                     },
                     namespace: NamespaceIdentOrUuid::Name {
@@ -1930,6 +2418,8 @@ mod tests {
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
                     action: CatalogNamespaceAction::CreateTable {
+                        name: None,
+                        table_id: None,
                         properties: Arc::default(),
                     },
                     namespace: NamespaceIdentOrUuid::Id {
@@ -1955,6 +2445,8 @@ mod tests {
                 identity: None,
                 operation: CatalogActionCheckOperation::Namespace {
                     action: CatalogNamespaceAction::CreateTable {
+                        name: None,
+                        table_id: None,
                         properties: Arc::default(),
                     },
                     namespace: NamespaceIdentOrUuid::Name {
@@ -2182,6 +2674,8 @@ mod tests {
                     identity: None,
                     operation: CatalogActionCheckOperation::Namespace {
                         action: CatalogNamespaceAction::CreateTable {
+                            name: None,
+                            table_id: None,
                             properties: Arc::default(),
                         },
                         namespace: NamespaceIdentOrUuid::Id {
@@ -2195,6 +2689,8 @@ mod tests {
                     identity: None,
                     operation: CatalogActionCheckOperation::Namespace {
                         action: CatalogNamespaceAction::CreateTable {
+                            name: None,
+                            table_id: None,
                             properties: Arc::default(),
                         },
                         namespace: NamespaceIdentOrUuid::Id {
@@ -2303,7 +2799,10 @@ mod tests {
                     id: None,
                     identity: None,
                     operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject,
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
                     },
                 },
                 CatalogActionCheckItem {
@@ -2352,7 +2851,10 @@ mod tests {
                 id: Some(format!("check-{i}")),
                 identity: None,
                 operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject,
+                    action: CatalogServerAction::CreateProject {
+                        name: None,
+                        project_id: None,
+                    },
                 },
             })
             .collect();
@@ -2426,5 +2928,244 @@ mod tests {
         let deserialized: CatalogActionsBatchCheckRequest =
             serde_json::from_value(expected).unwrap();
         assert_eq!(request, deserialized);
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_role_based_identity(pool: sqlx::PgPool) {
+        use crate::api::management::v1::{
+            ApiServer,
+            role::{CreateRoleRequest, Service as RoleService},
+        };
+
+        let prof = crate::server::test::memory_io_profile();
+        let authz = HidingAuthorizer::new();
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            prof,
+            None,
+            authz.clone(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+
+        let metadata = RequestMetadata::new_unauthenticated();
+
+        // Create a role in the project so fetch_identity_roles can resolve it.
+        let role = ApiServer::<PostgresBackend, _, _>::create_role(
+            CreateRoleRequest {
+                name: "test-role".to_string(),
+                description: None,
+                project_id: Some((*test_warehouse.project_id).clone()),
+                provider_id: None,
+                source_id: None,
+            },
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+        let role_id = role.id;
+
+        // Test 1: server action with role identity — exercises fetch_identity_roles +
+        // resolve_identity end-to-end.
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("role-server-check".to_string()),
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                operation: CatalogActionCheckOperation::Server {
+                    action: CatalogServerAction::CreateProject {
+                        name: None,
+                        project_id: None,
+                    },
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("role-server-check".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 2: warehouse action with role identity — allowed before hiding.
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("role-warehouse-allow".to_string()),
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("role-warehouse-allow".to_string())
+        );
+        assert!(response.results[0].allowed);
+
+        // Test 3: hide the warehouse, then recheck with role identity — should be denied.
+        authz.hide(&format!("warehouse:{}", test_warehouse.warehouse_id));
+
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![CatalogActionCheckItem {
+                id: Some("role-warehouse-deny".to_string()),
+                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                operation: CatalogActionCheckOperation::Warehouse {
+                    action: CatalogWarehouseAction::Use,
+                    warehouse_id: test_warehouse.warehouse_id,
+                },
+            }],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.results[0].id,
+            Some("role-warehouse-deny".to_string())
+        );
+        assert!(!response.results[0].allowed);
+
+        // Test 4: batch mixing role identity with no-identity on the same server action —
+        // both must succeed, confirming prefetch deduplication works.
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: Some("batch-role".to_string()),
+                    identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
+                    operation: CatalogActionCheckOperation::Server {
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("batch-no-identity".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::Server {
+                        action: CatalogServerAction::CreateProject {
+                            name: None,
+                            project_id: None,
+                        },
+                    },
+                },
+            ],
+            error_on_not_found: false,
+        };
+
+        let response = check_internal(api_context.clone(), metadata.clone(), request)
+            .await
+            .unwrap();
+
+        assert_eq!(response.results.len(), 2);
+        assert!(response.results.iter().all(|r| r.allowed));
+        assert_eq!(response.results[0].id, Some("batch-role".to_string()));
+        assert_eq!(
+            response.results[1].id,
+            Some("batch-no-identity".to_string())
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_check_internal_generic_table_operation(pool: sqlx::PgPool) {
+        use crate::{
+            api::data::v1::generic_tables::{GenericTableService as _, ListGenericTablesQuery},
+            service::authz::AllowAllAuthorizer,
+        };
+
+        let (api_context, test_warehouse) = crate::server::test::setup(
+            pool.clone(),
+            crate::server::test::memory_io_profile(),
+            None,
+            AllowAllAuthorizer::default(),
+            TabularDeleteProfile::Hard {},
+            None,
+        )
+        .await;
+        let metadata = RequestMetadata::new_unauthenticated();
+        let prefix = test_warehouse.warehouse_id.to_string();
+        let ns_name = "gt_check_ns";
+        crate::server::test::create_ns(api_context.clone(), prefix.clone(), ns_name.to_string())
+            .await;
+
+        let gt_name = "my-gt";
+        create_generic_table(api_context.clone(), prefix.clone(), ns_name, gt_name)
+            .await
+            .unwrap();
+
+        let listed = CatalogServer::list_generic_tables(
+            NamespaceParameters {
+                prefix: Some(Prefix(prefix.clone())),
+                namespace: NamespaceIdent::new(ns_name.to_string()),
+            },
+            ListGenericTablesQuery::default(),
+            api_context.clone(),
+            metadata.clone(),
+        )
+        .await
+        .unwrap();
+        let gt_id = listed
+            .identifiers
+            .iter()
+            .find(|i| i.name == gt_name)
+            .and_then(|i| i.id)
+            .expect("generic table id");
+
+        let request = CatalogActionsBatchCheckRequest {
+            checks: vec![
+                CatalogActionCheckItem {
+                    id: Some("by-name".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::GenericTable {
+                        action: CatalogGenericTableAction::Drop,
+                        generic_table: TabularIdentOrUuid::Name {
+                            namespace: NamespaceIdent::new(ns_name.to_string()),
+                            table: gt_name.to_string(),
+                            warehouse_id: test_warehouse.warehouse_id,
+                        },
+                    },
+                },
+                CatalogActionCheckItem {
+                    id: Some("by-id".to_string()),
+                    identity: None,
+                    operation: CatalogActionCheckOperation::GenericTable {
+                        action: CatalogGenericTableAction::ReadData,
+                        generic_table: TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id: test_warehouse.warehouse_id,
+                            table_id: *gt_id,
+                        },
+                    },
+                },
+            ],
+            error_on_not_found: true,
+        };
+
+        let response = check_internal(api_context, metadata, request)
+            .await
+            .unwrap();
+        assert_eq!(response.results.len(), 2);
+        assert!(response.results.iter().all(|r| r.allowed));
+        assert_eq!(response.results[0].id, Some("by-name".to_string()));
+        assert_eq!(response.results[1].id, Some("by-id".to_string()));
     }
 }

@@ -32,7 +32,7 @@ fix:
     cargo sort -w
 
 sqlx-prepare:
-    cargo sqlx prepare --workspace -- --tests
+    cargo sqlx prepare --workspace -- --tests --features "sqlx-postgres"
 
 doc-test:
 	cargo test --no-fail-fast --doc --all-features --workspace
@@ -66,9 +66,19 @@ test-openfga:
     LAST_VERSION=$(ls $BASE_PATH | sort -r | head -n 1); \
     fga model test --tests $BASE_PATH/$LAST_VERSION/store.fga.yaml'
 
+check-opa:
+    cd authz/opa-bridge && opa check --strict policies/
+    cd authz/opa-bridge && opa fmt --diff --fail policies/ tests/
+    cd authz/opa-bridge && opa test policies/ tests/ -v
+    cd authz/opa-bridge && regal lint policies/
+
 update-management-openapi:
     LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run --features open-api management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml
+
+update-generic-table-openapi:
+    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run --features open-api generic-table-openapi > docs/docs/api/generic-table-open-api.yaml
+    yq -i '.info.version = "0.0.0"' docs/docs/api/generic-table-open-api.yaml
 
 add-return-uuid-to-rest-openapi:
     yq eval '.paths."/v1/{prefix}/namespaces".get.parameters += [{"name": "returnUuids", "in": "query", "description": "If true, include the `namespace-uuids` field in the response", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml

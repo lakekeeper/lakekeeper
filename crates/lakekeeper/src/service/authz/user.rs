@@ -6,8 +6,8 @@ use crate::{
         UserId,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogUserAction,
-            MustUse, UserOrRole,
+            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -42,7 +42,7 @@ impl AuthorizationFailureSource for AuthZUserActionForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AuthZUserActionForbidden { action } = self;
         ErrorModel::forbidden(
-            format!("Action `{action}` forbidden",),
+            format!("Action `{action}` forbidden"),
             "UserActionForbidden",
             None,
         )
@@ -60,13 +60,23 @@ pub enum RequireUserActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
+    AuthorizerValidationFailed(AuthzBadRequest),
 }
 impl From<BackendUnavailableOrCountMismatch> for RequireUserActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireUserActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -75,6 +85,7 @@ delegate_authorization_failure_source!(RequireUserActionError => {
     AuthorizationBackendUnavailable,
     CannotInspectPermissions,
     AuthorizationCountMismatch,
+    AuthorizerValidationFailed,
 });
 
 #[async_trait::async_trait]
@@ -85,7 +96,7 @@ pub trait AuthZUserOps: Authorizer {
         for_user: Option<&UserOrRole>,
         user_id: &UserId,
         action: impl Into<Self::UserAction> + Send,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_user_actions_arr(metadata, for_user, &[(user_id, action.into())])
             .await?
@@ -98,12 +109,12 @@ pub trait AuthZUserOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(vec![true; users_with_actions.len()])
         } else {
             let converted = users_with_actions
@@ -132,7 +143,7 @@ pub trait AuthZUserOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, A)],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_user_actions_vec(metadata, for_user, users_with_actions)
             .await?

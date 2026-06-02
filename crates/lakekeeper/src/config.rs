@@ -3,33 +3,40 @@
 
 use core::result::Result::Ok;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::Infallible,
     net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
     path::PathBuf,
     str::FromStr,
-    sync::LazyLock,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
 use anyhow::{Context, anyhow};
+use figment::value::Uncased;
 use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use veil::Redact;
 
-use crate::{ProjectId, WarehouseId};
+use crate::{
+    WarehouseId,
+    service::{
+        ArcProjectId, UserId,
+        authn::{K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
+    },
+};
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
-pub static DEFAULT_PROJECT_ID: LazyLock<Option<ProjectId>> = LazyLock::new(|| {
+pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> = LazyLock::new(|| {
     CONFIG
         .enable_default_project
-        .then_some(uuid::Uuid::nil().into())
+        .then_some(Arc::new(uuid::Uuid::nil().into()))
 });
 
 fn get_config() -> DynAppConfig {
@@ -42,9 +49,24 @@ fn get_config() -> DynAppConfig {
 
     let file_keys = &["kafka_config"];
 
+    let config_keys_map = &[("METRICS_PORT", "METRICS__PORT")];
+
     let mut config = figment::Figment::from(defaults);
     for prefix in prefixes {
-        let env = figment::providers::Env::prefixed(prefix).split("__");
+        let env = figment::providers::Env::prefixed(prefix)
+            .map(|env_key| {
+                config_keys_map
+                    .iter()
+                    .find_map(|(k, v)| {
+                        if *k == env_key {
+                            Some(Uncased::from_borrowed(v))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(env_key.into())
+            })
+            .split("__");
         config = config
             .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
             .merge(env);
@@ -53,6 +75,17 @@ fn get_config() -> DynAppConfig {
     let mut config = config
         .extract::<DynAppConfig>()
         .expect("Valid Configuration");
+
+    validate_openid_provider_ids(&config);
+
+    if !config.openid_providers.is_empty() && config.openid_provider_uri.is_none() {
+        tracing::warn!(
+            "LAKEKEEPER__OPENID_PROVIDERS is set but LAKEKEEPER__OPENID_PROVIDER_URI is not. \
+             API authentication will work, but the UI login button is disabled — the UI \
+             redirects only to the primary provider. Set LAKEKEEPER__OPENID_PROVIDER_URI to \
+             enable UI login."
+        );
+    }
 
     // Ensure base_uri has a trailing slash
     if let Some(base_uri) = config.base_uri.as_mut() {
@@ -63,6 +96,39 @@ fn get_config() -> DynAppConfig {
     config
         .reserved_namespaces
         .extend(DEFAULT_RESERVED_NAMESPACES.into_iter().map(str::to_string));
+
+    for (name, engine) in &config.trusted_engines {
+        assert!(
+            !engine.owner_property().trim().is_empty(),
+            "Invalid trusted engine '{name}': owner_property must not be empty"
+        );
+        for (idp_id, identity) in engine.identities() {
+            assert!(
+                !idp_id.trim().is_empty(),
+                "Invalid trusted engine '{name}': identity IdP ID must not be empty"
+            );
+            assert!(
+                !identity.audiences.is_empty() || !identity.subjects.is_empty(),
+                "Invalid trusted engine '{name}', identity '{idp_id}': \
+                 at least one audience or subject must be configured"
+            );
+            assert!(
+                identity.audiences.iter().all(|a| !a.trim().is_empty()),
+                "Invalid trusted engine '{name}', identity '{idp_id}': \
+                 audiences must not contain empty strings"
+            );
+            assert!(
+                identity.subjects.iter().all(|s| !s.trim().is_empty()),
+                "Invalid trusted engine '{name}', identity '{idp_id}': \
+                 subjects must not contain empty strings"
+            );
+        }
+    }
+    config.protected_properties = config
+        .trusted_engines
+        .values()
+        .map(|e| e.owner_property().to_string())
+        .collect();
 
     // Fail early if the base_uri is not a valid URL
     if let Some(uri) = &config.base_uri {
@@ -78,7 +144,204 @@ fn get_config() -> DynAppConfig {
         );
     }
 
+    // `UserAssignmentsCache` entries may reference roles that are still live
+    // in the role cache.  If `user_assignments.time_to_live_secs` exceeds
+    // `role.time_to_live_secs` a deleted role can remain visible through
+    // user-assignment cache entries after it has been evicted from the role
+    // cache, violating the documented invariant.
+    // The constraint is only meaningful when both caches are active; if either
+    // is disabled the TTL relationship has no effect at runtime.
+    if config.cache.user_assignments.enabled && config.cache.role.enabled {
+        assert!(
+            config.cache.user_assignments.time_to_live_secs <= config.cache.role.time_to_live_secs,
+            "Invalid cache configuration: user_assignments.time_to_live_secs ({}) must not exceed role.time_to_live_secs ({})",
+            config.cache.user_assignments.time_to_live_secs,
+            config.cache.role.time_to_live_secs,
+        );
+    }
+
     config
+}
+
+fn validate_openid_provider_ids(config: &DynAppConfig) {
+    // Grammar `[a-z0-9-]+` (same shape as `RoleProviderId`). Lowercase-only
+    // means env-var (which figment lowercases) and YAML/TOML keys agree on
+    // one canonical form, so case-collisions, control characters, the
+    // `~` separator, and case-insensitive reserved-name aliases are all
+    // forbidden by the grammar — no separate checks needed.
+    for idp_id in config.openid_providers.keys() {
+        assert!(
+            !idp_id.is_empty(),
+            "Invalid OIDC provider: IdP ID must not be empty"
+        );
+        assert!(
+            idp_id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "Invalid OIDC provider '{idp_id}': IdP ID must match `[a-z0-9-]+`"
+        );
+        // Reserved names — direct equality is sufficient because the grammar
+        // already excludes any case variant.
+        assert!(
+            idp_id != K8S_IDP_ID,
+            "Invalid OIDC provider '{idp_id}': IdP ID '{K8S_IDP_ID}' is reserved"
+        );
+        assert!(
+            idp_id != OIDC_IDP_ID,
+            "Invalid OIDC provider '{idp_id}': IdP ID '{OIDC_IDP_ID}' is reserved"
+        );
+    }
+}
+
+/// Identifies who is trusted to act as this engine from a specific `IdP`.
+///
+/// The map key (not part of this struct) is the `IdP` ID.
+/// A token matches if:
+/// - the map key matches the token's `IdP` ID, AND
+/// - any configured `audience` appears in the token's audiences,
+///   OR any configured `subject` matches the token's subject.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EngineIdentity {
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    #[serde(default)]
+    pub subjects: Vec<String>,
+}
+
+impl EngineIdentity {
+    /// Check whether a token with the given audiences and subject matches this identity.
+    #[must_use]
+    pub fn matches(&self, token_audiences: &HashSet<&str>, token_subject: Option<&str>) -> bool {
+        let audience_match = self
+            .audiences
+            .iter()
+            .any(|a| token_audiences.contains(a.as_str()));
+        let subject_match = token_subject.is_some_and(|sub| self.subjects.iter().any(|s| s == sub));
+        audience_match || subject_match
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TrinoEngineConfig {
+    pub owner_property: String,
+    /// Map from `IdP` ID to identity configuration.
+    #[serde(default)]
+    pub identities: HashMap<String, EngineIdentity>,
+}
+
+impl TrinoEngineConfig {
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        if let Some(owner) = properties.get(&self.owner_property) {
+            SecurityModel::Definer(owner.clone())
+        } else {
+            SecurityModel::Invoker
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TrustedEngine {
+    Trino(TrinoEngineConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityModel {
+    Invoker,
+    Definer(String),
+}
+
+/// Multiple matched engines resolved to different owners for the same view.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Ambiguous security model: multiple engines resolve to different owners")]
+pub struct AmbiguousSecurityModel {
+    pub owners: Vec<String>,
+}
+
+impl TrustedEngine {
+    #[must_use]
+    pub fn determine_security_model(&self, properties: &HashMap<String, String>) -> SecurityModel {
+        match self {
+            TrustedEngine::Trino(c) => c.determine_security_model(properties),
+        }
+    }
+
+    #[must_use]
+    pub fn owner_property(&self) -> &str {
+        match self {
+            TrustedEngine::Trino(c) => &c.owner_property,
+        }
+    }
+
+    #[must_use]
+    pub fn identities(&self) -> &HashMap<String, EngineIdentity> {
+        match self {
+            TrustedEngine::Trino(c) => &c.identities,
+        }
+    }
+}
+
+/// The set of trusted engines that matched the current request's token.
+///
+/// Consumers should use the high-level methods instead of iterating over engines.
+#[derive(Debug, Clone, Default)]
+pub struct MatchedEngines {
+    engines: Vec<TrustedEngine>,
+}
+
+impl MatchedEngines {
+    #[must_use]
+    pub fn new(engines: Vec<TrustedEngine>) -> Self {
+        Self { engines }
+    }
+
+    #[must_use]
+    pub fn single(engine: TrustedEngine) -> Self {
+        Self {
+            engines: vec![engine],
+        }
+    }
+
+    /// Whether the request comes from any trusted engine.
+    #[must_use]
+    pub fn is_trusted(&self) -> bool {
+        !self.engines.is_empty()
+    }
+
+    /// Determine security model from view properties.
+    ///
+    /// Returns `Definer` if any matched engine's owner property is set.
+    /// Returns an error if multiple engines resolve to different owners
+    /// (ambiguous delegation).
+    pub fn determine_security_model(
+        &self,
+        properties: &HashMap<String, String>,
+    ) -> Result<SecurityModel, AmbiguousSecurityModel> {
+        let mut found_owner: Option<String> = None;
+        for engine in &self.engines {
+            if let SecurityModel::Definer(owner) = engine.determine_security_model(properties) {
+                if let Some(ref prev) = found_owner {
+                    if *prev != owner {
+                        return Err(AmbiguousSecurityModel {
+                            owners: vec![prev.clone(), owner],
+                        });
+                    }
+                } else {
+                    found_owner = Some(owner);
+                }
+            }
+        }
+        Ok(found_owner.map_or(SecurityModel::Invoker, SecurityModel::Definer))
+    }
+
+    /// Whether this request is allowed to modify the given property.
+    /// True if any matched engine's security model property matches.
+    #[must_use]
+    pub fn owns_property(&self, property: &str) -> bool {
+        self.engines.iter().any(|e| e.owner_property() == property)
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -89,8 +352,6 @@ pub struct DynAppConfig {
     /// This is used as the "uri" and "s3.signer.url"
     /// while generating the Catalog Config
     pub base_uri: Option<url::Url>,
-    /// Port under which we serve metrics
-    pub metrics_port: u16,
     /// Port to listen on.
     pub listen_port: u16,
     /// Bind IP the server listens on.
@@ -186,14 +447,14 @@ pub struct DynAppConfig {
     /// Expected audience for the provided token.
     /// Specify multiple audiences as a comma-separated list.
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub openid_audience: Option<Vec<String>>,
     /// Additional issuers to trust for `OpenID` Connect
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub openid_additional_issuers: Option<Vec<String>>,
     /// A scope that must be present in provided tokens
@@ -201,23 +462,62 @@ pub struct DynAppConfig {
     pub enable_kubernetes_authentication: bool,
     /// Audience expected in provided JWT tokens.
     #[serde(
-        deserialize_with = "deserialize_audience",
-        serialize_with = "serialize_audience"
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
     )]
     pub kubernetes_authentication_audience: Option<Vec<String>>,
     /// Accept legacy k8s token without audience and issuer
     /// set to kubernetes/serviceaccount or `https://kubernetes.default.svc.cluster.local`
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
-    /// Claim to use in provided JWT tokens as the subject.
-    pub openid_subject_claim: Option<String>,
+    /// Claim(s) to use in provided JWT tokens as the subject.
+    /// Accepts a comma-separated list of claim names; the first claim present
+    /// in the token is used. A single claim name (without a comma) is also
+    /// accepted for backward compatibility.
+    #[serde(
+        deserialize_with = "deserialize_comma_separated",
+        serialize_with = "serialize_comma_separated"
+    )]
+    pub openid_subject_claim: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
-    /// The field should contain an array of strings or a single string.
+    /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
+    /// Multiple OIDC providers keyed by identity provider ID.
+    /// When set, each provider gets its own JWKS authenticator and is added
+    /// in addition to the single-provider configuration (`openid_provider_uri`).
+    #[serde(default)]
+    pub openid_providers: HashMap<String, OidcProviderConfig>,
 
     // ------------- AUTHORIZATION - OPENFGA -------------
     #[serde(default)]
     pub authz_backend: AuthZBackend,
+
+    /// Principals granted instance-admin privileges via deployment config.
+    ///
+    /// Instance admins bypass authorization for all control-plane actions
+    /// (bootstrap, project/warehouse/role/namespace/table/view management) but
+    /// NOT for data-plane actions (`CatalogTableAction::ReadData` /
+    /// `WriteData`). The privilege cannot be revoked from within Lakekeeper at
+    /// runtime; change the deployment config to add or remove admins.
+    ///
+    /// Accepts a TOML inline array of user IDs (each of form
+    /// `<idp_id>~<subject>`) — for simple string arrays this is syntactically
+    /// identical to JSON:
+    ///
+    /// ```text
+    /// LAKEKEEPER__INSTANCE_ADMINS=["kubernetes~system:serviceaccount:lk:op","oidc~alice"]
+    /// ```
+    ///
+    /// A bare string (e.g. `oidc~alice`) is rejected — even a single admin
+    /// must be wrapped in brackets: `["oidc~alice"]`.
+    #[serde(default)]
+    pub instance_admins: HashSet<UserId>,
+    // ------------- TRUSTED ENGINES -------------
+    #[serde(default)]
+    pub trusted_engines: HashMap<String, TrustedEngine>,
+    /// Owner properties from all trusted engines, pre-computed at startup.
+    #[serde(skip)]
+    pub protected_properties: HashSet<String>,
     // ------------- Health -------------
     pub health_check_frequency_seconds: u64,
 
@@ -250,6 +550,10 @@ pub struct DynAppConfig {
     pub pagination_size_default: u32,
     pub pagination_size_max: u32,
 
+    // ------------- Metrics -------------
+    #[serde(default)]
+    pub(crate) metrics: Metrics,
+
     // ------------- Stats -------------
     /// Interval to wait before writing the latest accumulated endpoint statistics into the database.
     ///
@@ -271,6 +575,10 @@ pub struct DynAppConfig {
     // ------------- Testing -------------
     pub skip_storage_validation: bool,
 
+    // ------------- Idempotency -------------
+    #[serde(default)]
+    pub idempotency: IdempotencyConfig,
+
     // ------------- Debug -------------
     #[serde(default)]
     pub debug: DebugConfig,
@@ -284,6 +592,43 @@ pub struct DynAppConfig {
         serialize_with = "serialize_std_duration_as_ms"
     )]
     pub max_request_time: Duration,
+
+    // ------------- Maintenance -------------
+    /// Maintenance mode.
+    ///
+    /// `off` (default) serves all requests normally.
+    ///
+    /// `read-only` is intended to be set by a Kubernetes operator during a
+    /// zero-downtime version upgrade: a rolling restart sets the flag on every
+    /// pod, the operator then runs migrations against the database, and a
+    /// second rolling restart removes the flag once new pods are ready. The
+    /// flag is captured once at startup and is not dynamic.
+    ///
+    /// When `read-only`, mutating HTTP requests (anything other than GET, HEAD
+    /// or OPTIONS) on `/catalog/v1` and `/management/v1` are rejected with
+    /// `503 Service Unavailable` and a `Retry-After` header. Built-in task
+    /// queue workers are not started. Per-warehouse user auto-registration on
+    /// `GET /v1/config` is suppressed.
+    #[serde(default)]
+    pub maintenance_mode: MaintenanceMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaintenanceMode {
+    /// Normal operation.
+    #[default]
+    Off,
+    /// Reject mutating requests with 503, do not start built-in task queue
+    /// workers, suppress side-effecting writes on read endpoints.
+    ReadOnly,
+}
+
+impl MaintenanceMode {
+    #[must_use]
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
 }
 
 pub(crate) fn seconds_to_duration<'de, D>(deserializer: D) -> Result<chrono::Duration, D::Error>
@@ -333,7 +678,9 @@ where
     format!("{}ms", duration.as_millis()).serialize(serializer)
 }
 
-fn deserialize_audience<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+pub(crate) fn deserialize_comma_separated<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -348,7 +695,10 @@ where
     .transpose()
 }
 
-fn serialize_audience<S>(value: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn serialize_comma_separated<S>(
+    value: &Option<Vec<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -433,6 +783,52 @@ pub enum SecretBackend {
     Postgres,
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct IdempotencyConfig {
+    /// Whether idempotency key support is enabled.
+    /// When enabled, `idempotency-key-lifetime` is advertised in getConfig.
+    pub enabled: bool,
+    /// How long idempotency records are kept (ISO-8601 duration).
+    /// This value is advertised to clients via getConfig.
+    /// Default: PT30M (30 minutes)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub lifetime: Duration,
+    /// Grace period added on top of lifetime for clock skew / transit delays (ISO-8601 duration).
+    /// Default: PT5M (5 minutes)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub grace_period: Duration,
+    /// Maximum time a background cleanup task may run before being considered dead.
+    /// If a cleanup exceeds this, the next attempt takes over.
+    /// Default: PT30S (30 seconds)
+    #[serde(with = "crate::utils::time_conversion::iso8601_std_duration_serde")]
+    pub cleanup_timeout: Duration,
+}
+
+impl Default for IdempotencyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            lifetime: Duration::from_mins(30),
+            grace_period: Duration::from_mins(5),
+            cleanup_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+impl IdempotencyConfig {
+    /// Returns the lifetime as an ISO-8601 duration string for advertising in getConfig.
+    #[must_use]
+    pub fn lifetime_iso8601(&self) -> String {
+        crate::utils::time_conversion::std_duration_to_iso_8601_string(&self.lifetime)
+    }
+
+    /// Total retention duration (lifetime + grace).
+    #[must_use]
+    pub fn total_retention(&self) -> Duration {
+        self.lifetime + self.grace_period
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
 pub struct DebugConfig {
     /// If true, log all request bodies to the debug log for debugging purposes.
@@ -462,6 +858,51 @@ pub(crate) struct AuditTracingConfig {
     pub enabled: bool,
 }
 
+/// Cache for `UserId → ListUserRoleAssignmentsResult` lookups.
+///
+/// Hot path: checked on every authorisation request.
+/// `time_to_live_secs` must not exceed `role.time_to_live_secs` to bound
+/// the window where a deleted role can appear in user assignment results.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct UserAssignmentsCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for UserAssignmentsCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 50_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
+/// Cache for `RoleId → ListRoleMembersResult` lookups.
+///
+/// Cold path: admin / provider queries only. Keep capacity low —
+/// each entry holds an unbounded `Vec<AssignedUser>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleMembersCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl Default for RoleMembersCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 1_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct Cache {
     /// Short‑Term Credentials cache configuration.
@@ -472,6 +913,12 @@ pub(crate) struct Cache {
     pub(crate) namespace: NamespaceCache,
     /// Secrets cache configuration.
     pub(crate) secrets: SecretsCache,
+    /// Role cache configuration.
+    pub(crate) role: RoleCache,
+    /// User-assignments cache: `UserId → roles`.
+    pub(crate) user_assignments: UserAssignmentsCache,
+    /// Role-members cache: `RoleId → members`.
+    pub(crate) role_members: RoleMembersCache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -547,11 +994,73 @@ impl std::default::Default for SecretsCache {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct RoleCache {
+    pub(crate) enabled: bool,
+    pub(crate) capacity: u64,
+    /// Time-to-live for cache entries in seconds. Defaults to 120 seconds.
+    pub(crate) time_to_live_secs: u64,
+}
+
+impl std::default::Default for RoleCache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 10_000,
+            time_to_live_secs: 120,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct Metrics {
+    /// Port under which to serve metrics
+    ///
+    /// default: 9000
+    pub(crate) port: u16,
+
+    pub(crate) tokio: Tokio,
+}
+
+impl std::default::Default for Metrics {
+    fn default() -> Self {
+        Self {
+            port: 9000,
+            tokio: Tokio::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct Tokio {
+    /// Interval to report Tokio Runtime metrics
+    ///
+    /// Accepts a string of format "{number}{ms|s}", e. g. "30s" for 30 seconds or "500ms" for 500
+    /// milliseconds
+    ///
+    /// default: 30s
+    #[serde(
+        deserialize_with = "seconds_to_std_duration",
+        serialize_with = "serialize_std_duration_as_ms"
+    )]
+    pub(crate) report_interval: Duration,
+}
+
+impl std::default::Default for Tokio {
+    fn default() -> Self {
+        Tokio {
+            report_interval: Duration::from_secs(30),
+        }
+    }
+}
+
 impl Default for DynAppConfig {
     fn default() -> Self {
         Self {
             base_uri: None,
-            metrics_port: 9000,
             enable_default_project: true,
             use_x_forwarded_headers: true,
             prefix_template: "{warehouse_id}".to_string(),
@@ -593,6 +1102,9 @@ impl Default for DynAppConfig {
             kafka_topic: None,
             log_cloudevents: None,
             authz_backend: AuthZBackend::default(),
+            instance_admins: HashSet::new(),
+            trusted_engines: HashMap::new(),
+            protected_properties: HashSet::new(),
             openid_provider_uri: None,
             openid_audience: None,
             openid_additional_issuers: None,
@@ -602,6 +1114,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_accept_legacy_serviceaccount: false,
             openid_subject_claim: None,
             openid_roles_claim: None,
+            openid_providers: HashMap::new(),
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
@@ -614,9 +1127,11 @@ impl Default for DynAppConfig {
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),
             pagination_size_default: 100,
             pagination_size_max: 1000,
+            metrics: Metrics::default(),
             endpoint_stat_flush_interval: Duration::from_secs(30),
             serve_swagger_ui: true,
             skip_storage_validation: false,
+            idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
@@ -624,6 +1139,7 @@ impl Default for DynAppConfig {
             audit: AuditConfig {
                 tracing: AuditTracingConfig { enabled: true },
             },
+            maintenance_mode: MaintenanceMode::Off,
         }
     }
 }
@@ -638,7 +1154,15 @@ impl DynAppConfig {
         self.default_tabular_expiration_delay_seconds
     }
 
+    /// Is any authentication active? Used by /info to reject anonymous.
     pub fn authn_enabled(&self) -> bool {
+        self.openid_provider_uri.is_some()
+            || !self.openid_providers.is_empty()
+            || self.enable_kubernetes_authentication
+    }
+
+    /// Does the UI have an SSO target? Used by the UI config.
+    pub fn ui_login_enabled(&self) -> bool {
         self.openid_provider_uri.is_some()
     }
 
@@ -751,7 +1275,9 @@ where
     value.0.iter().join(",").serialize(serializer)
 }
 
+/// Deserialize a comma-separated string or a sequence into `Vec<String>`.
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod test {
     use std::net::Ipv6Addr;
 
@@ -803,6 +1329,125 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allow-all");
             let config = get_config();
             assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_default_empty() {
+        assert!(DynAppConfig::default().instance_admins.is_empty());
+    }
+
+    #[test]
+    fn test_instance_admins_parses_json_array() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__INSTANCE_ADMINS",
+                r#"["oidc~alice","kubernetes~system:serviceaccount:lk:op"]"#,
+            );
+            let config = get_config();
+            assert_eq!(config.instance_admins.len(), 2);
+            assert!(
+                config
+                    .instance_admins
+                    .contains(&UserId::try_from("oidc~alice").unwrap())
+            );
+            assert!(config.instance_admins.contains(
+                &UserId::try_from("kubernetes~system:serviceaccount:lk:op").unwrap(),
+            ));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_single_element() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", r#"["oidc~solo"]"#);
+            let config = get_config();
+            assert_eq!(config.instance_admins.len(), 1);
+            assert!(
+                config
+                    .instance_admins
+                    .contains(&UserId::try_from("oidc~solo").unwrap())
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_accepts_whitespace_in_array() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__INSTANCE_ADMINS",
+                r#"[ "oidc~alice" ,  "oidc~bob" ]"#,
+            );
+            let config = get_config();
+            assert_eq!(config.instance_admins.len(), 2);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_rejects_bare_string() {
+        // `FOO=oidc~alice` must NOT parse as a single-element admin list:
+        // figment reads it as a scalar string, not a sequence. Operators
+        // must use the inline-array form (`["..."]`) even for one admin.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", "oidc~alice");
+            let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
+            let env = figment::providers::Env::prefixed("LAKEKEEPER_TEST__").split("__");
+            let result = figment::Figment::from(defaults)
+                .merge(env)
+                .extract::<DynAppConfig>();
+            assert!(
+                result.is_err(),
+                "bare string must not be accepted as a single-element list, got {result:?}",
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_maintenance_mode_default_off() {
+        let config = get_config();
+        assert_eq!(config.maintenance_mode, MaintenanceMode::Off);
+        assert!(!config.maintenance_mode.is_read_only());
+    }
+
+    #[test]
+    fn test_maintenance_mode_read_only_via_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__MAINTENANCE_MODE", "read-only");
+            let config = get_config();
+            assert_eq!(config.maintenance_mode, MaintenanceMode::ReadOnly);
+            assert!(config.maintenance_mode.is_read_only());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_maintenance_mode_off_via_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__MAINTENANCE_MODE", "off");
+            let config = get_config();
+            assert_eq!(config.maintenance_mode, MaintenanceMode::Off);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_instance_admins_rejects_missing_idp_prefix() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__INSTANCE_ADMINS", r#"["no-idp-prefix"]"#);
+            let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
+            let env = figment::providers::Env::prefixed("LAKEKEEPER_TEST__").split("__");
+            let result = figment::Figment::from(defaults)
+                .merge(env)
+                .extract::<DynAppConfig>();
+            assert!(
+                result.is_err(),
+                "expected parsing to fail for user id without idp prefix, got {result:?}",
+            );
             Ok(())
         });
     }
@@ -1282,6 +1927,277 @@ mod test {
     }
 
     #[test]
+    fn test_role_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.role.enabled);
+            assert_eq!(config.cache.role.capacity, 10_000);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.role.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE__CAPACITY", "5000");
+            let config = get_config();
+            assert!(config.cache.role.enabled);
+            assert_eq!(config.cache.role.capacity, 5000);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_not_set() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.openid_providers.is_empty());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_structured_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__AUDIENCE",
+                "lakekeeper,warehouse",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__ADDITIONAL_ISSUERS",
+                "https://issuer.example.com",
+            );
+            jail.set_env("LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SCOPE", "openid");
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "sub,oid",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__ROLES_CLAIM",
+                "resource_access.lakekeeper.roles",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__REQUIRE_CONNECTED_ON_STARTUP",
+                "false",
+            );
+
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert_eq!(provider.uri.as_str(), "https://company.okta.com/");
+            assert_eq!(
+                provider.audience,
+                Some(vec!["lakekeeper".to_string(), "warehouse".to_string()])
+            );
+            assert_eq!(
+                provider.additional_issuers,
+                Some(vec!["https://issuer.example.com".to_string()])
+            );
+            assert_eq!(provider.scope, Some("openid".to_string()));
+            assert_eq!(
+                provider.subject_claims,
+                Some(vec!["sub".to_string(), "oid".to_string()])
+            );
+            assert_eq!(
+                provider.roles_claim,
+                Some("resource_access.lakekeeper.roles".to_string())
+            );
+            assert!(!provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_provider_require_connected_defaults_to_true() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert!(provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID must match `[a-z0-9-]+`")]
+    fn test_openid_provider_id_rejects_separator() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA~PROD__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID must match `[a-z0-9-]+`")]
+    fn test_openid_provider_id_rejects_underscore() {
+        // Underscores were tolerated by the old check but excluded by the new
+        // grammar — pin that behavior since the doc still mentioned `my_provider`
+        // before the grammar was tightened.
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__MY_PROVIDER__URI",
+                "https://example.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID 'kubernetes' is reserved")]
+    fn test_openid_provider_id_rejects_kubernetes() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__KUBERNETES__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "IdP ID 'oidc' is reserved")]
+    fn test_openid_provider_id_rejects_oidc() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OIDC__URI",
+                "https://company.okta.com",
+            );
+            let _config = get_config();
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_user_assignments_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.user_assignments.enabled);
+            assert_eq!(config.cache.user_assignments.capacity, 50_000);
+            assert_eq!(config.cache.user_assignments.time_to_live_secs, 120);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.user_assignments.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__ENABLED", "true");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__CAPACITY",
+                "100000",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let config = get_config();
+            assert!(config.cache.user_assignments.enabled);
+            assert_eq!(config.cache.user_assignments.capacity, 100_000);
+            assert_eq!(config.cache.user_assignments.time_to_live_secs, 60);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_members_cache() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.cache.role_members.enabled);
+            assert_eq!(config.cache.role_members.capacity, 1_000);
+            assert_eq!(config.cache.role_members.time_to_live_secs, 120);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__ENABLED", "false");
+            let config = get_config();
+            assert!(!config.cache.role_members.enabled);
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__ENABLED", "true");
+            jail.set_env("LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__CAPACITY", "5000");
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS",
+                "30",
+            );
+            let config = get_config();
+            assert!(config.cache.role_members.enabled);
+            assert_eq!(config.cache.role_members.capacity, 5000);
+            assert_eq!(config.cache.role_members.time_to_live_secs, 30);
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "user_assignments.time_to_live_secs")]
+    fn test_user_assignments_ttl_exceeds_role_ttl_is_rejected() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS",
+                "300",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS",
+                "60",
+            );
+            let _config = get_config(); // must panic – user_assignments TTL > role TTL
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn openid_subject_claims() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.openid_subject_claim.is_none());
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_SUBJECT_CLAIM", "custom_sub");
+            let config = get_config();
+            assert_eq!(
+                config.openid_subject_claim,
+                Some(vec!["custom_sub".to_string()])
+            );
+            Ok(())
+        });
+
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__OPENID_SUBJECT_CLAIM", "custom_sub,oid");
+            let config = get_config();
+            assert_eq!(
+                config.openid_subject_claim,
+                Some(vec!["custom_sub".to_string(), "oid".to_string()])
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_audit_tracing_enabled() {
         // Test default value is true
         figment::Jail::expect_with(|_jail| {
@@ -1303,6 +2219,517 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUDIT__TRACING__ENABLED", "true");
             let config = get_config();
             assert!(config.audit.tracing.enabled);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_trusted_engine_configuration() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.trusted_engines.is_empty());
+            Ok(())
+        });
+
+        // Verify full env var configuration including identities
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__TYPE", "trino");
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY",
+                "trino.run-as-owner",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES",
+                "[trino_dev, trino_prod]",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS",
+                "[trino-sa, trino-sa-2]",
+            );
+
+            let config = get_config();
+            let engine = config.trusted_engines.get("trino").unwrap();
+            let TrustedEngine::Trino(c) = engine;
+            assert_eq!(c.owner_property, "trino.run-as-owner");
+            assert_eq!(c.identities.len(), 2);
+
+            let oidc = c.identities.get("oidc").unwrap();
+            assert_eq!(oidc.audiences, vec!["trino_dev", "trino_prod"]);
+            assert!(oidc.subjects.is_empty());
+
+            let k8s = c.identities.get("kubernetes").unwrap();
+            assert!(k8s.audiences.is_empty());
+            assert_eq!(k8s.subjects, vec!["trino-sa", "trino-sa-2"]);
+
+            // protected_properties should be pre-computed
+            assert!(config.protected_properties.contains("trino.run-as-owner"));
+
+            Ok(())
+        });
+
+        // Single-value audiences still require bracket syntax
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__TYPE", "trino");
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__OWNER_PROPERTY",
+                "trino.run-as-owner",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES",
+                "[trino]",
+            );
+            let config = get_config();
+            let engine = config.trusted_engines.get("trino").unwrap();
+            let TrustedEngine::Trino(c) = engine;
+            let oidc = c.identities.get("oidc").unwrap();
+            assert_eq!(oidc.audiences, vec!["trino"]);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_mins(30));
+            assert_eq!(config.idempotency.grace_period, Duration::from_mins(5));
+            assert_eq!(config.idempotency.lifetime_iso8601(), "PT30M");
+            assert_eq!(
+                config.idempotency.total_retention(),
+                Duration::from_mins(35)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__ENABLED", "false");
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", "PT1H");
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__GRACE_PERIOD", "PT10M");
+            let config = get_config();
+            assert!(!config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_hours(1));
+            assert_eq!(config.idempotency.grace_period, Duration::from_mins(10));
+            assert_eq!(config.idempotency.lifetime_iso8601(), "PT1H");
+            assert_eq!(
+                config.idempotency.total_retention(),
+                Duration::from_mins(70)
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_idempotency_partial_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", "PT15M");
+            let config = get_config();
+            // lifetime overridden, grace_period keeps default
+            assert!(config.idempotency.enabled);
+            assert_eq!(config.idempotency.lifetime, Duration::from_mins(15));
+            assert_eq!(config.idempotency.grace_period, Duration::from_mins(5));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_metrics_default_values_as_expected() {
+        figment::Jail::expect_with(|_| {
+            let config = get_config();
+            assert_eq!(config.metrics.port, 9000);
+            assert_eq!(
+                config.metrics.tokio.report_interval,
+                Duration::from_secs(30),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_metrics_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
+            jail.set_env("LAKEKEEPER_TEST__METRICS__TOKIO__REPORT_INTERVAL", "100ms");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 2);
+            assert_eq!(
+                config.metrics.tokio.report_interval,
+                Duration::from_millis(100),
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_flat_metrics_port_config_is_mapped() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS_PORT", "1");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 1);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_nested_metrics_port_config_takes_precedence() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__METRICS_PORT", "1");
+            jail.set_env("LAKEKEEPER_TEST__METRICS__PORT", "2");
+            let config = get_config();
+            assert_eq!(config.metrics.port, 2);
+            Ok(())
+        });
+    }
+
+    fn test_engine(property: &str) -> TrustedEngine {
+        TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: property.to_string(),
+            identities: HashMap::new(),
+        })
+    }
+
+    #[test]
+    fn test_determine_security_model_returns_definer_when_property_set() {
+        let config = TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        };
+        let properties = HashMap::from([("trino.run-as-owner".to_string(), "alice".to_string())]);
+        assert_eq!(
+            config.determine_security_model(&properties),
+            SecurityModel::Definer("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_determine_security_model_returns_invoker_when_property_absent() {
+        let config = TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        };
+        assert_eq!(
+            config.determine_security_model(&HashMap::new()),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_determine_security_model_ignores_unrelated_properties() {
+        let config = TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::new(),
+        };
+        let properties = HashMap::from([("some.other.property".to_string(), "value".to_string())]);
+        assert_eq!(
+            config.determine_security_model(&properties),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_trusted_engine_delegates_to_trino_config() {
+        let engine = test_engine("trino.run-as-owner");
+        assert_eq!(engine.owner_property(), "trino.run-as-owner");
+
+        let properties = HashMap::from([("trino.run-as-owner".to_string(), "bob".to_string())]);
+        assert_eq!(
+            engine.determine_security_model(&properties),
+            SecurityModel::Definer("bob".to_string())
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_default_is_not_trusted() {
+        let m = MatchedEngines::default();
+        assert!(!m.is_trusted());
+        assert!(!m.owns_property("anything"));
+        assert_eq!(
+            m.determine_security_model(&HashMap::new()).unwrap(),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_single() {
+        let m = MatchedEngines::single(test_engine("trino.run-as-owner"));
+        assert!(m.is_trusted());
+        assert!(m.owns_property("trino.run-as-owner"));
+        assert!(!m.owns_property("spark.run-as-owner"));
+    }
+
+    #[test]
+    fn test_matched_engines_multiple_determine_security_model() {
+        let m = MatchedEngines::new(vec![
+            test_engine("trino.run-as-owner"),
+            test_engine("spark.run-as-owner"),
+        ]);
+
+        let props = HashMap::from([("spark.run-as-owner".to_string(), "alice".to_string())]);
+        assert_eq!(
+            m.determine_security_model(&props).unwrap(),
+            SecurityModel::Definer("alice".to_string())
+        );
+
+        assert!(m.owns_property("trino.run-as-owner"));
+        assert!(m.owns_property("spark.run-as-owner"));
+        assert!(!m.owns_property("other.property"));
+    }
+
+    #[test]
+    fn test_matched_engines_invoker_when_no_property_matches() {
+        let m = MatchedEngines::single(test_engine("trino.run-as-owner"));
+        let props = HashMap::from([("unrelated".to_string(), "value".to_string())]);
+        assert_eq!(
+            m.determine_security_model(&props).unwrap(),
+            SecurityModel::Invoker
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_same_owner_across_engines_is_ok() {
+        let m = MatchedEngines::new(vec![
+            test_engine("trino.run-as-owner"),
+            test_engine("spark.run-as-owner"),
+        ]);
+        let props = HashMap::from([
+            ("trino.run-as-owner".to_string(), "alice".to_string()),
+            ("spark.run-as-owner".to_string(), "alice".to_string()),
+        ]);
+        assert_eq!(
+            m.determine_security_model(&props).unwrap(),
+            SecurityModel::Definer("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn test_matched_engines_different_owners_is_ambiguous() {
+        let m = MatchedEngines::new(vec![
+            test_engine("trino.run-as-owner"),
+            test_engine("spark.run-as-owner"),
+        ]);
+        let props = HashMap::from([
+            ("trino.run-as-owner".to_string(), "alice".to_string()),
+            ("spark.run-as-owner".to_string(), "bob".to_string()),
+        ]);
+        assert!(m.determine_security_model(&props).is_err());
+    }
+
+    #[test]
+    fn test_identities_accessor() {
+        let engine = TrustedEngine::Trino(TrinoEngineConfig {
+            owner_property: "trino.run-as-owner".to_string(),
+            identities: HashMap::from([
+                (
+                    "oidc".to_string(),
+                    EngineIdentity {
+                        audiences: vec!["trino_dev".to_string()],
+                        subjects: Vec::new(),
+                    },
+                ),
+                (
+                    "kubernetes".to_string(),
+                    EngineIdentity {
+                        audiences: Vec::new(),
+                        subjects: vec!["trino-sa".to_string()],
+                    },
+                ),
+            ]),
+        });
+        assert_eq!(engine.identities().len(), 2);
+        assert!(engine.identities().contains_key("oidc"));
+        assert!(engine.identities().contains_key("kubernetes"));
+    }
+
+    #[test]
+    fn test_engine_identity_matches_audience() {
+        let id = EngineIdentity {
+            audiences: vec!["trino".to_string()],
+            subjects: Vec::new(),
+        };
+        let auds: HashSet<&str> = ["trino"].into_iter().collect();
+        assert!(id.matches(&auds, None));
+        assert!(!id.matches(&HashSet::new(), None));
+    }
+
+    #[test]
+    fn test_engine_identity_matches_subject() {
+        let id = EngineIdentity {
+            audiences: Vec::new(),
+            subjects: vec!["trino-sa".to_string()],
+        };
+        assert!(id.matches(&HashSet::new(), Some("trino-sa")));
+        assert!(!id.matches(&HashSet::new(), Some("other")));
+        assert!(!id.matches(&HashSet::new(), None));
+    }
+
+    #[test]
+    fn test_engine_identity_matches_audience_or_subject() {
+        let id = EngineIdentity {
+            audiences: vec!["trino".to_string()],
+            subjects: vec!["admin-sa".to_string()],
+        };
+        let auds: HashSet<&str> = ["other_aud"].into_iter().collect();
+        // Subject matches even though audience doesn't
+        assert!(id.matches(&auds, Some("admin-sa")));
+        // Audience matches even though subject doesn't
+        let auds: HashSet<&str> = ["trino"].into_iter().collect();
+        assert!(id.matches(&auds, Some("other")));
+    }
+
+    #[test]
+    fn test_openid_providers_single() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://okta.example.com",
+            );
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert_eq!(config.openid_providers.len(), 1);
+            assert_eq!(provider.uri.as_str(), "https://okta.example.com/");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_multiple() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__AUDIENCE",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "sub",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__EKS-PROD__URI",
+                "https://oidc.eks.us-east-1.amazonaws.com/id/ABC123",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__EKS-PROD__AUDIENCE",
+                "sts.amazonaws.com",
+            );
+
+            let config = get_config();
+            assert_eq!(config.openid_providers.len(), 2);
+
+            let okta = config.openid_providers.get("okta").unwrap();
+            assert_eq!(
+                okta.audience,
+                Some(vec!["https://company.okta.com".to_string()])
+            );
+            assert_eq!(okta.subject_claims, Some(vec!["sub".to_string()]));
+
+            let eks = config.openid_providers.get("eks-prod").unwrap();
+            assert_eq!(eks.audience, Some(vec!["sts.amazonaws.com".to_string()]));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_openid_providers_with_all_fields() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__URI",
+                "https://login.microsoftonline.com/tenant-id/v2.0",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__AUDIENCE",
+                "api://my-app,second-audience",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__ADDITIONAL_ISSUERS",
+                "https://sts.windows.net/tenant-id/",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__SCOPE",
+                "lakekeeper",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__SUBJECT_CLAIMS",
+                "oid,sub",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__ROLES_CLAIM",
+                "groups",
+            );
+
+            let config = get_config();
+            assert_eq!(config.openid_providers.len(), 1);
+
+            let provider = config.openid_providers.get("entra").unwrap();
+            assert_eq!(
+                provider.audience,
+                Some(vec![
+                    "api://my-app".to_string(),
+                    "second-audience".to_string()
+                ])
+            );
+            assert_eq!(
+                provider.additional_issuers,
+                Some(vec!["https://sts.windows.net/tenant-id/".to_string()])
+            );
+            assert_eq!(provider.scope, Some("lakekeeper".to_string()));
+            assert_eq!(
+                provider.subject_claims,
+                Some(vec!["oid".to_string(), "sub".to_string()])
+            );
+            assert_eq!(provider.roles_claim, Some("groups".to_string()));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_openid_providers() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://okta.example.com",
+            );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_kubernetes_only() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ENABLE_KUBERNETES_AUTHENTICATION", "true");
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_enabled_with_single_provider() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDER_URI",
+                "https://keycloak.example.com/realms/test",
+            );
+            let config = get_config();
+            assert!(config.authn_enabled());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_authn_disabled_by_default() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert!(!config.authn_enabled());
             Ok(())
         });
     }

@@ -25,6 +25,18 @@
       display: none;
     }
   }
+
+  /* Constrain width of the homepage counter/stats row */
+  @media (min-width: 1200px) {
+    .cs_counter_area .cs_counter_1_wrap {
+      grid-template-columns: repeat(4, auto);
+      justify-content: center;
+      gap: 80px;
+    }
+  }
+  .cs_counter_area .cs_counter_number {
+    white-space: nowrap;
+  }
 </style>
 
 <div class="cs_preloader cs_center cs_hero_shapes_1">
@@ -63,25 +75,25 @@
       <div class="cs_counter_1_wrap">
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="60000" class="odometer" id="download-counter"></span>+
+            <span data-count-to="400000" class="odometer" id="download-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Monthly Downloads</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="1100" class="odometer"></span>+
+            <span data-count-to="1200" class="odometer"></span>+
           </div>
           <p class="cs_counter_title mb-0">Stars</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="1100" class="odometer" id="pull-requests-counter"></span>+
+            <span data-count-to="1700" class="odometer" id="pull-requests-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Pull Requests</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="115" class="odometer"></span>+
+            <span data-count-to="130" class="odometer"></span>+
           </div>
           <p class="cs_counter_title mb-0">Forks</p>
         </div>

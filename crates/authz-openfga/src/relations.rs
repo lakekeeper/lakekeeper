@@ -1,10 +1,13 @@
-use lakekeeper::service::{
-    authn::UserId,
-    authz::{
-        ActionDescriptor, CatalogAction, CatalogNamespaceAction, CatalogProjectAction,
-        CatalogRoleAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-        CatalogWarehouseAction, NamespaceAction, ProjectAction, RoleAction, RoleAssignee,
-        ServerAction, TableAction, UserOrRole, ViewAction, WarehouseAction,
+use lakekeeper::{
+    api::management::v1::check::{RoleAssignee, UserOrRole},
+    service::{
+        authn::UserId,
+        authz::{
+            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
+            CatalogViewAction, CatalogWarehouseAction, GenericTableAction, NamespaceAction,
+            ProjectAction, RoleAction, ServerAction, TableAction, ViewAction, WarehouseAction,
+        },
     },
 };
 use serde::{Deserialize, Serialize};
@@ -376,7 +379,7 @@ impl ReducedRelation for CatalogServerAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogServerAction::CreateProject => ServerRelation::CanCreateProject,
+            CatalogServerAction::CreateProject { .. } => ServerRelation::CanCreateProject,
             CatalogServerAction::UpdateUsers => ServerRelation::CanUpdateUsers,
             CatalogServerAction::DeleteUsers => ServerRelation::CanDeleteUsers,
             CatalogServerAction::ListUsers => ServerRelation::CanListUsers,
@@ -664,13 +667,13 @@ impl ReducedRelation for CatalogProjectAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogProjectAction::CreateWarehouse => ProjectRelation::CanCreateWarehouse,
+            CatalogProjectAction::CreateWarehouse { .. } => ProjectRelation::CanCreateWarehouse,
             CatalogProjectAction::Delete => ProjectRelation::CanDelete,
             CatalogProjectAction::Rename => ProjectRelation::CanRename,
             CatalogProjectAction::GetMetadata => ProjectRelation::CanGetMetadata,
             CatalogProjectAction::ListWarehouses => ProjectRelation::CanListWarehouses,
             CatalogProjectAction::IncludeInList => ProjectRelation::CanIncludeInList,
-            CatalogProjectAction::CreateRole => ProjectRelation::CanCreateRole,
+            CatalogProjectAction::CreateRole { .. } => ProjectRelation::CanCreateRole,
             CatalogProjectAction::ListRoles => ProjectRelation::CanListRoles,
             CatalogProjectAction::SearchRoles => ProjectRelation::CanSearchRoles,
             CatalogProjectAction::GetEndpointStatistics => {
@@ -750,6 +753,7 @@ pub enum WarehouseRelation {
     CanGetAllTasks,
     CanControlAllTasks,
     CanSetProtection,
+    CanSetFormatVersionPolicy,
     CanGetEndpointStatistics,
 }
 impl WarehouseAction for WarehouseRelation {}
@@ -900,6 +904,7 @@ pub(super) enum APIWarehouseAction {
     GetAllTasks,
     ControlAllTasks,
     SetProtection,
+    SetFormatVersionPolicy,
     GetEndpointStatistics,
 }
 
@@ -963,6 +968,9 @@ impl ReducedRelation for APIWarehouseAction {
             APIWarehouseAction::GetAllTasks => WarehouseRelation::CanGetAllTasks,
             APIWarehouseAction::ControlAllTasks => WarehouseRelation::CanControlAllTasks,
             APIWarehouseAction::SetProtection => WarehouseRelation::CanSetProtection,
+            APIWarehouseAction::SetFormatVersionPolicy => {
+                WarehouseRelation::CanSetFormatVersionPolicy
+            }
             APIWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
@@ -1001,6 +1009,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::GetAllTasks => WarehouseRelation::CanGetAllTasks,
             CatalogWarehouseAction::ControlAllTasks => WarehouseRelation::CanControlAllTasks,
             CatalogWarehouseAction::SetProtection => WarehouseRelation::CanSetProtection,
+            CatalogWarehouseAction::SetFormatVersionPolicy => {
+                WarehouseRelation::CanSetFormatVersionPolicy
+            }
             CatalogWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
@@ -1052,6 +1063,8 @@ pub enum NamespaceRelation {
     CanListTables,
     CanListViews,
     CanListNamespaces,
+    CanCreateGenericTable,
+    CanListGenericTables,
     CanListEverything,
     CanIncludeInList,
     CanReadAssignments,
@@ -1198,6 +1211,7 @@ impl Assignment for NamespaceAssignment {
 pub(super) enum APINamespaceAction {
     CreateTable,
     CreateView,
+    CreateGenericTable,
     CreateNamespace,
     Delete,
     UpdateProperties,
@@ -1248,6 +1262,7 @@ impl ReducedRelation for APINamespaceAction {
         match self {
             APINamespaceAction::CreateTable => NamespaceRelation::CanCreateTable,
             APINamespaceAction::CreateView => NamespaceRelation::CanCreateView,
+            APINamespaceAction::CreateGenericTable => NamespaceRelation::CanCreateGenericTable,
             APINamespaceAction::CreateNamespace => NamespaceRelation::CanCreateNamespace,
             APINamespaceAction::Delete => NamespaceRelation::CanDelete,
             APINamespaceAction::UpdateProperties => NamespaceRelation::CanUpdateProperties,
@@ -1283,6 +1298,10 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::ListNamespaces => NamespaceRelation::CanListNamespaces,
             CatalogNamespaceAction::SetProtection => NamespaceRelation::CanSetProtection,
             CatalogNamespaceAction::IncludeInList => NamespaceRelation::CanIncludeInList,
+            CatalogNamespaceAction::CreateGenericTable { .. } => {
+                NamespaceRelation::CanCreateGenericTable
+            }
+            CatalogNamespaceAction::ListGenericTables => NamespaceRelation::CanListGenericTables,
         }
     }
 }
@@ -1336,7 +1355,11 @@ pub enum TableRelation {
     CanSetProtection,
 }
 
-impl TableAction for TableRelation {}
+impl TableAction for TableRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanReadData | Self::CanWriteData)
+    }
+}
 impl CatalogAction for TableRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
@@ -1571,17 +1594,20 @@ pub enum ViewRelation {
     PassGrants,
     ManageGrants,
     Describe,
+    Select,
     Modify,
     // -- Actions --
     CanDrop,
     CanCommit,
     CanGetMetadata,
+    CanSelect,
     CanRename,
     CanIncludeInList,
     CanReadAssignments,
     CanGrantPassGrants,
     CanGrantManageGrants,
     CanGrantDescribe,
+    CanGrantSelect,
     CanGrantModify,
     CanChangeOwnership,
     CanUndrop,
@@ -1590,7 +1616,11 @@ pub enum ViewRelation {
     CanSetProtection,
 }
 
-impl ViewAction for ViewRelation {}
+impl ViewAction for ViewRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanSelect)
+    }
+}
 impl CatalogAction for ViewRelation {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
@@ -1619,6 +1649,7 @@ pub(super) enum APIViewRelation {
     PassGrants,
     ManageGrants,
     Describe,
+    Select,
     Modify,
 }
 
@@ -1634,6 +1665,8 @@ pub(super) enum ViewAssignment {
     ManageGrants(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentDescribe"))]
     Describe(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentSelect"))]
+    Select(UserOrRole),
     #[cfg_attr(feature = "open-api", schema(title = "ViewAssignmentModify"))]
     Modify(UserOrRole),
 }
@@ -1645,6 +1678,7 @@ impl GrantableRelation for APIViewRelation {
             APIViewRelation::PassGrants => ViewRelation::CanGrantPassGrants,
             APIViewRelation::ManageGrants => ViewRelation::CanGrantManageGrants,
             APIViewRelation::Describe => ViewRelation::CanGrantDescribe,
+            APIViewRelation::Select => ViewRelation::CanGrantSelect,
             APIViewRelation::Modify => ViewRelation::CanGrantModify,
         }
     }
@@ -1667,6 +1701,9 @@ impl Assignment for ViewAssignment {
             APIViewRelation::Describe => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Describe)
             }
+            APIViewRelation::Select => {
+                UserOrRole::parse_from_openfga(user).map(ViewAssignment::Select)
+            }
             APIViewRelation::Modify => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Modify)
             }
@@ -1679,6 +1716,7 @@ impl Assignment for ViewAssignment {
             | ViewAssignment::PassGrants(user)
             | ViewAssignment::ManageGrants(user)
             | ViewAssignment::Describe(user)
+            | ViewAssignment::Select(user)
             | ViewAssignment::Modify(user) => user.to_openfga(),
         }
     }
@@ -1689,6 +1727,7 @@ impl Assignment for ViewAssignment {
             ViewAssignment::PassGrants { .. } => APIViewRelation::PassGrants,
             ViewAssignment::ManageGrants { .. } => APIViewRelation::ManageGrants,
             ViewAssignment::Describe { .. } => APIViewRelation::Describe,
+            ViewAssignment::Select { .. } => APIViewRelation::Select,
             ViewAssignment::Modify { .. } => APIViewRelation::Modify,
         }
     }
@@ -1702,11 +1741,13 @@ pub(super) enum APIViewAction {
     Drop,
     Commit,
     GetMetadata,
+    Select,
     Rename,
     ReadAssignments,
     GrantPassGrants,
     GrantManageGrants,
     GrantDescribe,
+    GrantSelect,
     GrantModify,
     ChangeOwnership,
     GetTasks,
@@ -1722,6 +1763,7 @@ pub(super) enum OpenFGAViewAction {
     GrantPassGrants,
     GrantManageGrants,
     GrantDescribe,
+    GrantSelect,
     GrantModify,
     ChangeOwnership,
 }
@@ -1735,6 +1777,7 @@ impl ReducedRelation for APIViewRelation {
             APIViewRelation::PassGrants => ViewRelation::PassGrants,
             APIViewRelation::ManageGrants => ViewRelation::ManageGrants,
             APIViewRelation::Describe => ViewRelation::Describe,
+            APIViewRelation::Select => ViewRelation::Select,
             APIViewRelation::Modify => ViewRelation::Modify,
         }
     }
@@ -1748,11 +1791,13 @@ impl ReducedRelation for APIViewAction {
             APIViewAction::Drop => ViewRelation::CanDrop,
             APIViewAction::Commit => ViewRelation::CanCommit,
             APIViewAction::GetMetadata => ViewRelation::CanGetMetadata,
+            APIViewAction::Select => ViewRelation::CanSelect,
             APIViewAction::Rename => ViewRelation::CanRename,
             APIViewAction::ReadAssignments => ViewRelation::CanReadAssignments,
             APIViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
             APIViewAction::GrantManageGrants => ViewRelation::CanGrantManageGrants,
             APIViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
+            APIViewAction::GrantSelect => ViewRelation::CanGrantSelect,
             APIViewAction::GrantModify => ViewRelation::CanGrantModify,
             APIViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
             APIViewAction::GetTasks => ViewRelation::CanGetTasks,
@@ -1770,6 +1815,7 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::Drop => ViewRelation::CanDrop,
             CatalogViewAction::Commit { .. } => ViewRelation::CanCommit,
             CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
+            CatalogViewAction::Select => ViewRelation::CanSelect,
             CatalogViewAction::Rename => ViewRelation::CanRename,
             CatalogViewAction::IncludeInList => ViewRelation::CanIncludeInList,
             CatalogViewAction::Undrop => ViewRelation::CanUndrop,
@@ -1789,8 +1835,289 @@ impl ReducedRelation for OpenFGAViewAction {
             OpenFGAViewAction::GrantPassGrants => ViewRelation::CanGrantPassGrants,
             OpenFGAViewAction::GrantManageGrants => ViewRelation::CanGrantManageGrants,
             OpenFGAViewAction::GrantDescribe => ViewRelation::CanGrantDescribe,
+            OpenFGAViewAction::GrantSelect => ViewRelation::CanGrantSelect,
             OpenFGAViewAction::GrantModify => ViewRelation::CanGrantModify,
             OpenFGAViewAction::ChangeOwnership => ViewRelation::CanChangeOwnership,
+        }
+    }
+}
+
+// =================== Generic Table Relations ===================
+
+#[derive(
+    Debug, Clone, Copy, Hash, Eq, PartialEq, strum_macros::Display, IntoStaticStr, EnumIter,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum GenericTableRelation {
+    // -- Hierarchical relations --
+    Parent,
+    // -- Direct relations --
+    Ownership,
+    PassGrants,
+    ManageGrants,
+    Describe,
+    Select,
+    Modify,
+    // -- Actions --
+    CanDrop,
+    CanUndrop,
+    CanWriteData,
+    CanReadData,
+    CanGetMetadata,
+    CanRename,
+    CanIncludeInList,
+    CanGetTasks,
+    CanControlTasks,
+    CanSetProtection,
+    // -- Read assignments / grant actions --
+    CanReadAssignments,
+    CanGrantPassGrants,
+    CanGrantManageGrants,
+    CanGrantDescribe,
+    CanGrantSelect,
+    CanGrantModify,
+    CanChangeOwnership,
+}
+
+impl GenericTableAction for GenericTableRelation {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::CanReadData | Self::CanWriteData)
+    }
+}
+impl CatalogAction for GenericTableRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+impl OpenFgaRelation for GenericTableRelation {}
+
+impl From<CatalogGenericTableAction> for GenericTableRelation {
+    fn from(action: CatalogGenericTableAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl From<&CatalogGenericTableAction> for GenericTableRelation {
+    fn from(action: &CatalogGenericTableAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl ReducedRelation for CatalogGenericTableAction {
+    type OpenFgaRelation = GenericTableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            CatalogGenericTableAction::Drop => GenericTableRelation::CanDrop,
+            CatalogGenericTableAction::Undrop => GenericTableRelation::CanUndrop,
+            CatalogGenericTableAction::WriteData => GenericTableRelation::CanWriteData,
+            CatalogGenericTableAction::ReadData => GenericTableRelation::CanReadData,
+            CatalogGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
+            CatalogGenericTableAction::Rename => GenericTableRelation::CanRename,
+            CatalogGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
+            CatalogGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
+            CatalogGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
+            CatalogGenericTableAction::SetProtection => GenericTableRelation::CanSetProtection,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "open-api", schema(as=GenericTableRelation))]
+pub(super) enum APIGenericTableRelation {
+    Ownership,
+    PassGrants,
+    ManageGrants,
+    Describe,
+    Select,
+    Modify,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum GenericTableAssignment {
+    #[cfg_attr(
+        feature = "open-api",
+        schema(title = "GenericTableAssignmentOwnership")
+    )]
+    Ownership(UserOrRole),
+    #[cfg_attr(
+        feature = "open-api",
+        schema(title = "GenericTableAssignmentPassGrants")
+    )]
+    PassGrants(UserOrRole),
+    #[cfg_attr(
+        feature = "open-api",
+        schema(title = "GenericTableAssignmentManageGrants")
+    )]
+    ManageGrants(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "GenericTableAssignmentDescribe"))]
+    Describe(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "GenericTableAssignmentSelect"))]
+    Select(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "GenericTableAssignmentModify"))]
+    Modify(UserOrRole),
+}
+
+impl GrantableRelation for APIGenericTableRelation {
+    fn grant_relation(&self) -> GenericTableRelation {
+        match self {
+            APIGenericTableRelation::Ownership => GenericTableRelation::CanChangeOwnership,
+            APIGenericTableRelation::PassGrants => GenericTableRelation::CanGrantPassGrants,
+            APIGenericTableRelation::ManageGrants => GenericTableRelation::CanGrantManageGrants,
+            APIGenericTableRelation::Describe => GenericTableRelation::CanGrantDescribe,
+            APIGenericTableRelation::Select => GenericTableRelation::CanGrantSelect,
+            APIGenericTableRelation::Modify => GenericTableRelation::CanGrantModify,
+        }
+    }
+}
+
+impl Assignment for GenericTableAssignment {
+    type Relation = APIGenericTableRelation;
+
+    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+        match relation {
+            APIGenericTableRelation::Ownership => {
+                UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::Ownership)
+            }
+            APIGenericTableRelation::PassGrants => {
+                UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::PassGrants)
+            }
+            APIGenericTableRelation::ManageGrants => {
+                UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::ManageGrants)
+            }
+            APIGenericTableRelation::Describe => {
+                UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::Describe)
+            }
+            APIGenericTableRelation::Select => {
+                UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::Select)
+            }
+            APIGenericTableRelation::Modify => {
+                UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::Modify)
+            }
+        }
+    }
+
+    fn openfga_user(&self) -> String {
+        match self {
+            GenericTableAssignment::Ownership(user)
+            | GenericTableAssignment::PassGrants(user)
+            | GenericTableAssignment::ManageGrants(user)
+            | GenericTableAssignment::Describe(user)
+            | GenericTableAssignment::Select(user)
+            | GenericTableAssignment::Modify(user) => user.to_openfga(),
+        }
+    }
+
+    fn relation(&self) -> Self::Relation {
+        match self {
+            GenericTableAssignment::Ownership(_) => APIGenericTableRelation::Ownership,
+            GenericTableAssignment::PassGrants(_) => APIGenericTableRelation::PassGrants,
+            GenericTableAssignment::ManageGrants(_) => APIGenericTableRelation::ManageGrants,
+            GenericTableAssignment::Describe(_) => APIGenericTableRelation::Describe,
+            GenericTableAssignment::Select(_) => APIGenericTableRelation::Select,
+            GenericTableAssignment::Modify(_) => APIGenericTableRelation::Modify,
+        }
+    }
+}
+
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenFGAGenericTableAction {
+    ReadAssignments,
+    GrantPassGrants,
+    GrantManageGrants,
+    GrantDescribe,
+    GrantSelect,
+    GrantModify,
+    ChangeOwnership,
+}
+
+impl ReducedRelation for APIGenericTableRelation {
+    type OpenFgaRelation = GenericTableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            APIGenericTableRelation::Ownership => GenericTableRelation::Ownership,
+            APIGenericTableRelation::PassGrants => GenericTableRelation::PassGrants,
+            APIGenericTableRelation::ManageGrants => GenericTableRelation::ManageGrants,
+            APIGenericTableRelation::Describe => GenericTableRelation::Describe,
+            APIGenericTableRelation::Select => GenericTableRelation::Select,
+            APIGenericTableRelation::Modify => GenericTableRelation::Modify,
+        }
+    }
+}
+
+impl ReducedRelation for OpenFGAGenericTableAction {
+    type OpenFgaRelation = GenericTableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            OpenFGAGenericTableAction::ReadAssignments => GenericTableRelation::CanReadAssignments,
+            OpenFGAGenericTableAction::GrantPassGrants => GenericTableRelation::CanGrantPassGrants,
+            OpenFGAGenericTableAction::GrantManageGrants => {
+                GenericTableRelation::CanGrantManageGrants
+            }
+            OpenFGAGenericTableAction::GrantDescribe => GenericTableRelation::CanGrantDescribe,
+            OpenFGAGenericTableAction::GrantSelect => GenericTableRelation::CanGrantSelect,
+            OpenFGAGenericTableAction::GrantModify => GenericTableRelation::CanGrantModify,
+            OpenFGAGenericTableAction::ChangeOwnership => GenericTableRelation::CanChangeOwnership,
+        }
+    }
+}
+
+// Mirrors `APITableAction` minus `Commit`, which the generic-table
+// authorization model does not expose.
+#[derive(Copy, Debug, Clone, Eq, PartialEq, Serialize, Deserialize, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=GenericTableAction))]
+#[serde(rename_all = "snake_case")]
+pub(super) enum APIGenericTableAction {
+    Drop,
+    Undrop,
+    WriteData,
+    ReadData,
+    GetMetadata,
+    Rename,
+    IncludeInList,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
+    ReadAssignments,
+    GrantPassGrants,
+    GrantManageGrants,
+    GrantDescribe,
+    GrantSelect,
+    GrantModify,
+    ChangeOwnership,
+}
+
+impl ReducedRelation for APIGenericTableAction {
+    type OpenFgaRelation = GenericTableRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            APIGenericTableAction::Drop => GenericTableRelation::CanDrop,
+            APIGenericTableAction::Undrop => GenericTableRelation::CanUndrop,
+            APIGenericTableAction::WriteData => GenericTableRelation::CanWriteData,
+            APIGenericTableAction::ReadData => GenericTableRelation::CanReadData,
+            APIGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
+            APIGenericTableAction::Rename => GenericTableRelation::CanRename,
+            APIGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,
+            APIGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
+            APIGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
+            APIGenericTableAction::SetProtection => GenericTableRelation::CanSetProtection,
+            APIGenericTableAction::ReadAssignments => GenericTableRelation::CanReadAssignments,
+            APIGenericTableAction::GrantPassGrants => GenericTableRelation::CanGrantPassGrants,
+            APIGenericTableAction::GrantManageGrants => GenericTableRelation::CanGrantManageGrants,
+            APIGenericTableAction::GrantDescribe => GenericTableRelation::CanGrantDescribe,
+            APIGenericTableAction::GrantSelect => GenericTableRelation::CanGrantSelect,
+            APIGenericTableAction::GrantModify => GenericTableRelation::CanGrantModify,
+            APIGenericTableAction::ChangeOwnership => GenericTableRelation::CanChangeOwnership,
         }
     }
 }

@@ -7,7 +7,8 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    NamespaceId, ProjectId, RoleId, TableId, ViewId, WarehouseId, storage::StorageProfile,
+    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
+    storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -23,7 +24,7 @@ use crate::{
         management::v1::{
             DeleteWarehouseQuery, TabularType,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
-            role::{ListRolesResponse, Role, SearchRoleResponse, UpdateRoleSourceSystemRequest},
+            role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},
             tasks::ListTasksRequest,
             user::{ListUsersResponse, SearchUserResponse, UserLastUpdatedWith, UserType},
@@ -31,7 +32,7 @@ use crate::{
         },
     },
     service::{
-        TabularId, TabularIdentBorrowed,
+        ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -46,6 +47,7 @@ pub use namespace::*;
 mod tabular;
 pub use tabular::*;
 pub(crate) mod namespace_cache;
+pub(crate) mod role_cache;
 mod warehouse;
 pub(crate) mod warehouse_cache;
 pub use warehouse::*;
@@ -65,6 +67,13 @@ mod table;
 pub use table::*;
 mod role;
 pub use role::*;
+mod role_assignment;
+pub use role_assignment::*;
+mod idempotency;
+pub(crate) mod role_assignments_cache;
+pub use idempotency::*;
+pub mod generic_table;
+pub use generic_table::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -149,8 +158,38 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub role_name: &'a str,
     #[builder(default)]
     pub description: Option<&'a str>,
-    #[builder(default)]
-    pub source_id: Option<&'a str>,
+    pub source_id: &'a RoleSourceId,
+    pub provider_id: &'a RoleProviderId,
+}
+
+/// How [`CatalogStore::create_roles_impl`] should handle a row that already
+/// exists with the same `(project_id, provider_id, source_id)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnRoleConflict {
+    /// Fail the entire batch with [`crate::service::RoleSourceIdConflict`].
+    /// Default — matches the standard customer-facing `POST /role`
+    /// semantics.
+    #[default]
+    Fail,
+    /// Upsert: insert if absent, or update the row's mutable metadata
+    /// (`name`, `description`) to the requested values. The existing `id`,
+    /// `created_at`, and monotonic `version` are preserved (version only
+    /// bumps when name/description actually change).
+    ///
+    /// **Storage-layer primitive — not reachable from the public
+    /// service-layer trait.** Production callers seeding catalog-managed
+    /// system roles go through
+    /// [`crate::service::CatalogRoleOps::upsert_system_roles`], which is
+    /// gated by the [`crate::service::SystemRoleSeederCap`] token. This
+    /// variant exists only for [`CatalogStore::create_roles_impl`] to
+    /// dispatch on, so backend implementors can match the conflict mode
+    /// when implementing the trait.
+    ///
+    /// The SQL's `WHERE ... IS DISTINCT FROM ...` predicate skips no-op
+    /// updates entirely, so the returned `Vec<Role>` reflects only rows
+    /// that were **inserted or actually changed** — its length may be
+    /// less than the request count.
+    UpdateMetadata,
 }
 
 #[async_trait::async_trait]
@@ -180,6 +219,17 @@ where
         terms_accepted: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<bool>;
+
+    /// Operator-only recovery: re-open the catalog so the bootstrap flow
+    /// can be run again. Used when switching authorizer backends or
+    /// recovering from a misconfigured first bootstrap. Must preserve
+    /// `server_id`, `terms_accepted`, and all catalog data; the next
+    /// `bootstrap` call will overwrite `terms_accepted`.
+    ///
+    /// Implementations must error if the catalog is already open for
+    /// bootstrap or no server row exists, so the operator notices when
+    /// the call is a no-op.
+    async fn reopen_for_bootstrap(catalog_state: Self::State) -> Result<ServerId>;
 
     // ---------------- Project Management ----------------
     /// Create a project
@@ -224,6 +274,7 @@ where
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        format_version_policy: WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
@@ -299,6 +350,13 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError>;
+
+    /// Set the per-warehouse Iceberg table format version policy.
+    async fn set_warehouse_format_version_policy_impl(
+        warehouse_id: WarehouseId,
+        policy: &WarehouseFormatVersionPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
@@ -394,7 +452,7 @@ where
         tabulars: &[TabularIdentBorrowed<'_>],
         list_flags: TabularListFlags,
         catalog_state: Self::State,
-    ) -> std::result::Result<Vec<ViewOrTableInfo>, GetTabularInfoError>;
+    ) -> std::result::Result<HashMap<TableIdent, ViewOrTableInfo>, GetTabularInfoError>;
 
     async fn get_tabular_infos_by_id_impl(
         warehouse_id: WarehouseId,
@@ -492,10 +550,46 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ViewInfo, CommitViewError>;
 
+    // ---------------- Generic Table Management ----------------
+    async fn create_generic_table_impl<'a>(
+        creation: GenericTableCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, CreateGenericTableError>;
+
+    async fn load_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
+    async fn load_generic_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
+    async fn list_generic_tables_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>;
+
+    async fn drop_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableId, DropGenericTableError>;
+
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(
         project_id: &ProjectId,
         roles_to_create: Vec<CatalogCreateRoleRequest<'_>>,
+        on_conflict: OnRoleConflict,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<Role>, CreateRoleError>;
 
@@ -517,16 +611,21 @@ where
 
     async fn list_roles_impl(
         project_id: Option<&ProjectId>,
-        filter: CatalogListRolesFilter<'_>,
+        filter: CatalogListRolesByIdFilter<'_>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesResponse, ListRolesError>;
 
-    /// Returns the list of deleted role ids.
+    /// Delete role rows matching `filter`, optionally scoped to a single
+    /// project. Mirrors [`Self::list_roles_impl`] so the same filter type
+    /// drives both reads and writes. Returns the IDs of deleted rows.
+    ///
+    /// The implementation must refuse to run when `project_id` is `None`
+    /// **and** every filter is `None` — that combination would erase every
+    /// role row across every project.
     async fn delete_roles_impl<'a>(
-        project_id: &ProjectId,
-        role_id_filter: Option<&[RoleId]>,
-        source_id_filter: Option<&[&str]>,
+        project_id: Option<&ProjectId>,
+        filter: CatalogListRolesByIdFilter<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<RoleId>, CatalogBackendError>;
 
@@ -535,6 +634,46 @@ where
         search_term: &str,
         catalog_state: Self::State,
     ) -> Result<SearchRoleResponse, SearchRolesError>;
+
+    /// Returns all roles in `project_id` whose `(provider_id, source_id)` matches one of
+    /// the provided idents. Ordering is unspecified. No pagination.
+    async fn list_roles_by_idents_impl(
+        project_id: &ProjectId,
+        idents: &[&RoleIdent],
+        catalog_state: Self::State,
+    ) -> Result<Vec<Role>, CatalogBackendError>;
+
+    // ---------------- Role Assignment Management ----------------
+    async fn sync_role_members_by_ident_impl<'a>(
+        project_id: &ProjectId,
+        role: &CatalogRoleForAssignment<'_>,
+        members: &[CatalogUserRoleAssignmentUser<'_>],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<SyncRoleMembersResult, SyncRoleMembersError>;
+
+    async fn sync_user_role_assignments_by_provider_impl<'a>(
+        user: &CatalogUserRoleAssignmentUser<'_>,
+        project_id: &ProjectId,
+        provider_id: &RoleProviderId,
+        roles: &[CatalogRoleForAssignment<'_>],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<SyncUserRoleAssignmentsResult, SyncUserRoleAssignmentsError>;
+
+    async fn list_role_assignments_for_user_impl(
+        user_id: &UserId,
+        catalog_state: Self::State,
+    ) -> Result<ListUserRoleAssignmentsResult, CatalogBackendError>;
+
+    async fn list_role_assignments_for_role_impl(
+        role_id: RoleId,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
+
+    async fn list_role_assignments_for_role_by_ident_impl(
+        project_id: &ProjectId,
+        role_ident: &RoleIdent,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
@@ -571,7 +710,7 @@ where
     /// We'll return statistics for the time-frame end - interval until end.
     /// If `status_codes` is None, return all status codes.
     async fn get_endpoint_statistics(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseFilter,
         range_specifier: TimeWindowSelector,
         status_codes: Option<&[u16]>,
@@ -670,7 +809,7 @@ where
     ) -> Result<()>;
 
     async fn set_task_queue_config_impl(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
         queue_name: &TaskQueueName,
         config: &SetTaskQueueConfigRequest,
@@ -688,4 +827,20 @@ where
         retention_period: Duration,
         project_id: &ProjectId,
     ) -> Result<()>;
+
+    // ---------------- Idempotency ----------------
+    /// Check if an idempotency key exists (SELECT on write pool).
+    async fn check_idempotency_key_impl(
+        warehouse_id: WarehouseId,
+        key: &crate::service::idempotency::IdempotencyKey,
+        state: Self::State,
+    ) -> Result<crate::service::idempotency::IdempotencyCheck>;
+
+    /// Insert an idempotency key inside a transaction (INSERT ... ON CONFLICT DO NOTHING).
+    /// Returns `true` if inserted, `false` if conflict.
+    async fn try_insert_idempotency_key_impl<'a>(
+        warehouse_id: WarehouseId,
+        info: &crate::service::idempotency::IdempotencyInfo,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<bool>;
 }

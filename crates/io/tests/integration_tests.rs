@@ -3,7 +3,9 @@ use std::{future::Future, sync::LazyLock};
 
 use bytes::Bytes;
 use futures::StreamExt;
-use lakekeeper_io::{LakekeeperStorage, StorageBackend, execute_with_parallelism};
+use lakekeeper_io::{
+    ErrorKind, LakekeeperStorage, ReadError, StorageBackend, execute_with_parallelism,
+};
 use tokio::{
     runtime::Runtime,
     time::{Duration, Instant, sleep},
@@ -60,6 +62,7 @@ async fn create_s3_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
     let s3_auth = lakekeeper_io::s3::S3Auth::AccessKey(lakekeeper_io::s3::S3AccessKeyAuth {
         aws_access_key_id: access_key,
         aws_secret_access_key: secret_key,
+        aws_session_token: None,
         external_id: None,
     });
 
@@ -239,6 +242,10 @@ test_all_storages!(
 test_all_storages!(test_empty_files, test_empty_files_impl);
 test_all_storages!(test_large_files, test_large_files_impl);
 test_all_storages!(test_special_characters, test_special_characters_impl);
+test_all_storages!(
+    test_special_characters_in_url_segments,
+    test_special_characters_in_url_segments_impl
+);
 test_all_storages!(test_error_handling, test_error_handling_impl);
 test_all_storages!(
     test_delete_non_existent_files,
@@ -253,8 +260,41 @@ test_all_storages!(
     test_batch_delete_many_items_some_nonexistant_impl
 );
 test_all_storages!(
+    test_percent_encoding_does_not_alias,
+    test_percent_encoding_does_not_alias_impl
+);
+test_all_storages!(
     test_list_non_existent_directory,
     test_list_non_existent_directory_impl
+);
+test_all_storages!(test_writer_basic, test_writer_basic_impl);
+test_all_storages!(test_writer_multi_chunks, test_writer_multi_chunks_impl);
+test_all_storages!(
+    test_writer_large_streaming,
+    test_writer_large_streaming_impl
+);
+test_all_storages!(
+    test_writer_close_twice_errors,
+    test_writer_close_twice_errors_impl
+);
+test_all_storages!(
+    test_writer_write_after_close_errors,
+    test_writer_write_after_close_errors_impl
+);
+test_all_storages!(test_writer_drop_cleanup, test_writer_drop_cleanup_impl);
+test_all_storages!(test_read_range_basic, test_read_range_basic_impl);
+test_all_storages!(test_read_range_large, test_read_range_large_impl);
+test_all_storages!(test_metadata_basic, test_metadata_basic_impl);
+test_all_storages!(test_metadata_not_found, test_metadata_not_found_impl);
+test_all_storages!(test_exists, test_exists_impl);
+test_all_storages!(
+    test_writer_then_read_range,
+    test_writer_then_read_range_impl
+);
+test_all_storages!(test_writer_then_metadata, test_writer_then_metadata_impl);
+test_all_storages!(
+    test_write_then_read_single_and_read,
+    test_write_then_read_single_and_read_impl
 );
 
 // // Performance tests for storage backend initialization
@@ -557,17 +597,17 @@ async fn test_batch_delete_many_items_some_nonexistant_impl(
 
     // Verify files exist by listing directory (much faster than reading each file)
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut listed_locations = Vec::new();
+    let mut listed_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        listed_locations.extend(locations);
+        let file_infos = result?;
+        listed_file_infos.extend(file_infos);
     }
 
     // Filter out directory entries (ending with '/')
-    let listed_files: Vec<_> = listed_locations
+    let listed_files: Vec<_> = listed_file_infos
         .iter()
-        .filter(|loc| !loc.to_string().ends_with('/'))
+        .filter(|file_info| !file_info.location().to_string().ends_with('/'))
         .collect();
 
     // Just verify we have at least as many files as we wrote
@@ -596,17 +636,17 @@ async fn test_batch_delete_many_items_some_nonexistant_impl(
 
     // Verify deletion using list operation instead of individual reads
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut remaining_locations = Vec::new();
+    let mut remaining_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        remaining_locations.extend(locations);
+        let file_infos = result?;
+        remaining_file_infos.extend(file_infos);
     }
 
     // Filter out directory entries (ending with '/')
-    let remaining_files: Vec<_> = remaining_locations
+    let remaining_files: Vec<_> = remaining_file_infos
         .iter()
-        .filter(|loc| !loc.to_string().ends_with('/'))
+        .filter(|file_info| !file_info.location().to_string().ends_with('/'))
         .collect();
 
     assert!(
@@ -642,21 +682,21 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
 
     // List all files in the base directory
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut all_locations = Vec::new();
+    let mut all_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        all_locations.extend(locations);
+        let file_infos = result?;
+        all_file_infos.extend(file_infos);
     }
 
     // Debug: print what we actually found
     println!(
         "Expected {} files, found {} files:",
         test_files.len(),
-        all_locations.len()
+        all_file_infos.len()
     );
-    for location in &all_locations {
-        println!("  Found:    {location}");
+    for file_info in &all_file_infos {
+        println!("  Found:    {}", file_info.location());
     }
     for path in &written_paths {
         println!("  Expected: {path}");
@@ -666,14 +706,17 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
 
     // Should have at least the minimum expected items
     assert!(
-        all_locations.len() >= min_expected_items,
+        all_file_infos.len() >= min_expected_items,
         "Should list at least {} items, found {}",
         min_expected_items,
-        all_locations.len()
+        all_file_infos.len()
     );
 
     // Verify that we can find our test files in the results
-    let location_strings: Vec<String> = all_locations.iter().map(ToString::to_string).collect();
+    let location_strings: Vec<String> = all_file_infos
+        .iter()
+        .map(|file_info| file_info.location().to_string())
+        .collect();
 
     for expected_path in &written_paths {
         assert!(
@@ -683,11 +726,12 @@ async fn test_list_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow
     }
 
     // Make sure all that was found but not expected are directories that end with a slash
-    for location in &all_locations {
-        if !written_paths.contains(&location.to_string()) {
+    for file_info in &all_file_infos {
+        if !written_paths.contains(&file_info.location().to_string()) {
             assert!(
-                location.to_string().ends_with('/'),
-                "Unexpected location found that is not a directory: {location}",
+                file_info.location().to_string().ends_with('/'),
+                "Unexpected location found that is not a directory: {}",
+                file_info.location(),
             );
         }
     }
@@ -745,31 +789,31 @@ async fn test_list_with_page_size_impl(
         println!("Testing with page size: {page_size}");
 
         let mut list_stream = storage.list(&base_dir, Some(page_size)).await?;
-        let mut all_locations = Vec::new();
+        let mut all_file_infos = Vec::new();
         let mut page_count = 0;
 
         while let Some(result) = list_stream.next().await {
-            let locations = result?;
+            let file_infos = result?;
             page_count += 1;
 
             // Each page (except possibly the last) should have at most page_size items
             assert!(
-                locations.len() <= page_size,
+                file_infos.len() <= page_size,
                 "Page {page_count} has {} items, which exceeds page size {page_size}",
-                locations.len()
+                file_infos.len()
             );
 
             // If this is not the last page, it should have exactly page_size items
             // (we can't easily check if it's the last page without consuming the stream)
 
-            all_locations.extend(locations);
+            all_file_infos.extend(file_infos);
         }
 
         // Should have collected all our files
         assert!(
-            all_locations.len() >= num_files,
+            all_file_infos.len() >= num_files,
             "Should list at least {num_files} items with page size {page_size}, found {}",
-            all_locations.len()
+            all_file_infos.len()
         );
 
         // Verify we got multiple pages for smaller page sizes
@@ -781,7 +825,10 @@ async fn test_list_with_page_size_impl(
         }
 
         // Verify that we can find our test files in the results
-        let location_strings: Vec<String> = all_locations.iter().map(ToString::to_string).collect();
+        let location_strings: Vec<String> = all_file_infos
+            .iter()
+            .map(|file_info| file_info.location().to_string())
+            .collect();
         for expected_path in &written_paths {
             assert!(
                 location_strings.iter().any(|loc| loc == expected_path),
@@ -792,24 +839,24 @@ async fn test_list_with_page_size_impl(
 
     // Test with page size of 1 (edge case)
     let mut list_stream = storage.list(&base_dir, Some(1)).await?;
-    let mut single_page_locations = Vec::new();
+    let mut single_page_file_infos = Vec::new();
     let mut single_page_count = 0;
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
+        let file_infos = result?;
         single_page_count += 1;
 
         // Each page should have exactly 1 item (except empty pages which shouldn't happen)
-        if !locations.is_empty() {
+        if !file_infos.is_empty() {
             assert_eq!(
-                locations.len(),
+                file_infos.len(),
                 1,
                 "With page size 1, each non-empty page should have exactly 1 item, got {}",
-                locations.len()
+                file_infos.len()
             );
         }
 
-        single_page_locations.extend(locations);
+        single_page_file_infos.extend(file_infos);
     }
 
     // Should have at least as many pages as files
@@ -820,13 +867,13 @@ async fn test_list_with_page_size_impl(
 
     // Test with very large page size (should get everything in one page)
     let mut list_stream = storage.list(&base_dir, Some(1000)).await?;
-    let mut large_page_locations = Vec::new();
+    let mut large_page_file_infos = Vec::new();
     let mut large_page_count = 0;
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
+        let file_infos = result?;
         large_page_count += 1;
-        large_page_locations.extend(locations);
+        large_page_file_infos.extend(file_infos);
     }
 
     // Should get everything in one or very few pages
@@ -1022,11 +1069,14 @@ async fn test_special_characters_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // Names are path of URL string, which may contain urlencoded chars
+    // Sub-delims (`!`, `=`, `-`, `_`, `.`, `+`, `*`, `'`, `$`, `,`, `;`) and
+    // multibyte UTF-8 are accepted literally. Reserved chars `?` and `#`
+    // are rejected by `Location::from_str` and must be percent-encoded;
+    // their round-trip is covered by `test_special_characters_in_url_segments`.
     let special_files = vec![
         "file with spaces.txt",
         "file-with-dashes.txt",
-        "y fl !? -_ä oats=1.2.txt",
+        "y fl ! -_ä oats=1.2.txt",
         "file_with_underscores.txt",
         "file.with.dots.txt",
         "file-with-ue-ü.txt",
@@ -1055,15 +1105,18 @@ async fn test_special_characters_impl(
 
     // Test listing files with special characters
     let mut list_stream = storage.list(&base_dir, None).await?;
-    let mut all_locations = Vec::new();
+    let mut all_file_infos = Vec::new();
 
     while let Some(result) = list_stream.next().await {
-        let locations = result?;
-        all_locations.extend(locations);
+        let file_infos = result?;
+        all_file_infos.extend(file_infos);
     }
 
     // Verify all files with special characters are listed
-    let listed_locations: Vec<String> = all_locations.iter().map(ToString::to_string).collect();
+    let listed_locations: Vec<String> = all_file_infos
+        .iter()
+        .map(|file_info| file_info.location().to_string())
+        .collect();
     assert_eq!(
         listed_locations.len(),
         special_files.len(),
@@ -1094,6 +1147,96 @@ async fn test_special_characters_impl(
     Ok(())
 }
 
+/// Like `test_special_characters_impl` but the special chars appear as
+/// pre-percent-encoded URL segments (e.g. `%3F`, `%20`) — what
+/// Lakekeeper REST receives when a client provides a URL-style location.
+async fn test_special_characters_in_url_segments_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    // Each entry: a URL-encoded path segment that should round-trip through
+    // write → read → list when used as a directory name in a URL location.
+    // Positive: segments that must round-trip end-to-end.
+    let positive_segments = vec![
+        "%3F",     // ?
+        "%22",     // "
+        "x%20y",   // space in the middle
+        "%20x",    // leading space
+        "x%20",    // trailing space
+        "x%20%20", // trailing double space
+        "%2A",     // *
+        "%24",     // $
+        "%27",     // '
+        "%2B",     // +
+        "üñîçødé",
+        "日本語",
+    ];
+    // Negative: segments that must be rejected up-front. The reasons differ
+    // (Azure InvalidUri for whitespace-only; `url::Url` normalises encoded
+    // dot-segments and encoded `/`) but the outcome is the same: silent
+    // path divergence that we surface as a clean parse-time error.
+    let negative_segments = vec![
+        "%20", "%09", "%20%20", // whitespace-only
+        "%2E", "%2e", "%2E%2E", "%2e%2e", // dot-segments
+        "%2F",    // encoded slash
+    ];
+
+    let base_dir = config.test_dir_path("special-chars-url-segments");
+    let mut written_paths = Vec::new();
+    let mut failures = Vec::new();
+
+    for seg in &positive_segments {
+        let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
+        match storage
+            .write(&path, Bytes::from(format!("Content for {seg}")))
+            .await
+        {
+            Ok(()) => written_paths.push((seg.to_string(), path)),
+            Err(e) => failures.push(format!("write({seg}): {e}")),
+        }
+    }
+
+    for (seg, path) in &written_paths {
+        match storage.read(path).await {
+            Ok(read) => {
+                let s = String::from_utf8(read.to_vec())?;
+                if s != format!("Content for {seg}") {
+                    failures.push(format!("read({seg}): mismatch (got {s:?})"));
+                }
+            }
+            Err(e) => failures.push(format!("read({seg}): {e}")),
+        }
+    }
+    for (_, path) in &written_paths {
+        let _ = storage.delete(path).await;
+    }
+
+    // The decoded-segment rejections live in `AdlsLocation` only — S3 keys
+    // and GCS object names accept these chars literally, so the test is
+    // ADLS-specific.
+    if matches!(storage, StorageBackend::Adls(_)) {
+        for seg in &negative_segments {
+            let path = format!("{base_dir}{seg}/data/metadata/00000-test.metadata.json");
+            match storage.write(&path, Bytes::from("x")).await {
+                Ok(()) => {
+                    failures.push(format!("write({seg}): expected reject, got Ok"));
+                    let _ = storage.delete(&path).await;
+                }
+                Err(_) => { /* expected */ }
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} segment(s) failed:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
 /// Test error handling for invalid paths implementation
 async fn test_error_handling_impl(
     storage: &StorageBackend,
@@ -1112,7 +1255,7 @@ async fn test_error_handling_impl(
         config.test_path("does/not/exist1.txt"),
         config.test_path("does/not/exist2.txt"),
     ];
-    storage.delete_batch(non_existent_paths).await?;
+    storage.delete_batch(&non_existent_paths).await?;
 
     Ok(())
 }
@@ -1195,14 +1338,17 @@ async fn test_remove_all_deletes_directory_impl(
 
     // List parent directory before removal to confirm target directory exists
     let mut pre_list_stream = storage.list(&parent_dir, None).await?;
-    let mut pre_locations = Vec::new();
+    let mut pre_file_infos = Vec::new();
     while let Some(result) = pre_list_stream.next().await {
-        let locations = result?;
-        pre_locations.extend(locations);
+        let file_infos = result?;
+        pre_file_infos.extend(file_infos);
     }
 
     // Should find both target and sibling directories
-    let pre_location_strings: Vec<String> = pre_locations.iter().map(ToString::to_string).collect();
+    let pre_location_strings: Vec<String> = pre_file_infos
+        .iter()
+        .map(|file_info| file_info.location().to_string())
+        .collect();
     let has_target_dir = pre_location_strings
         .iter()
         .any(|loc| loc.starts_with(&target_dir));
@@ -1243,14 +1389,16 @@ async fn test_remove_all_deletes_directory_impl(
 
     // List parent directory after removal to confirm target directory is gone
     let mut post_list_stream = storage.list(&parent_dir, None).await?;
-    let mut post_locations = Vec::new();
+    let mut post_file_infos = Vec::new();
     while let Some(result) = post_list_stream.next().await {
-        let locations = result?;
-        post_locations.extend(locations);
+        let file_infos = result?;
+        post_file_infos.extend(file_infos);
     }
 
-    let post_location_strings: Vec<String> =
-        post_locations.iter().map(ToString::to_string).collect();
+    let post_location_strings: Vec<String> = post_file_infos
+        .iter()
+        .map(|file_infos| file_infos.location().to_string())
+        .collect();
     let still_has_target_dir = post_location_strings
         .iter()
         .any(|loc| loc.starts_with(&target_dir));
@@ -1314,23 +1462,25 @@ async fn test_list_prefix_boundaries_impl(
 
     for list_dir in &[format!("{base_dir}dir"), format!("{base_dir}dir/")] {
         // List contents of the specific directory
-        let mut list_stream = storage.list(&list_dir, None).await?;
-        let mut listed_locations = Vec::new();
+        let mut list_stream = storage.list(list_dir, None).await?;
+        let mut listed_file_infos = Vec::new();
 
         while let Some(result) = list_stream.next().await {
-            let locations = result?;
-            listed_locations.extend(locations);
+            let file_infos = result?;
+            listed_file_infos.extend(file_infos);
         }
 
         // Debug output
         // println!("Listed {} items in {}", listed_locations.len(), list_dir);
-        for loc in &listed_locations {
-            println!("  Found: {loc}");
+        for file_info in &listed_file_infos {
+            println!("  Found: {}", file_info.location());
         }
 
         // Convert locations to strings for easier comparison
-        let location_strings: Vec<String> =
-            listed_locations.iter().map(ToString::to_string).collect();
+        let location_strings: Vec<String> = listed_file_infos
+            .iter()
+            .map(|file_info| file_info.location().to_string())
+            .collect();
 
         // Verify that only the correct files are included in the results
         // Should include: base/dir/file.txt and base/dir/subdir/nested.txt
@@ -1376,6 +1526,447 @@ async fn test_list_prefix_boundaries_impl(
         let _ = storage.delete(&path).await; // Ignore errors during cleanup
     }
 
+    Ok(())
+}
+
+/// Write `data` through the streaming `writer` API in fixed-size slices.
+async fn writer_write_in_chunks(
+    storage: &StorageBackend,
+    path: &str,
+    data: &Bytes,
+    chunk_size: usize,
+) -> anyhow::Result<()> {
+    let mut writer = storage.writer(path).await?;
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let end = (offset + chunk_size).min(data.len());
+        writer.write(data.slice(offset..end)).await?;
+        offset = end;
+    }
+    writer.close().await?;
+    Ok(())
+}
+
+/// Streaming writer: single write call then close, content survives round-trip.
+async fn test_writer_basic_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-basic.bin");
+    let data = Bytes::from_static(b"streaming writer payload");
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(data.clone()).await?;
+    writer.close().await?;
+
+    let read_back = storage.read(&path).await?;
+    assert_eq!(read_back, data);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Streaming writer: many small write calls accumulate correctly across close.
+async fn test_writer_multi_chunks_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-multi-chunks.bin");
+
+    let chunks: Vec<Bytes> = (0..16u8).map(|i| Bytes::from(vec![i; 1024])).collect();
+    let mut expected = bytes::BytesMut::new();
+    for chunk in &chunks {
+        expected.extend_from_slice(chunk);
+    }
+    let expected = expected.freeze();
+
+    let mut writer = storage.writer(&path).await?;
+    for chunk in chunks {
+        writer.write(chunk).await?;
+    }
+    writer.close().await?;
+
+    let read_back = storage.read(&path).await?;
+    assert_eq!(read_back, expected);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Streaming writer with payload large enough to trigger backend-specific
+/// multipart promotion (S3/GCS at 25 MiB, ADLS at 7 MiB; 30 MiB triggers all).
+async fn test_writer_large_streaming_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-large.bin");
+    let data = generate_test_data(30);
+
+    writer_write_in_chunks(storage, &path, &data, 8 * 1024 * 1024).await?;
+
+    let read_back = storage.read(&path).await?;
+    assert_eq!(read_back.len(), data.len());
+    assert!(
+        read_back == data,
+        "streaming-written large file content mismatch"
+    );
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Closing an already-closed writer must fail.
+async fn test_writer_close_twice_errors_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-close-twice.bin");
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(Bytes::from_static(b"hi")).await?;
+    writer.close().await?;
+
+    let second = writer.close().await;
+    assert!(second.is_err(), "second close() should fail");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Writing after `close` must fail.
+async fn test_writer_write_after_close_errors_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-write-after-close.bin");
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(Bytes::from_static(b"hi")).await?;
+    writer.close().await?;
+
+    let after = writer.write(Bytes::from_static(b"more")).await;
+    assert!(after.is_err(), "write() after close() should fail");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Dropping a streaming writer without `close` should(!) not leave a file at the
+/// target path (best-effort `Drop` impl may fail for other reasons).
+/// Writes 30 MiB to force backend-side state (S3 multipart, GCS
+/// resumable session, ADLS up-front file create), then drops the writer and
+/// polls every 20 ms for absence with a 10s budget — matching the
+/// `DROP_CANCEL_DURATION` upper bound on the spawned cleanup task. Memory
+/// backend never persists buffered bytes, so absence is immediate.
+/// Unfortunately this test is flaky by its' design, so a failure is not
+/// indicative for a broken `Drop` impl.
+async fn test_writer_drop_cleanup_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-drop-cleanup.bin");
+    let data = generate_test_data(30);
+
+    {
+        let mut writer = storage.writer(&path).await?;
+        writer.write(data).await?;
+        // Drop without close — Drop impl spawns best-effort cleanup.
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let poll_interval = Duration::from_millis(20);
+    loop {
+        if !storage.exists(&path).await? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "file {path} still exists 10s after writer Drop; cleanup task did not succeed within its' budget"
+            ));
+        }
+        sleep(poll_interval).await;
+    }
+}
+
+/// `read_range` returns exactly the requested slice on a small file, including
+/// tail-aligned, interior, and empty ranges.
+async fn test_read_range_basic_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("range-basic.bin");
+    let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+    let data = Bytes::from(data);
+    storage.write(&path, data.clone()).await?;
+
+    // Full range
+    let full = storage.read_range(&path, 0..4096).await?;
+    assert_eq!(full, data);
+
+    // Tail-aligned
+    let tail = storage.read_range(&path, 4000..4096).await?;
+    assert_eq!(tail, data.slice(4000..4096));
+
+    // Interior
+    let mid = storage.read_range(&path, 100..200).await?;
+    assert_eq!(mid, data.slice(100..200));
+
+    // Empty (start == end) must yield empty bytes without backend round-trip
+    let empty = storage.read_range(&path, 50..50).await?;
+    assert_eq!(empty.len(), 0);
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `read_range` over a large file: small interior range and a >25 MiB span
+/// that forces the parallel-chunked download path on every cloud backend.
+async fn test_read_range_large_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("range-large.bin");
+    let data = generate_test_data(30);
+    storage.write(&path, data.clone()).await?;
+
+    // Small range near start (single fetch path)
+    let head = storage.read_range(&path, 0..1024).await?;
+    assert_eq!(head, data.slice(0..1024));
+
+    // Large interior range (>25 MiB) forces parallel chunked read
+    let big_range = 1024usize..(29 * 1024 * 1024);
+    let big = storage
+        .read_range(&path, big_range.start as u64..big_range.end as u64)
+        .await?;
+    let expected = data.slice(big_range.clone());
+    assert_eq!(big.len(), expected.len());
+    assert!(big == expected, "chunked range-read content mismatch");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `metadata` returns size matching the bytes written and a location ending
+/// with the requested suffix.
+async fn test_metadata_basic_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("metadata-basic.bin");
+    let data = Bytes::from(vec![0xab; 4096]);
+    storage.write(&path, data.clone()).await?;
+
+    let info = storage.metadata(&path).await?;
+    assert_eq!(info.size(), Some(data.len() as u64));
+    // Backends may canonicalize the URL; assert the suffix matches.
+    assert!(
+        info.location().to_string().ends_with("metadata-basic.bin"),
+        "metadata location {} does not end with expected suffix",
+        info.location()
+    );
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// `metadata` on a missing path surfaces `ErrorKind::NotFound`.
+async fn test_metadata_not_found_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("metadata-missing.bin");
+    let result = storage.metadata(&path).await;
+    match result {
+        Err(ReadError::IOError(e)) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(other) => Err(anyhow::anyhow!("expected NotFound IOError, got {other:?}")),
+        Ok(_) => Err(anyhow::anyhow!("expected metadata to fail on missing file")),
+    }
+}
+
+/// `exists` flips false → true → false across the file lifecycle.
+async fn test_exists_impl(storage: &StorageBackend, config: &TestConfig) -> anyhow::Result<()> {
+    let path = config.test_path("exists.bin");
+
+    assert!(
+        !storage.exists(&path).await?,
+        "file must not exist before write"
+    );
+
+    storage.write(&path, Bytes::from_static(b"hi")).await?;
+    assert!(storage.exists(&path).await?, "file must exist after write");
+
+    storage.delete(&path).await?;
+    assert!(
+        !storage.exists(&path).await?,
+        "file must not exist after delete"
+    );
+
+    Ok(())
+}
+
+/// Mixed flow: write via streaming `writer`, then `read_range` interior bytes.
+async fn test_writer_then_read_range_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-then-range.bin");
+    let data: Vec<u8> = (0..=255u8).cycle().take(8192).collect();
+    let data = Bytes::from(data);
+
+    let mut writer = storage.writer(&path).await?;
+    writer.write(data.slice(0..4096)).await?;
+    writer.write(data.slice(4096..8192)).await?;
+    writer.close().await?;
+
+    let middle = storage.read_range(&path, 4000..4200).await?;
+    assert_eq!(middle, data.slice(4000..4200));
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Mixed flow: write via streaming `writer` with multipart payload, then
+/// `metadata` reports the correct size.
+async fn test_writer_then_metadata_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("writer-then-metadata.bin");
+    let data = generate_test_data(30);
+
+    writer_write_in_chunks(storage, &path, &data, 8 * 1024 * 1024).await?;
+
+    let info = storage.metadata(&path).await?;
+    assert_eq!(info.size(), Some(data.len() as u64));
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Mixed flow: bulk `write`, then read with both `read_single` and `read`
+/// on a payload large enough to exercise the multipart download path.
+async fn test_write_then_read_single_and_read_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    let path = config.test_path("write-then-reads.bin");
+    let data = generate_test_data(30);
+    storage.write(&path, data.clone()).await?;
+
+    let read_single = storage.read_single(&path).await?;
+    let read_multi = storage.read(&path).await?;
+
+    assert_eq!(read_single.len(), data.len());
+    assert_eq!(read_multi.len(), data.len());
+    assert!(read_single == data, "read_single content mismatch");
+    assert!(read_multi == data, "read content mismatch");
+
+    storage.delete(&path).await?;
+    Ok(())
+}
+
+/// Pin the byte-literal storage-key model: two paths that differ only by
+/// percent-encoding of an unreserved/sub-delim character must address two
+/// physically distinct objects. If any backend silently aliases them, the
+/// catalog cannot rely on raw `fs_location` bytes for uniqueness — and
+/// canonicalisation (or backend-specific rejection) becomes mandatory.
+///
+/// This is the empirical premise behind dropping `Location::from_str`
+/// canonicalisation. A failure here is the signal that the byte-literal
+/// model does NOT hold for the failing backend, and policy-level mitigation
+/// is required for that backend specifically.
+async fn test_percent_encoding_does_not_alias_impl(
+    storage: &StorageBackend,
+    config: &TestConfig,
+) -> anyhow::Result<()> {
+    // Pairs of paths that share the same URI-decoded form but differ
+    // byte-for-byte. Under the byte-literal model each pair produces two
+    // distinct storage objects.
+    //
+    // Each entry: (decoded form, percent-encoded form, label).
+    // - "Abc" vs "%41bc": alphanumeric — pchar unreserved
+    // - "foo-bar" vs "foo%2Dbar": `-` — pchar unreserved
+    // - "foo+bar" vs "foo%2Bbar": `+` — pchar sub-delim
+    // - "%3F" vs "%3f": hex case in surviving %XX
+    let pairs: &[(&str, &str, &str)] = &[
+        ("Abc", "%41bc", "alpha-A"),
+        ("foo-bar", "foo%2Dbar", "dash"),
+        ("foo+bar", "foo%2Bbar", "plus"),
+        ("%3F", "%3f", "hex-case-Q"),
+    ];
+
+    let base_dir = config.test_dir_path("percent-alias-test");
+    let mut failures = Vec::new();
+    let mut to_cleanup = Vec::new();
+
+    for (decoded, encoded, label) in pairs {
+        let path_decoded = format!("{base_dir}{decoded}/data.bin");
+        let path_encoded = format!("{base_dir}{encoded}/data.bin");
+
+        // Distinct payloads so we can detect aliasing by content swap.
+        let payload_decoded = Bytes::from(format!("DECODED:{label}"));
+        let payload_encoded = Bytes::from(format!("ENCODED:{label}"));
+
+        // Write the decoded path first, then the encoded path. If the
+        // backend aliases, the second write overwrites the first.
+        if let Err(e) = storage.write(&path_decoded, payload_decoded.clone()).await {
+            failures.push(format!("{label}: write decoded `{decoded}` failed: {e}"));
+            continue;
+        }
+        to_cleanup.push(path_decoded.clone());
+
+        if let Err(e) = storage.write(&path_encoded, payload_encoded.clone()).await {
+            failures.push(format!("{label}: write encoded `{encoded}` failed: {e}"));
+            continue;
+        }
+        to_cleanup.push(path_encoded.clone());
+
+        // Read back from the originally-written paths. If the backend
+        // aliases the two, the decoded-path read returns the encoded-path
+        // payload (or vice versa, depending on which write "won").
+        match storage.read(&path_decoded).await {
+            Ok(got) if got == payload_decoded => {} // expected — distinct
+            Ok(got) if got == payload_encoded => {
+                failures.push(format!(
+                    "{label}: ALIAS DETECTED — decoded path `{decoded}` returned encoded payload (write to `{encoded}` overwrote it)"
+                ));
+            }
+            Ok(got) => {
+                failures.push(format!(
+                    "{label}: decoded path returned unexpected payload: {got:?}"
+                ));
+            }
+            Err(e) => failures.push(format!("{label}: read decoded `{decoded}` failed: {e}")),
+        }
+
+        match storage.read(&path_encoded).await {
+            Ok(got) if got == payload_encoded => {} // expected — distinct
+            Ok(got) if got == payload_decoded => {
+                failures.push(format!(
+                    "{label}: ALIAS DETECTED — encoded path `{encoded}` returned decoded payload"
+                ));
+            }
+            Ok(got) => {
+                failures.push(format!(
+                    "{label}: encoded path returned unexpected payload: {got:?}"
+                ));
+            }
+            Err(e) => failures.push(format!("{label}: read encoded `{encoded}` failed: {e}")),
+        }
+    }
+
+    // Cleanup regardless of outcome.
+    for path in to_cleanup {
+        let _ = storage.delete(&path).await;
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} percent-encoding alias check(s) failed:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 

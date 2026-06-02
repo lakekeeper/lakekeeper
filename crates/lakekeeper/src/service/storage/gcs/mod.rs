@@ -36,9 +36,10 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -67,6 +68,9 @@ pub struct GcsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sts_enabled: bool,
+    /// Storage layout for namespace and tabular paths.
+    #[serde(default)]
+    pub storage_layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -226,13 +230,17 @@ impl GcsProfile {
     /// Validate the GCS profile with credentials.
     /// # Errors
     /// - Fails if the bucket or key prefix changed
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.bucket != other.bucket {
             return Err(UpdateError::ImmutableField("bucket".to_string()));
         }
 
         if self.key_prefix != other.key_prefix {
             return Err(UpdateError::ImmutableField("key_prefix".to_string()));
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)
@@ -529,12 +537,24 @@ impl GcsProfile {
     }
 }
 
-pub(super) fn get_file_io_from_table_config(
+/// Build a `GcsStorage` client from vended-credentials properties.
+///
+/// Reads the downscoped `OAuth2` access token from the iceberg-format
+/// `TableProperties` previously produced by `generate_table_config`.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
-    Ok(iceberg::io::FileIOBuilder::new("gcs")
-        .with_props(config.inner())
-        .build()?)
+) -> Result<GcsStorage, CredentialsError> {
+    let access_token = config.get_prop_opt::<gcs::Token>().ok_or_else(|| {
+        CredentialsError::ShortTermCredential {
+            reason: "GCS vended credentials are missing the OAuth2 access token.".to_string(),
+            source: None,
+        }
+    })?;
+    let auth = GcsAuth::BearerToken(lakekeeper_io::gcs::GcsBearerTokenAuth { access_token });
+    GCSSettings {}
+        .get_storage_client(&auth)
+        .await
+        .map_err(Into::into)
 }
 
 impl TryFrom<GcsCredential> for GcsAuth {
@@ -580,6 +600,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
+                storage_layout: None,
             };
             (profile, cred)
         }
@@ -650,6 +671,7 @@ pub(crate) mod test {
                 bucket,
                 key_prefix: Some(format!("test_prefix/{}", uuid::Uuid::now_v7())),
                 sts_enabled: true,
+                storage_layout: None,
             };
             (profile, cred)
         }
@@ -687,6 +709,7 @@ mod is_overlapping_location_tests {
             bucket: bucket.to_string(),
             key_prefix: key_prefix.map(ToString::to_string),
             sts_enabled: true,
+            storage_layout: None,
         }
     }
 

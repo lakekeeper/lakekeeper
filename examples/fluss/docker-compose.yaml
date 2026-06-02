@@ -1,0 +1,287 @@
+services:
+  # --- Lakekeeper ---
+  lakekeeper:
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: always
+    extra_hosts:
+      - "localtest.me:host-gateway"
+    environment:
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+    command: ["serve"]
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 3s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
+    networks:
+      iceberg_net:
+    ports:
+      - "8181:8181"
+
+  migrate:
+    image: ${LAKEKEEPER_TEST__SERVER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: always
+    environment:
+      - LAKEKEEPER__PG_ENCRYPTION_KEY=This-is-NOT-Secure!
+      - LAKEKEEPER__PG_DATABASE_URL_READ=postgresql://postgres:postgres@db:5432/postgres
+      - LAKEKEEPER__PG_DATABASE_URL_WRITE=postgresql://postgres:postgres@db:5432/postgres
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      iceberg_net:
+
+  bootstrap:
+    image: curlimages/curl
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - -w
+      - "%{http_code}"
+      - "-X"
+      - "POST"
+      - "-v"
+      - "http://lakekeeper:8181/management/v1/bootstrap"
+      - "-H"
+      - "Content-Type: application/json"
+      - "--data"
+      - '{"accept-terms-of-use": true}'
+      - "-o"
+      - "/dev/null"
+    networks:
+      iceberg_net:
+
+  initialwarehouse:
+    image: curlimages/curl
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+      createbuckets:
+        condition: service_completed_successfully
+    restart: "no"
+    command:
+      - -w
+      - "%{http_code}"
+      - "-X"
+      - "POST"
+      - "-v"
+      - "http://lakekeeper:8181/management/v1/warehouse"
+      - "-H"
+      - "Content-Type: application/json"
+      - "--data"
+      - "@create-default-warehouse.json"
+      - "-o"
+      - "/dev/null"
+    volumes:
+      - ./create-default-warehouse.json:/home/curl_user/create-default-warehouse.json
+    networks:
+      iceberg_net:
+
+  db:
+    image: postgres:17
+    environment:
+      - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 2
+      start_period: 10s
+    networks:
+      iceberg_net:
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      - RUSTFS_ACCESS_KEY=rustfs-root-user
+      - RUSTFS_SECRET_KEY=rustfs-root-password
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_CORS_ALLOWED_ORIGINS=*
+    command: /data
+    networks:
+      iceberg_net:
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  createbuckets:
+    image: rustfs/rc:latest
+    depends_on:
+      - rustfs
+    restart: on-failure
+    entrypoint: >
+      /bin/sh -c "
+      until rc alias set storage http://rustfs:9000 rustfs-root-user rustfs-root-password; do
+        echo 'Waiting for RustFS...';
+        sleep 1;
+      done;
+      rc mb --ignore-existing storage/fluss;
+      "
+    networks:
+      iceberg_net:
+
+  # --- Download JARs needed by Fluss (Iceberg plugin) and Flink (tiering) ---
+  download-jars:
+    image: alpine:3
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache curl &&
+        mkdir -p /jars/fluss-plugins /jars/flink-lib &&
+        echo '--- Downloading Fluss Iceberg plugin JARs ---' &&
+        curl -fSL -o /jars/fluss-plugins/hadoop-apache-3.3.5-2.jar https://repo1.maven.org/maven2/io/trino/hadoop/hadoop-apache/3.3.5-2/hadoop-apache-3.3.5-2.jar &&
+        curl -fSL -o /jars/fluss-plugins/iceberg-aws-1.10.1.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws/1.10.1/iceberg-aws-1.10.1.jar &&
+        curl -fSL -o /jars/fluss-plugins/iceberg-aws-bundle-1.10.1.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.10.1/iceberg-aws-bundle-1.10.1.jar &&
+        echo '--- Downloading Flink tiering JARs ---' &&
+        curl -fSL -o /jars/flink-lib/flink-faker-0.5.3.jar https://github.com/knaufk/flink-faker/releases/download/v0.5.3/flink-faker-0.5.3.jar &&
+        curl -fSL -o /jars/flink-lib/fluss-flink-1.20-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-flink-1.20/0.9.0-incubating/fluss-flink-1.20-0.9.0-incubating.jar &&
+        curl -fSL -o /jars/flink-lib/fluss-lake-iceberg-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-lake-iceberg/0.9.0-incubating/fluss-lake-iceberg-0.9.0-incubating.jar &&
+        curl -fSL -o /jars/flink-lib/fluss-flink-tiering-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-flink-tiering/0.9.0-incubating/fluss-flink-tiering-0.9.0-incubating.jar &&
+        curl -fSL -o /jars/flink-lib/hadoop-client-api-3.3.5.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-client-api/3.3.5/hadoop-client-api-3.3.5.jar &&
+        curl -fSL -o /jars/flink-lib/hadoop-client-runtime-3.3.5.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-client-runtime/3.3.5/hadoop-client-runtime-3.3.5.jar &&
+        curl -fSL -o /jars/flink-lib/fluss-fs-s3-0.9.0-incubating.jar https://repo1.maven.org/maven2/org/apache/fluss/fluss-fs-s3/0.9.0-incubating/fluss-fs-s3-0.9.0-incubating.jar &&
+        curl -fSL -o /jars/flink-lib/iceberg-aws-1.10.1.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws/1.10.1/iceberg-aws-1.10.1.jar &&
+        curl -fSL -o /jars/flink-lib/iceberg-aws-bundle-1.10.1.jar https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/1.10.1/iceberg-aws-bundle-1.10.1.jar &&
+        curl -fSL -o /jars/flink-lib/failsafe-3.3.2.jar https://repo1.maven.org/maven2/dev/failsafe/failsafe/3.3.2/failsafe-3.3.2.jar &&
+        echo 'All JARs downloaded.'
+    volumes:
+      - jars:/jars
+
+  # --- Fluss ---
+  zookeeper:
+    image: zookeeper:3.9.2
+    restart: always
+    networks:
+      iceberg_net:
+
+  coordinator-server:
+    image: apache/fluss:0.9.0-incubating
+    depends_on:
+      zookeeper:
+        condition: service_started
+      initialwarehouse:
+        condition: service_completed_successfully
+      download-jars:
+        condition: service_completed_successfully
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://coordinator-server:9123
+        remote.data.dir: s3://fluss/remote-data
+        s3.endpoint: http://localtest.me:9000
+        s3.access-key: rustfs-root-user
+        s3.secret-key: rustfs-root-password
+        s3.path.style.access: true
+        s3.region: us-east-1
+        datalake.format: iceberg
+        datalake.iceberg.type: rest
+        datalake.iceberg.uri: http://lakekeeper:8181/catalog
+        datalake.iceberg.warehouse: fluss-warehouse
+    volumes:
+      - jars:/tmp/jars:ro
+    extra_hosts:
+      - "localtest.me:host-gateway"
+    entrypoint: ["/bin/bash", "-c", "cp /tmp/jars/fluss-plugins/*.jar /opt/fluss/plugins/iceberg/ && /docker-entrypoint.sh coordinatorServer"]
+    networks:
+      iceberg_net:
+
+  tablet-server:
+    image: apache/fluss:0.9.0-incubating
+    depends_on:
+      - coordinator-server
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://tablet-server:9123
+        data.dir: /tmp/fluss/data
+        remote.data.dir: s3://fluss/remote-data
+        s3.endpoint: http://localtest.me:9000
+        s3.access-key: rustfs-root-user
+        s3.secret-key: rustfs-root-password
+        s3.path.style.access: true
+        s3.region: us-east-1
+        kv.snapshot.interval: 0s
+        datalake.format: iceberg
+        datalake.iceberg.type: rest
+        datalake.iceberg.uri: http://lakekeeper:8181/catalog
+        datalake.iceberg.warehouse: fluss-warehouse
+    volumes:
+      - jars:/tmp/jars:ro
+    extra_hosts:
+      - "localtest.me:host-gateway"
+    entrypoint: ["/bin/bash", "-c", "cp /tmp/jars/fluss-plugins/*.jar /opt/fluss/plugins/iceberg/ && /docker-entrypoint.sh tabletServer"]
+    networks:
+      iceberg_net:
+
+  # --- Flink ---
+  jobmanager:
+    image: flink:1.20-scala_2.12-java17
+    depends_on:
+      download-jars:
+        condition: service_completed_successfully
+    ports:
+      - "8083:8081"
+    entrypoint: ["/bin/bash", "-c", "cp /tmp/jars/flink-lib/*.jar /opt/flink/lib/ && /docker-entrypoint.sh jobmanager"]
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+    volumes:
+      - jars:/tmp/jars:ro
+    networks:
+      iceberg_net:
+
+  taskmanager:
+    image: flink:1.20-scala_2.12-java17
+    depends_on:
+      jobmanager:
+        condition: service_started
+      download-jars:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "localtest.me:host-gateway"
+    entrypoint: ["/bin/bash", "-c", "cp /tmp/jars/flink-lib/*.jar /opt/flink/lib/ && /docker-entrypoint.sh taskmanager"]
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 10
+        taskmanager.memory.process.size: 2048m
+        taskmanager.memory.task.off-heap.size: 128m
+    volumes:
+      - jars:/tmp/jars:ro
+    networks:
+      iceberg_net:
+
+  duckdb:
+    image: duckdb/duckdb
+    profiles: ["tools"]
+    extra_hosts:
+      - "localtest.me:host-gateway"
+    networks:
+      iceberg_net:
+
+volumes:
+  jars:
+
+networks:
+  iceberg_net:

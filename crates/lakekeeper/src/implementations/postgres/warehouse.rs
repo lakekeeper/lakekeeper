@@ -1,5 +1,6 @@
-use std::{collections::HashSet, ops::Deref};
+use std::{collections::HashSet, ops::Deref, sync::Arc};
 
+use iceberg::spec::FormatVersion;
 use sqlx::{PgPool, types::Json};
 
 use super::CatalogState;
@@ -14,18 +15,20 @@ use crate::{
         },
     },
     implementations::postgres::{
+        PostgresBackend,
         dbutils::DBErrorHandler,
         pagination::{PaginateToken, V1PaginateToken},
     },
     service::{
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError,
-        CatalogGetWarehouseByNameError, CatalogListWarehousesError, CatalogRenameWarehouseError,
-        DatabaseIntegrityError, GetProjectResponse, ProjectIdNotFoundError, ResolvedWarehouse,
-        SetWarehouseDeletionProfileError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StorageProfileSerializationError, UpdateWarehouseStorageProfileError,
-        WarehouseAlreadyExists, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
-        WarehouseNotEmpty, WarehouseProtected, WarehouseStatus, WarehouseVersion,
-        storage::StorageProfile,
+        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
+        CatalogRenameWarehouseError, CatalogRoleOps, DatabaseIntegrityError, GetProjectResponse,
+        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
+        WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
+        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
+        WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 
@@ -60,6 +63,8 @@ pub(super) async fn set_warehouse_deletion_profile<
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
             "#,
@@ -84,6 +89,7 @@ pub(crate) async fn create_warehouse(
     storage_profile: StorageProfile,
     tabular_delete_profile: TabularDeleteProfile,
     storage_secret_id: Option<SecretId>,
+    format_version_policy: WarehouseFormatVersionPolicy,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let storage_profile_ser =
@@ -93,6 +99,12 @@ pub(crate) async fn create_warehouse(
         .expiration_seconds()
         .map(|dur| dur.num_seconds());
     let prof = DbTabularDeleteProfile::from(tabular_delete_profile);
+
+    let allowed_format_versions_db =
+        format_version_versions_to_db(&format_version_policy.allowed_format_versions);
+    let default_format_version_db = format_version_policy
+        .default_format_version
+        .map(format_version_to_db);
 
     let warehouse = sqlx::query_as!(
         WarehouseRecord,
@@ -104,8 +116,10 @@ pub(crate) async fn create_warehouse(
                                    storage_secret_id,
                                    status,
                                    tabular_expiration_seconds,
-                                   tabular_delete_mode)
-                                VALUES ($1, $2, $3, $4, 'active', $5, $6)
+                                   tabular_delete_mode,
+                                   allowed_format_versions,
+                                   default_format_version)
+                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
                                 RETURNING
                                     project_id,
                                     warehouse_id,
@@ -116,6 +130,8 @@ pub(crate) async fn create_warehouse(
                                     tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                                     tabular_expiration_seconds,
                                     protected,
+                                    allowed_format_versions,
+                                    default_format_version,
                                     updated_at,
                                     version),
             whs AS (INSERT INTO warehouse_statistics (number_of_views,
@@ -130,7 +146,9 @@ pub(crate) async fn create_warehouse(
         storage_profile_ser,
         storage_secret_id.map(|id| id.into_uuid()),
         num_secs,
-        prof as _
+        prof as _,
+        &allowed_format_versions_db,
+        default_format_version_db
     )
     .fetch_one(&mut **transaction)
     .await
@@ -175,10 +193,17 @@ pub(crate) async fn rename_project(
     Ok(())
 }
 
+// `'static` on the inner Transaction lifetime is required so the call to
+// `PostgresBackend::upsert_system_roles` below matches the trait's
+// `Transaction<'_>` GAT, which for `PostgresBackend` resolves to
+// `&mut sqlx::Transaction<'static, sqlx::Postgres>`. The only caller
+// (`<PostgresBackend as CatalogStore>::create_project` in catalog.rs)
+// already passes a `'static`-conn transaction, so this tightening is a
+// no-op at every call site.
 pub(crate) async fn create_project(
     project_id: &ProjectId,
     project_name: String,
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> crate::service::Result<()> {
     let Some(_project_id) = sqlx::query_scalar!(
         r#"
@@ -201,6 +226,24 @@ pub(crate) async fn create_project(
         )
         .into());
     };
+
+    // Seed system roles from the process-wide registry, if any. Empty in
+    // default OSS (no extension registered). Atomic with the project
+    // insert; the seeder path goes through the cap-gated trait method so
+    // `create_project` and the post-migration backfill share one code path.
+    let specs = registered_system_roles();
+    if !specs.is_empty() {
+        let cap = SystemRoleSeederCap::new();
+        PostgresBackend::upsert_system_roles(project_id, specs, cap, transaction)
+            .await
+            .map_err(|e| {
+                ErrorModel::internal(
+                    "Failed to seed registered system roles",
+                    "SystemRoleSeedFailed",
+                    Some(Box::new(e)),
+                )
+            })?;
+    }
 
     Ok(())
 }
@@ -231,7 +274,7 @@ pub(crate) async fn get_project(
 
     if let Some(project) = project {
         Ok(Some(GetProjectResponse {
-            project_id: ProjectId::from_db_unchecked(project.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(project.project_id)),
             name: project.project_name,
         }))
     } else {
@@ -280,6 +323,8 @@ struct WarehouseRecord {
     tabular_delete_mode: DbTabularDeleteProfile,
     tabular_expiration_seconds: Option<i64>,
     protected: bool,
+    allowed_format_versions: Vec<i16>,
+    default_format_version: Option<i16>,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
     version: i64,
 }
@@ -293,15 +338,23 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             value.tabular_expiration_seconds,
         )?;
 
+        let allowed_format_versions = db_to_allowed_format_versions(value.allowed_format_versions)?;
+        let default_format_version = value
+            .default_format_version
+            .map(format_version_from_db)
+            .transpose()?;
+
         Ok(ResolvedWarehouse {
             warehouse_id: value.warehouse_id.into(),
             name: value.warehouse_name,
-            project_id: ProjectId::from_db_unchecked(value.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(value.project_id)),
             storage_profile: value.storage_profile.deref().clone(),
             storage_secret_id: value.storage_secret_id.map(Into::into),
             status: value.status,
             tabular_delete_profile,
             protected: value.protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at: value.updated_at,
             version: WarehouseVersion::from(value.version),
         })
@@ -331,6 +384,8 @@ pub(crate) async fn list_warehouses<
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
             FROM warehouse
@@ -368,6 +423,8 @@ pub(super) async fn get_warehouse_by_name(
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at,
             version
         FROM warehouse
@@ -408,6 +465,8 @@ pub(crate) async fn get_warehouse_by_id<
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at,
             version
         FROM warehouse
@@ -447,7 +506,7 @@ pub(crate) async fn list_projects<'e, 'c: 'e, E: sqlx::Executor<'c, Database = s
     Ok(projects
         .into_iter()
         .map(|project| GetProjectResponse {
-            project_id: ProjectId::from_db_unchecked(project.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(project.project_id)),
             name: project.project_name,
         })
         .collect())
@@ -529,6 +588,8 @@ pub(crate) async fn rename_warehouse(
             tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
             tabular_expiration_seconds,
             protected,
+            allowed_format_versions,
+            default_format_version,
             updated_at,
             version
         "#,
@@ -566,6 +627,8 @@ pub(crate) async fn set_warehouse_status(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
         "#,
@@ -603,10 +666,55 @@ pub(crate) async fn set_warehouse_protection(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
             "#,
         protected,
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
+
+    Ok(warehouse.try_into()?)
+}
+
+pub(crate) async fn set_warehouse_format_version_policy(
+    warehouse_id: WarehouseId,
+    policy: &WarehouseFormatVersionPolicy,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
+    let allowed_format_versions_db = format_version_versions_to_db(&policy.allowed_format_versions);
+    let default_format_version_db = policy.default_format_version.map(format_version_to_db);
+
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
+            SET allowed_format_versions = $1, default_format_version = $2
+            WHERE warehouse_id = $3
+            RETURNING
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                allowed_format_versions,
+                default_format_version,
+                updated_at,
+                version
+            "#,
+        &allowed_format_versions_db,
+        default_format_version_db,
         *warehouse_id
     )
     .fetch_optional(&mut **transaction)
@@ -646,6 +754,8 @@ pub(crate) async fn update_storage_profile(
                 tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
                 tabular_expiration_seconds,
                 protected,
+                allowed_format_versions,
+                default_format_version,
                 updated_at,
                 version
         "#,
@@ -696,6 +806,46 @@ fn db_to_api_tabular_delete_profile(
         }
         DbTabularDeleteProfile::Hard => Ok(TabularDeleteProfile::Hard {}),
     }
+}
+
+/// Convert a stored `smallint` to an Iceberg [`FormatVersion`].
+fn format_version_from_db(value: i16) -> Result<FormatVersion, DatabaseIntegrityError> {
+    match value {
+        1 => Ok(FormatVersion::V1),
+        2 => Ok(FormatVersion::V2),
+        3 => Ok(FormatVersion::V3),
+        other => Err(DatabaseIntegrityError::new(format!(
+            "Invalid table format version '{other}' stored for warehouse."
+        ))),
+    }
+}
+
+/// Convert a stored `smallint[]` to [`AllowedFormatVersions`].
+fn db_to_allowed_format_versions(
+    values: Vec<i16>,
+) -> Result<AllowedFormatVersions, DatabaseIntegrityError> {
+    let versions = values
+        .into_iter()
+        .map(format_version_from_db)
+        .collect::<Result<Vec<_>, _>>()?;
+    AllowedFormatVersions::try_new(versions).map_err(|_| {
+        DatabaseIntegrityError::new("Stored allowed_format_versions for warehouse is empty.")
+    })
+}
+
+/// Convert an Iceberg [`FormatVersion`] to a `smallint` for storage.
+fn format_version_to_db(version: FormatVersion) -> i16 {
+    version as i16
+}
+
+/// Convert an [`AllowedFormatVersions`] set to a `smallint[]` for storage.
+fn format_version_versions_to_db(allowed: &AllowedFormatVersions) -> Vec<i16> {
+    allowed
+        .as_slice()
+        .iter()
+        .copied()
+        .map(format_version_to_db)
+        .collect()
 }
 
 pub(crate) async fn get_warehouse_stats(
@@ -796,11 +946,10 @@ pub(crate) mod test {
         project_id: Option<&ProjectId>,
         secret_id: Option<SecretId>,
         create_project: bool,
-    ) -> (crate::ProjectId, crate::WarehouseId) {
-        let project_id = project_id.map_or(
-            ProjectId::from(uuid::Uuid::nil()),
-            std::borrow::ToOwned::to_owned,
-        );
+    ) -> (crate::service::ArcProjectId, crate::WarehouseId) {
+        let project_id = project_id.map_or(Arc::new(ProjectId::from(uuid::Uuid::nil())), |id| {
+            Arc::new(id.clone())
+        });
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
@@ -832,6 +981,7 @@ pub(crate) mod test {
                 expiration_seconds: chrono::Duration::seconds(5),
             },
             secret_id,
+            WarehouseFormatVersionPolicy::default(),
             t.transaction(),
         )
         .await
@@ -848,7 +998,7 @@ pub(crate) mod test {
 
         let fetched_warehouse = PostgresBackend::get_warehouse_by_name(
             "test_warehouse",
-            &ProjectId::from(uuid::Uuid::nil()),
+            &Arc::new(ProjectId::from(uuid::Uuid::nil())),
             WarehouseStatus::active(),
             state.clone(),
         )
@@ -865,7 +1015,7 @@ pub(crate) mod test {
     async fn test_list_projects(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 
-        let project_id_1 = ProjectId::from(uuid::Uuid::new_v4());
+        let project_id_1 = Arc::new(ProjectId::from(uuid::Uuid::new_v4()));
         initialize_warehouse(state.clone(), None, Some(&project_id_1), None, true).await;
 
         let mut trx = PostgresTransaction::begin_read(state.clone())
@@ -882,7 +1032,7 @@ pub(crate) mod test {
         assert_eq!(projects.len(), 1);
         assert!(projects.contains(&project_id_1));
 
-        let project_id_2 = ProjectId::from(uuid::Uuid::new_v4());
+        let project_id_2 = Arc::new(ProjectId::from(uuid::Uuid::new_v4()));
         initialize_warehouse(state.clone(), None, Some(&project_id_2), None, true).await;
 
         let mut trx = PostgresTransaction::begin_read(state.clone())
@@ -902,7 +1052,7 @@ pub(crate) mod test {
         let mut trx = PostgresTransaction::begin_read(state).await.unwrap();
 
         let projects = PostgresBackend::list_projects(
-            Some(HashSet::from_iter(vec![project_id_1.clone()])),
+            Some(HashSet::from_iter(vec![(*project_id_1).clone()])),
             trx.transaction(),
         )
         .await
@@ -1237,5 +1387,200 @@ pub(crate) mod test {
             e,
             CatalogDeleteWarehouseError::WarehouseIdNotFound(_)
         ));
+    }
+
+    // ── create_roles `OnRoleConflict::UpdateMetadata` semantics ────────────
+
+    #[sqlx::test]
+    async fn test_create_roles_update_metadata_is_noop_when_unchanged(pool: sqlx::PgPool) {
+        // The IS DISTINCT FROM guard in the ON CONFLICT clause must keep
+        // re-runs with identical values from bumping `version` (which the
+        // `set_updated_at_and_increment_version` trigger would otherwise
+        // increment on any UPDATE that touched a row tuple). The returned
+        // Vec must also be empty — no rows were inserted or changed.
+        use crate::{
+            implementations::postgres::role::create_roles,
+            service::{
+                CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId,
+                SYSTEM_ROLE_PROVIDER_ID,
+            },
+        };
+
+        let project_id = ProjectId::new_random();
+        let mut t = pool.begin().await.unwrap();
+        create_project(&project_id, "noop-test".to_string(), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // First seed: insert one system role.
+        let source: RoleSourceId = "example_role".parse().unwrap();
+        let initial = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Example Role")
+            .description(Some("Example description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        let seeded = create_roles(
+            &project_id,
+            vec![initial],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(seeded.len(), 1);
+
+        let original = fetch_system_role(&pool, &project_id, &source).await;
+
+        // Re-run with identical values — must be a no-op.
+        let again = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Example Role")
+            .description(Some("Example description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        let upserted = create_roles(
+            &project_id,
+            vec![again],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(
+            upserted.len(),
+            0,
+            "no-op upsert must return an empty Vec, not the unchanged row"
+        );
+
+        let after = fetch_system_role(&pool, &project_id, &source).await;
+        assert_eq!(after.id, original.id, "row id must be unchanged");
+        assert_eq!(
+            after.version, original.version,
+            "version must not bump on no-op upsert"
+        );
+        assert_eq!(
+            after.updated_at, original.updated_at,
+            "updated_at must not move on no-op upsert"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_create_roles_update_metadata_refreshes_existing_row(pool: sqlx::PgPool) {
+        // Locks in `OnRoleConflict::UpdateMetadata`: re-running create_roles
+        // with the same `(project, provider, source_id)` but a new
+        // name/description must update the existing row in place,
+        // preserving its id and bumping its version via the trigger.
+        use crate::{
+            implementations::postgres::role::create_roles,
+            service::{
+                CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId,
+                SYSTEM_ROLE_PROVIDER_ID,
+            },
+        };
+
+        let project_id = ProjectId::new_random();
+        let mut t = pool.begin().await.unwrap();
+        create_project(&project_id, "upsert-test".to_string(), &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let source: RoleSourceId = "example_role".parse().unwrap();
+        let initial = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Original Name")
+            .description(Some("Original description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        create_roles(
+            &project_id,
+            vec![initial],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let original = fetch_system_role(&pool, &project_id, &source).await;
+        assert_eq!(original.name, "Original Name");
+
+        // Upsert with a different name+description; row id must be
+        // preserved, name/description and version change.
+        let refreshed_request = CatalogCreateRoleRequest::builder()
+            .role_id(RoleId::new_random())
+            .role_name("Refreshed Name")
+            .description(Some("Refreshed description"))
+            .source_id(&source)
+            .provider_id(&SYSTEM_ROLE_PROVIDER_ID)
+            .build();
+        let mut t = pool.begin().await.unwrap();
+        let upserted = create_roles(
+            &project_id,
+            vec![refreshed_request],
+            OnRoleConflict::UpdateMetadata,
+            &mut *t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(upserted.len(), 1);
+
+        let refreshed = fetch_system_role(&pool, &project_id, &source).await;
+        assert_eq!(refreshed.id, original.id, "row id must be preserved");
+        assert_eq!(refreshed.name, "Refreshed Name");
+        assert_eq!(
+            refreshed.description.as_deref(),
+            Some("Refreshed description")
+        );
+        assert!(
+            *refreshed.version > *original.version,
+            "version must be bumped by the trigger ({:?} -> {:?})",
+            original.version,
+            refreshed.version
+        );
+    }
+
+    /// Lookup helper used by upsert tests — fetches the single system role
+    /// row identified by `(provider_id = "system", source_id)`.
+    async fn fetch_system_role(
+        pool: &sqlx::PgPool,
+        project_id: &ProjectId,
+        source: &crate::service::RoleSourceId,
+    ) -> std::sync::Arc<crate::service::Role> {
+        use crate::{
+            implementations::postgres::role::list_roles,
+            service::{CatalogListRolesByIdFilter, SYSTEM_ROLE_PROVIDER_ID},
+        };
+        let provider = &*SYSTEM_ROLE_PROVIDER_ID;
+        let providers = [provider];
+        let sources = [source];
+        let filter = CatalogListRolesByIdFilter::builder()
+            .provider_ids(Some(&providers))
+            .source_ids(Some(&sources))
+            .build();
+        let response = list_roles(
+            Some(project_id),
+            filter,
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
+            pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.roles.len(), 1, "expected exactly one matching row");
+        response.roles[0].clone()
     }
 }

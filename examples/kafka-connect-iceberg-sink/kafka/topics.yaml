@@ -1,5 +1,5 @@
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: connect-cluster-configs
@@ -13,7 +13,7 @@ spec:
   config:
     cleanup.policy: compact
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: connect-cluster-offsets
@@ -27,7 +27,7 @@ spec:
   config:
     cleanup.policy: compact
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: connect-cluster-status
@@ -41,7 +41,7 @@ spec:
   config:
     cleanup.policy: compact
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: control-iceberg
@@ -55,7 +55,7 @@ spec:
   config:
     cleanup.policy: compact
 ---
-apiVersion: kafka.strimzi.io/v1beta2
+apiVersion: kafka.strimzi.io/v1
 kind: KafkaTopic
 metadata:
   name: events

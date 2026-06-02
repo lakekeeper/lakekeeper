@@ -10,7 +10,7 @@ use crate::{
     implementations::postgres::{
         dbutils::DBErrorHandler,
         tabular::{
-            FromTabularRowError, TabularRow,
+            FromTabularRowError, TabularRowCore,
             table::{
                 DbTableFormatVersion, MAX_PARAMETERS, TableUpdateFlags,
                 common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
@@ -116,10 +116,10 @@ pub(crate) async fn commit_table_transaction(
     let table_infos = updated_tabulars
         .iter()
         .map(|row| {
-            let mut table_or_view_info = TabularRow::from_row(row)
+            let mut table_or_view_info = TabularRowCore::from_row(row)
                 .map_err(|e| {
                     e.into_catalog_backend_error()
-                        .append_detail("Failed to build `TabularRow` after table commit")
+                        .append_detail("Failed to build `TabularRowCore` after table commit")
                 })?
                 .try_into_table_or_view(warehouse_id)
                 .map_err(CommitTableTransactionError::from)?;
@@ -141,9 +141,12 @@ pub(crate) async fn commit_table_transaction(
                 ViewOrTableInfo::Table(table_info) => {
                     table_info.properties = properties;
                 }
-               ViewOrTableInfo::View(_view_info) => {
+                ViewOrTableInfo::View(_view_info) => {
                     // This commit is for tables only
                     debug_assert!(false, "Commit should not return views");
+                }
+                ViewOrTableInfo::GenericTable(_) => {
+                    debug_assert!(false, "Commit should not return generic tables");
                 }
             }
 
@@ -193,13 +196,7 @@ struct CommitVerificationData {
 #[allow(clippy::too_many_lines)]
 fn build_table_and_tabular_update_queries(
     location_metadata_pairs: Vec<TableMetadataTransition>,
-) -> Result<
-    (
-        sqlx::QueryBuilder<'static, Postgres>,
-        sqlx::QueryBuilder<'static, Postgres>,
-    ),
-    ConversionError,
-> {
+) -> Result<(sqlx::QueryBuilder<Postgres>, sqlx::QueryBuilder<Postgres>), ConversionError> {
     let n_commits = location_metadata_pairs.len();
     let mut query_builder_table = sqlx::QueryBuilder::new(
         r#"
@@ -293,7 +290,8 @@ fn build_table_and_tabular_update_queries(
     );
 
     query_builder_table.push(" RETURNING t.table_id");
-    // Copy from get_tabular_infos_by_ids
+    // Returns the columns expected by `TabularRowCore`. Properties are not
+    // read back here — callers overlay them from the in-memory metadata.
     query_builder_tabular.push(
         r#" RETURNING
                 t.warehouse_id,
@@ -307,15 +305,11 @@ fn build_table_and_tabular_update_queries(
                 t.fs_location,
                 t.fs_protocol
         )
-        SELECT 
-            u.*, 
+        SELECT
+            u.*,
             w.version as warehouse_version,
             n.namespace_name,
-            n.version as namespace_version,
-            NULL::text[] as view_properties_keys,
-            NULL::text[] as view_properties_values,
-            NULL::text[] as table_properties_keys,
-            NULL::text[] as table_properties_values
+            n.version as namespace_version
         FROM updated u
         INNER JOIN warehouse w ON u.warehouse_id = w.warehouse_id
         INNER JOIN namespace n ON n.namespace_id = u.namespace_id AND n.warehouse_id = u.warehouse_id
@@ -835,5 +829,118 @@ mod tests {
         assert_eq!(new_metadata_loaded.len(), 1);
         let new_metadata_loaded = &new_metadata_loaded[0];
         pretty_assertions::assert_eq!(new_metadata_loaded.table_metadata, new_metadata);
+    }
+
+    /// Regression test: removing the last/only table property must persist after reload.
+    ///
+    /// Previously, `set_table_properties` early-returned when the new property
+    /// map was empty, so the DELETE from `table_properties` never ran and the
+    /// stale row resurfaced on the next load.
+    #[sqlx::test]
+    async fn test_remove_last_property_persists_after_reload(pool: sqlx::PgPool) {
+        let (previous_table_info, previous_metadata) = setup_table(pool.clone()).await;
+        let warehouse_id = previous_table_info.warehouse_id;
+        let table_id = TableId::from(previous_metadata.uuid());
+
+        // Step 1: set a single property on the table.
+        let prev_loc = previous_table_info
+            .metadata_location
+            .clone()
+            .unwrap()
+            .to_string();
+        let set_build = previous_metadata
+            .clone()
+            .into_builder(Some(prev_loc.clone()))
+            .set_properties(HashMap::from_iter(vec![(
+                "lakekeeper.history.expire.enabled".to_string(),
+                "true".to_string(),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap();
+        let after_set_metadata = set_build.metadata;
+        let new_loc_1 =
+            Location::from_str("s3://bucket/test/location/metadata/metadata2.json").unwrap();
+        let commit_1 = TableCommit {
+            new_metadata: Arc::new(after_set_metadata.clone()),
+            new_metadata_location: new_loc_1.clone(),
+            previous_metadata_location: Some(
+                previous_table_info.metadata_location.clone().unwrap(),
+            ),
+            updates: Arc::new(set_build.changes),
+            diffs: calculate_diffs(&after_set_metadata, &previous_metadata, 1, 0),
+        };
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit_1], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Sanity-check: property is visible after reload.
+        let mut t = pool.begin().await.unwrap();
+        let loaded = PostgresBackend::load_tables(
+            warehouse_id,
+            [table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(
+            loaded[0]
+                .table_metadata
+                .properties()
+                .get("lakekeeper.history.expire.enabled"),
+            Some(&"true".to_string()),
+            "property should be set after the first commit"
+        );
+
+        // Step 2: remove that one property; the new property map is empty.
+        let remove_build = after_set_metadata
+            .clone()
+            .into_builder(Some(new_loc_1.to_string()))
+            .remove_properties(&["lakekeeper.history.expire.enabled".to_string()])
+            .unwrap()
+            .build()
+            .unwrap();
+        let after_remove_metadata = remove_build.metadata;
+        assert!(
+            after_remove_metadata.properties().is_empty(),
+            "test precondition: new metadata properties must be empty to trigger the bug path"
+        );
+        let new_loc_2 =
+            Location::from_str("s3://bucket/test/location/metadata/metadata3.json").unwrap();
+        let commit_2 = TableCommit {
+            new_metadata: Arc::new(after_remove_metadata.clone()),
+            new_metadata_location: new_loc_2,
+            previous_metadata_location: Some(new_loc_1),
+            updates: Arc::new(remove_build.changes),
+            diffs: calculate_diffs(&after_remove_metadata, &after_set_metadata, 1, 0),
+        };
+        let mut t = pool.begin().await.unwrap();
+        commit_table_transaction(warehouse_id, vec![commit_2], &mut t)
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // The real test: reload from Postgres and verify the row is gone.
+        let mut t = pool.begin().await.unwrap();
+        let loaded = PostgresBackend::load_tables(
+            warehouse_id,
+            [table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut t,
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert!(
+            loaded[0].table_metadata.properties().is_empty(),
+            "property must be gone after reload, found: {:?}",
+            loaded[0].table_metadata.properties(),
+        );
     }
 }

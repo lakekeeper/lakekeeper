@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH requested AS (\n            SELECT ARRAY(SELECT jsonb_array_elements_text(r))::text[] AS namespace_name\n            FROM UNNEST($2::jsonb[]) AS r\n        )\n        SELECT n.namespace_name AS \"namespace_name!\", n.namespace_id AS \"namespace_id!\"\n        FROM namespace n\n        INNER JOIN requested r ON r.namespace_name = n.namespace_name\n        WHERE n.warehouse_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "namespace_name!",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "namespace_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "namespace",
+            "name": "namespace_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "JsonbArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "dfb8cd4882462dafefaf392847c074401414736bbaf1a2074ddc2ddc65e7bee0"
+}

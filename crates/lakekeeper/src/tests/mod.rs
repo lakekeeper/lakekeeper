@@ -1,22 +1,25 @@
+use std::sync::Arc;
+
 use crate::{
     ProjectId,
     api::{
         RequestMetadata,
         management::v1::{
             ApiServer,
-            server::{APACHE_LICENSE_STATUS, BootstrapRequest, Service as _},
+            server::{APACHE_LICENSE_STATUS, BootstrapRequest, DEFAULT_BUILD_INFO, Service as _},
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
         },
     },
     implementations::{
         CatalogState,
-        postgres::{PostgresBackend, SecretsState, migrations::migrate},
+        postgres::{PostgresBackend, SecretsState, migrations::migrate_core_only},
     },
     service::{
-        UserId,
+        ArcProjectId, UserId,
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
         namespace_cache::NamespaceCacheEventListener,
+        role_cache::RoleCacheEventListener,
         storage::{StorageCredential, StorageProfile},
         warehouse_cache::WarehouseCacheEventListener,
     },
@@ -29,7 +32,17 @@ mod drop_warehouse;
 #[cfg(test)]
 mod endpoint_stats;
 #[cfg(test)]
+mod generic_table_name_collision;
+#[cfg(test)]
+mod generic_table_protection;
+#[cfg(test)]
 mod namespace_ops;
+#[cfg(test)]
+mod referenced_by;
+#[cfg(test)]
+mod referenced_by_generic_table;
+#[cfg(test)]
+mod role_ops;
 #[cfg(test)]
 mod soft_deletion;
 #[cfg(test)]
@@ -56,12 +69,27 @@ pub fn memory_io_profile() -> StorageProfile {
     crate::service::storage::MemoryProfile::default().into()
 }
 
+/// Test-only public reach into [`crate::service::post_migration_hooks`]'s
+/// `pub(crate)` backfill helper. Downstream test crates
+/// drive specific spec lists through this wrapper to
+/// avoid installing the process-wide registry (`OnceLock`), which would
+/// pollute every other test in the same binary.
+///
+/// Production callers must go through
+/// [`crate::service::run_post_migration_hooks`].
+pub async fn upsert_system_roles_in_all_projects<C: crate::service::CatalogStore>(
+    state: C::State,
+    roles: &[crate::service::SystemRoleSpec],
+) -> anyhow::Result<()> {
+    crate::service::upsert_system_roles_in_all_projects::<C>(state, roles).await
+}
+
 #[derive(Debug)]
 pub struct TestWarehouseResponse {
     pub warehouse_id: WarehouseId,
-    pub project_id: ProjectId,
+    pub project_id: ArcProjectId,
     pub warehouse_name: String,
-    pub additional_warehouses: Vec<(ProjectId, WarehouseId, String)>,
+    pub additional_warehouses: Vec<(ArcProjectId, WarehouseId, String)>,
 }
 
 pub async fn spawn_build_in_queues<T: Authorizer>(
@@ -96,7 +124,7 @@ pub struct SetupTestCatalog<T: Authorizer> {
     #[builder(default = 1)]
     number_of_warehouses: usize,
     #[builder(default)]
-    project_id: Option<ProjectId>,
+    project_id: Option<ArcProjectId>,
 }
 
 impl<T: Authorizer> SetupTestCatalog<T> {
@@ -114,7 +142,7 @@ impl<T: Authorizer> SetupTestCatalog<T> {
             self.delete_profile,
             self.user_id,
             self.number_of_warehouses,
-            self.project_id,
+            self.project_id.map(Arc::unwrap_or_clone),
         )
         .await
     }
@@ -134,12 +162,47 @@ pub(crate) async fn setup<T: Authorizer>(
     ApiContext<State<T, PostgresBackend, SecretsState>>,
     TestWarehouseResponse,
 ) {
+    let (ctx, warehouse, _registry) = setup_with_registry(
+        pool,
+        storage_profile,
+        storage_credential,
+        authorizer,
+        delete_profile,
+        user_id,
+        number_of_warehouses,
+        project_id,
+    )
+    .await;
+    (ctx, warehouse)
+}
+
+/// Like [`setup`] but also returns the `TaskQueueRegistry` so tests can
+/// register additional queues (e.g. a `user_schedulable=true` fixture for
+/// scheduling-endpoint lifecycle tests). The registry shares interior-mutable
+/// state with the `RegisteredTaskQueues` inside the returned `ApiContext`,
+/// so a later `register_queue` call is visible to subsequent endpoint
+/// invocations on `ctx` — no rebuild needed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn setup_with_registry<T: Authorizer>(
+    pool: PgPool,
+    storage_profile: StorageProfile,
+    storage_credential: Option<StorageCredential>,
+    authorizer: T,
+    delete_profile: TabularDeleteProfile,
+    user_id: Option<UserId>,
+    number_of_warehouses: usize,
+    project_id: Option<ProjectId>,
+) -> (
+    ApiContext<State<T, PostgresBackend, SecretsState>>,
+    TestWarehouseResponse,
+    TaskQueueRegistry,
+) {
     assert!(
         number_of_warehouses > 0,
         "Number of warehouses must be greater than 0",
     );
-    migrate(&pool).await.unwrap();
-    let api_context = get_api_context(&pool, authorizer).await;
+    migrate_core_only(&pool).await.unwrap();
+    let (api_context, registry) = get_api_context_with_registry(&pool, authorizer).await;
 
     let metadata = if let Some(user_id) = user_id {
         RequestMetadata::test_user(user_id)
@@ -167,6 +230,8 @@ pub(crate) async fn setup<T: Authorizer>(
             storage_profile,
             storage_credential,
             delete_profile,
+            allowed_format_versions: None,
+            default_format_version: None,
         },
         api_context.clone(),
         metadata.clone(),
@@ -179,10 +244,12 @@ pub(crate) async fn setup<T: Authorizer>(
         let create_wh_response = ApiServer::create_warehouse(
             CreateWarehouseRequest {
                 warehouse_name: warehouse_name.clone(),
-                project_id: Some(warehouse.project_id()),
+                project_id: Some(Arc::unwrap_or_clone(warehouse.project_id())),
                 storage_profile: memory_io_profile(),
                 storage_credential: None,
                 delete_profile,
+                allowed_format_versions: None,
+                default_format_version: None,
             },
             api_context.clone(),
             metadata.clone(),
@@ -203,13 +270,31 @@ pub(crate) async fn setup<T: Authorizer>(
             warehouse_name,
             additional_warehouses,
         },
+        registry,
     )
 }
 
+/// Backwards-compatible wrapper for callers that don't need the registry.
+/// Prefer [`get_api_context_with_registry`] for new tests that need to
+/// register additional queues post-bootstrap.
+#[allow(dead_code)] // Some call sites are only enabled under specific feature combos.
 pub(crate) async fn get_api_context<T: Authorizer>(
     pool: &PgPool,
     auth: T,
 ) -> ApiContext<State<T, PostgresBackend, SecretsState>> {
+    get_api_context_with_registry(pool, auth).await.0
+}
+
+/// Like [`get_api_context`] but also returns the `TaskQueueRegistry`.
+/// Lets tests register additional queues into the same shared state the
+/// returned `ApiContext` reads from.
+pub(crate) async fn get_api_context_with_registry<T: Authorizer>(
+    pool: &PgPool,
+    auth: T,
+) -> (
+    ApiContext<State<T, PostgresBackend, SecretsState>>,
+    TaskQueueRegistry,
+) {
     let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
     let secret_store = SecretsState::from_pools(pool.clone(), pool.clone());
 
@@ -223,7 +308,7 @@ pub(crate) async fn get_api_context<T: Authorizer>(
         )
         .await;
     let registered_task_queues = task_queues.registered_task_queues();
-    ApiContext {
+    let ctx = ApiContext {
         v1_state: State {
             authz: auth,
             catalog: catalog_state,
@@ -232,11 +317,14 @@ pub(crate) async fn get_api_context<T: Authorizer>(
             events: EventDispatcher::new(vec![
                 std::sync::Arc::new(WarehouseCacheEventListener {}),
                 std::sync::Arc::new(NamespaceCacheEventListener {}),
+                std::sync::Arc::new(RoleCacheEventListener {}),
             ]),
             registered_task_queues,
             license_status: &APACHE_LICENSE_STATUS,
+            build_info: &DEFAULT_BUILD_INFO,
         },
-    }
+    };
+    (ctx, task_queues)
 }
 
 pub(crate) fn random_request_metadata() -> RequestMetadata {

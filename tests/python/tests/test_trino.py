@@ -117,6 +117,28 @@ def test_nested_schema(trino, warehouse: conftest.Warehouse):
     )
 
 
+def test_table_in_nested_schema(trino, warehouse: conftest.Warehouse):
+    cur = trino.cursor()
+    cur.execute("CREATE SCHEMA test_table_in_nested_schema_trino")
+    cur.execute('CREATE SCHEMA "test_table_in_nested_schema_trino.nested"')
+    cur.execute(
+        "CREATE TABLE \"test_table_in_nested_schema_trino.nested\".my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    loaded_table = warehouse.pyiceberg_catalog.load_table(
+        ("test_table_in_nested_schema_trino", "nested", "my_table")
+    )
+    assert len(loaded_table.schema().fields) == 3
+    cur.execute(
+        "INSERT INTO \"test_table_in_nested_schema_trino.nested\".my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')"
+    )
+    r = cur.execute(
+        'SELECT * FROM "test_table_in_nested_schema_trino.nested".my_table ORDER BY my_ints'
+    ).fetchall()
+    assert len(r) == 2
+    assert r[0] == [1, 1.0, "a"]
+    assert r[1] == [2, 2.0, "b"]
+
+
 def test_set_properties(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA test_set_properties_trino")
@@ -752,6 +774,30 @@ def test_table_extra_properties(trino, warehouse: conftest.Warehouse):
     assert r == [["extra.property.one", "foo"]]
 
 
+def test_select_from_view_on_view(trino, warehouse: conftest.Warehouse):
+    # View-on-view: the outer view's DEFINER-run-as-owner check on the inner
+    # view reaches Trino as CreateViewWithSelectFromColumns on the inner
+    # view's name. The OPA bridge must permit that via the view path;
+    # table-lookup at Lakekeeper returns not-found for a view and would
+    # otherwise deny.
+    ns = "test_select_from_view_on_view"
+    cur = trino.cursor()
+    cur.execute(f"CREATE SCHEMA {ns}")
+    cur.execute(
+        f"CREATE TABLE {ns}.my_table (my_ints INT, my_floats DOUBLE, strings VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(f"INSERT INTO {ns}.my_table VALUES (1, 1.0, 'a'), (2, 2.0, 'b')")
+    cur.execute(
+        f"CREATE OR REPLACE VIEW {ns}.inner_view AS SELECT strings FROM {ns}.my_table"
+    )
+    cur.execute(
+        f"CREATE OR REPLACE VIEW {ns}.outer_view AS SELECT strings FROM {ns}.inner_view"
+    )
+
+    r = cur.execute(f"SELECT * FROM {ns}.outer_view ORDER BY strings").fetchall()
+    assert r == [["a"], ["b"]]
+
+
 def test_create_view_security_invoker(trino, warehouse: conftest.Warehouse):
     cur = trino.cursor()
     cur.execute("CREATE SCHEMA test_create_view_security_invoker_trino")
@@ -764,3 +810,235 @@ def test_create_view_security_invoker(trino, warehouse: conftest.Warehouse):
     assert ["my_view"] in cur.execute(
         f"SHOW TABLES IN test_create_view_security_invoker_trino"
     ).fetchall()
+
+
+def test_inline_function(trino):
+    """Test Trino inline SQL functions (WITH FUNCTION) on Iceberg table data."""
+    ns = "test_inline_function"
+    cur = trino.cursor()
+    cur.execute(f"CREATE SCHEMA {ns}")
+    cur.execute(
+        f"CREATE TABLE {ns}.my_table (id INT, value INT) WITH (format='PARQUET')"
+    )
+    cur.execute(
+        f"INSERT INTO {ns}.my_table VALUES (1, 10), (2, 20), (3, 30)"
+    )
+
+    r = cur.execute(
+        f"WITH "
+        f"  FUNCTION triple(x INTEGER) "
+        f"    RETURNS INTEGER "
+        f"    RETURN x * 3 "
+        f"SELECT id, triple(value) AS tripled "
+        f"FROM {ns}.my_table "
+        f"ORDER BY id"
+    ).fetchall()
+    assert r == [[1, 30], [2, 60], [3, 90]]
+
+
+def test_builtin_functions(trino):
+    """Test that Trino builtin functions work correctly on Iceberg table data."""
+    ns = "test_builtin_functions"
+    cur = trino.cursor()
+    cur.execute(f"CREATE SCHEMA {ns}")
+    cur.execute(
+        f"CREATE TABLE {ns}.events ("
+        f"  id INT,"
+        f"  name VARCHAR,"
+        f"  amount DOUBLE,"
+        f"  ts TIMESTAMP(6),"
+        f"  payload VARCHAR"
+        f") WITH (format='PARQUET')"
+    )
+    cur.execute(
+        f"INSERT INTO {ns}.events VALUES "
+        f"(1, 'alice', 10.5,  TIMESTAMP '2024-01-15 08:30:00', '{{\"key\": \"v1\"}}'),"
+        f"(2, 'bob',   20.0,  TIMESTAMP '2024-02-20 14:00:00', '{{\"key\": \"v2\"}}'),"
+        f"(3, 'alice', 30.75, TIMESTAMP '2024-03-10 22:15:00', '{{\"key\": \"v3\"}}'),"
+        f"(4, 'carol', NULL,  TIMESTAMP '2024-04-05 03:45:00', NULL),"
+        f"(5, 'bob',   50.0,  TIMESTAMP '2024-01-31 18:00:00', '{{\"key\": \"v5\"}}')"
+    )
+
+    # Aggregation functions
+    r = cur.execute(
+        f"SELECT count(*), sum(amount), avg(amount), min(amount), max(amount) "
+        f"FROM {ns}.events"
+    ).fetchone()
+    assert r[0] == 5
+    assert abs(r[1] - 111.25) < 0.01
+    assert r[2] is not None
+    assert abs(r[3] - 10.5) < 0.01
+    assert abs(r[4] - 50.0) < 0.01
+
+    # String functions
+    r = cur.execute(
+        f"SELECT upper(name), length(name), substr(name, 1, 3), concat(name, '_x') "
+        f"FROM {ns}.events WHERE id = 1"
+    ).fetchone()
+    assert r == ["ALICE", 5, "ali", "alice_x"]
+
+    # Date/time functions
+    r = cur.execute(
+        f"SELECT year(ts), month(ts), day(ts), hour(ts) "
+        f"FROM {ns}.events WHERE id = 1"
+    ).fetchone()
+    assert r == [2024, 1, 15, 8]
+
+    # Window functions
+    r = cur.execute(
+        f"SELECT id, name, amount, "
+        f"  row_number() OVER (PARTITION BY name ORDER BY amount DESC) as rn "
+        f"FROM {ns}.events WHERE amount IS NOT NULL "
+        f"ORDER BY name, rn"
+    ).fetchall()
+    # alice: 30.75 (rn=1), 10.5 (rn=2); bob: 50.0 (rn=1), 20.0 (rn=2)
+    assert r[0][1] == "alice" and r[0][3] == 1
+    assert r[1][1] == "alice" and r[1][3] == 2
+    assert r[2][1] == "bob" and r[2][3] == 1
+    assert r[3][1] == "bob" and r[3][3] == 2
+
+    # CASE, COALESCE, IF
+    r = cur.execute(
+        f"SELECT "
+        f"  coalesce(amount, 0) as filled_amount, "
+        f"  if(amount IS NULL, 'missing', 'present') as status, "
+        f"  CASE WHEN amount > 25 THEN 'high' ELSE 'low' END as tier "
+        f"FROM {ns}.events WHERE id = 4"
+    ).fetchone()
+    assert r == [0.0, "missing", "low"]
+
+    # GROUP BY with HAVING and array_agg
+    r = cur.execute(
+        f"SELECT name, count(*) as cnt, array_agg(id ORDER BY id) as ids "
+        f"FROM {ns}.events GROUP BY name HAVING count(*) > 1 ORDER BY name"
+    ).fetchall()
+    assert len(r) == 2
+    assert r[0][0] == "alice" and r[0][1] == 2 and r[0][2] == [1, 3]
+    assert r[1][0] == "bob" and r[1][1] == 2 and r[1][2] == [2, 5]
+
+    # JSON extract
+    r = cur.execute(
+        f"SELECT json_extract_scalar(payload, '$.key') "
+        f"FROM {ns}.events WHERE id = 1"
+    ).fetchone()
+    assert r[0] == "v1"
+
+    # date_diff
+    r = cur.execute(
+        f"SELECT date_diff('day', min(ts), max(ts)) FROM {ns}.events"
+    ).fetchone()
+    assert r[0] > 0
+
+    # Subquery / CTE
+    r = cur.execute(
+        f"WITH ranked AS ("
+        f"  SELECT name, amount, rank() OVER (ORDER BY amount DESC) as rnk "
+        f"  FROM {ns}.events WHERE amount IS NOT NULL"
+        f") SELECT name, amount FROM ranked WHERE rnk = 1"
+    ).fetchone()
+    assert r[0] == "bob"
+    assert abs(r[1] - 50.0) < 0.01
+
+
+def test_special_characters_in_names(trino):
+    """Test various UTF-8 special characters in schema and table names"""
+    cur = trino.cursor()
+
+    # In Trino, identifiers with special characters are quoted with double quotes.
+    # Nested namespaces are expressed as "parent.child" (dot-separated within quotes).
+    special_schema_names = [
+        "tsc_namespace with spaces",
+        "tsc_namespace-with-hyphens",
+        "tsc_naméspace_with_àccents_ñ",
+        "tsc_namespace_with_ümlauts_ä_ö",
+        "tsc_namespace_中文_日本語",
+        "tsc_namespace_🚀_emoji_✨",
+        "tsc_namespace%with%percent",
+    ]
+
+    special_table_names = [
+        "table-with-hyphens",
+        "tablé_with_àccents_ñ",
+        "table_with_ümlauts_ä_ö",
+        "table_中文_日本語",
+        "table_🚀_emoji_✨",
+        "table with spaces",
+    ]
+
+    # Test creating schemas with special characters
+    for i, schema_name in enumerate(special_schema_names):
+        cur.execute(f'CREATE SCHEMA "{schema_name}"')
+
+        # Verify schema was created
+        schemas = [row[0] for row in cur.execute("SHOW SCHEMAS").fetchall()]
+        assert schema_name in schemas
+
+        # Create a table in the special schema and insert/read data
+        cur.execute(
+            f"CREATE TABLE \"{schema_name}\".my_table (id INT, value VARCHAR) WITH (format='PARQUET')"
+        )
+        cur.execute(
+            f"""INSERT INTO "{schema_name}".my_table VALUES ({i + 1}, 'test_{i}')"""
+        )
+        r = cur.execute(f'SELECT id, value FROM "{schema_name}".my_table').fetchall()
+        assert len(r) == 1
+        assert r[0][0] == i + 1
+        assert r[0][1] == f"test_{i}"
+
+    # Test creating tables with special character names inside a regular schema
+    root_schema = "tsc_root_schema"
+    cur.execute(f"CREATE SCHEMA {root_schema}")
+
+    for i, table_name in enumerate(special_table_names):
+        cur.execute(
+            f"""CREATE TABLE {root_schema}."{table_name}" (id INT, value VARCHAR) WITH (format='PARQUET')"""
+        )
+        cur.execute(
+            f"""INSERT INTO {root_schema}."{table_name}" VALUES ({i}, 'value_{i}')"""
+        )
+
+        r = cur.execute(
+            f'SELECT id, value FROM {root_schema}."{table_name}"'
+        ).fetchall()
+        assert len(r) == 1
+        assert r[0][0] == i
+        assert r[0][1] == f"value_{i}"
+
+        # Verify table appears in listing
+        tables = [
+            row[0] for row in cur.execute(f"SHOW TABLES IN {root_schema}").fetchall()
+        ]
+        assert table_name in tables
+
+    # Test deeply nested schemas with special characters.
+    # Trino represents nested namespaces as "level1.level2.level3" (dot-separated).
+    cur.execute('CREATE SCHEMA "tsc_nested_parent"')
+    cur.execute('CREATE SCHEMA "tsc_nested_parent.child_ä"')
+    cur.execute('CREATE SCHEMA "tsc_nested_parent.child_ä.lëvel_🚀"')
+
+    cur.execute(
+        'CREATE TABLE "tsc_nested_parent.child_ä.lëvel_🚀"."tåble_émoji_🎯" '
+        "(id INT, data VARCHAR) WITH (format='PARQUET')"
+    )
+    cur.execute(
+        """INSERT INTO "tsc_nested_parent.child_ä.lëvel_🚀"."tåble_émoji_🎯" VALUES (42, 'nested_data')"""
+    )
+    r = cur.execute(
+        'SELECT id, data FROM "tsc_nested_parent.child_ä.lëvel_🚀"."tåble_émoji_🎯"'
+    ).fetchall()
+    assert len(r) == 1
+    assert r[0][0] == 42
+    assert r[0][1] == "nested_data"
+
+    # Test renaming a table to a name with special characters
+    cur.execute(
+        f"CREATE TABLE {root_schema}.rename_test (id INT) WITH (format='PARQUET')"
+    )
+    new_name = "rënamed_tåble_🎯"
+    cur.execute(
+        f'ALTER TABLE {root_schema}.rename_test RENAME TO {root_schema}."{new_name}"'
+    )
+
+    cur.execute(f'INSERT INTO {root_schema}."{new_name}" VALUES (42)')
+    r = cur.execute(f'SELECT id FROM {root_schema}."{new_name}"').fetchall()
+    assert r[0][0] == 42

@@ -1,4 +1,4 @@
-mod commit;
+pub(crate) mod commit;
 pub(crate) mod create;
 mod drop;
 mod exists;
@@ -15,7 +15,7 @@ use crate::{
         v1::{
             ApiContext, CommitViewRequest, CreateViewRequest, DataAccessMode, ListTablesQuery,
             ListTablesResponse, LoadViewResult, NamespaceParameters, Prefix, RenameTableRequest,
-            Result, ViewParameters,
+            Result, ViewParameters, views::LoadViewRequest,
         },
     },
     request_metadata::RequestMetadata,
@@ -50,11 +50,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     /// Load a view from the catalog
     async fn load_view(
         parameters: ViewParameters,
+        request: LoadViewRequest,
         state: ApiContext<State<A, C, S>>,
-        data_access: impl Into<DataAccessMode> + Send,
         request_metadata: RequestMetadata,
     ) -> Result<LoadViewResult> {
-        load::load_view(parameters, state, data_access, request_metadata).await
+        load::load_view(parameters, request, state, request_metadata).await
     }
 
     /// Commit updates to a view
@@ -128,7 +128,7 @@ mod test {
     use uuid::Uuid;
 
     use crate::{
-        ProjectId, WarehouseId,
+        WarehouseId,
         api::{
             ApiContext, RequestMetadata,
             iceberg::v1::{DropParams, PaginationQuery, ViewParameters, views::ViewService},
@@ -143,8 +143,8 @@ mod test {
             views::validate_view_properties,
         },
         service::{
-            CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State, TabularListFlags,
-            ViewId,
+            ArcProjectId, CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State,
+            TabularListFlags, ViewId,
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
         },
@@ -157,7 +157,7 @@ mod test {
         ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>,
         NamespaceIdent,
         WarehouseId,
-        ProjectId,
+        ArcProjectId,
     ) {
         let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
         let state = api_context.v1_state.catalog.clone();

@@ -261,7 +261,6 @@ Basic setup in Starburst:
     )
     ```
 
-
 ## <img src="/assets/spark.svg" width="40" background-color="red"> Spark
 
 The following docker compose examples are available for spark:
@@ -486,3 +485,52 @@ SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 -- Set persistent for the system
 ALTER SYSTEM SET iceberg_engine_connection = 'public.lakekeeper_catalog_conn';
 ```
+
+## <img src="/assets/fluss.svg" width="30"> Apache Fluss
+
+[Apache Fluss](https://fluss.apache.org/) is a streaming storage system that can tier streaming data into Iceberg tables via its [Streaming Lakehouse](https://fluss.apache.org/docs/streaming-lakehouse/overview/) feature. Lakekeeper can be used as the Iceberg REST catalog for this tiering, so that tiered data is immediately queryable by any Iceberg-compatible engine through Lakekeeper. For details on how Fluss integrates with Iceberg specifically, see the [Fluss Iceberg integration docs](https://fluss.apache.org/docs/streaming-lakehouse/integrate-data-lakes/iceberg/).
+
+To point Fluss at Lakekeeper, set the following properties in `server.yaml`. Fluss strips the `datalake.iceberg.` prefix and passes the remainder as native Iceberg REST catalog properties. The snippet below assumes Lakekeeper is running without authentication; if authentication is enabled, additional properties need to be set (see f. ex. [Spark](#spark)).
+
+```yaml
+datalake.format: iceberg
+datalake.iceberg.type: rest
+datalake.iceberg.uri: http://<lakekeeper-host>:<lakekeeper-port>/catalog
+datalake.iceberg.warehouse: <warehouse-name>
+```
+
+A Docker Compose example including Fluss, the tiering service, and Lakekeeper is available in the `examples/fluss` directory of the Lakekeeper repository.
+
+## <img src="/assets/firebolt.svg" width="30" alt="Firebolt"> Firebolt
+
+[Firebolt](https://www.firebolt.io/) is a high-performance, scale-out analytical database. [Firebolt Core](https://github.com/firebolt-db/firebolt-core) is the free, self-hosted edition packaged as a single Docker image. Both connect to Lakekeeper through the same `CREATE LOCATION` syntax.
+
+Firebolt supports vended-credentials from Iceberg REST Catalogs for S3, so no S3 credentials need to be configured on Firebolt. This works for both AWS S3 and self-hosted S3-compatible object stores (e.g. MinIO, RustFS).
+
+=== "S3-Compatible"
+
+    ```sql
+    CREATE LOCATION lakekeeper
+    WITH
+        SOURCE = ICEBERG
+        CATALOG = REST
+        CATALOG_OPTIONS = (
+            URL = '<Lakekeeper Catalog URI, i.e. https://lakekeeper.example.com/catalog>'
+            WAREHOUSE = '<Name of the Warehouse in Lakekeeper>'
+            NAMESPACE = '<Namespace identifier>'
+            TABLE = '<Table name>'
+        )
+        -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
+        CREDENTIALS = (
+            OAUTH_CLIENT_ID = '<Client-ID>'
+            OAUTH_CLIENT_SECRET = '<Client-Secret>'
+            OAUTH_SERVER_URL = '<Token Endpoint of your IdP, i.e. https://keycloak.example.com/realms/iceberg/protocol/openid-connect/token>'
+            -- Optional:
+            OAUTH_SCOPE = '<Scopes to request from the IdP, i.e. lakekeeper>'
+        );
+
+    -- Read the table
+    SELECT * FROM READ_ICEBERG(LOCATION => 'lakekeeper');
+    ```
+
+Refer to the [Firebolt CREATE LOCATION (Iceberg) docs](https://docs.firebolt.io/reference-sql/commands/data-definition/create-location-iceberg) for additional options.

@@ -11,6 +11,10 @@ description = """
 Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
+[package.metadata.cargo-machete]
+# Imported as `cloudevents`
+ignored = ["cloudevents-sdk"]
+
 [features]
 all = [
     "sqlx-postgres",
@@ -36,25 +40,22 @@ open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 anyhow = { workspace = true }
 async-channel = { workspace = true }
 async-nats = { workspace = true, optional = true }
-async-stream = { workspace = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-sdk-sts = { workspace = true }
 aws-sigv4 = { workspace = true, optional = true }
-aws-smithy-http = { workspace = true }
-aws-smithy-http-client = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true, features = ["typed-header"] }
 axum-prometheus = { workspace = true }
 azure_core = { workspace = true }
-azure_identity = { workspace = true }
 azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
+crc = { workspace = true }
 derive_more = { workspace = true }
 fastrand = { workspace = true }
 figment = { workspace = true }
@@ -70,17 +71,13 @@ iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
-jsonwebtoken = { workspace = true }
-jwks_client_rs = { workspace = true }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
     "storage-adls",
     "storage-gcs",
 ] }
 lazy-regex = { workspace = true }
-lazy_static = { workspace = true }
 limes = { workspace = true }
-middle = { workspace = true }
 moka = { workspace = true }
 pastey = { workspace = true }
 percent-encoding = { workspace = true }
@@ -91,12 +88,14 @@ semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_norway = { workspace = true, optional = true }
+serde_urlencoded = { workspace = true }
 sqlx = { workspace = true, optional = true, features = ["tls-rustls"] }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
+tokio-metrics = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = [
@@ -115,13 +114,15 @@ utoipa = { workspace = true, features = ["uuid"], optional = true }
 utoipa-swagger-ui = { workspace = true, optional = true }
 uuid = { workspace = true }
 valuable = { workspace = true, features = ["derive"] }
-vaultrs = "0.7.2"
-vaultrs-login = "0.2.1"
+vaultrs = "0.8"
+vaultrs-login = "0.2.4"
 veil = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 
 [dev-dependencies]
 assert-json-diff = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 http-body-util = { workspace = true }
 lakekeeper = { path = ".", features = ["test-utils"] }
@@ -130,9 +131,8 @@ maplit = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_norway = { workspace = true }
-serde_urlencoded = "0.7.1"
 similar = { workspace = true }
-tempfile = { version = "3.20" }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
 tracing-subscriber = { workspace = true }

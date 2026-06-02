@@ -6,17 +6,18 @@ use std::{
 use futures::future::try_join_all;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata, management::v1::role::Role},
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
     async_trait,
     axum::Router,
     service::{
-        Actor, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo, CatalogStore, ErrorModel,
-        NamespaceId, NamespaceWithParent, ResolvedWarehouse, RoleId, SecretStore, ServerId, State,
-        TableId, UserId, ViewId,
+        Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
+        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, NamespaceId, NamespaceWithParent,
+        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
         authz::{
-            AuthorizationBackendUnavailable, Authorizer, CannotInspectPermissions,
-            CatalogProjectAction, CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
-            NamespaceParent, UserOrRole,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
+            AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
+            CatalogUserAction, IsAllowedActionError, ListProjectsResponse, NamespaceParent,
+            UserOrRole,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -26,7 +27,7 @@ use lakekeeper::{
 use openfga_client::{
     client::{
         BasicOpenFgaClient, BatchCheckItem, CheckRequestTupleKey, ConsistencyPreference,
-        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition,
+        ReadRequestTupleKey, ReadResponse, Tuple, TupleKey, TupleKeyWithoutCondition, WriteOptions,
         batch_check_single_result::CheckResult,
     },
     tonic,
@@ -43,8 +44,9 @@ use crate::{
     },
     models::OpenFgaType,
     relations::{
-        self, NamespaceRelation, OpenFgaRelation, ProjectRelation, ReducedRelation, RoleRelation,
-        ServerRelation, TableRelation, ViewRelation, WarehouseRelation,
+        self, GenericTableRelation, NamespaceRelation, OpenFgaRelation, ProjectRelation,
+        ReducedRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
+        WarehouseRelation,
     },
 };
 
@@ -70,6 +72,14 @@ impl OpenFGAAuthorizer {
             server_id,
         }
     }
+
+    /// Reference to the underlying OpenFGA store client. Exposed for
+    /// maintenance entry points (e.g. reconcile) that need to issue
+    /// store-level reads/writes alongside the authorizer.
+    #[must_use]
+    pub fn client(&self) -> &BasicOpenFgaClient {
+        &self.client
+    }
 }
 
 /// Implements batch checks for the `are_allowed_x_actions` methods.
@@ -81,6 +91,7 @@ impl Authorizer for OpenFGAAuthorizer {
     type NamespaceAction = NamespaceRelation;
     type TableAction = TableRelation;
     type ViewAction = ViewRelation;
+    type GenericTableAction = GenericTableRelation;
     type UserAction = CatalogUserAction;
     type RoleAction = RoleRelation;
 
@@ -104,13 +115,13 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn check_assume_role_impl(
         &self,
         principal: &UserId,
-        assumed_role: RoleId,
+        assumed_role: &Role,
         _request_metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         self.check(CheckRequestTupleKey {
             user: Actor::Principal(principal.clone()).to_openfga(),
             relation: relations::RoleRelation::CanAssume.to_string(),
-            object: assumed_role.to_openfga(),
+            object: assumed_role.id.to_openfga(),
         })
         .await
         .map_err(Into::into)
@@ -157,17 +168,24 @@ impl Authorizer for OpenFGAAuthorizer {
             ServerRelation::Admin
         };
 
-        self.write(
-            Some(vec![TupleKey {
-                user: user.to_openfga(),
-                relation: relation.to_string(),
-                object: self.openfga_server().clone(),
-                condition: None,
-            }]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)?;
+        // Idempotent: a re-bootstrap (after `lakekeeper reopen-bootstrap`)
+        // may run against an OpenFGA store that already holds the same
+        // admin/operator tuple — strict writes would fail in that case.
+        self.client
+            .write_with_options(
+                Some(vec![TupleKey {
+                    user: user.to_openfga(),
+                    relation: relation.to_string(),
+                    object: self.openfga_server().clone(),
+                    condition: None,
+                }]),
+                None,
+                WriteOptions::new_idempotent(),
+            )
+            .await
+            .inspect_err(|e| tracing::error!("Failed to write bootstrap tuple to OpenFGA: {e}"))
+            .map_err(crate::error::OpenFGAError::from)
+            .map_err(authz_to_error_no_audit)?;
 
         Ok(())
     }
@@ -175,7 +193,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn list_projects_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<ListProjectsResponse, AuthorizationBackendUnavailable> {
+    ) -> Result<ListProjectsResponse, AuthzBackendErrorOrBadRequest> {
         let actor = metadata.actor();
         self.list_projects_internal(actor).await.map_err(Into::into)
     }
@@ -183,7 +201,7 @@ impl Authorizer for OpenFGAAuthorizer {
     async fn can_search_users_impl(
         &self,
         metadata: &RequestMetadata,
-    ) -> Result<bool, AuthorizationBackendUnavailable> {
+    ) -> Result<bool, AuthzBackendErrorOrBadRequest> {
         // Currently all authenticated principals can search users
         Ok(metadata.actor().is_authenticated())
     }
@@ -198,8 +216,10 @@ impl Authorizer for OpenFGAAuthorizer {
         // This does not include assignments to the role.
         // Used for cross-project role get so that we can show role names and not just IDs.
 
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         // Separate CanRead actions from others to avoid unnecessary batch checks
         let mut results = Vec::with_capacity(roles_with_actions.len());
@@ -286,7 +306,10 @@ impl Authorizer for OpenFGAAuthorizer {
         if !batch_indices.is_empty() {
             let server_id = self.openfga_server().clone();
             let actor_openfga = metadata.actor().to_openfga();
-            let user = for_user.map_or_else(|| actor_openfga.clone(), OpenFgaEntity::to_openfga);
+            let user = for_user.map_or_else(
+                || actor_openfga.clone(),
+                |u| u.api_user_or_role().to_openfga(),
+            );
 
             let batch_results = self
                 .batch_check(vec![
@@ -336,8 +359,10 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         actions: &[Self::ServerAction],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
         let object = self.openfga_server().clone();
 
         let items: Vec<_> = actions
@@ -367,10 +392,12 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
-        projects_with_actions: &[(&ProjectId, Self::ProjectAction)],
+        projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
     ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = projects_with_actions
             .iter()
@@ -410,8 +437,10 @@ impl Authorizer for OpenFGAAuthorizer {
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
     ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = warehouses_with_actions
             .iter()
@@ -453,8 +482,10 @@ impl Authorizer for OpenFGAAuthorizer {
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
 
         let items: Vec<_> = actions
             .iter()
@@ -488,93 +519,186 @@ impl Authorizer for OpenFGAAuthorizer {
             .await
     }
 
-    async fn are_allowed_table_actions_impl(
+    async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        tables_with_actions: &[(
+        actions: &[(
             &NamespaceWithParent,
-            &impl AuthZTableInfo,
-            Self::TableAction,
+            ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
-
-        let items: Vec<_> = tables_with_actions
+        // Build check requests with per-action user handling
+        let items: Vec<_> = actions
             .iter()
-            .map(|(_ns, table, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: (table.warehouse_id(), table.table_id()).to_openfga(),
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.table_id()).to_openfga(),
+                }
             })
             .collect();
 
-        let guard_tuples = if for_user.is_some() {
-            // Collect unique table objects for permission checks
-            let unique_tables: HashSet<_> = tables_with_actions
-                .iter()
-                .map(|(_ns, table, _)| (table.warehouse_id(), table.table_id()).to_openfga())
-                .collect();
+        // Collect guard tuples for actions with explicit for_user, but skip for delegated execution
+        // Delegated execution (e.g., DEFINER views) uses the specified user's permissions directly
+        // without requiring permission inspection rights.
+        let mut guard_tuples = Vec::new();
+        let unique_tables_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some() && !action.is_delegated_execution)
+            .map(|(_, action)| (action.info.warehouse_id(), action.info.table_id()).to_openfga())
+            .collect();
 
-            unique_tables
-                .into_iter()
-                .map(|table_obj| CheckRequestTupleKey {
-                    user: metadata.actor().to_openfga(),
-                    relation: TableRelation::CanReadAssignments.to_string(),
-                    object: table_obj,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        guard_tuples.extend(unique_tables_needing_guards.into_iter().map(|table_obj| {
+            CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: TableRelation::CanReadAssignments.to_string(),
+                object: table_obj,
+            }
+        }));
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
             .await
     }
 
-    async fn are_allowed_view_actions_impl(
+    async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        views_with_actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, Self::ViewAction)],
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
     ) -> Result<Vec<bool>, IsAllowedActionError> {
-        let user =
-            for_user.map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
-
-        let items: Vec<_> = views_with_actions
+        // Build check requests with per-action user handling
+        let items: Vec<_> = actions
             .iter()
-            .map(|(_ns, view, a)| CheckRequestTupleKey {
-                user: user.clone(),
-                relation: a.to_string(),
-                object: (view.warehouse_id(), view.view_id()).to_openfga(),
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.view_id()).to_openfga(),
+                }
             })
             .collect();
 
-        let guard_tuples = if for_user.is_some() {
-            // Collect unique view objects for permission checks
-            let unique_views: HashSet<_> = views_with_actions
-                .iter()
-                .map(|(_ns, view, _)| (view.warehouse_id(), view.view_id()).to_openfga())
-                .collect();
+        // Collect guard tuples for actions with explicit for_user, but skip for delegated execution
+        // Delegated execution (e.g., DEFINER views) uses the specified user's permissions directly
+        // without requiring permission inspection rights.
+        let mut guard_tuples = Vec::new();
+        let unique_views_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some() && !action.is_delegated_execution)
+            .map(|(_, action)| (action.info.warehouse_id(), action.info.view_id()).to_openfga())
+            .collect();
 
-            unique_views
-                .into_iter()
-                .map(|view_obj| CheckRequestTupleKey {
-                    user: metadata.actor().to_openfga(),
-                    relation: ViewRelation::CanReadAssignments.to_string(),
-                    object: view_obj,
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        guard_tuples.extend(unique_views_needing_guards.into_iter().map(|view_obj| {
+            CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: ViewRelation::CanReadAssignments.to_string(),
+                object: view_obj,
+            }
+        }));
 
         self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
+    }
+
+    async fn are_allowed_generic_table_actions_impl<
+        A: Into<Self::GenericTableAction> + Send + Clone + Sync,
+    >(
+        &self,
+        metadata: &RequestMetadata,
+        _warehouse: &ResolvedWarehouse,
+        _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
+        )],
+    ) -> Result<Vec<bool>, IsAllowedActionError> {
+        // Build check requests with per-action user handling
+        let items: Vec<_> = actions
+            .iter()
+            .map(|(_, action)| {
+                let user = action
+                    .user
+                    .map_or_else(|| metadata.actor().to_openfga(), OpenFgaEntity::to_openfga);
+                CheckRequestTupleKey {
+                    user,
+                    relation: action.action.clone().into().to_string(),
+                    object: (action.info.warehouse_id(), action.info.generic_table_id())
+                        .to_openfga(),
+                }
+            })
+            .collect();
+
+        // Collect guard tuples for actions with explicit for_user, but skip for delegated execution.
+        let mut guard_tuples = Vec::new();
+        let unique_gts_needing_guards: HashSet<_> = actions
+            .iter()
+            .filter(|(_, action)| action.user.is_some() && !action.is_delegated_execution)
+            .map(|(_, action)| {
+                (action.info.warehouse_id(), action.info.generic_table_id()).to_openfga()
+            })
+            .collect();
+
+        guard_tuples.extend(unique_gts_needing_guards.into_iter().map(|gt_obj| {
+            CheckRequestTupleKey {
+                user: metadata.actor().to_openfga(),
+                relation: GenericTableRelation::CanReadAssignments.to_string(),
+                object: gt_obj,
+            }
+        }));
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
+    }
+
+    async fn create_generic_table(
+        &self,
+        metadata: &RequestMetadata,
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        parent: NamespaceId,
+    ) -> AuthorizerResult<()> {
+        let actor = metadata.actor();
+
+        // Higher consistency as for stage create overwrites old relations are deleted
+        // immediately before
+        self.require_no_relations(&(warehouse_id, generic_table_id))
+            .await?;
+
+        let mut tuples = crate::tuples::hierarchy_tuples_for_generic_table(
+            warehouse_id,
+            generic_table_id,
+            parent,
+        );
+        tuples.extend(crate::tuples::ownership_tuples_for_generic_table(
+            actor,
+            warehouse_id,
+            generic_table_id,
+        ));
+        self.write_higher_consistency(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn delete_generic_table(
+        &self,
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+    ) -> AuthorizerResult<()> {
+        self.delete_all_relations(&(warehouse_id, generic_table_id))
             .await
     }
 
@@ -590,33 +714,17 @@ impl Authorizer for OpenFGAAuthorizer {
         &self,
         metadata: &RequestMetadata,
         role_id: RoleId,
-        parent_project_id: ProjectId,
+        parent_project_id: ArcProjectId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
 
         self.require_no_relations(&role_id).await?;
-        let parent_id = parent_project_id.to_openfga();
-        let this_id = role_id.to_openfga();
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: RoleRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: RoleRelation::Project.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_role(&parent_project_id, role_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_role(actor, role_id));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_role(
@@ -635,34 +743,15 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(project_id).await?;
-        let server = self.openfga_server().clone();
-        let this_id = project_id.to_openfga();
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: ProjectRelation::ProjectAdmin.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: server.clone(),
-                    relation: ProjectRelation::Server.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id,
-                    relation: ServerRelation::Project.to_string(),
-                    object: server,
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let server = self.openfga_server();
+        let mut tuples = crate::tuples::hierarchy_tuples_for_project(&server, project_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_project(
+            actor, project_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_project(
@@ -682,34 +771,16 @@ impl Authorizer for OpenFGAAuthorizer {
         let actor = metadata.actor();
 
         self.require_no_relations(&warehouse_id).await?;
-        let project_id = parent_project_id.to_openfga();
-        let this_id = warehouse_id.to_openfga();
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: WarehouseRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: project_id.clone(),
-                    relation: WarehouseRelation::Project.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: ProjectRelation::Warehouse.to_string(),
-                    object: project_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples =
+            crate::tuples::hierarchy_tuples_for_warehouse(parent_project_id, warehouse_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_warehouse(
+            actor,
+            warehouse_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_warehouse(
@@ -730,44 +801,15 @@ impl Authorizer for OpenFGAAuthorizer {
 
         self.require_no_relations(&namespace_id).await?;
 
-        let (parent_id, parent_child_relation) = match parent {
-            NamespaceParent::Warehouse(warehouse_id) => (
-                warehouse_id.to_openfga(),
-                WarehouseRelation::Namespace.to_string(),
-            ),
-            NamespaceParent::Namespace(parent_namespace_id) => (
-                parent_namespace_id.to_openfga(),
-                NamespaceRelation::Child.to_string(),
-            ),
-        };
-        let this_id = namespace_id.to_openfga();
-
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: NamespaceRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: NamespaceRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: parent_child_relation,
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_namespace(
+            actor,
+            namespace_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_namespace(
@@ -786,39 +828,21 @@ impl Authorizer for OpenFGAAuthorizer {
         parent: NamespaceId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
-        let parent_id = parent.to_openfga();
-        let this_id = (warehouse_id, table_id).to_openfga();
 
         // Higher consistency as for stage create overwrites old relations are deleted
         // immediately before
         self.require_no_relations(&(warehouse_id, table_id)).await?;
 
-        self.write_higher_consistency(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: TableRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: TableRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: NamespaceRelation::Child.to_string(),
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_table(warehouse_id, table_id, parent);
+        tuples.extend(crate::tuples::ownership_tuples_for_table(
+            actor,
+            warehouse_id,
+            table_id,
+        ));
+        self.write_higher_consistency(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_table(
@@ -837,37 +861,19 @@ impl Authorizer for OpenFGAAuthorizer {
         parent: NamespaceId,
     ) -> AuthorizerResult<()> {
         let actor = metadata.actor();
-        let parent_id = parent.to_openfga();
-        let this_id = (warehouse_id, view_id).to_openfga();
 
         self.require_no_relations(&(warehouse_id, view_id)).await?;
 
-        self.write(
-            Some(vec![
-                TupleKey {
-                    user: actor.to_openfga(),
-                    relation: ViewRelation::Ownership.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: parent_id.clone(),
-                    relation: ViewRelation::Parent.to_string(),
-                    object: this_id.clone(),
-                    condition: None,
-                },
-                TupleKey {
-                    user: this_id.clone(),
-                    relation: NamespaceRelation::Child.to_string(),
-                    object: parent_id.clone(),
-                    condition: None,
-                },
-            ]),
-            None,
-        )
-        .await
-        .map_err(authz_to_error_no_audit)
-        .map_err(Into::into)
+        let mut tuples = crate::tuples::hierarchy_tuples_for_view(warehouse_id, view_id, parent);
+        tuples.extend(crate::tuples::ownership_tuples_for_view(
+            actor,
+            warehouse_id,
+            view_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
     }
 
     async fn delete_view(
@@ -953,11 +959,14 @@ impl OpenFGAAuthorizer {
         Ok(())
     }
 
-    /// A convenience wrapper around read that handles error conversion
+    /// A convenience wrapper around read that handles error conversion.
+    ///
+    /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
+    /// [`openfga_client::client::OpenFgaClient::read`].
     pub(crate) async fn read(
         &self,
         page_size: i32,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: impl Into<Option<ReadRequestTupleKey>>,
         continuation_token: impl Into<Option<String>>,
     ) -> OpenFGAResult<ReadResponse> {
         self.client
@@ -970,11 +979,14 @@ impl OpenFGAAuthorizer {
             .map_err(Into::into)
     }
 
-    /// A convenience wrapper around read that handles error conversion
+    /// A convenience wrapper around read that handles error conversion.
+    ///
+    /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
+    /// [`openfga_client::client::OpenFgaClient::read`].
     async fn read_higher_consistency(
         &self,
         page_size: i32,
-        tuple_key: impl Into<ReadRequestTupleKey>,
+        tuple_key: impl Into<Option<ReadRequestTupleKey>>,
         continuation_token: impl Into<Option<String>>,
     ) -> OpenFGAResult<ReadResponse> {
         self.client_higher_consistency
@@ -1690,7 +1702,7 @@ pub(crate) mod tests {
         async fn test_are_allowed_project_actions_without_for_user() {
             let authorizer = new_authorizer_in_empty_store().await;
             let user_id: UserId = UserId::new_unchecked("oidc", "test_user");
-            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let project_id = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
 
             let metadata = RequestMetadata::test_user(user_id.clone());
 
@@ -1748,7 +1760,7 @@ pub(crate) mod tests {
             let target_user_id = UserId::new_unchecked("oidc", "target_user");
             let target_user = UserOrRole::User(target_user_id.clone());
 
-            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let project_id = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
             let metadata = RequestMetadata::test_user(admin_user_id.clone());
 
             // Grant target user some permissions on the project
@@ -1784,7 +1796,9 @@ pub(crate) mod tests {
                 IsAllowedActionError::CannotInspectPermissions(_) => {
                     // Expected error
                 }
-                IsAllowedActionError::AuthorizationBackendUnavailable(_) => {
+                IsAllowedActionError::AuthorizationBackendUnavailable(_)
+                | IsAllowedActionError::BadRequest(_)
+                | IsAllowedActionError::CountMismatch(_) => {
                     panic!("Expected CannotInspectPermissions error, got: {err:?}")
                 }
             }
@@ -1831,7 +1845,7 @@ pub(crate) mod tests {
             let target_user_id = UserId::new_unchecked("oidc", "target_user");
             let target_user = UserOrRole::User(target_user_id.clone());
 
-            let project_id = ProjectId::from(uuid::Uuid::now_v7());
+            let project_id = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
             let metadata = RequestMetadata::test_user(admin_user_id.clone());
 
             // Grant admin user permissions on the project
@@ -1845,7 +1859,7 @@ pub(crate) mod tests {
                             condition: None,
                         },
                         TupleKey {
-                            user: target_user.to_openfga(),
+                            user: target_user.api_user_or_role().to_openfga(),
                             relation: ProjectRelation::DataAdmin.to_string(),
                             object: project_id.to_openfga(),
                             condition: None,
@@ -1856,8 +1870,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
 
-            // Check target user's permissions (not the admin's)
-            // Target user has no permissions
+            // Check target user's permissions
             let results = authorizer
                 .are_allowed_project_actions_vec(
                     &metadata,
@@ -1872,6 +1885,107 @@ pub(crate) mod tests {
                 .into_inner();
 
             assert_eq!(results, vec![true, false]);
+        }
+
+        #[tokio::test]
+        async fn test_generic_table_permissions_lifecycle() {
+            use std::collections::HashMap;
+
+            use lakekeeper::service::{
+                GenericTableId, GenericTabularInfo, NamespaceId, NamespaceWithParent,
+                ResolvedWarehouse, WarehouseId,
+            };
+
+            let authorizer = new_authorizer_in_empty_store().await;
+            let user_id = UserId::new_unchecked("oidc", "gt_test_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+            let warehouse_id = WarehouseId::from(uuid::Uuid::now_v7());
+            let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
+            let generic_table_id = GenericTableId::from(uuid::Uuid::now_v7());
+            let warehouse = ResolvedWarehouse::new_with_id(warehouse_id);
+            let ns = NamespaceWithParent::test_default(namespace_id, warehouse_id);
+            let parent_namespaces: HashMap<NamespaceId, NamespaceWithParent> =
+                HashMap::from([(namespace_id, ns.clone())]);
+
+            let gt_info =
+                GenericTabularInfo::test_default(warehouse_id, namespace_id, generic_table_id);
+
+            let make = |action| {
+                (
+                    &ns,
+                    ActionOnGenericTable {
+                        info: &gt_info,
+                        action,
+                        user: None,
+                        is_delegated_execution: false,
+                    },
+                )
+            };
+
+            // Before creating any tuples, all actions should be denied
+            let results = authorizer
+                .are_allowed_generic_table_actions_impl(
+                    &metadata,
+                    &warehouse,
+                    &parent_namespaces,
+                    &[
+                        make(GenericTableRelation::CanGetMetadata),
+                        make(GenericTableRelation::CanReadData),
+                        make(GenericTableRelation::CanWriteData),
+                        make(GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanUndrop),
+                        make(GenericTableRelation::CanIncludeInList),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false, false, false, false, false, false]);
+
+            // Create the generic table in authorizer (sets ownership + parent)
+            authorizer
+                .create_generic_table(&metadata, warehouse_id, generic_table_id, namespace_id)
+                .await
+                .unwrap();
+
+            // Now the creator should have full permissions via ownership
+            let results = authorizer
+                .are_allowed_generic_table_actions_impl(
+                    &metadata,
+                    &warehouse,
+                    &parent_namespaces,
+                    &[
+                        make(GenericTableRelation::CanGetMetadata),
+                        make(GenericTableRelation::CanReadData),
+                        make(GenericTableRelation::CanWriteData),
+                        make(GenericTableRelation::CanDrop),
+                        make(GenericTableRelation::CanUndrop),
+                        make(GenericTableRelation::CanIncludeInList),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true, true, true, true, true, true]);
+
+            // Delete the generic table from authorizer
+            authorizer
+                .delete_generic_table(warehouse_id, generic_table_id)
+                .await
+                .unwrap();
+
+            // After deletion, all actions should be denied again
+            let results = authorizer
+                .are_allowed_generic_table_actions_impl(
+                    &metadata,
+                    &warehouse,
+                    &parent_namespaces,
+                    &[
+                        make(GenericTableRelation::CanGetMetadata),
+                        make(GenericTableRelation::CanDrop),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false, false]);
         }
     }
 }

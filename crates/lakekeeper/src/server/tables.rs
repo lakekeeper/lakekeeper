@@ -14,19 +14,23 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{ETag, IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
+pub(crate) mod authorize_load;
 pub(crate) mod create_table;
 mod load_table;
 mod rename_table;
+
+pub(crate) use authorize_load::*;
+
 use super::{
     CatalogServer,
-    commit_tables::apply_commit,
+    commit_tables::{apply_commit, ensure_format_version_upgrades_allowed},
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
@@ -35,14 +39,18 @@ use super::{
 use crate::{
     WarehouseId, XXHashSet,
     api::{
+        endpoints::EndpointFlat,
         iceberg::{
             types::DropParams,
             v1::{
                 ApiContext, CommitTableRequest, CommitTableResponse, CommitTransactionRequest,
                 CreateTableRequest, DataAccess, ErrorModel, ListTablesQuery, ListTablesResponse,
                 LoadTableResult, LoadTableResultOrNotModified, NamespaceParameters, Prefix,
-                RegisterTableRequest, RenameTableRequest, Result, TableIdent, TableParameters,
-                tables::{DataAccessMode, LoadTableFilters},
+                ReferencingView, RegisterTableRequest, RenameTableRequest, Result, TableIdent,
+                TableParameters,
+                tables::{
+                    DataAccessMode, LoadTableCredentialsRequest, LoadTableFilters, LoadTableRequest,
+                },
             },
         },
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
@@ -54,25 +62,28 @@ use crate::{
         tabular::list_entities,
     },
     service::{
-        AuthZTableInfo as _, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogNamespaceOps,
-        CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps, NamedEntity,
-        ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId, TableInfo,
-        TabularId, TabularInfo, TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
+        AuthZTableInfo, CONCURRENT_UPDATE_ERROR_TYPE, CachePolicy, CatalogIdempotencyOps,
+        CatalogNamespaceOps, CatalogStore, CatalogTableOps, CatalogTabularOps, CatalogWarehouseOps,
+        NamedEntity, ResolvedWarehouse, State, TableCommit, TableCreation, TableId, TableIdentOrId,
+        TableInfo, TabularId, TabularIdentBorrowed, TabularInfo, TabularListFlags, TabularNotFound,
+        Transaction, WarehouseStatus,
         authz::{
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZError, AuthZTableActionForbidden,
-            AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
+            AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
             RequireNamespaceActionError, RequireTableActionError,
-            refresh_warehouse_and_namespace_if_needed,
         },
+        build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
             context::{ResolvedNamespace, ResolvedTable},
         },
+        idempotency::{IdempotencyCheck, IdempotencyInfo},
         require_namespace_for_tabular,
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions},
+        storage::StoragePermissions,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -86,6 +97,77 @@ const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED: &str =
 const PROPERTY_METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT: bool = true;
 
 pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
+
+/// Replay a load-table operation for idempotency.
+///
+/// Used when an idempotency check detects a replay for operations that
+/// return a `LoadTableResult` (e.g. `createTable`, `registerTable`).
+async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    parameters: TableParameters,
+    data_access: DataAccessMode,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+    operation_name: &str,
+) -> Result<LoadTableResult> {
+    let load_result = load_table::load_table::<C, A, S>(
+        parameters,
+        LoadTableRequest::builder().data_access(data_access).build(),
+        state,
+        request_metadata,
+    )
+    .await
+    .map_err(|e| {
+        ErrorModel::internal(
+            format!("Failed to replay idempotent {operation_name}: {e}"),
+            "IdempotencyReplayFailed",
+            None,
+        )
+    })?;
+    match load_result {
+        LoadTableResultOrNotModified::LoadTableResult(r) => Ok(r),
+        LoadTableResultOrNotModified::NotModifiedResponse(_) => {
+            // Should not happen: replay uses LoadTableRequest::default() with no
+            // If-None-Match header. If it does, treat as an internal error.
+            Err(ErrorModel::internal(
+                "Unexpected NotModified during idempotency replay",
+                "IdempotencyReplayFailed",
+                None,
+            )
+            .into())
+        }
+    }
+}
+
+/// Replay a commit-table operation for idempotency.
+///
+/// Used when an idempotency check detects a replay for `updateTable`.
+async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    parameters: TableParameters,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+) -> Result<CommitTableResponse> {
+    // CommitTableResponse doesn't include storage credentials, so default access mode is fine.
+    let r = replay_load_table::<C, A, S>(
+        parameters,
+        DataAccessMode::default(),
+        state,
+        request_metadata,
+        "updateTable",
+    )
+    .await?;
+    let metadata_location = r.metadata_location.ok_or_else(|| {
+        ErrorModel::internal(
+            "Missing metadata_location during idempotency replay",
+            "IdempotencyReplayFailed",
+            None,
+        )
+    })?;
+    Ok(CommitTableResponse {
+        metadata_location,
+        metadata: r.metadata,
+        config: None,
+    })
+}
 
 #[async_trait::async_trait]
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
@@ -200,7 +282,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let metadata_location =
             parse_location(&request.metadata_location, StatusCode::BAD_REQUEST)?;
 
-        // ------------------- AUTHZ -------------------
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                let load_params = TableParameters {
+                    prefix: parameters.prefix.clone(),
+                    table: table_ident,
+                };
+                return replay_load_table::<C, A, S>(
+                    load_params,
+                    DataAccessMode::default(),
+                    state,
+                    request_metadata,
+                    "registerTable",
+                )
+                .await;
+            }
+        }
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
         let authorizer = state.v1_state.authz.clone();
 
         let event_ctx = APIEventContext::for_namespace(
@@ -210,6 +313,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             parameters.namespace.clone(),
             // Preliminary action, updated after Metadata is read
             CatalogNamespaceAction::CreateTable {
+                name: Some(request.name.clone()),
+                table_id: None,
                 properties: Arc::new(BTreeMap::new()),
             },
         );
@@ -244,6 +349,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         storage_profile.require_allowed_location(&table_location)?;
 
         let action = CatalogNamespaceAction::CreateTable {
+            name: Some(request.name.clone()),
+            table_id: Some(TableId::from(table_metadata.uuid())),
             properties: Arc::new(
                 table_metadata
                     .properties()
@@ -359,18 +466,40 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
+        // Insert idempotency key in the same transaction.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1RegisterTable)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t_write.transaction(),
+            )
+            .await?
+        {
+            // Concurrent request committed the same key.
+            t_write
+                .rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         let mut auth_needs_delete = false;
         // Delete the previous table from authorizer if it exists and differs from the new one
         if let Some(previous_table_to_drop) = &previous_table_to_drop {
             if previous_table_to_drop.tabular_id != tabular_id {
                 auth_needs_delete = true;
-                // Only create authorization for the new table if it's different
                 authorizer
                     .create_table(request_metadata, warehouse_id, tabular_id, namespace_id)
                     .await?;
             }
         } else {
-            // No previous table, need to create authorization
             authorizer
                 .create_table(request_metadata, warehouse_id, tabular_id, namespace_id)
                 .await?;
@@ -382,13 +511,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // If we need to delete the previous table from authorizer
         if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
             authorizer.delete_table(warehouse_id, previous_table.tabular_id).await.map_err({
-                    |e| {
-                        tracing::warn!(
-                            "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
-                            previous_table.tabular_id, e.error
-                        );
-                    }
-                }).ok();
+                |e| {
+                    tracing::warn!(
+                        "Failed to delete previous table {} from authorizer on overwrite via table register endpoint: {}",
+                        previous_table.tabular_id, e.error
+                    );
+                }
+            }).ok();
         }
 
         // If a staged table was overwritten, delete it from authorizer
@@ -419,29 +548,22 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn load_table(
         parameters: TableParameters,
-        data_access: impl Into<DataAccessMode> + Send,
-        filters: LoadTableFilters,
+        request: LoadTableRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
-        etags: Vec<ETag>,
     ) -> Result<LoadTableResultOrNotModified> {
-        load_table::load_table(
-            parameters,
-            data_access,
-            filters,
-            state,
-            request_metadata,
-            etags,
-        )
-        .await
+        load_table::load_table(parameters, request, state, request_metadata).await
     }
 
     async fn load_table_credentials(
         parameters: TableParameters,
+        request: LoadTableCredentialsRequest,
         data_access: DataAccess,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<LoadCredentialsResponse> {
+        let LoadTableCredentialsRequest { referenced_by } = request;
+
         // ------------------- VALIDATIONS -------------------
         let TableParameters { prefix, table } = parameters;
         let warehouse_id = require_warehouse_id(prefix.as_ref())?;
@@ -461,6 +583,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             TabularListFlags::active_and_staged(),
             state.v1_state.authz,
             state.v1_state.catalog.clone(),
+            referenced_by.as_deref(),
         )
         .await
         {
@@ -525,38 +648,56 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<CommitTableResponse> {
+        // ------------------- VALIDATIONS -------------------
         request.identifier = Some(determine_table_ident(
             &parameters.table,
             request.identifier.as_ref(),
         )?);
-        let t = commit_tables_with_authz(
-            parameters.prefix,
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        let idempotency = idempotency_key.map(|key| IdempotencyInfo {
+            key,
+            endpoint: EndpointFlat::CatalogV1UpdateTable,
+            http_status: StatusCode::OK,
+        });
+        let result = commit_tables_with_authz(
+            parameters.prefix.clone(),
             CommitTransactionRequest {
                 table_changes: vec![request],
             },
-            state,
-            request_metadata,
+            state.clone(),
+            request_metadata.clone(),
+            idempotency.as_ref(),
         )
         .await?;
-        let mut it = t.iter();
-        let Some(item) = it.next() else {
-            return Err(ErrorModel::internal(
-                "No new metadata returned by backend",
-                "NoNewMetadataReturned",
-                None,
-            )
-            .into());
-        };
-        debug_assert!(
-            it.next().is_none(),
-            "commit_table must return exactly one CommitContext"
-        );
 
-        Ok(CommitTableResponse {
-            metadata_location: item.new_metadata_location.to_string(),
-            metadata: item.new_metadata.clone(),
-            config: None,
-        })
+        match result {
+            CommitTablesResult::Replay => {
+                replay_commit_table::<C, A, S>(parameters, state, request_metadata).await
+            }
+            CommitTablesResult::Committed(t) => {
+                let mut it = t.iter();
+                let Some(item) = it.next() else {
+                    return Err(ErrorModel::internal(
+                        "No new metadata returned by backend",
+                        "NoNewMetadataReturned",
+                        None,
+                    )
+                    .into());
+                };
+                debug_assert!(
+                    it.next().is_none(),
+                    "commit_table must return exactly one CommitContext"
+                );
+
+                Ok(CommitTableResponse {
+                    metadata_location: item.new_metadata_location.to_string(),
+                    metadata: item.new_metadata.clone(),
+                    config: None,
+                })
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -587,7 +728,17 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         validate_table_or_view_ident(table)?;
 
-        // ------------------- AUTHZ -------------------
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                return Ok(());
+            }
+        }
+
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
         let authorizer = state.v1_state.authz;
 
         let event_ctx = APIEventContext::for_table(
@@ -660,14 +811,6 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
                     tracing::debug!("Queued purge task for dropped table '{table_id}'.");
                 }
-                t.commit().await?;
-                authorizer
-                    .delete_table(warehouse_id, table_id)
-                    .await
-                    .inspect_err(|e| {
-                        tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
-                    })
-                    .ok();
             }
             TabularDeleteProfile::Soft { expiration_seconds } => {
                 let _ = TabularExpirationTask::schedule_task::<C>(
@@ -701,8 +844,41 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
 
                 tracing::debug!("Queued expiration task for dropped table '{table_id}'.");
-                t.commit().await?;
             }
+        }
+
+        // Insert idempotency key and commit — shared across both delete profiles.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1DropTable)
+                    .http_status(StatusCode::NO_CONTENT)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+        t.commit().await?;
+
+        // Post-commit: best-effort authz cleanup for hard deletes
+        if matches!(delete_profile, TabularDeleteProfile::Hard {}) {
+            authorizer
+                .delete_table(warehouse_id, table_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to delete table from authorizer: {}", e.error);
+                })
+                .ok();
         }
 
         event_ctx.emit_table_dropped_async(DropParams {
@@ -767,9 +943,28 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
     ) -> Result<()> {
-        let contexts = commit_tables_with_authz(prefix, request, state, request_metadata).await?;
-        tracing::debug!("Successfully committed {} table(s)", contexts.len());
-        Ok(())
+        // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        let idempotency = idempotency_key.map(|key| IdempotencyInfo {
+            key,
+            endpoint: EndpointFlat::CatalogV1CommitTransaction,
+            http_status: StatusCode::NO_CONTENT,
+        });
+        let result = commit_tables_with_authz(
+            prefix,
+            request,
+            state,
+            request_metadata,
+            idempotency.as_ref(),
+        )
+        .await?;
+        match result {
+            CommitTablesResult::Replay => Ok(()),
+            CommitTablesResult::Committed(contexts) => {
+                tracing::debug!("Successfully committed {} table(s)", contexts.len());
+                Ok(())
+            }
+        }
     }
 }
 
@@ -780,6 +975,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     list_flags: TabularListFlags,
     authorizer: A,
     state: C::State,
+    referenced_by: Option<&[ReferencingView]>,
 ) -> Result<
     (
         Arc<ResolvedWarehouse>,
@@ -788,56 +984,184 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     ),
     AuthZError,
 > {
-    let (warehouse, namespace, table_info) = tokio::join!(
-        C::get_active_warehouse_by_id(warehouse_id, state.clone()),
-        C::get_namespace(warehouse_id, table.namespace.clone(), state.clone()),
-        C::get_table_info(warehouse_id, table.clone(), list_flags, state.clone())
+    let engines = request_metadata.engines();
+    let referenced_by = effective_referenced_by(referenced_by, engines);
+
+    // 1. Collect all relevant namespace idents
+    let user_provided_namespaces = get_relevant_namespaces_to_authorize_load_tabular(
+        &TabularIdentBorrowed::Table(&table),
+        referenced_by,
     );
-    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-    let table_info = authorizer.require_table_presence(warehouse_id, table.clone(), table_info)?;
-    let namespace =
-        authorizer.require_namespace_presence(warehouse_id, table.namespace.clone(), namespace)?;
 
-    // Refresh warehouse and namespace if required
+    // 2. Collect all relevant tabular idents
+    let user_provided_tabulars = get_relevant_tabulars_to_authorize_load_tabular(
+        TabularIdentBorrowed::Table(&table),
+        referenced_by,
+    );
 
-    let (warehouse, namespace) = refresh_warehouse_and_namespace_if_needed::<C, _, _>(
-        &warehouse,
-        namespace,
-        &table_info,
-        AuthZCannotSeeTable::new_not_found(warehouse_id, table.clone()),
-        &authorizer,
+    // 3. Load objects concurrently
+    let AuthorizeLoadTabularObjects {
+        warehouse,
+        namespaces,
+        tabulars,
+    } = load_objects_to_authorize_load_tabular::<C>(
+        warehouse_id,
+        user_provided_namespaces.clone().into_iter().collect(),
+        user_provided_tabulars.clone().into_iter().collect(),
+        list_flags,
         state.clone(),
     )
-    .await?;
+    .await;
 
-    let [can_get_metadata, can_read, can_write] = authorizer
-        .are_allowed_table_actions_arr(
-            request_metadata,
-            None,
-            &warehouse,
-            &namespace,
-            &table_info,
-            &[
-                CatalogTableAction::GetMetadata,
-                CatalogTableAction::ReadData,
-                CatalogTableAction::WriteData,
-            ],
-        )
+    // 4. Check objects presence
+    let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
+    let tabulars =
+        check_required_tabulars(warehouse_id, user_provided_tabulars, tabulars, &authorizer)?;
+    let namespaces =
+        check_required_namespaces(warehouse_id, &user_provided_namespaces, namespaces)?;
+
+    // 5. Build NamespaceHierarchy
+    let namespaces_with_hierarchy = namespaces
+        .iter()
+        .map(|(namespace_id, namespace)| {
+            (
+                *namespace_id,
+                build_namespace_hierarchy(namespace, &namespaces),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    // 6. Sort tabulars by comparing initial referenced_by list plus appended table/view
+    let sorted_tabulars =
+        sort_tabulars_for_authorize_load_tabular(&tabulars, referenced_by, &table);
+
+    // 7. Connect tabular with namespaces by using namespace_id
+    let sorted_tabulars = add_namespace_to_tabulars_for_authorize_load_tabular(
+        warehouse_id,
+        sorted_tabulars,
+        &namespaces_with_hierarchy,
+    )?;
+
+    // 8. Resolve owners and assign the current user for each tabular in the chain.
+    //    DEFINER views switch current_user to the view owner for subsequent tabulars.
+    let token_idp_id = request_metadata
+        .authentication()
+        .and_then(|a| a.subject().idp_id())
+        .map(String::as_str);
+    let sorted_tabulars_with_full_info = resolve_users_for_authorize_load_tabular(
+        &sorted_tabulars,
+        request_metadata.actor(),
+        engines,
+        token_idp_id,
+    )?;
+
+    // 9. Build actions and check all authorizations in batch.
+    let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+        &sorted_tabulars_with_full_info,
+    );
+    let authz_results = authorizer
+        .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
         .await?
         .into_inner();
 
-    if !can_get_metadata {
-        return Err(AuthZCannotSeeTable::new_forbidden(warehouse_id, table).into());
+    // 10. Interpret authorization results.
+    let (table_info, storage_permissions) =
+        interpret_authz_results_for_load_table(&actions, &authz_results, warehouse_id, &table)?;
+
+    Ok((warehouse, table_info, storage_permissions))
+}
+
+/// Interpret the flat `Vec<bool>` authorization results by matching each result
+/// to its corresponding action. This avoids relying on positional indices.
+///
+/// Returns `(TableInfo, Option<StoragePermissions>)` for the target table.
+fn interpret_authz_results_for_load_table(
+    actions: &[TabularAuthzAction<'_>],
+    authz_results: &[bool],
+    warehouse_id: WarehouseId,
+    table: &TableIdent,
+) -> Result<(TableInfo, Option<StoragePermissions>), AuthZError> {
+    if actions.len() != authz_results.len() {
+        return Err(
+            BackendUnavailableOrCountMismatch::from(AuthorizationCountMismatch::new(
+                actions.len(),
+                authz_results.len(),
+                "load_table",
+            ))
+            .into(),
+        );
     }
 
-    let storage_permissions = if can_write {
+    let mut table_info: Option<TableInfo> = None;
+    let mut table_is_delegated = false;
+    let mut can_get_metadata = None;
+    let mut can_read = None;
+    let mut can_write = None;
+
+    for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
+        match action {
+            ActionOnTableOrView::Table(table_action) => {
+                if let Some(existing) = &table_info {
+                    if existing.tabular_id != table_action.info.tabular_id {
+                        return Err(BackendUnavailableOrCountMismatch::from(
+                            AuthorizationCountMismatch::new(1, 2, "tables_in_chain"),
+                        )
+                        .into());
+                    }
+                } else {
+                    table_info = Some(table_action.info.clone());
+                    table_is_delegated = table_action.is_delegated_execution;
+                }
+                match &table_action.action {
+                    CatalogTableAction::GetMetadata => can_get_metadata = Some(allowed),
+                    CatalogTableAction::ReadData => can_read = Some(allowed),
+                    CatalogTableAction::WriteData => can_write = Some(allowed),
+                    _ => {}
+                }
+            }
+            ActionOnTableOrView::View(view_action) => {
+                if !allowed {
+                    return Err(AuthZCannotSeeView::new_forbidden(
+                        warehouse_id,
+                        view_action.info.tabular_ident.clone(),
+                    )
+                    .with_delegated_execution(view_action.is_delegated_execution)
+                    .into());
+                }
+            }
+            ActionOnTableOrView::GenericTable(_) => {
+                // Unreachable: loadTable authz chain only resolves tables and
+                // intermediate views. Fail closed if the invariant breaks in
+                // release — silent fall-through would let an unexpected
+                // entry bypass authorization checks.
+                return Err(BackendUnavailableOrCountMismatch::from(
+                    AuthorizationCountMismatch::new(0, 0, "generic_table_in_load_table_chain"),
+                )
+                .into());
+            }
+        }
+    }
+
+    let table_info = table_info
+        .ok_or_else(|| AuthZCannotSeeTable::new_not_found(warehouse_id, table.clone()))?;
+
+    if !can_get_metadata.unwrap_or(false) {
+        return Err(
+            AuthZCannotSeeTable::new_forbidden(warehouse_id, table.clone())
+                .with_delegated_execution(table_is_delegated)
+                .into(),
+        );
+    }
+
+    let storage_permissions = if can_write.unwrap_or(false) {
         Some(StoragePermissions::ReadWriteDelete)
-    } else if can_read {
+    } else if can_read.unwrap_or(false) {
         Some(StoragePermissions::Read)
     } else {
         None
     };
-    Ok((warehouse, table_info, storage_permissions))
+
+    Ok((table_info, storage_permissions))
 }
 
 /// Validate commit table requests
@@ -908,6 +1232,7 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
     request: CommitTransactionRequest,
     event_ctx: APIEventCommitContext,
     state: ApiContext<State<A, C, S>>,
+    idempotency: Option<&IdempotencyInfo>,
 ) -> Result<Arc<Vec<CommitContext>>> {
     let include_deleted = false;
     let warehouse_id = event_ctx.user_provided_entity().warehouse_id;
@@ -915,9 +1240,15 @@ async fn commit_tables_inner<C: CatalogStore, A: Authorizer, S: SecretStore>(
     // Start the retry loop
     let mut attempt = 0;
     loop {
-        let result =
-            try_commit_tables::<C, A, S>(&request, &warehouse, &event_ctx, &state, include_deleted)
-                .await;
+        let result = try_commit_tables::<C, A, S>(
+            &request,
+            &warehouse,
+            &event_ctx,
+            &state,
+            include_deleted,
+            idempotency,
+        )
+        .await;
 
         match result {
             Ok(commits) => {
@@ -981,12 +1312,13 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     request: CommitTransactionRequest,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
-) -> Result<Arc<Vec<CommitContext>>> {
+    idempotency: Option<&IdempotencyInfo>,
+) -> Result<CommitTablesResult> {
     // ------------------- VALIDATIONS -------------------
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     commit_tables_validate(&request)?;
 
-    // ------------------- AUTHZ -------------------
+    // ------------------- AUTHZ (+ parallel idempotency check) -------------------
     let authorizer = state.v1_state.authz.clone();
     let request_metadata = Arc::new(request_metadata);
 
@@ -1015,16 +1347,33 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
         actions.clone(),
     );
 
-    let authz_result = commit_tables_authz::<A, C>(
-        authorizer,
-        warehouse_id,
-        &event_ctx.user_provided_entity().tables,
-        &actions,
-        state.v1_state.catalog.clone(),
-        event_ctx.request_metadata(),
-    )
-    .await;
+    // Run authz and idempotency check in parallel.
+    let (authz_result, idempotency_check) = tokio::join!(
+        commit_tables_authz::<A, C>(
+            authorizer,
+            warehouse_id,
+            &event_ctx.user_provided_entity().tables,
+            &actions,
+            state.v1_state.catalog.clone(),
+            event_ctx.request_metadata(),
+        ),
+        async {
+            if let Some(info) = idempotency {
+                C::check_idempotency_key(warehouse_id, &info.key, state.v1_state.catalog.clone())
+                    .await
+            } else {
+                Ok(IdempotencyCheck::NewRequest)
+            }
+        }
+    );
+    let idempotency_check = idempotency_check?;
     let (event_ctx, authz_result) = event_ctx.emit_authz(authz_result)?;
+
+    // If the idempotency check determined this is a replay, return early.
+    if idempotency_check.is_replay() {
+        return Ok(CommitTablesResult::Replay);
+    }
+
     let warehouse = authz_result.warehouse;
     let table_infos = authz_result
         .table_infos_with_actions
@@ -1034,13 +1383,38 @@ async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S: Sec
     let event_ctx = event_ctx.resolve(table_infos);
 
     // ------------------- BUSINESS LOGIC -------------------
-    commit_tables_inner::<C, _, _>(warehouse, request, event_ctx, state).await
+    let commits =
+        commit_tables_inner::<C, _, _>(warehouse, request, event_ctx, state, idempotency).await?;
+    Ok(CommitTablesResult::Committed(commits))
 }
 
 struct CommitAuthorizationResult<'a> {
     table_infos_with_actions:
         HashMap<TableIdent, (Arc<TabularInfo<TableId>>, &'a CatalogTableAction)>,
     warehouse: Arc<ResolvedWarehouse>,
+}
+
+/// Result of `commit_tables_with_authz`, indicating whether the operation
+/// was committed or is a replay of a previously committed idempotent request.
+#[derive(Debug)]
+enum CommitTablesResult {
+    /// The commit was executed successfully.
+    Committed(Arc<Vec<CommitContext>>),
+    /// An idempotency check determined this is a replay of an already-committed
+    /// request. The caller must reconstruct the response appropriately.
+    Replay,
+}
+
+impl CommitTablesResult {
+    /// Unwrap the committed result, panicking if this is a replay.
+    /// Only intended for use in tests.
+    #[cfg(test)]
+    fn unwrap_committed(self) -> Arc<Vec<CommitContext>> {
+        match self {
+            Self::Committed(c) => c,
+            Self::Replay => panic!("Expected CommitTablesResult::Committed, got Replay"),
+        }
+    }
 }
 
 async fn commit_tables_authz<'a, A: Authorizer + Clone, C: CatalogStore>(
@@ -1139,6 +1513,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     event_ctx: &APIEventCommitContext,
     state: &ApiContext<State<A, C, S>>,
     include_deleted: bool,
+    idempotency: Option<&IdempotencyInfo>,
 ) -> Result<Arc<Vec<CommitContext>>> {
     let warehouse_id = warehouse.warehouse_id;
     let mut transaction = C::Transaction::begin_write(state.v1_state.catalog.clone()).await?;
@@ -1190,6 +1565,10 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
                     TabularNotFound::new(warehouse_id, TableIdentOrId::from(table_ident.clone()))
                         .append_detail("Table metadata not returned from table load".to_string())
                 })?;
+            ensure_format_version_upgrades_allowed(
+                &change.updates,
+                &warehouse.allowed_format_versions,
+            )?;
             let TableMetadataBuildResult {
                 metadata: new_metadata,
                 changes: _,
@@ -1295,6 +1674,20 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
             transaction.transaction(),
         )
         .await?;
+
+        // Insert idempotency key in the same transaction.
+        if let Some(info) = idempotency
+            && !C::try_insert_idempotency_key(warehouse_id, info, transaction.transaction()).await?
+        {
+            transaction
+                .rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
 
         transaction.commit().await?;
         Result::<_, IcebergErrorResponse>::Ok(())
@@ -1814,8 +2207,7 @@ pub(crate) mod test {
                 types::{PageToken, Prefix},
                 v1::{
                     DataAccess, DropParams, ListTablesQuery, LoadTableResultOrNotModified,
-                    NamespaceParameters, TableParameters,
-                    tables::{LoadTableFilters, TablesService as _},
+                    NamespaceParameters, TableParameters, tables::TablesService as _,
                 },
             },
             management::v1::{
@@ -1832,11 +2224,9 @@ pub(crate) mod test {
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
         service::{
-            SecretStore, State, TableId, TabularListFlags, UserId,
-            authz::{
-                AllowAllAuthorizer, CatalogNamespaceAction, CatalogTableAction,
-                tests::HidingAuthorizer,
-            },
+            Actor, NamespaceHierarchy, SecretStore, State, TableId, TabularListFlags, UserId,
+            ViewInfo, ViewOrTableInfo,
+            authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
         },
         tests::{create_table_request as create_request, random_request_metadata},
     };
@@ -2060,11 +2450,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident,
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2097,9 +2485,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2182,9 +2572,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2199,11 +2591,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2350,6 +2740,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2362,11 +2753,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2414,9 +2803,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2431,11 +2822,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2508,6 +2897,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2520,11 +2910,9 @@ pub(crate) mod test {
                     name: "tab-1".to_string(),
                 },
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2564,6 +2952,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2573,11 +2962,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2611,9 +2998,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2624,11 +3013,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2662,9 +3049,11 @@ pub(crate) mod test {
                 },
                 ctx.clone(),
                 RequestMetadata::new_unauthenticated(),
+                None,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap_committed(),
         )
         .into_iter()
         .next()
@@ -2675,11 +3064,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -2816,6 +3203,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await;
 
@@ -2925,7 +3313,7 @@ pub(crate) mod test {
             name: "my_migration_table".to_string(),
         };
 
-        // Add a snapshot to the V2 table (without row_range)
+        // Add a snapshot to the V2 table (without row_range, as V2 snapshots don't have it)
         let last_updated = table.metadata.last_updated_ms();
         let builder = (*table.metadata)
             .clone()
@@ -2937,8 +3325,7 @@ pub(crate) mod test {
             .with_sequence_number(1)
             .with_schema_id(0)
             .with_manifest_list("/snap-1.avro")
-            // No row_range for V2 table
-            .with_row_range(0, 50) // row_range is ignored in V2
+            // No row_range for V2 table - this is the realistic scenario
             .with_summary(Summary {
                 operation: Operation::Append,
                 additional_properties: HashMap::from_iter(vec![
@@ -2978,6 +3365,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -2988,11 +3376,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3017,6 +3403,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3027,11 +3414,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3073,6 +3458,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3083,11 +3469,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3161,6 +3545,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3170,11 +3555,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3230,6 +3613,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3239,11 +3623,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3293,6 +3675,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3302,11 +3685,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -3337,6 +3718,7 @@ pub(crate) mod test {
             },
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
+            None,
         )
         .await
         .unwrap();
@@ -3346,11 +3728,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix.clone(),
                 table: table_ident.clone(),
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -4212,15 +4592,8 @@ pub(crate) mod test {
         .unwrap();
 
         // Not authorized to create a table in the destination namepsace
-        authz.block_action(
-            format!(
-                "namespace:{:?}",
-                CatalogNamespaceAction::CreateTable {
-                    properties: Arc::default(),
-                }
-            )
-            .as_str(),
-        );
+        // Block any CreateTable namespace action (prefix match — fields are dynamic).
+        authz.block_action("namespace:CreateTable");
         let response = CatalogServer::rename_table(
             prefix,
             RenameTableRequest {
@@ -4461,11 +4834,9 @@ pub(crate) mod test {
                 prefix: ns_params.prefix,
                 table: table_ident,
             },
-            DataAccess::not_specified(),
-            LoadTableFilters::default(),
+            LoadTableRequest::builder().build(),
             ctx.clone(),
             RequestMetadata::new_unauthenticated(),
-            Vec::new(),
         )
         .await
         .unwrap();
@@ -4671,5 +5042,152 @@ pub(crate) mod test {
             .unwrap()
             .expect("table and metadata should still exist");
         }
+    }
+
+    // ---- interpret_authz_results tests ----
+
+    fn resolved(
+        tabular: ViewOrTableInfo,
+        actor: &Actor,
+        namespace: NamespaceHierarchy,
+    ) -> ResolvedTabular {
+        ResolvedTabular {
+            tabular,
+            user: actor.to_user_or_role(),
+            is_delegated_execution: false,
+            namespace,
+        }
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_all_allowed() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, true, true];
+
+        let (info, perms) = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        )
+        .unwrap();
+
+        assert_eq!(info.tabular_id, table.tabular_id);
+        assert_eq!(perms, Some(StoragePermissions::ReadWriteDelete));
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_read_only() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, true, false];
+
+        let (_, perms) = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        )
+        .unwrap();
+
+        assert_eq!(perms, Some(StoragePermissions::Read));
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_no_read_no_write() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, false, false];
+
+        let (_, perms) = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        )
+        .unwrap();
+
+        assert_eq!(perms, None);
+    }
+
+    #[test]
+    fn test_interpret_authz_results_table_not_visible() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![false, false, false];
+
+        let result = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_interpret_authz_results_view_denied_in_chain() {
+        let warehouse_id = WarehouseId::new_random();
+        let view = ViewInfo::new_random(warehouse_id);
+        let view_ns = NamespaceHierarchy::new_with_id(warehouse_id, view.namespace_id);
+        let table = TableInfo::new_random(warehouse_id);
+        let table_ns = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![
+            resolved(view.into(), &actor, view_ns),
+            resolved(table.clone().into(), &actor, table_ns),
+        ];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![false, true, true, true];
+
+        let result = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_interpret_authz_results_count_mismatch() {
+        let warehouse_id = WarehouseId::new_random();
+        let table = TableInfo::new_random(warehouse_id);
+        let namespace = NamespaceHierarchy::new_with_id(warehouse_id, table.namespace_id);
+        let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
+
+        let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let results = vec![true, true]; // Only 2 results for 3 actions
+
+        let result = interpret_authz_results_for_load_table(
+            &actions,
+            &results,
+            warehouse_id,
+            &table.tabular_ident,
+        );
+        assert!(result.is_err());
     }
 }

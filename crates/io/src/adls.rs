@@ -24,7 +24,7 @@ pub use adls_location::{
 };
 pub use adls_storage::AdlsStorage;
 
-use crate::error::InitializeClientError;
+use crate::InitializeClientError;
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
@@ -49,7 +49,7 @@ static SYSTEM_IDENTITY_CACHE: LazyLock<moka::future::Cache<String, Arc<DefaultAz
     LazyLock::new(|| {
         moka::future::Cache::builder()
             .max_capacity(1000)
-            .time_to_live(Duration::from_secs(30 * 60))
+            .time_to_live(Duration::from_mins(30))
             .build()
     });
 
@@ -58,12 +58,20 @@ pub enum AzureAuth {
     ClientCredentials(AzureClientCredentialsAuth),
     SharedAccessKey(AzureSharedAccessKeyAuth),
     AzureSystemIdentity,
+    /// SAS (Shared Access Signature) token. Used with downscoped credentials vended via SAS delegation.
+    Sas(AzureSasAuth),
 }
 
 #[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
 pub struct AzureSharedAccessKeyAuth {
     #[redact(partial)]
     pub key: String,
+}
+
+#[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
+pub struct AzureSasAuth {
+    #[redact(partial)]
+    pub sas_token: String,
 }
 
 #[derive(Redact, Clone, PartialEq, Eq, typed_builder::TypedBuilder)]
@@ -132,6 +140,11 @@ impl AzureSettings {
                 let identity: Arc<DefaultAzureCredential> = self.get_system_identity().await?;
                 StorageCredentials::token_credential(identity)
             }
+            AzureAuth::Sas(AzureSasAuth { sas_token }) => StorageCredentials::sas_token(sas_token)
+                .map_err(|e| InitializeClientError {
+                    reason: format!("Invalid Azure SAS token: {e}"),
+                    source: Some(Box::new(e)),
+                })?,
         })
     }
 
@@ -174,10 +187,10 @@ impl AzureSettings {
     async fn get_system_identity(
         &self,
     ) -> Result<Arc<DefaultAzureCredential>, InitializeClientError> {
-        let authority_host_str = self.authority_host.as_ref().map_or(
-            DEFAULT_AUTHORITY_HOST.as_str().to_string(),
-            ToString::to_string,
-        );
+        let authority_host_str = self
+            .authority_host
+            .as_ref()
+            .map_or(DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string);
         let cache_key = format!("{}::{}", authority_host_str, self.cloud_location.account());
 
         SYSTEM_IDENTITY_CACHE

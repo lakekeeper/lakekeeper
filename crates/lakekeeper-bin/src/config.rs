@@ -45,6 +45,7 @@ fn get_config() -> DynAppConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::result_large_err)]
 mod tests {
     use super::*;
 

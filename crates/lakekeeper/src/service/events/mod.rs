@@ -11,6 +11,7 @@ pub use publisher::{
 };
 pub use types::*;
 pub mod backends;
+pub use backends::audit::AuditPrincipal;
 pub use types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource};
 pub(crate) use types::authorization::{
     delegate_authorization_failure_source, impl_authorization_failure_source,

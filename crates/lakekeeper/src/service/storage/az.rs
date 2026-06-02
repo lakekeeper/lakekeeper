@@ -1,7 +1,8 @@
+#[cfg(test)]
+use std::sync::LazyLock;
 use std::{
     collections::HashMap,
     str::FromStr,
-    sync::LazyLock,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,6 @@ use azure_storage::{
     },
 };
 use azure_storage_blobs::prelude::BlobServiceClient;
-use iceberg::io::ADLS_AUTHORITY_HOST;
 use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -44,9 +44,10 @@ use crate::{
                 insert_stc_into_cache,
             },
             error::{
-                CredentialsError, IcebergFileIoError, InvalidProfileError, TableConfigError,
-                UpdateError, ValidationError,
+                CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
+                ValidationError,
             },
+            storage_layout::StorageLayout,
         },
     },
 };
@@ -77,6 +78,9 @@ pub struct AdlsProfile {
     /// Defaults to true.
     #[serde(default = "default_true")]
     pub sas_enabled: bool,
+    /// Storage layout for namespace and tabular paths.
+    #[serde(default)]
+    pub storage_layout: Option<StorageLayout>,
 }
 
 fn default_true() -> bool {
@@ -84,6 +88,7 @@ fn default_true() -> bool {
 }
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
+#[cfg(test)]
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
@@ -139,7 +144,7 @@ impl AdlsProfile {
     ///
     /// # Errors
     /// Fails if the `bucket`, `region` or `key_prefix` is different.
-    pub fn update_with(self, other: Self) -> Result<Self, UpdateError> {
+    pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
         if self.filesystem != other.filesystem {
             return Err(UpdateError::ImmutableField("filesystem".to_string()));
         }
@@ -154,6 +159,10 @@ impl AdlsProfile {
 
         if self.host != other.host {
             return Err(UpdateError::ImmutableField("host".to_string()));
+        }
+
+        if other.storage_layout.is_none() {
+            other.storage_layout = self.storage_layout;
         }
 
         Ok(other)
@@ -477,15 +486,24 @@ impl AdlsProfile {
         signed_expiry: OffsetDateTime,
         key: impl Into<SasKey>,
     ) -> Result<String, CredentialsError> {
-        let path = reduce_scheme_string(stc_request.table_location.as_ref());
+        let path = reduce_scheme_string(stc_request.table_location.as_ref()).map_err(|e| {
+            CredentialsError::ShortTermCredential {
+                reason: format!("Invalid ADLS location for SAS signing: {e}"),
+                source: Some(Box::new(e)),
+            }
+        })?;
         let rootless_path = path.trim_start_matches('/').trim_end_matches('/');
         let depth = rootless_path.split('/').count();
 
+        // Azure recomputes the canonical-resource by URL-decoding the request
+        // URL path. Hand-rolling the canonical with the encoded form (e.g.
+        // literal `%3F` or `%20`) produces a signature mismatch.
+        let decoded_path = percent_encoding::percent_decode_str(rootless_path).decode_utf8_lossy();
         let canonical_resource = format!(
             "/blob/{}/{}/{}",
             self.account_name.as_str(),
             self.filesystem.as_str(),
-            rootless_path
+            decoded_path
         );
 
         tracing::debug!(
@@ -584,11 +602,10 @@ impl AdlsProfile {
 
 /// Removes the hostname and user from the path.
 /// Keeps only the path and optionally the scheme.
-#[must_use]
-pub(crate) fn reduce_scheme_string(path: &str) -> String {
-    AdlsLocation::try_from_str(path, true)
-        .map(|l| format!("/{}", l.blob_name().clone().trim_start_matches('/')))
-        .unwrap_or(path.to_string())
+/// Reduce an ADLS URL to its rooted blob path (`/<blob_name>`).
+pub(crate) fn reduce_scheme_string(path: &str) -> Result<String, InvalidLocationError> {
+    let l = AdlsLocation::try_from_str(path, true)?;
+    Ok(format!("/{}", l.blob_name().trim_start_matches('/')))
 }
 
 #[derive(Redact, Hash, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -653,36 +670,37 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
     format!("adls.sas-token-expires-at-ms.{account_name}.{endpoint_suffix}")
 }
 
-pub(super) fn get_file_io_from_table_config(
+/// Build an `AdlsStorage` client from vended-credentials properties.
+///
+/// Reads the SAS token (under the profile's account/endpoint-specific key)
+/// from the iceberg-format `TableProperties` previously produced by
+/// `generate_table_config`.
+///
+/// `profile` is required because the SAS-token property key embeds the storage
+/// account name and endpoint host (`adls.sas-token.<account>.<endpoint>`); it
+/// cannot be derived from `TableProperties` alone. Do not "normalize" this
+/// signature with the S3/GCS counterparts — removing `profile` will break the
+/// key lookup.
+pub(super) async fn lakekeeper_io_from_vended_table_config(
+    profile: &AdlsProfile,
     config: &TableProperties,
-) -> Result<iceberg::io::FileIO, IcebergFileIoError> {
-    // Add Authority host if not present
-    let mut config = config.inner().clone();
-
-    let sas_token_prefix = "adls.sas-token.";
-    // Iceberg Rust cannot parse tokens of form "<sas_token_prefix><storage_account_name>.<endpoint_suffix>=<sas_token>"
-    // https://github.com/apache/iceberg-rust/issues/1442
-    let mut sas_token = None;
-    for (key, value) in &config {
-        if key.starts_with(sas_token_prefix) {
-            sas_token = Some(value.clone());
-            break;
-        }
-    }
-    if let Some(sas_token) = sas_token {
-        config.remove(sas_token_prefix);
-        config.insert("adls.sas-token".to_string(), sas_token);
-    }
-
-    if !config.contains_key(ADLS_AUTHORITY_HOST) {
-        config.insert(
-            ADLS_AUTHORITY_HOST.to_string(),
-            DEFAULT_AUTHORITY_HOST.to_string(),
-        );
-    }
-    Ok(iceberg::io::FileIOBuilder::new("abfss")
-        .with_props(config)
-        .build()?)
+) -> Result<AdlsStorage, CredentialsError> {
+    let sas_key = profile.iceberg_sas_property_key();
+    let sas_token =
+        config
+            .get_custom_prop(&sas_key)
+            .ok_or_else(|| CredentialsError::ShortTermCredential {
+                reason: format!(
+                    "ADLS vended credentials are missing SAS token at key '{sas_key}'."
+                ),
+                source: None,
+            })?;
+    let auth = AzureAuth::Sas(lakekeeper_io::adls::AzureSasAuth { sas_token });
+    profile
+        .azure_settings()
+        .get_storage_client(&auth)
+        .await
+        .map_err(Into::into)
 }
 
 impl TryFrom<AzCredential> for AzureAuth {
@@ -718,26 +736,23 @@ impl TryFrom<AzCredential> for AzureAuth {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::service::{
-        NamespaceId, TabularId,
-        storage::{AdlsProfile, StorageLocations, StorageProfile, az::DEFAULT_AUTHORITY_HOST},
+    use crate::service::storage::{
+        AdlsProfile, StorageProfile,
+        az::DEFAULT_AUTHORITY_HOST,
+        storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
 
     #[test]
     fn test_reduce_scheme_string() {
-        // Test abfss protocol
         let path = "abfss://filesystem@dfs.windows.net/path/_test";
-        let reduced_path = reduce_scheme_string(path);
-        assert_eq!(reduced_path, "/path/_test");
+        assert_eq!(reduce_scheme_string(path).unwrap(), "/path/_test");
 
-        // Test wasbs protocol
         let wasbs_path = "wasbs://filesystem@account.windows.net/path/to/data";
-        let reduced_wasbs_path = reduce_scheme_string(wasbs_path);
-        assert_eq!(reduced_wasbs_path, "/path/to/data");
+        assert_eq!(reduce_scheme_string(wasbs_path).unwrap(), "/path/to/data");
 
-        // Test a non-matching path
+        // Non-ADLS scheme must error rather than silently pass through.
         let non_matching = "http://example.com/path";
-        assert_eq!(reduce_scheme_string(non_matching), non_matching);
+        assert!(reduce_scheme_string(non_matching).is_err());
     }
 
     pub(crate) mod azure_integration_tests {
@@ -762,6 +777,7 @@ pub(crate) mod test {
                 sas_token_validity_seconds: None,
                 allow_alternative_protocols: false,
                 sas_enabled: true,
+                storage_layout: None,
             }
         }
 
@@ -847,19 +863,28 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            storage_layout: None,
         };
 
         let sp: StorageProfile = profile.clone().into();
 
-        let namespace_id = NamespaceId::from(uuid::Uuid::now_v7());
-        let table_id = TabularId::Table(uuid::Uuid::now_v7().into());
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
+        let namespace_uuid = uuid::Uuid::now_v7();
+        let tabular_uuid = uuid::Uuid::now_v7();
+        let namespace_path = NamespacePath::new(vec![NamespaceNameContext {
+            name: "test_ns".to_string(),
+            uuid: namespace_uuid,
+        }]);
+        let tabular_name_context = TabularNameContext {
+            name: "test_tabular".to_string(),
+            uuid: tabular_uuid,
+        };
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
             format!(
-                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_id}/{table_id}"
+                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_uuid}/{tabular_uuid}"
             )
         );
 
@@ -868,11 +893,11 @@ pub(crate) mod test {
         profile.host = Some("blob.com".to_string());
         let sp: StorageProfile = profile.into();
 
-        let namespace_location = sp.default_namespace_location(namespace_id).unwrap();
-        let location = sp.default_tabular_location(&namespace_location, table_id);
+        let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
+        let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("abfss://filesystem@account.blob.com/{namespace_id}/{table_id}")
+            format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")
         );
     }
 
@@ -887,6 +912,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: true,
             sas_enabled: true,
+            storage_layout: None,
         };
 
         assert!(
@@ -907,6 +933,7 @@ pub(crate) mod test {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            storage_layout: None,
         };
 
         assert!(
@@ -940,6 +967,7 @@ mod is_overlapping_location_tests {
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
+            storage_layout: None,
         }
     }
 

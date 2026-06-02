@@ -1,7 +1,9 @@
 use lakekeeper::{
     api::ErrorModel,
     service::{
-        authz::{AuthorizationBackendUnavailable, IsAllowedActionError},
+        authz::{
+            AuthorizationBackendUnavailable, AuthzBackendErrorOrBadRequest, IsAllowedActionError,
+        },
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
 };
@@ -24,6 +26,11 @@ pub enum OpenFGABackendUnavailable {
     BatchCheckError(#[from] BatchCheckError),
     #[error(transparent)]
     MissingItemInBatchCheck(#[from] MissingItemInBatchCheck),
+}
+impl From<OpenFGABackendUnavailable> for AuthzBackendErrorOrBadRequest {
+    fn from(err: OpenFGABackendUnavailable) -> Self {
+        AuthorizationBackendUnavailable::from(err).into()
+    }
 }
 impl From<OpenFGABackendUnavailable> for IsAllowedActionError {
     fn from(err: OpenFGABackendUnavailable) -> Self {
@@ -245,7 +252,7 @@ impl UnexpectedCorrelationId {
 #[derive(Debug, thiserror::Error)]
 #[error("One of the checks in a batch returned {} error with code {}: {message}", 
     error_type.as_deref().unwrap_or("unknown"), 
-    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())
+    code.map_or_else(|| "unknown".to_string(), |c| c.to_string())
 )]
 pub struct BatchCheckError {
     message: String,

@@ -234,6 +234,16 @@ impl ErrorModel {
         Self::new(message, r#type, StatusCode::FORBIDDEN.as_u16(), source)
     }
 
+    /// 409 Conflict: an idempotent request is already being processed.
+    #[must_use]
+    pub fn request_in_progress() -> Self {
+        Self::conflict(
+            "A request with this idempotency key is currently being processed. Please retry later.",
+            "RequestInProgress",
+            None,
+        )
+    }
+
     pub fn failed_dependency(
         message: impl Into<String>,
         r#type: impl Into<String>,
@@ -389,6 +399,13 @@ impl valuable::Mappable for TracedResponseError<'_> {
             len += 1;
         }
         (len, Some(len))
+    }
+}
+
+#[cfg(feature = "axum")]
+impl axum::response::IntoResponse for ErrorModel {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        IcebergErrorResponse { error: self }.into_response()
     }
 }
 

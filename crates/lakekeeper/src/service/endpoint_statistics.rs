@@ -17,7 +17,9 @@ use http::StatusCode;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::{ProjectId, WarehouseId, api::endpoints::Endpoint, request_metadata::RequestMetadata};
+use crate::{
+    WarehouseId, api::endpoints::Endpoint, request_metadata::RequestMetadata, service::ArcProjectId,
+};
 
 #[cfg(feature = "router")]
 /// Middleware for tracking endpoint statistics.
@@ -123,7 +125,7 @@ pub enum FlushMode {
 #[derive(Debug)]
 pub struct EndpointStatisticsTracker {
     rcv: tokio::sync::mpsc::Receiver<EndpointStatisticsMessage>,
-    endpoint_statistics: HashMap<ProjectId, ProjectStatistics>,
+    endpoint_statistics: HashMap<ArcProjectId, ProjectStatistics>,
     statistic_sinks: Vec<Arc<dyn EndpointStatisticsSink>>,
     flush_interval: Duration,
     flush_mode: FlushMode,
@@ -234,7 +236,7 @@ impl EndpointStatisticsTracker {
         let mut stats = HashMap::new();
         std::mem::swap(&mut stats, &mut self.endpoint_statistics);
 
-        let s: HashMap<ProjectId, HashMap<EndpointIdentifier, i64>> = stats
+        let s: HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>> = stats
             .into_iter()
             .map(|(k, v)| (k, v.into_consumable()))
             .collect();
@@ -327,7 +329,7 @@ impl EndpointStatisticsTracker {
 pub trait EndpointStatisticsSink: Debug + Send + Sync + 'static {
     async fn consume_endpoint_statistics(
         &self,
-        stats: HashMap<ProjectId, HashMap<EndpointIdentifier, i64>>,
+        stats: HashMap<ArcProjectId, HashMap<EndpointIdentifier, i64>>,
     ) -> crate::api::Result<()>;
 
     fn sink_id(&self) -> &'static str;

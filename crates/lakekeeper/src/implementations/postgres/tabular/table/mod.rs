@@ -498,8 +498,28 @@ pub(crate) async fn load_tables(
         r#"
         WITH filtered_table_refs AS (
             SELECT warehouse_id, table_id, snapshot_id, table_ref_name, retention
-            FROM table_refs 
+            FROM table_refs
             WHERE warehouse_id = $1 AND table_id = ANY($2)
+        ),
+        snapshots_to_load AS (
+            -- refs mode: drive from filtered_table_refs (one index lookup per ref)
+            SELECT ts.table_id, ts.snapshot_id, ts.parent_snapshot_id, ts.sequence_number,
+                   ts.manifest_list, ts.summary, ts.schema_id, ts.timestamp_ms,
+                   ts.first_row_id, ts.assigned_rows, ts.key_id
+            FROM table_snapshot ts
+            INNER JOIN filtered_table_refs ftr
+                ON ftr.warehouse_id = ts.warehouse_id
+               AND ftr.table_id    = ts.table_id
+               AND ftr.snapshot_id = ts.snapshot_id
+            WHERE $4 = 'refs'
+            UNION ALL
+            -- all mode: full scan, unchanged behaviour
+            SELECT table_id, snapshot_id, parent_snapshot_id, sequence_number,
+                   manifest_list, summary, schema_id, timestamp_ms,
+                   first_row_id, assigned_rows, key_id
+            FROM table_snapshot
+            WHERE warehouse_id = $1 AND table_id = ANY($2)
+            AND $4 = 'all'
         )
         SELECT
             t.warehouse_id,
@@ -582,26 +602,19 @@ pub(crate) async fn load_tables(
                             ARRAY_AGG(value) as values
                      FROM table_properties WHERE warehouse_id = $1 AND table_id = ANY($2)
                      GROUP BY table_id) tp ON tp.table_id = t.table_id
-        LEFT JOIN (SELECT ts.table_id,
-                          ARRAY_AGG(ts.snapshot_id) as snapshot_ids,
-                          ARRAY_AGG(ts.parent_snapshot_id) as parent_snapshot_ids,
-                          ARRAY_AGG(ts.sequence_number) as sequence_numbers,
-                          ARRAY_AGG(ts.manifest_list) as manifest_lists,
-                          ARRAY_AGG(ts.summary) as summaries,
-                          ARRAY_AGG(ts.schema_id) as schema_ids,
-                          ARRAY_AGG(ts.timestamp_ms) as timestamp,
-                          ARRAY_AGG(ts.first_row_id) as first_row_ids,
-                          ARRAY_AGG(ts.assigned_rows) as assigned_rows,
-                          ARRAY_AGG(ts.key_id) as key_id
-                   FROM table_snapshot ts
-                   WHERE ts.warehouse_id = $1 AND ts.table_id = ANY($2)
-                   AND ($4 = 'all' OR EXISTS (
-                       SELECT 1 FROM filtered_table_refs ftr 
-                       WHERE ftr.warehouse_id = ts.warehouse_id 
-                         AND ftr.table_id = ts.table_id 
-                         AND ftr.snapshot_id = ts.snapshot_id
-                   ))
-                   GROUP BY ts.table_id) tsnap ON tsnap.table_id = t.table_id
+        LEFT JOIN (SELECT table_id,
+                          ARRAY_AGG(snapshot_id) as snapshot_ids,
+                          ARRAY_AGG(parent_snapshot_id) as parent_snapshot_ids,
+                          ARRAY_AGG(sequence_number) as sequence_numbers,
+                          ARRAY_AGG(manifest_list) as manifest_lists,
+                          ARRAY_AGG(summary) as summaries,
+                          ARRAY_AGG(schema_id) as schema_ids,
+                          ARRAY_AGG(timestamp_ms) as timestamp,
+                          ARRAY_AGG(first_row_id) as first_row_ids,
+                          ARRAY_AGG(assigned_rows) as assigned_rows,
+                          ARRAY_AGG(key_id) as key_id
+                   FROM snapshots_to_load
+                   GROUP BY table_id) tsnap ON tsnap.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(snapshot_id ORDER BY sequence_number) as snapshot_ids,
                           ARRAY_AGG(timestamp ORDER BY sequence_number) as timestamps
@@ -760,8 +773,8 @@ pub(crate) mod tests {
         },
         server::tables::create_table::create_table_request_into_table_metadata,
         service::{
-            CreateTableError, NamedEntity, NamespaceId, RenameTabularError, TableCreation,
-            TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
+            AllowedFormatVersions, CreateTableError, NamedEntity, NamespaceId, RenameTabularError,
+            TableCreation, TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
             tasks::{
                 ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -883,7 +896,13 @@ pub(crate) mod tests {
         };
         let table_id = table_id.unwrap_or_else(|| Uuid::now_v7().into());
 
-        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
         let schema = table_metadata.current_schema_id();
         let table_metadata = table_metadata
             .into_builder(None)
@@ -961,7 +980,13 @@ pub(crate) mod tests {
         let mut transaction = pool.begin().await.unwrap();
         let table_id = uuid::Uuid::now_v7().into();
 
-        let table_metadata = create_table_request_into_table_metadata(table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
 
         let request = TableCreation {
             warehouse_id,
@@ -1044,8 +1069,13 @@ pub(crate) mod tests {
 
         let mut transaction = pool.begin().await.unwrap();
         let staged_table_id = uuid::Uuid::now_v7().into();
-        let table_metadata =
-            create_table_request_into_table_metadata(staged_table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            staged_table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
 
         let request = TableCreation {
             warehouse_id,
@@ -1092,8 +1122,13 @@ pub(crate) mod tests {
         // We can overwrite the table with a regular create
         let (request, metadata_location) = create_request(Some(false), None);
 
-        let table_metadata =
-            create_table_request_into_table_metadata(staged_table_id, request).unwrap();
+        let table_metadata = create_table_request_into_table_metadata(
+            staged_table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
 
         let request = TableCreation {
             warehouse_id,
@@ -1127,7 +1162,7 @@ pub(crate) mod tests {
             .context_radius(15)
             .missing_newline_hint(false)
             .to_string();
-        assert_eq!(load_result.table_metadata, table_metadata, "{diff}",);
+        assert_eq!(load_result.table_metadata, table_metadata, "{diff}");
         assert_eq!(load_result.metadata_location, metadata_location);
     }
 
@@ -1151,7 +1186,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert!(infos.is_empty());
         drop(table_ident);
 
@@ -1165,7 +1202,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert!(infos.is_empty());
 
         let infos = get_tabular_infos_by_idents(
@@ -1178,7 +1217,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         let info = &infos[0];
         assert_eq!(info.tabular_id(), table.table_id.into());
@@ -1204,7 +1245,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let table_1 = initialize_table(warehouse_id, state.clone(), true, None, None, None).await;
@@ -1217,7 +1260,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let infos = get_tabular_infos_by_idents(
@@ -1230,7 +1275,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].tabular_id(), table_1.table_id.into());
 
@@ -1247,7 +1294,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         // Only table_2 should be returned (table_1 is staged)
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].tabular_id(), table_2.table_id.into());
@@ -1265,7 +1314,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         // Both tables should be returned
         assert_eq!(infos.len(), 2);
         let ids: std::collections::HashSet<_> =
@@ -1325,7 +1376,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         // Should find the table by case-insensitive match
         assert_eq!(infos[0].tabular_id(), created.table_id.into());
@@ -1342,11 +1395,12 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        // Both queries should resolve to the same table, but we should get 2 results
-        // (one for each queried identifier)
+        // Both queries should resolve to the same table, but keyed by the input casing
         assert_eq!(infos.len(), 2);
-        let id_lower = infos[0].tabular_id();
-        let id_upper = infos[1].tabular_id();
+        assert!(infos.contains_key(&table_ident_lower));
+        assert!(infos.contains_key(&table_ident_upper));
+        let id_lower = infos[&table_ident_lower].tabular_id();
+        let id_upper = infos[&table_ident_upper].tabular_id();
         assert_eq!(id_lower, id_upper);
         assert_eq!(id_lower, created.table_id.into());
     }
@@ -1382,7 +1436,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let exists = get_tabular_infos_by_idents(
@@ -1392,7 +1448,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         // Table id should be the same
         assert_eq!(exists.len(), 1);
         assert_eq!(exists[0].tabular_id(), table.table_id.into());
@@ -1432,7 +1490,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 0);
 
         let infos = get_tabular_infos_by_idents(
@@ -1442,7 +1502,9 @@ pub(crate) mod tests {
             &state.read_pool(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_values()
+        .collect::<Vec<_>>();
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].tabular_id(), table.table_id.into());
     }
@@ -1889,5 +1951,154 @@ pub(crate) mod tests {
             .len(),
             0
         );
+    }
+
+    #[sqlx::test]
+    async fn test_rename_to_different_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            None,
+            None,
+            Some("my_table".to_string()),
+        )
+        .await;
+
+        // Rename to a name that differs only in case
+        let new_table_ident = TableIdent {
+            namespace: table.namespace.clone(),
+            name: "My_Table".to_string(),
+        };
+
+        let mut transaction = pool.begin().await.unwrap();
+        rename_tabular(
+            warehouse_id,
+            table.table_id.into(),
+            &table.table_ident,
+            &new_table_ident,
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        // Old name should still find it (case-insensitive)
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[TabularIdentBorrowed::Table(&table.table_ident)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 1);
+        let info = infos
+            .get(&table.table_ident)
+            .expect("old ident should match");
+        assert_eq!(info.tabular_id(), table.table_id.into());
+
+        // New name should also find it
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[TabularIdentBorrowed::Table(&new_table_ident)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 1);
+        let info = infos.get(&new_table_ident).expect("new ident should match");
+        assert_eq!(info.tabular_id(), table.table_id.into());
+
+        // The stored name should be the new case
+        let listed = list_tabulars(
+            warehouse_id,
+            Some(table.namespace_id),
+            TabularListFlags::active(),
+            &state.read_pool(),
+            None,
+            PaginationQuery::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        let (_, info, _) = listed.into_iter_with_page_tokens().next().unwrap();
+        assert_eq!(info.tabular_ident().name, "My_Table");
+    }
+
+    #[sqlx::test]
+    async fn test_list_tables_case_insensitive_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["My_Namespace".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let _ = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace.clone()),
+            None,
+            Some("table_one".to_string()),
+        )
+        .await;
+        let _ = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(namespace.clone()),
+            None,
+            Some("table_two".to_string()),
+        )
+        .await;
+
+        // Look up both tables using uppercase namespace
+        let upper_ident_1 = TableIdent {
+            namespace: NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap(),
+            name: "TABLE_ONE".to_string(),
+        };
+        let upper_ident_2 = TableIdent {
+            namespace: NamespaceIdent::from_vec(vec!["MY_NAMESPACE".to_string()]).unwrap(),
+            name: "TABLE_TWO".to_string(),
+        };
+
+        let infos = get_tabular_infos_by_idents(
+            warehouse_id,
+            &[
+                TabularIdentBorrowed::Table(&upper_ident_1),
+                TabularIdentBorrowed::Table(&upper_ident_2),
+            ],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(infos.len(), 2);
+
+        // Listing by namespace_id should return original case
+        let listed = list_tabulars(
+            warehouse_id,
+            Some(namespace_id),
+            TabularListFlags::active(),
+            &state.read_pool(),
+            None,
+            PaginationQuery::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.len(), 2);
+        let names: std::collections::HashSet<String> = listed
+            .iter()
+            .map(|(_, info)| info.tabular_ident().name.clone())
+            .collect();
+        assert!(names.contains("table_one"));
+        assert!(names.contains("table_two"));
     }
 }

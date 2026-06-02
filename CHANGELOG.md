@@ -1,5 +1,259 @@
 # Changelog
 
+## [0.12.3](https://github.com/lakekeeper/lakekeeper/compare/v0.12.2...v0.12.3) (2026-05-26)
+
+
+### Features
+
+* add LAKEKEEPER__UI__ENABLE_SURVEYS opt-out flag ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **migrations:** atomic core + extension migrations ([aa734bf](https://github.com/lakekeeper/lakekeeper/commit/aa734bffcacd98566aa670f62341a4455833496c))
+* **role:** accept Into&lt;Arc&lt;RoleProviderId&gt;&gt; in RoleIdent::new ([#1758](https://github.com/lakekeeper/lakekeeper/issues/1758)) ([60ac97d](https://github.com/lakekeeper/lakekeeper/commit/60ac97d652d105be8a4fca99f2ecc84bdebf5430))
+* RoleIdent cheap cloning / inner Arc for provider ([#1757](https://github.com/lakekeeper/lakekeeper/issues/1757)) ([78b3009](https://github.com/lakekeeper/lakekeeper/commit/78b3009fefab629d151c0ffd25a5baa5275fcd31))
+* **role:** reserve `system` provider for catalog-managed roles ([#1776](https://github.com/lakekeeper/lakekeeper/issues/1776)) ([0441112](https://github.com/lakekeeper/lakekeeper/commit/044111241dd1c15fd955323575b692756f7c1ae9))
+* **server:** add read-only maintenance mode ([#1765](https://github.com/lakekeeper/lakekeeper/issues/1765)) ([5279d69](https://github.com/lakekeeper/lakekeeper/commit/5279d69dcaa29e78a8b435a8fb9b36d109c47978))
+* **ui:** "Export for GitHub" button and dialog in Server Overview — copies / downloads a JSON support bundle (server info + UI config, no tokens) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** "Export for GitHub" item in AppBar help menu ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** Feedback button at the right of the AppBar with 1-10 rating, discovery source select (incl. "Other"), and 2000-char improvements field; pre-fills a mailto draft to info@vakamo.com ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** Show role provider id in overfiew (v0.14.3) ([c7c2c1b](https://github.com/lakekeeper/lakekeeper/commit/c7c2c1b836f60937e8788df4bab7b3dc2e88e14e))
+* **ui:** two-column Server Information + Console layout in Server Settings ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **ui:** User Surveys row in UI Configuration (toggle from VITE_ENABLE_USER_SURVEYS) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **users:** drop unique-email constraint ([#1755](https://github.com/lakekeeper/lakekeeper/issues/1755)) ([bfd2812](https://github.com/lakekeeper/lakekeeper/commit/bfd2812fa3b9f8ec30824340d465a15c9f5cc546))
+
+
+### Bug Fixes
+
+* **ci:** hashicorp/vault non-root entrypoint ([0ea1f47](https://github.com/lakekeeper/lakekeeper/commit/0ea1f4735f45de1b425063f8c401895a99f35614))
+* inconsistency between link text and target ([#1753](https://github.com/lakekeeper/lakekeeper/issues/1753)) ([d01dd94](https://github.com/lakekeeper/lakekeeper/commit/d01dd94720fe6bff9ac73efba763896dab710be5))
+* **kv2:** replace stale vault health status ([#1773](https://github.com/lakekeeper/lakekeeper/issues/1773)) ([4176ad5](https://github.com/lakekeeper/lakekeeper/commit/4176ad5d2368a630d44fb5313ceba8c3fdb2245f))
+* **postgres/migrations:** rewrite namespace trigger so pg_restore can replay it ([#1781](https://github.com/lakekeeper/lakekeeper/issues/1781)) ([14f224d](https://github.com/lakekeeper/lakekeeper/commit/14f224d63181725483184ee21be7aa15926abd3e))
+* **stats:** assert relative deltas to tolerate bucket straddling ([0ea1f47](https://github.com/lakekeeper/lakekeeper/commit/0ea1f4735f45de1b425063f8c401895a99f35614))
+* table property removal lost when no properties remain ([#1767](https://github.com/lakekeeper/lakekeeper/issues/1767)) ([3055b0a](https://github.com/lakekeeper/lakekeeper/commit/3055b0a6c888b752b2b6c014d6e8bbc743acd96f))
+* **ui:** show Lakekeeper Version (drop Enterprise Version row when running OSS edition) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **view:** preserve protection during view commits ([#1770](https://github.com/lakekeeper/lakekeeper/issues/1770)) ([bf4c409](https://github.com/lakekeeper/lakekeeper/commit/bf4c40907bfddefe6590bbd52af5bb8bc5d5c3ef))
+* **view:** respect force=true in soft-delete warehouses on drop ([#1779](https://github.com/lakekeeper/lakekeeper/issues/1779)) ([c1b4357](https://github.com/lakekeeper/lakekeeper/commit/c1b4357b0efd659ea9a4920d5c31964b4ef62aae))
+
+
+### Documentation
+
+* **example:** add Firebolt section to documented engines ([#1759](https://github.com/lakekeeper/lakekeeper/issues/1759)) ([ab030b1](https://github.com/lakekeeper/lakekeeper/commit/ab030b10cf74ce47f3bab66bc18a8f1ec0cc9d2b))
+* **role-provider:** document Search and Branching LDAP modes ([05cce57](https://github.com/lakekeeper/lakekeeper/commit/05cce5797d3321ce30c59e034f19a3861c39cd88))
+
+
+### Miscellaneous Chores
+
+* Bridge lakekeeper-io to Iceberg Storage trait ([#1734](https://github.com/lakekeeper/lakekeeper/issues/1734)) ([a152365](https://github.com/lakekeeper/lakekeeper/commit/a15236583a61f0ef50ccb0228d0b3b7833df3ab9))
+* Bump MSRV to 1.94 ([aa734bf](https://github.com/lakekeeper/lakekeeper/commit/aa734bffcacd98566aa670f62341a4455833496c))
+* **deps:** bump @lakekeeper/console-components to v0.6.2 (Renovate batches: eslint, vue-router / vue-tsc / eslint-plugin-vue, sql-formatter, @codemirror/view; README typos; @hey-api/openapi-ts 0.97 SDK regen) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* **deps:** sqlx v0.9.0 ([aa734bf](https://github.com/lakekeeper/lakekeeper/commit/aa734bffcacd98566aa670f62341a4455833496c))
+* **docs:** Improve remove orphan file docs ([79b9d46](https://github.com/lakekeeper/lakekeeper/commit/79b9d4630cc8804cc483c2d85ba2ed0430ac110a))
+* **docs:** Update plus OpenAPI (remove orphan files) ([bf77a59](https://github.com/lakekeeper/lakekeeper/commit/bf77a590f4fe27f07d42d44534a1518c8f87fd65))
+* **refactor:** split TabularRow into core and properties variants ([#1777](https://github.com/lakekeeper/lakekeeper/issues/1777)) ([30a9259](https://github.com/lakekeeper/lakekeeper/commit/30a925901f79e8e8b6b8520999c674f79a20a785))
+* **ui:** dependencies page reads installed lib version from node_modules (no longer needs a sibling repo checkout) ([719150b](https://github.com/lakekeeper/lakekeeper/commit/719150bed3b700308ff5954217cfad8aac5ba9cf))
+* Update dependencies ([#1754](https://github.com/lakekeeper/lakekeeper/issues/1754)) ([bd2c57c](https://github.com/lakekeeper/lakekeeper/commit/bd2c57cac9b36ff6f036c590c5a7e39197ec966d))
+
+## [0.12.2](https://github.com/lakekeeper/lakekeeper/compare/v0.12.1...v0.12.2) (2026-05-10)
+
+
+### Features
+
+* **io:** canonicalise Location at parse time to avoid aliases ([#1743](https://github.com/lakekeeper/lakekeeper/issues/1743)) ([7e6f257](https://github.com/lakekeeper/lakekeeper/commit/7e6f257cacf1fb95a9f89bc04b6bd0b3ff1f85ed))
+* **io:** expose object size on FileInfo ([#1741](https://github.com/lakekeeper/lakekeeper/issues/1741)) ([3ec87dd](https://github.com/lakekeeper/lakekeeper/commit/3ec87dd56f707aadd7f1ae26e8a22aa23dfd1343))
+
+
+### Bug Fixes
+
+* **adls:** pre-encode `%` in blob name to defeat SDK alias collapse ([#1746](https://github.com/lakekeeper/lakekeeper/issues/1746)) ([2e8aea5](https://github.com/lakekeeper/lakekeeper/commit/2e8aea51a438b38c7369d21f35279bd8ccdb9ea8))
+* **postgres:** apply pg_acquire_timeout to all pool initializations ([#1744](https://github.com/lakekeeper/lakekeeper/issues/1744)) ([3af2055](https://github.com/lakekeeper/lakekeeper/commit/3af2055c19f4e54db4bd90ec852dcef27d63eb64))
+* **storage:** harden STS/CEL credential policies against path injection ([#1740](https://github.com/lakekeeper/lakekeeper/issues/1740)) ([8531e7b](https://github.com/lakekeeper/lakekeeper/commit/8531e7b210a7e953749ff180f780a767efba6fbb))
+
+
+### Miscellaneous Chores
+
+* **docs:** Update Cedarschema ([cf796f6](https://github.com/lakekeeper/lakekeeper/commit/cf796f6de006fcd2f110b5bc384befa6e27f0a93))
+* **main:** release 0.12.1 ([#1742](https://github.com/lakekeeper/lakekeeper/issues/1742)) ([b5c98a3](https://github.com/lakekeeper/lakekeeper/commit/b5c98a3de56396c51d81590f92e957fec27f48d3))
+* Release-as 0.12.2 ([db043b3](https://github.com/lakekeeper/lakekeeper/commit/db043b3e089f11324a8fac1a5c3bfba475497bc6))
+
+## [0.12.1](https://github.com/lakekeeper/lakekeeper/compare/v0.12.1...v0.12.1) (2026-05-09)
+
+
+### Features
+
+* **io:** canonicalise Location at parse time to avoid aliases ([#1743](https://github.com/lakekeeper/lakekeeper/issues/1743)) ([7e6f257](https://github.com/lakekeeper/lakekeeper/commit/7e6f257cacf1fb95a9f89bc04b6bd0b3ff1f85ed))
+* **io:** expose object size on FileInfo ([#1741](https://github.com/lakekeeper/lakekeeper/issues/1741)) ([3ec87dd](https://github.com/lakekeeper/lakekeeper/commit/3ec87dd56f707aadd7f1ae26e8a22aa23dfd1343))
+
+
+### Bug Fixes
+
+* **adls:** pre-encode `%` in blob name to defeat SDK alias collapse ([#1746](https://github.com/lakekeeper/lakekeeper/issues/1746)) ([2e8aea5](https://github.com/lakekeeper/lakekeeper/commit/2e8aea51a438b38c7369d21f35279bd8ccdb9ea8))
+* **postgres:** apply pg_acquire_timeout to all pool initializations ([#1744](https://github.com/lakekeeper/lakekeeper/issues/1744)) ([3af2055](https://github.com/lakekeeper/lakekeeper/commit/3af2055c19f4e54db4bd90ec852dcef27d63eb64))
+* **storage:** harden STS/CEL credential policies against path injection ([#1740](https://github.com/lakekeeper/lakekeeper/issues/1740)) ([8531e7b](https://github.com/lakekeeper/lakekeeper/commit/8531e7b210a7e953749ff180f780a767efba6fbb))
+
+
+### Miscellaneous Chores
+
+* **docs:** Update Cedarschema ([cf796f6](https://github.com/lakekeeper/lakekeeper/commit/cf796f6de006fcd2f110b5bc384befa6e27f0a93))
+
+## [0.12.1](https://github.com/lakekeeper/lakekeeper/compare/v0.12.0...v0.12.1) (2026-05-04)
+
+
+### Features
+
+* **audit:** include inner check tuples and decisions in introspect_permission audit logs ([#1697](https://github.com/lakekeeper/lakekeeper/issues/1697)) ([154be89](https://github.com/lakekeeper/lakekeeper/commit/154be89e85cc8dbee67182ab686ff6fcd757790b))
+* **authz:** add data-plane Select action for views ([#1721](https://github.com/lakekeeper/lakekeeper/issues/1721)) ([58aaaca](https://github.com/lakekeeper/lakekeeper/commit/58aaacad3b67a71fe07b1c0cd8f19d8a606e2c91))
+* **authz:** add RequireServerActionError variant to AuthZError ([#1719](https://github.com/lakekeeper/lakekeeper/issues/1719)) ([55eb67e](https://github.com/lakekeeper/lakekeeper/commit/55eb67ef3c0dbc043d81bc2a0c6b5dc5be71b909))
+* **authz:** expose resolve_principal for downstream API-to-authz UserOrRole conversion ([#1703](https://github.com/lakekeeper/lakekeeper/issues/1703)) ([511fdf2](https://github.com/lakekeeper/lakekeeper/commit/511fdf2b47cba311162e5f0a84d609921d13fe3a))
+* **authz:** rebuild and reconcile OpenFGA hierarchy tuples from catalog ([#1731](https://github.com/lakekeeper/lakekeeper/issues/1731)) ([551949f](https://github.com/lakekeeper/lakekeeper/commit/551949f01bd1c9ba8a34b8ed265a92e798d7738f))
+* **authz:** support switching to OpenFGA via reconcile + reopen-bootstrap ([#1733](https://github.com/lakekeeper/lakekeeper/issues/1733)) ([c5352a1](https://github.com/lakekeeper/lakekeeper/commit/c5352a187391a498bee83429feb16f72c3153682))
+* Extend Server Info with console information and commit SHAs ([#1725](https://github.com/lakekeeper/lakekeeper/issues/1725)) ([d47fd55](https://github.com/lakekeeper/lakekeeper/commit/d47fd55dc1cbe25e878a018aa92e1592b12102d7))
+* Instance Admins ([#1716](https://github.com/lakekeeper/lakekeeper/issues/1716)) ([22d7602](https://github.com/lakekeeper/lakekeeper/commit/22d7602f7940babf1386f6abecaffd7aadd63ee6))
+* **opa-bridge:** allow CreateViewWithSelectFromColumns on views so view-on-view queries pass the run-as-owner check ([#1712](https://github.com/lakekeeper/lakekeeper/issues/1712)) ([63d4020](https://github.com/lakekeeper/lakekeeper/commit/63d4020b783006f153f4d27d21655ae908093af5))
+* **opa-bridge:** Support "ADD_FILES" trino operation ([199e7a2](https://github.com/lakekeeper/lakekeeper/commit/199e7a2d3bdcbc7bdfa61e1d07ec866d643a0882))
+* **perf:** add warehouse/namespace broad-access fast path to Trino OPA batch ([#1727](https://github.com/lakekeeper/lakekeeper/issues/1727)) ([5483b69](https://github.com/lakekeeper/lakekeeper/commit/5483b69b1158789cddbebb9dfb876e75458796fd))
+* protect immutable table properties (encryption.key-id) during commits ([#1700](https://github.com/lakekeeper/lakekeeper/issues/1700)) ([d2e7787](https://github.com/lakekeeper/lakekeeper/commit/d2e778760e5bfd6ba3e0d69e49adb01a2f47d987))
+* reject case variants of protected view properties ([#1724](https://github.com/lakekeeper/lakekeeper/issues/1724)) ([9edf577](https://github.com/lakekeeper/lakekeeper/commit/9edf5777f8a1970d3e62da8774794f1a3e888d34))
+* **storage:** drop opendal, validate vended creds via lakekeeper_io ([#1737](https://github.com/lakekeeper/lakekeeper/issues/1737)) ([62add79](https://github.com/lakekeeper/lakekeeper/commit/62add79da1b115c4f4a7aface08ca304ceb0f399))
+* Validation for referenced-by parameter for trusted engines merged ([#1647](https://github.com/lakekeeper/lakekeeper/issues/1647)) ([ac0d70e](https://github.com/lakekeeper/lakekeeper/commit/ac0d70e1488e170a79f7dc9f150bacbec6ef9171))
+
+
+### Bug Fixes
+
+* Add webpki_root_certs to S3 Client, ubi native certs ([#1720](https://github.com/lakekeeper/lakekeeper/issues/1720)) ([8fec273](https://github.com/lakekeeper/lakekeeper/commit/8fec27375cdddbc725ffa13e73f549239ba05594))
+* allow renaming tables to a different case of their own name ([7c26309](https://github.com/lakekeeper/lakekeeper/commit/7c263091f255b75ed5d66024b5bc6b29ef553508))
+* **authz:** collapse user == actor to None in authz batch wrapper ([#1715](https://github.com/lakekeeper/lakekeeper/issues/1715)) ([bd6507d](https://github.com/lakekeeper/lakekeeper/commit/bd6507dfd20d4441f84228251ee54aec6227922f))
+* **opa-bridge:** add ReadSystemInformation rule and trim admin user entries ([e251740](https://github.com/lakekeeper/lakekeeper/commit/e25174065b41846968c24b30ca3d448a57f23bed))
+* pin gcloud-storage/gcloud-auth to ~1.2 to prevent reqwest-middleware version conflict ([#1701](https://github.com/lakekeeper/lakekeeper/issues/1701)) ([a3cfa87](https://github.com/lakekeeper/lakekeeper/commit/a3cfa87bf2f411b235a11e40c6494660e450585f))
+* return caller's case from namespace lookups, canonical from id lookups ([7c26309](https://github.com/lakekeeper/lakekeeper/commit/7c263091f255b75ed5d66024b5bc6b29ef553508))
+* **storage/adls:** remove the actual matched SAS token key, not the prefix ([76a091b](https://github.com/lakekeeper/lakekeeper/commit/76a091b9b01ba507cc448a56241d54f526c19a14))
+* **ui:** Fix base url trailing slash - 0.13.15 ([#1729](https://github.com/lakekeeper/lakekeeper/issues/1729)) ([a5cc2c6](https://github.com/lakekeeper/lakekeeper/commit/a5cc2c6f16372fef9f856509af1bc28bdf0e39fd))
+* **ui:** Fix UI Authentication due to Vite 8 changes ([#1723](https://github.com/lakekeeper/lakekeeper/issues/1723)) ([e2e8502](https://github.com/lakekeeper/lakekeeper/commit/e2e8502ad000dc3b042751fca5d7cad7d189bff2))
+* **ui:** pass warehouse-name to TablePreview to fix stale name after rename ([d2c7cef](https://github.com/lakekeeper/lakekeeper/commit/d2c7cef5fe95acd0d179b88a2740c82a8db6201c))
+* **ui:** wipe persisted state on fresh bootstrap, detach LoQE catalog on warehouse rename ([e12ae4e](https://github.com/lakekeeper/lakekeeper/commit/e12ae4eef2b75576329322977b224ace1306f4ac))
+
+
+### Documentation
+
+* document case sensitivity design and fix case-only rename conflict ([7c26309](https://github.com/lakekeeper/lakekeeper/commit/7c263091f255b75ed5d66024b5bc6b29ef553508))
+* Fluss example ([#1688](https://github.com/lakekeeper/lakekeeper/issues/1688)) ([6f5a52a](https://github.com/lakekeeper/lakekeeper/commit/6f5a52aa2f4edf15af027e97db9e41bb2678d8ce))
+* support deploying into a custom Postgres schema ([#1714](https://github.com/lakekeeper/lakekeeper/issues/1714)) ([fcab053](https://github.com/lakekeeper/lakekeeper/commit/fcab053eef0edb1799b5b25ea8721c84c33bb457))
+
+
+### Miscellaneous Chores
+
+* Add AGENTS.md ([46870c5](https://github.com/lakekeeper/lakekeeper/commit/46870c5569ef3cac6c1588875238110430290f50))
+* **ci:** pin actions to SHA, add cargo-machete, nightly toolchain, MSRV 1.92 ([#1705](https://github.com/lakekeeper/lakekeeper/issues/1705)) ([87a11d5](https://github.com/lakekeeper/lakekeeper/commit/87a11d5045c32ddd291b22af88794e7b9290784a))
+* **deps:** bump iceberg-rust, adopt iceberg-storage-opendal split ([#1736](https://github.com/lakekeeper/lakekeeper/issues/1736)) ([ed96701](https://github.com/lakekeeper/lakekeeper/commit/ed967015b9471f1e2a6a604cccb07db02cfbcf9d))
+* **deps:** bump rustls-webpki 0.103 to 0.103.12 for RUSTSEC-2026-0098 ([#1713](https://github.com/lakekeeper/lakekeeper/issues/1713)) ([d1f797d](https://github.com/lakekeeper/lakekeeper/commit/d1f797db28c396eb42fe9f412e2d71a545428f74))
+* **docs:** 0.12 docs ([63bbcff](https://github.com/lakekeeper/lakekeeper/commit/63bbcffa7d2596a5308dcae8f1fa92d1a9654550))
+* **docs:** Improve `get_metadata` vs `select` docs ([7b84288](https://github.com/lakekeeper/lakekeeper/commit/7b8428896404cbd7a2ac83d667b601f7ac4e500b))
+* **docs:** Improve Instance Admin docs ([8674abb](https://github.com/lakekeeper/lakekeeper/commit/8674abbb3634e1501af561804aa7ce35d0e6f78d))
+* **docs:** Update numbers ([973d7a9](https://github.com/lakekeeper/lakekeeper/commit/973d7a97ab46383f995342d78440e145a4196a05))
+* Make LakekeeperStorage dyn-Compatible ([#1728](https://github.com/lakekeeper/lakekeeper/issues/1728)) ([966675d](https://github.com/lakekeeper/lakekeeper/commit/966675d29b7152f815d0f19f7d417e9f0049a77e))
+* return standartized NoSuchWarehouseException for warehouse-not-found errors ([#1702](https://github.com/lakekeeper/lakekeeper/issues/1702)) ([3ac0fa8](https://github.com/lakekeeper/lakekeeper/commit/3ac0fa80c18586ba62abae50991fa5f24bb4df5f))
+* **ui:** Compress files ([#1738](https://github.com/lakekeeper/lakekeeper/issues/1738)) ([0368cdc](https://github.com/lakekeeper/lakekeeper/commit/0368cdc19d79ea0713fb086f835bf0b64128f002))
+
+## [0.12.0](https://github.com/lakekeeper/lakekeeper/compare/v0.11.2...v0.12.0) (2026-04-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* unify cache metrics under shared names with cache_type label ([#1641](https://github.com/lakekeeper/lakekeeper/issues/1641))
+* Use structured log format that uses objects as log values
+
+### Features
+
+* Add audit event handler ([b77c687](https://github.com/lakekeeper/lakekeeper/commit/b77c68740a67221669acaa122742b3912d48aeb5))
+* Add AuthorizerValidationFailed Error ([#1624](https://github.com/lakekeeper/lakekeeper/issues/1624)) ([add0654](https://github.com/lakekeeper/lakekeeper/commit/add06545a0215f3786195a386252447c6c5a9a90))
+* Add Configuration of TrustedEngines and add to Request Metadata ([#1629](https://github.com/lakekeeper/lakekeeper/issues/1629)) ([83317c2](https://github.com/lakekeeper/lakekeeper/commit/83317c2ec9f7632bf81e64da4fa41720d17027e2))
+* Add FileInfo to `LakekeeperStorage::list` ([#1605](https://github.com/lakekeeper/lakekeeper/issues/1605)) ([e96afc0](https://github.com/lakekeeper/lakekeeper/commit/e96afc004a1e72ec0f3ffff50ba4176a084763de))
+* Add in-memory Roles Cache ([#1623](https://github.com/lakekeeper/lakekeeper/issues/1623)) ([add0654](https://github.com/lakekeeper/lakekeeper/commit/add06545a0215f3786195a386252447c6c5a9a90))
+* Add non-productive debug option to log authorization header ([#1613](https://github.com/lakekeeper/lakekeeper/issues/1613)) ([aff61ba](https://github.com/lakekeeper/lakekeeper/commit/aff61ba588a0623918046437d1ca3b2e7a26cbb7))
+* add OPA batch optimization for Lakekeeper-managed catalogs ([#1674](https://github.com/lakekeeper/lakekeeper/issues/1674)) ([a8045ed](https://github.com/lakekeeper/lakekeeper/commit/a8045edde7c26fa182f1d8c3fef8d9f36e89e08a))
+* add resource name to Create* authorizer action contexts ([#1657](https://github.com/lakekeeper/lakekeeper/issues/1657)) ([0de3544](https://github.com/lakekeeper/lakekeeper/commit/0de354421581e9f8f29b99f7a557b6e84c9e515d))
+* add role lifecycle events and improve actor serialization ([#1622](https://github.com/lakekeeper/lakekeeper/issues/1622)) ([add0654](https://github.com/lakekeeper/lakekeeper/commit/add06545a0215f3786195a386252447c6c5a9a90))
+* Adds max_request_body_size and max_request_time configuration variables ([#1583](https://github.com/lakekeeper/lakekeeper/issues/1583)) ([bbdf892](https://github.com/lakekeeper/lakekeeper/commit/bbdf89201bfa6a08ab1b24e0c48eae1206f319cc))
+* **authz:** add Trino custom rule extension point and configurable admin users ([47fcb6a](https://github.com/lakekeeper/lakekeeper/commit/47fcb6ad2482f545a9ecb20931fcb25f8774ee88))
+* Configurable STS Endpoint ([#1653](https://github.com/lakekeeper/lakekeeper/issues/1653)) ([40b41d4](https://github.com/lakekeeper/lakekeeper/commit/40b41d4a397268f9ae9c9931a175768fb939e6a5))
+* Customization Option for Storage Layout ([#1615](https://github.com/lakekeeper/lakekeeper/issues/1615)) ([ed970ca](https://github.com/lakekeeper/lakekeeper/commit/ed970ca233144f7bb7718ee4454a2414a08951d4))
+* **docs:** Add documentation for Logging ([b77c687](https://github.com/lakekeeper/lakekeeper/commit/b77c68740a67221669acaa122742b3912d48aeb5))
+* extend OPA bridge with admin users, system schema handling, and context forwarding ([#1662](https://github.com/lakekeeper/lakekeeper/issues/1662)) ([40ef2e9](https://github.com/lakekeeper/lakekeeper/commit/40ef2e968eacbc81242accd3c512311b6822b738))
+* Fallback subject claims ([#1646](https://github.com/lakekeeper/lakekeeper/issues/1646)) ([09ff52e](https://github.com/lakekeeper/lakekeeper/commit/09ff52e3fa3eb412920336f5c24a62079a420b64))
+* Idempotency Keys ([#1671](https://github.com/lakekeeper/lakekeeper/issues/1671)) ([6bba368](https://github.com/lakekeeper/lakekeeper/commit/6bba368793eb3c8fcf2a61ba9ddd1bba2d1268a6))
+* Improve action logs in audit ([#1610](https://github.com/lakekeeper/lakekeeper/issues/1610)) ([e3c1c97](https://github.com/lakekeeper/lakekeeper/commit/e3c1c97cdec6cc4ce531deaaa0df9a37aa98256e))
+* Improve list namespaces, tables and views query performance ([#1618](https://github.com/lakekeeper/lakekeeper/issues/1618)) ([49efe9c](https://github.com/lakekeeper/lakekeeper/commit/49efe9c0c6eb1f50f20b0fc1930be821ada0f3c7))
+* Improve StorageLayout and remove inner API from docs. Add validation for StorageLayouts ([#1628](https://github.com/lakekeeper/lakekeeper/issues/1628)) ([0f34f8d](https://github.com/lakekeeper/lakekeeper/commit/0f34f8dff03b3e81f24bd2c862ba0bd80c3f1ce6))
+* include S3 multipart upload actions in STS session policy ([#1652](https://github.com/lakekeeper/lakekeeper/issues/1652)) ([0664778](https://github.com/lakekeeper/lakekeeper/commit/06647780b75d181be726d0b6d39836d2bcd84ab9))
+* include storage credential type in GetWarehouseResponse ([#1668](https://github.com/lakekeeper/lakekeeper/issues/1668)) ([7ca148f](https://github.com/lakekeeper/lakekeeper/commit/7ca148ff140cb62eb2fd2dd4a8ccc9d890f0dec8))
+* Interior Mutability for EventDispatcher ([#1649](https://github.com/lakekeeper/lakekeeper/issues/1649)) ([7589b17](https://github.com/lakekeeper/lakekeeper/commit/7589b1783690bb2c62c02b610dc5b6a355ce62d5))
+* Introduce Authorization events with exactly once per API-Call guarantee ([b77c687](https://github.com/lakekeeper/lakekeeper/commit/b77c68740a67221669acaa122742b3912d48aeb5))
+* Introduce string-based RoleIdent with provider-scoped role identifiers ([add0654](https://github.com/lakekeeper/lakekeeper/commit/add06545a0215f3786195a386252447c6c5a9a90))
+* Parse roles from tokens into identifiers ([#1625](https://github.com/lakekeeper/lakekeeper/issues/1625)) ([add0654](https://github.com/lakekeeper/lakekeeper/commit/add06545a0215f3786195a386252447c6c5a9a90))
+* Parsing referenced-by query parameter ([#1627](https://github.com/lakekeeper/lakekeeper/issues/1627)) ([87c078f](https://github.com/lakekeeper/lakekeeper/commit/87c078f638d5db6c4b69f17aba74e375f0b97b79))
+* Reduce memory footprint by switching to jemalloc from ptmalloc ([0eaeedc](https://github.com/lakekeeper/lakekeeper/commit/0eaeedc8411120f18ec9229b4dd08c36dd294d23))
+* Role Assignment Store & Cache ([#1638](https://github.com/lakekeeper/lakekeeper/issues/1638)) ([cc0d6f8](https://github.com/lakekeeper/lakekeeper/commit/cc0d6f8b2e1aa36676cc41580c30319b7d63b20e))
+* Spark 4 Integration Tests ([daa7947](https://github.com/lakekeeper/lakekeeper/commit/daa7947333097b25e09a91281a6057d334db599c))
+* Support V3 Variant Datatype ([daa7947](https://github.com/lakekeeper/lakekeeper/commit/daa7947333097b25e09a91281a6057d334db599c))
+* Tokio Metrics ([#1664](https://github.com/lakekeeper/lakekeeper/issues/1664)) ([294dbbf](https://github.com/lakekeeper/lakekeeper/commit/294dbbf066bb335c6552220e64aa4598dc14cbb7))
+* **ui:** Add branch operations: create, rename, delete, rollback, and fast-forward ([66e768e](https://github.com/lakekeeper/lakekeeper/commit/66e768ee630804d04f4274922985d8a2ee32aad2))
+* **ui:** Add branch operations: create, rename, delete, rollback, and fast-forward ([66e768e](https://github.com/lakekeeper/lakekeeper/commit/66e768ee630804d04f4274922985d8a2ee32aad2))
+* **ui:** add community action cards (Star, Contribute, Share on LinkedIn) to Home page ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* **ui:** add HomeStatistics dashboard with project/warehouse/table/view counts and API calls area chart ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* **ui:** Add Properties Dialog for editing table/view/namespace properties ([66e768e](https://github.com/lakekeeper/lakekeeper/commit/66e768ee630804d04f4274922985d8a2ee32aad2))
+* **ui:** add WarehouseStatistics tab with D3 stacked area charts and server-side filtering ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* **ui:** move GitHub stars to AppBar linked to repository ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* **ui:** pass storageLayout prop to NamespaceTables and NamespaceViews ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* **ui:** Redesign branch visualization snapshot detail panel with card layout ([66e768e](https://github.com/lakekeeper/lakekeeper/commit/66e768ee630804d04f4274922985d8a2ee32aad2))
+* **ui:** update Contributing section in README to point to shared CONTRIBUTING.md ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* unify cache metrics under shared names with cache_type label ([#1641](https://github.com/lakekeeper/lakekeeper/issues/1641)) ([894c01e](https://github.com/lakekeeper/lakekeeper/commit/894c01eb445ac9fc6759e021487f49f849fd4b36))
+* Update Console to a78db64 ([#1611](https://github.com/lakekeeper/lakekeeper/issues/1611)) ([26040ce](https://github.com/lakekeeper/lakekeeper/commit/26040ce30e20ebe0548a22d56908ab97f1b66dc2))
+* Update UI - Add Local Query Engine with memory Management ([#1621](https://github.com/lakekeeper/lakekeeper/issues/1621)) ([1aff402](https://github.com/lakekeeper/lakekeeper/commit/1aff402454b4095f06e4a1ab287d33f1ba6f2d21))
+* Update UI - Add Storage Layout configuration ([#1634](https://github.com/lakekeeper/lakekeeper/issues/1634)) ([3c6e351](https://github.com/lakekeeper/lakekeeper/commit/3c6e351d8dab1eb4b5c1a9caad52785ab2aa70b8))
+* Use structured log format that uses objects as log values ([b77c687](https://github.com/lakekeeper/lakekeeper/commit/b77c68740a67221669acaa122742b3912d48aeb5))
+
+
+### Bug Fixes
+
+* Allow Storage Profile region update if S3 endpoint is set ([#1678](https://github.com/lakekeeper/lakekeeper/issues/1678)) ([4e7db35](https://github.com/lakekeeper/lakekeeper/commit/4e7db3534092b6c2a6d271f561ede390c1cbecc9))
+* bump aws-lc-sys to 0.38.0 to patch GHSA-vw5v-4f2q-w9xf ([#1644](https://github.com/lakekeeper/lakekeeper/issues/1644)) ([e5e2d64](https://github.com/lakekeeper/lakekeeper/commit/e5e2d649a5a3c8cfdd67337efd226d0b5e8d11b0))
+* **ci:** Pin botocore & s3fs Versions ([#1603](https://github.com/lakekeeper/lakekeeper/issues/1603)) ([735ee8c](https://github.com/lakekeeper/lakekeeper/commit/735ee8c24afc145124e98a2d82ab6f5118f236ec))
+* **docs:** Add missing `TOKEN_TYPE` config for Google IdP ([de24e13](https://github.com/lakekeeper/lakekeeper/commit/de24e13e26edf0887e9d93f3e4e9f9d2d89b4de9))
+* **docs:** Cedarschema download link ([0808a66](https://github.com/lakekeeper/lakekeeper/commit/0808a6682eedc2082b0d7361270bd3d2a91b63f5))
+* **docs:** linebreaks for Cedar configuration ([aef6020](https://github.com/lakekeeper/lakekeeper/commit/aef6020492df4df9886f24b96b0f8dea332d5029))
+* list_tabulars returning duplicate pagination results ([#1682](https://github.com/lakekeeper/lakekeeper/issues/1682)) ([#1684](https://github.com/lakekeeper/lakekeeper/issues/1684)) ([379a0f7](https://github.com/lakekeeper/lakekeeper/commit/379a0f7b8a62f6a4d1f18dd927720168b6419b7a))
+* rename S3 credential fields to drop aws_ prefix, add alias for backwards compatibility ([#1685](https://github.com/lakekeeper/lakekeeper/issues/1685)) ([c803c0d](https://github.com/lakekeeper/lakekeeper/commit/c803c0d13ca4f459c0afd16963615a7b2ec22a9b))
+* S3 identity cache memory leak ([0eaeedc](https://github.com/lakekeeper/lakekeeper/commit/0eaeedc8411120f18ec9229b4dd08c36dd294d23))
+* **security:** update crypto dependencies to patch CVE in aws-lc-sys, rustls-webpki ([#1672](https://github.com/lakekeeper/lakekeeper/issues/1672)) ([8f8e4de](https://github.com/lakekeeper/lakekeeper/commit/8f8e4de24654dd9935cd06ac178b88e3b71126d9))
+* **ui:** Better Safari support, Add Task Log Cleanup configuration ([#1593](https://github.com/lakekeeper/lakekeeper/issues/1593)) ([4738d4a](https://github.com/lakekeeper/lakekeeper/commit/4738d4a925f43fd7bcd51bb623e1d4c98e91c266))
+* **ui:** remove deprecated GitHub stats chips, quick access cards, and routeToRoles from Home ([ba5c0b1](https://github.com/lakekeeper/lakekeeper/commit/ba5c0b187d2e888daf183197dd4964159e82dcf4))
+* update lz4_flex to 0.12.1 to patch memory leak vulnerability (GHSA-vvp9-7p8x-rfvv) ([#1665](https://github.com/lakekeeper/lakekeeper/issues/1665)) ([913ebd2](https://github.com/lakekeeper/lakekeeper/commit/913ebd23b47da231e0ebe47f831cc4c53884dd91))
+
+
+### Miscellaneous Chores
+
+* add monitoring documentation ([#1648](https://github.com/lakekeeper/lakekeeper/issues/1648)) ([c7174ad](https://github.com/lakekeeper/lakekeeper/commit/c7174adfb604f6b9d35ae6094e197f5b2333260f))
+* Bump node to 24 (LTS), UI 1c6a3bb ([#1660](https://github.com/lakekeeper/lakekeeper/issues/1660)) ([3e91f6e](https://github.com/lakekeeper/lakekeeper/commit/3e91f6ed3649effc5acaf547937ead096b554bda))
+* **ci:** Use LAKEKEEPER_TEST prefix for AWS variables ([#1679](https://github.com/lakekeeper/lakekeeper/issues/1679)) ([31ef80a](https://github.com/lakekeeper/lakekeeper/commit/31ef80a501dd13afbbe43967f5eb9cc16cc573ec))
+* **deps:** Add cargo-deny with License checker ([#1580](https://github.com/lakekeeper/lakekeeper/issues/1580)) ([b1cdcd5](https://github.com/lakekeeper/lakekeeper/commit/b1cdcd51f715a24f8a258879e10f6e8a8c49ce41))
+* **deps:** update rust crate bytes to v1.11.1 [security] ([#1597](https://github.com/lakekeeper/lakekeeper/issues/1597)) ([0ec6a00](https://github.com/lakekeeper/lakekeeper/commit/0ec6a008f674b8dca87a1ed813e345b9973e1a57))
+* **deps:** update rust crate jsonwebtoken to v10.3.0 [security] ([#1598](https://github.com/lakekeeper/lakekeeper/issues/1598)) ([93bd887](https://github.com/lakekeeper/lakekeeper/commit/93bd887abf799fbc17d31721cb216ee3628780c0))
+* **deps:** update rust crate time to v0.3.47 [security] ([#1600](https://github.com/lakekeeper/lakekeeper/issues/1600)) ([bc994e5](https://github.com/lakekeeper/lakekeeper/commit/bc994e542f108fc9a502ff92d7365d9723761c10))
+* **docs:** Add Lakekeeper Plus license configuration ([#1595](https://github.com/lakekeeper/lakekeeper/issues/1595)) ([239dc5d](https://github.com/lakekeeper/lakekeeper/commit/239dc5d97b312dfedbf1d9eaef4288e5234e5625))
+* **docs:** add opt-in audit event for resolved role assignments ([20044c2](https://github.com/lakekeeper/lakekeeper/commit/20044c2c059b67f9a4d0be48655fd11f16ee4f35))
+* **docs:** Cedar & Role Provider docs ([#1651](https://github.com/lakekeeper/lakekeeper/issues/1651)) ([5bf1312](https://github.com/lakekeeper/lakekeeper/commit/5bf13128dd6e3dc34fba7572caec8af3092bd0d2))
+* **docs:** Cedar User Derivations Transformations ([8ba8862](https://github.com/lakekeeper/lakekeeper/commit/8ba886296666f4140ff19d30902d530cff30e429))
+* **docs:** Cedar User Identity Derivations ([a86301f](https://github.com/lakekeeper/lakekeeper/commit/a86301f5c65085fead6095fe1da6c5214e18389e))
+* **docs:** Clarify Cedar property value ([0a257d0](https://github.com/lakekeeper/lakekeeper/commit/0a257d0c34a418e8ec28aa88cdf3ca0193917131))
+* **docs:** document Azure token v1/v2 issuer differences, fix S3 CORS headers ([527b748](https://github.com/lakekeeper/lakekeeper/commit/527b7484950bacd53c45478a1fd0a8afe42dc1f0))
+* **docs:** Document Cedar global_role_ids for ParsedProperties ([6a6a5d6](https://github.com/lakekeeper/lakekeeper/commit/6a6a5d6301589e2726d0ab15478aaf8aaedb5059))
+* **docs:** Fix Role-Provider heading style ([85520d1](https://github.com/lakekeeper/lakekeeper/commit/85520d1435efa599941dc71a47d5fca422621205))
+* **docs:** Group Provider TOML configuration ([624abf9](https://github.com/lakekeeper/lakekeeper/commit/624abf9935dbeae5e553950fef4d1d19d167c235))
+* **docs:** Improve cedar docs ([#1587](https://github.com/lakekeeper/lakekeeper/issues/1587)) ([30e04f7](https://github.com/lakekeeper/lakekeeper/commit/30e04f7c8646e0c9163c32d7ad5a1eb0f0262380))
+* **events:** restructure event system service::events with clearer naming conventions ([#1602](https://github.com/lakekeeper/lakekeeper/issues/1602)) ([f6aaa45](https://github.com/lakekeeper/lakekeeper/commit/f6aaa4570cf62d54943581e7a00b9f882d9c992d))
+* **hooks:** restructure EndpointHook to use event structs ([#1601](https://github.com/lakekeeper/lakekeeper/issues/1601)) ([7db8da6](https://github.com/lakekeeper/lakekeeper/commit/7db8da6eb001979f7bf4d3c1cf1e9e21ad2250e5))
+* **opa-bridge:** Add CreateViewWithSelectFromColumns permissions based on "read_data" of underlying table ([#1594](https://github.com/lakekeeper/lakekeeper/issues/1594)) ([c378f6e](https://github.com/lakekeeper/lakekeeper/commit/c378f6e69f0e11e56d992c32b3939e73a4ed0ef0))
+* **opa:** Format policies, strict checking in CI ([#1666](https://github.com/lakekeeper/lakekeeper/issues/1666)) ([155b4ae](https://github.com/lakekeeper/lakekeeper/commit/155b4ae90dc00a0102bb3f355371a358b97f7aad))
+* **test:** Extend tests for v2 to v3 migration with data ([#1691](https://github.com/lakekeeper/lakekeeper/issues/1691)) ([d926bbf](https://github.com/lakekeeper/lakekeeper/commit/d926bbfc7351934f15a96f370a0d0c1b3b9f631b))
+* **ui:** Update UI to 0.13.2 ([#1686](https://github.com/lakekeeper/lakekeeper/issues/1686)) ([1d79d98](https://github.com/lakekeeper/lakekeeper/commit/1d79d98a8079e7573945ff522acedcfb0ab6cd2b))
+
 ## [0.11.2](https://github.com/lakekeeper/lakekeeper/compare/v0.11.1...v0.11.2) (2026-01-29)
 
 

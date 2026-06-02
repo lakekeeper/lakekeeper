@@ -13,8 +13,8 @@ use crate::{
         ResolvedWarehouse, SecretStore, State, TabularId,
         authz::{
             AuthZCannotUseWarehouseId, AuthZTableOps, Authorizer, AuthzWarehouseOps,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireWarehouseActionError,
+            CatalogGenericTableAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, RequireWarehouseActionError,
         },
         events::{
             APIEventContext,
@@ -70,7 +70,7 @@ where
         if search.chars().count() > 64 {
             search = search.chars().take(64).collect();
         }
-        let all_matches =
+        let all_matches: Vec<_> =
             C::search_tabular(warehouse_id, &search, context.v1_state.catalog.clone())
                 .await?
                 .search_results;
@@ -90,6 +90,8 @@ where
                     t.tabular.as_action_request(
                         CatalogViewAction::IncludeInList,
                         CatalogTableAction::IncludeInList,
+                        CatalogGenericTableAction::IncludeInList,
+                        None,
                     ),
                 ))
             })
@@ -101,7 +103,6 @@ where
             authorizer
                 .are_allowed_tabular_actions_vec(
                     event_ctx.request_metadata(),
-                    None,
                     &warehouse,
                     &namespaces,
                     &actions,

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO view_version (\n            warehouse_id, view_id, version_id, schema_id, timestamp,\n            default_namespace_id, default_catalog, summary\n        )\n        SELECT $1, $2, u.version_id, u.schema_id, u.timestamp,\n               u.default_namespace_id, u.default_catalog, u.summary\n        FROM UNNEST(\n            $3::int[], $4::int[], $5::timestamptz[],\n            $6::uuid[], $7::text[], $8::jsonb[]\n        ) AS u(version_id, schema_id, timestamp,\n               default_namespace_id, default_catalog, summary)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4Array",
+        "Int4Array",
+        "TimestamptzArray",
+        "UuidArray",
+        "TextArray",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6c155167ca55c7672474ead9c4938c3085bb7167de450321234f5bd6080dceee"
+}

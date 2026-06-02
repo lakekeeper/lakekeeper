@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
@@ -11,7 +13,7 @@ use crate::{
     },
     implementations::postgres::dbutils::DBErrorHandler,
     service::{
-        DatabaseIntegrityError, TableId, ViewId,
+        ArcProjectId, DatabaseIntegrityError, TableId, ViewId,
         task_configs::TaskQueueConfigFilter,
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, Task, TaskAttemptId, TaskCheckState,
@@ -42,6 +44,7 @@ pub(crate) struct InsertResult {
 enum TaskEntityTypeDB {
     Table,
     View,
+    GenericTable,
     Project,
     Warehouse,
 }
@@ -51,6 +54,7 @@ impl From<WarehouseTaskEntityId> for TaskEntityTypeDB {
         match entity_id {
             WarehouseTaskEntityId::Table { .. } => Self::Table,
             WarehouseTaskEntityId::View { .. } => Self::View,
+            WarehouseTaskEntityId::GenericTable { .. } => Self::GenericTable,
         }
     }
 }
@@ -78,17 +82,15 @@ fn task_entity_from_db(
     entity_name: Option<Vec<String>>,
 ) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
-        TaskEntityTypeDB::View | TaskEntityTypeDB::Table => {
+        TaskEntityTypeDB::View | TaskEntityTypeDB::Table | TaskEntityTypeDB::GenericTable => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
-                    DatabaseIntegrityError::new(
-                        "WarehouseId is missing for table or view scoped task.",
-                    )
+                    DatabaseIntegrityError::new("WarehouseId is missing for tabular scoped task.")
                 })
                 .map(WarehouseId::from)?;
 
             let entity_id = entity_id.ok_or_else(|| {
-                DatabaseIntegrityError::new("EntityId is missing for table or view scoped task.")
+                DatabaseIntegrityError::new("EntityId is missing for tabular scoped task.")
             })?;
 
             let entity_id = match entity_type {
@@ -98,11 +100,14 @@ fn task_entity_from_db(
                 TaskEntityTypeDB::Table => WarehouseTaskEntityId::Table {
                     table_id: TableId::from(entity_id),
                 },
+                TaskEntityTypeDB::GenericTable => WarehouseTaskEntityId::GenericTable {
+                    generic_table_id: crate::service::GenericTableId::from(entity_id),
+                },
                 _ => unreachable!(),
             };
 
             let entity_name = entity_name.ok_or_else(|| {
-                DatabaseIntegrityError::new("Entity name is missing for table or view scoped task.")
+                DatabaseIntegrityError::new("Entity name is missing for tabular scoped task.")
             })?;
 
             Ok(TaskEntity::EntityInWarehouse {
@@ -287,6 +292,9 @@ pub(crate) async fn queue_task_batch(
                     TaskEntityTypeDB::Table => Some(WarehouseTaskEntityId::Table {
                         table_id: record.entity_id.unwrap().into(),
                     }),
+                    TaskEntityTypeDB::GenericTable => Some(WarehouseTaskEntityId::GenericTable {
+                        generic_table_id: record.entity_id.unwrap().into(),
+                    }),
                     TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => None,
                 },
             })
@@ -418,7 +426,7 @@ pub(crate) async fn pick_task(
 
     if let Some(task) = x {
         tracing::trace!("Picked up task: {:?}", task);
-        let project_id = ProjectId::from_db_unchecked(task.project_id);
+        let project_id = Arc::new(ProjectId::from_db_unchecked(task.project_id));
         let scope = task_entity_from_db(
             task.entity_type,
             task.warehouse_id,
@@ -819,7 +827,7 @@ pub(crate) async fn get_task_queue_config<
 pub(crate) async fn set_task_queue_config(
     transaction: &mut PgConnection,
     queue_name: &TaskQueueName,
-    project_id: ProjectId,
+    project_id: ArcProjectId,
     warehouse_id: Option<WarehouseId>,
     config: &SetTaskQueueConfigRequest,
 ) -> crate::api::Result<()> {
@@ -1278,7 +1286,7 @@ mod test {
         conn: &mut PgConnection,
         queue_name: &TaskQueueName,
         parent_task_id: Option<TaskId>,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         scheduled_for: Option<DateTime<Utc>>,
         payload: Option<serde_json::Value>,
         entity: TaskEntity,
@@ -1371,7 +1379,51 @@ mod test {
         assert_ne!(id, id3);
     }
 
-    pub(crate) async fn setup_warehouse(pool: PgPool) -> (WarehouseId, ProjectId) {
+    #[sqlx::test]
+    async fn test_queue_task_batch_round_trips_generic_table_entity(pool: PgPool) {
+        // Pins the TaskEntityTypeDB::GenericTable arm of the InsertResult
+        // mapping at the queue_task_batch site: a GenericTable entity goes in,
+        // a GenericTable entity must come back with the same generic_table_id.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+
+        let generic_table_uuid = Uuid::now_v7();
+        let entity_id = WarehouseTaskEntityId::GenericTable {
+            generic_table_id: generic_table_uuid.into(),
+        };
+        let tq_name = generate_tq_name();
+
+        let mut inserts = queue_task_batch(
+            &mut conn,
+            &tq_name,
+            vec![TaskInput {
+                task_metadata: ScheduleTaskMetadata {
+                    project_id: project_id.clone(),
+                    parent_task_id: None,
+                    scheduled_for: None,
+                    entity: TaskEntity::EntityInWarehouse {
+                        warehouse_id,
+                        entity_id,
+                        entity_name: vec!["ns".to_string(), format!("gt-{generic_table_uuid}")],
+                    },
+                },
+                payload: serde_json::json!({"kind": "generic-table"}),
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(inserts.len(), 1, "expected one InsertResult");
+        let inserted = inserts.pop().unwrap();
+        match inserted.entity_id {
+            Some(WarehouseTaskEntityId::GenericTable { generic_table_id }) => {
+                assert_eq!(*generic_table_id, generic_table_uuid);
+            }
+            other => panic!("expected InsertResult.entity_id = GenericTable, got {other:?}"),
+        }
+    }
+
+    pub(crate) async fn setup_warehouse(pool: PgPool) -> (WarehouseId, ArcProjectId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -1389,7 +1441,7 @@ mod test {
 
     pub(crate) async fn setup_two_warehouses(
         pool: PgPool,
-    ) -> (ProjectId, WarehouseId, WarehouseId) {
+    ) -> (ArcProjectId, WarehouseId, WarehouseId) {
         let prof = crate::tests::memory_io_profile();
         let (_, wh) = crate::tests::setup(
             pool.clone(),
@@ -2014,7 +2066,7 @@ mod test {
     }
 
     fn task_schedule_metadata(
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         entity_id: WarehouseTaskEntityId,
     ) -> ScheduleTaskMetadata {
@@ -3376,8 +3428,8 @@ mod test {
         assert_eq!(now_task.attempt(), 2); // Attempt 2 now as the task used to be running
     }
 
-    async fn setup_project(state: CatalogState) -> crate::api::Result<ProjectId> {
-        let project_id = ProjectId::new_random();
+    async fn setup_project(state: CatalogState) -> crate::api::Result<ArcProjectId> {
+        let project_id = Arc::new(ProjectId::new_random());
         let mut transaction = PostgresTransaction::begin_write(state).await?;
         PostgresBackend::create_project(
             &project_id,
@@ -3393,7 +3445,7 @@ mod test {
         conn: &mut PgConnection,
         queue_name: &TaskQueueName,
         config: Value,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: Option<WarehouseId>,
     ) -> crate::api::Result<()> {
         set_task_queue_config(

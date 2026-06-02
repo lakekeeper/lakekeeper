@@ -962,6 +962,7 @@ async fn test_namespace_cache_parent_version_staleness(pool: PgPool) {
     let stale_parent = crate::service::NamespaceWithParent {
         namespace: Arc::new(stale_parent_ns),
         parent: None,
+        requested_ident: None,
     };
 
     NAMESPACE_CACHE.insert(parent_id, stale_parent).await;
@@ -1264,11 +1265,7 @@ async fn test_cache_eviction_invalidates_mapping(pool: PgPool) {
     // Verify both caches have the entry
     assert!(NAMESPACE_CACHE.get(&id).await.is_some());
 
-    let cache_key: Vec<unicase::UniCase<String>> = ident
-        .inner()
-        .into_iter()
-        .map(unicase::UniCase::new)
-        .collect();
+    let cache_key: Vec<String> = ident.as_ref().clone();
     assert!(
         IDENT_TO_ID_CACHE
             .get(&(warehouse_id, cache_key.clone()))

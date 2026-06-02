@@ -20,10 +20,12 @@ jobs:
       current_test: ${{ inputs.test_name }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Restore binary
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: lakekeeper-image
           path: artifacts
@@ -36,29 +38,14 @@ jobs:
           docker load -i artifacts/lakekeeper-local-amd64.tar
 
       - name: Test ${{ inputs.test_name }}
-        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         with:
           max_attempts: 2
           timeout_minutes: 25
-          command: |
-            cd tests &&
-            if [[ "${{ inputs.test_name }}" == *"openfga"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"kv2"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-vault-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"opa"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-openfga-overlay.yaml -f docker-compose-trino-opa-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"starrocks"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-starrocks-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"aws_system_identity"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-s3-system-identity-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            elif [[ "${{ inputs.test_name }}" == *"legacy_md5"* ]]; then
-              docker compose -f docker-compose.yaml -f docker-compose-legacy-md5-overlay.yaml run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            else
-              docker compose run --quiet-pull spark /opt/entrypoint.sh bash -c "cd /opt/tests && bash run.sh ${current_test}"
-            fi
+          # run.sh auto-selects the Spark image and docker-compose overlays
+          # based on the test name / Iceberg version suffix.
+          command: cd tests && bash run.sh ${current_test}
         env:
-          LAKEKEEPER_TEST__SPARK_IMAGE: apache/spark:3.5.6-java17-python3
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -67,11 +54,11 @@ jobs:
           AZURE_STORAGE_FILESYSTEM: ${{ secrets.AZURE_STORAGE_FILESYSTEM }}
           GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          AWS_S3_REGION: ${{ secrets.AWS_S3_REGION }}
-          AWS_S3_ACCESS_KEY_ID: ${{ secrets.AWS_S3_ACCESS_KEY_ID }}
-          AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.AWS_S3_SECRET_ACCESS_KEY }}
-          AWS_S3_STS_ROLE_ARN: ${{ secrets.AWS_S3_STS_ROLE_ARN }}
+          LAKEKEEPER_TEST__AWS_S3_BUCKET: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_BUCKET }}
+          LAKEKEEPER_TEST__AWS_S3_REGION: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_REGION }}
+          LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY_ID }}
+          LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY }}
+          LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN: ${{ secrets.LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN }}
       - name: Dump DB
         if: always()
         uses: tj-actions/pg-dump@f68d6b3b0a96a30fda60109a19a5d9fb3c536c9c
@@ -84,10 +71,10 @@ jobs:
         run: cat dump.sql | gzip -9 > dump.sql.gz
       - name: Upload dump
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: db-dump-${{ inputs.test_name }}
           path: dump.sql.gz
       - name: Dump docker logs on failure
         if: always()
-        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e
+        uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2

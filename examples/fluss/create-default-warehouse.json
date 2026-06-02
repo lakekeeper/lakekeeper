@@ -1,0 +1,21 @@
+{
+  "warehouse-name": "fluss-warehouse",
+  "project-id": "00000000-0000-0000-0000-000000000000",
+  "storage-profile": {
+    "type": "s3",
+    "bucket": "fluss",
+    "key-prefix": "iceberg",
+    "assume-role-arn": null,
+    "endpoint": "http://localtest.me:9000",
+    "region": "us-east-1",
+    "path-style-access": true,
+    "flavor": "minio",
+    "sts-enabled": true
+  },
+  "storage-credential": {
+    "type": "s3",
+    "credential-type": "access-key",
+    "access-key-id": "rustfs-root-user",
+    "secret-access-key": "rustfs-root-password"
+  }
+}

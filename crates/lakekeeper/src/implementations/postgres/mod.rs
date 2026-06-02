@@ -1,11 +1,14 @@
+mod advisory_lock;
 mod bootstrap;
 mod catalog;
 pub(crate) mod dbutils;
 pub mod endpoint_statistics;
+pub(crate) mod idempotency;
 pub mod migrations;
 pub(crate) mod namespace;
 mod pagination;
 pub(crate) mod role;
+pub(crate) mod role_assignment;
 pub(crate) mod secrets;
 pub mod tabular;
 pub mod tasks;
@@ -14,6 +17,7 @@ pub(crate) mod warehouse;
 
 use std::{str::FromStr, sync::Arc};
 
+pub use advisory_lock::PostgresAdvisoryLock;
 use anyhow::anyhow;
 use async_trait::async_trait;
 pub use endpoint_statistics::sink::PostgresStatisticsSink;
@@ -240,6 +244,7 @@ impl DynAppConfig {
     pub fn to_pool_opts(&self) -> PgPoolOptions {
         sqlx::pool::PoolOptions::default()
             .test_before_acquire(self.pg_test_before_acquire)
+            .acquire_timeout(core::time::Duration::from_secs(self.pg_acquire_timeout))
             .max_lifetime(
                 self.pg_connection_max_lifetime
                     .map(core::time::Duration::from_secs),

@@ -11,9 +11,10 @@ use crate::{
         ResolvedWarehouse, SerializationError, TabularNotFound, UnexpectedTabularInResponse,
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
-            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogViewAction, MustUse, UserOrRole,
+            ActionOnView, AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -33,9 +34,22 @@ pub trait ViewAction
 where
     Self: CatalogAction + Clone + PartialEq + Eq + From<CatalogViewAction>,
 {
+    /// Whether this action executes the view (producing rows) as opposed to
+    /// inspecting its metadata or performing a catalog operation on it.
+    /// Mirrors [`super::table::TableAction::is_data_plane`] for tables and
+    /// lets policies that treat the data and control planes differently
+    /// react accordingly (for example, the [`InstanceAdminAuthorizer`]
+    /// bypass carve-out).
+    ///
+    /// [`InstanceAdminAuthorizer`]: crate::service::authz::instance_admin::InstanceAdminAuthorizer
+    fn is_data_plane(&self) -> bool;
 }
 
-impl ViewAction for CatalogViewAction {}
+impl ViewAction for CatalogViewAction {
+    fn is_data_plane(&self) -> bool {
+        matches!(self, Self::Select)
+    }
+}
 
 // ------------------ Cannot See Error ------------------
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +59,8 @@ pub struct AuthZCannotSeeView {
     /// Whether the resource was confirmed not to exist (for audit logging)
     /// HTTP response is deliberately ambiguous, but audit log should be concrete
     internal_resource_not_found: bool,
+    /// Set when the view was accessed via a DEFINER referenced-by chain
+    is_delegated_execution: Option<bool>,
 }
 impl AuthZCannotSeeView {
     #[must_use]
@@ -57,6 +73,7 @@ impl AuthZCannotSeeView {
             warehouse_id,
             view: view.into(),
             internal_resource_not_found: resource_not_found,
+            is_delegated_execution: None,
         }
     }
 
@@ -69,6 +86,12 @@ impl AuthZCannotSeeView {
     pub fn new_forbidden(warehouse_id: WarehouseId, view: impl Into<ViewIdentOrId>) -> Self {
         Self::new(warehouse_id, view, false)
     }
+
+    #[must_use]
+    pub fn with_delegated_execution(mut self, is_delegated: bool) -> Self {
+        self.is_delegated_execution = Some(is_delegated);
+        self
+    }
 }
 impl AuthorizationFailureSource for AuthZCannotSeeView {
     fn into_error_model(self) -> ErrorModel {
@@ -76,8 +99,14 @@ impl AuthorizationFailureSource for AuthZCannotSeeView {
             warehouse_id,
             view,
             internal_resource_not_found: _,
+            is_delegated_execution,
         } = self;
-        TabularNotFound::new(warehouse_id, view).into()
+        let mut err = TabularNotFound::new(warehouse_id, view);
+        if is_delegated_execution == Some(true) {
+            err = err
+                .append_detail("Access denied during delegated execution via DEFINER view chain");
+        }
+        err.into()
     }
 
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
@@ -135,6 +164,7 @@ pub enum RequireViewActionError {
     AuthorizationBackendUnavailable(AuthorizationBackendUnavailable),
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the view
     AuthZCannotSeeView(AuthZCannotSeeView),
     // Propagated directly
@@ -150,7 +180,16 @@ impl From<BackendUnavailableOrCountMismatch> for RequireViewActionError {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireViewActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -176,6 +215,7 @@ delegate_authorization_failure_source!(RequireViewActionError => {
     SerializationError,
     UnexpectedTabularInResponse,
     InternalParseLocationError,
+    AuthorizerValidationFailed
 });
 
 #[async_trait::async_trait]
@@ -242,14 +282,36 @@ pub trait AuthZViewOps: Authorizer {
                 .into_inner();
             is_allowed.then_some(view).ok_or(cant_see_err)
         } else {
+            let parent_namespaces: HashMap<_, _> = namespace
+                .parents
+                .iter()
+                .map(|ns| (ns.namespace_id(), ns.clone()))
+                .collect();
             let [can_see_view, is_allowed] = self
                 .are_allowed_view_actions_arr(
                     metadata,
-                    None,
                     warehouse,
-                    namespace,
-                    &view,
-                    &[CAN_SEE_PERMISSION.clone().into(), action.clone()],
+                    &parent_namespaces,
+                    &[
+                        (
+                            &namespace.namespace,
+                            ActionOnView {
+                                info: &view,
+                                action: CAN_SEE_PERMISSION.clone().into(),
+                                user: None,
+                                is_delegated_execution: false,
+                            },
+                        ),
+                        (
+                            &namespace.namespace,
+                            ActionOnView {
+                                info: &view,
+                                action: action.clone(),
+                                user: None,
+                                is_delegated_execution: false,
+                            },
+                        ),
+                    ],
                 )
                 .await?
                 .into_inner();
@@ -378,15 +440,26 @@ pub trait AuthZViewOps: Authorizer {
         namespace: &NamespaceHierarchy,
         view: &impl AuthZViewInfo,
         action: impl Into<Self::ViewAction> + Send,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
+        let parent_namespaces: HashMap<_, _> = namespace
+            .parents
+            .iter()
+            .map(|ns| (ns.namespace_id(), ns.clone()))
+            .collect();
         let [decision] = self
             .are_allowed_view_actions_arr(
                 metadata,
-                for_user,
                 warehouse,
-                namespace,
-                view,
-                &[action.into()],
+                &parent_namespaces,
+                &[(
+                    &namespace.namespace,
+                    ActionOnView {
+                        info: view,
+                        action: action.into(),
+                        user: for_user,
+                        is_delegated_execution: false,
+                    },
+                )],
             )
             .await?
             .into_inner();
@@ -395,32 +468,23 @@ pub trait AuthZViewOps: Authorizer {
 
     async fn are_allowed_view_actions_arr<
         const N: usize,
-        A: Into<Self::ViewAction> + Send + Clone + Sync,
+        A: ViewAction + Into<Self::ViewAction> + Send + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
-        for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
-        namespace_hierarchy: &NamespaceHierarchy,
-        view: &impl AuthZViewInfo,
-        actions: &[A; N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
-        let actions = actions
+        parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        ); N],
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
+        let actions_vec: Vec<_> = actions
             .iter()
-            .map(|a| (&namespace_hierarchy.namespace, view, a.clone().into()))
-            .collect::<Vec<_>>();
+            .map(|(ns, action)| (*ns, action.clone()))
+            .collect();
         let result = self
-            .are_allowed_view_actions_vec(
-                metadata,
-                for_user,
-                warehouse,
-                &namespace_hierarchy
-                    .parents
-                    .iter()
-                    .map(|ns| (ns.namespace_id(), ns.clone()))
-                    .collect(),
-                &actions,
-            )
+            .are_allowed_view_actions_vec(metadata, warehouse, parent_namespaces, &actions_vec)
             .await?
             .into_inner();
         let n_returned = result.len();
@@ -430,73 +494,93 @@ pub trait AuthZViewOps: Authorizer {
         Ok(MustUse::from(arr))
     }
 
-    async fn are_allowed_view_actions_vec<A: Into<Self::ViewAction> + Send + Clone + Sync>(
+    async fn are_allowed_view_actions_vec<A: ViewAction + Into<Self::ViewAction> + Send + Sync>(
         &self,
         metadata: &RequestMetadata,
-        mut for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
-        actions: &[(&NamespaceWithParent, &impl AuthZViewInfo, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+        actions: &[(
+            &NamespaceWithParent,
+            ActionOnView<'_, '_, impl AuthZViewInfo, A>,
+        )],
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
-            let namespaces: Vec<&NamespaceWithParent> =
-                actions.iter().map(|(ns, _, _)| *ns).collect();
+            let namespaces: Vec<&NamespaceWithParent> = actions.iter().map(|(ns, _)| *ns).collect();
             super::table::validate_namespace_hierarchy(&namespaces, parent_namespaces);
         }
 
-        if metadata.actor().to_user_or_role().as_ref() == for_user {
-            for_user = None;
+        // Check warehouse matches and determine which actions can be auto-approved
+        // Also collect actions that need authorization check
+        let mut auto_approved: Vec<Option<bool>> = Vec::with_capacity(actions.len());
+        let mut actions_to_check = Vec::new();
+
+        for (ns, action) in actions {
+            let same_warehouse = action.info.warehouse_id() == warehouse.warehouse_id;
+            if !same_warehouse {
+                tracing::warn!(
+                    "View warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
+                    action.info.warehouse_id(),
+                    warehouse.warehouse_id
+                );
+                auto_approved.push(Some(false));
+                continue;
+            }
+
+            // Normalize user: if it's the actor itself, treat as None (acting as self).
+            // See the equivalent block in `are_allowed_table_actions_vec` for why this
+            // is applied to the forwarded action, not just the admin shortcut.
+            let normalized_user = if metadata.actor().to_user_or_role().as_ref() == action.user {
+                None
+            } else {
+                action.user
+            };
+
+            // `LakekeeperInternal` bypasses all actions including data-plane.
+            // Instance admins bypass only non-data-plane actions — `Select`
+            // must still route through the configured authorizer.
+            let bypass = metadata.bypasses_control_plane_authz(normalized_user)
+                && (metadata.is_lakekeeper_internal() || !action.action.is_data_plane());
+            if bypass {
+                auto_approved.push(Some(true));
+            } else {
+                auto_approved.push(None);
+                let mut normalized_action = action.clone();
+                normalized_action.user = normalized_user;
+                actions_to_check.push((*ns, normalized_action));
+            }
         }
 
-        let warehouse_matches = actions
-            .iter()
-            .map(|(_, view, _)| {
-                let same_warehouse = view.warehouse_id() == warehouse.warehouse_id;
-                if !same_warehouse {
-                    tracing::warn!(
-                        "View warehouse_id `{}` does not match provided warehouse_id `{}`. Denying access.",
-                        view.warehouse_id(),
-                        warehouse.warehouse_id
-                    );
-                }
-                same_warehouse
-            })
-            .collect::<Vec<_>>();
-
-        if metadata.has_admin_privileges() && for_user.is_none() {
-            Ok(warehouse_matches)
+        // If all actions are auto-decided, return early
+        if actions_to_check.is_empty() {
+            Ok(auto_approved.into_iter().map(|v| v.unwrap()).collect())
         } else {
-            let converted = actions
-                .iter()
-                .map(|(ns, id, action)| (*ns, *id, action.clone().into()))
-                .collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_view_actions_impl(
                     metadata,
-                    for_user,
                     warehouse,
                     parent_namespaces,
-                    &converted,
+                    &actions_to_check,
                 )
                 .await?;
 
-            if decisions.len() != actions.len() {
+            if decisions.len() != actions_to_check.len() {
                 return Err(AuthorizationCountMismatch::new(
-                    actions.len(),
+                    actions_to_check.len(),
                     decisions.len(),
                     "view",
                 )
                 .into());
             }
 
-            let decisions = warehouse_matches
-                .iter()
-                .zip(decisions.iter())
-                .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
-                .collect::<Vec<_>>();
+            // Merge auto-approved decisions with checked decisions
+            let mut decision_iter = decisions.into_iter();
+            let final_decisions: Vec<bool> = auto_approved
+                .into_iter()
+                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap()))
+                .collect();
 
-            Ok(decisions)
+            Ok(final_decisions)
         }
         .map(MustUse::from)
     }

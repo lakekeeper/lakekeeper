@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use chrono::DateTime;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
@@ -63,7 +63,7 @@ fn parse_task(row: TaskRow) -> Result<TaskInfo, IcebergErrorResponse> {
         },
         queue_name: row.queue_name.into(),
         task_metadata: TaskMetadata {
-            project_id: ProjectId::from_db_unchecked(row.project_id),
+            project_id: Arc::new(ProjectId::from_db_unchecked(row.project_id)),
             entity: scope,
             parent_task_id: row.parent_task_id.map(TaskId::from),
             scheduled_for: row.attempt_scheduled_for,
@@ -161,6 +161,9 @@ pub(crate) async fn list_tasks(
                 (Some(*table_id), TaskEntityTypeDB::Table)
             }
             WarehouseTaskEntityFilter::View { view_id } => (Some(*view_id), TaskEntityTypeDB::View),
+            WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
+                (Some(*generic_table_id), TaskEntityTypeDB::GenericTable)
+            }
             WarehouseTaskEntityFilter::Warehouse => (None, TaskEntityTypeDB::Warehouse),
         })
         .unzip::<_, _, Vec<_>, Vec<_>>();
@@ -290,7 +293,7 @@ pub(crate) async fn list_tasks(
         entities_filter_is_none, // 12
         created_after, // 13
         created_before, // 14
-        &project_id.map(ProjectId::as_str).unwrap_or_default(), // 15
+        &project_id.map(|p| p.as_str()).unwrap_or_default(), // 15
         warehouse_id.is_none(), // 16
         include_sub_tasks, // 17
         project_id.is_none(), // 18
@@ -342,6 +345,7 @@ mod tests {
             pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
         },
         service::{
+            ArcProjectId,
             authz::AllowAllAuthorizer,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ScheduleTaskMetadata, TaskEntity, TaskInput,
@@ -389,7 +393,7 @@ mod tests {
         conn: &mut sqlx::PgConnection,
         queue_name: &TaskQueueName,
         entity_id: WarehouseTaskEntityId,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -410,7 +414,7 @@ mod tests {
         queue_name: &TaskQueueName,
         entity_id: WarehouseTaskEntityId,
         entity_name: Vec<String>,
-        project_id: ProjectId,
+        project_id: ArcProjectId,
         warehouse_id: WarehouseId,
         payload: Option<serde_json::Value>,
     ) -> Result<crate::service::tasks::TaskId, IcebergErrorResponse> {
@@ -774,6 +778,66 @@ mod tests {
             _ => {
                 panic!("Expected TaskEntity::Table")
             }
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_list_tasks_filter_by_generic_table_entity(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let table_entity = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let gt_entity = WarehouseTaskEntityId::GenericTable {
+            generic_table_id: Uuid::now_v7().into(),
+        };
+        let tq_name = generate_tq_name();
+
+        let _table_task = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            table_entity,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+        let gt_task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            gt_entity,
+            project_id.clone(),
+            warehouse_id,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let request = ListTasksRequest {
+            entities: Some(vec![WarehouseTaskEntityFilter::GenericTable {
+                generic_table_id: gt_entity.as_uuid().into(),
+            }]),
+            ..Default::default()
+        };
+        let result = list_tasks(
+            &TaskFilter::WarehouseId {
+                warehouse_id,
+                project_id,
+            },
+            &request,
+            &mut conn,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].task_id(), gt_task_id);
+        match result.tasks[0].task_metadata.entity_id() {
+            Some(WarehouseTaskEntityId::GenericTable { generic_table_id }) => {
+                assert_eq!(*generic_table_id, gt_entity.as_uuid());
+            }
+            other => panic!("Expected TaskEntity::GenericTable, got {other:?}"),
         }
     }
 
@@ -2095,7 +2159,7 @@ mod tests {
             if let Some(task_wh_id) = task.task_metadata.warehouse_id() {
                 assert_eq!(task_wh_id, warehouse_id);
             }
-            assert_eq!(*task.project_id(), project_id);
+            assert_eq!(task.project_id(), &*project_id);
         }
     }
 }

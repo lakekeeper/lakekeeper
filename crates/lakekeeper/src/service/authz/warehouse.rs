@@ -10,8 +10,8 @@ use crate::{
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogWarehouseAction, MustUse, UserOrRole,
+            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogWarehouseAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -154,6 +154,7 @@ pub enum RequireWarehouseActionError {
     AuthorizationCountMismatch(AuthorizationCountMismatch),
     CannotInspectPermissions(CannotInspectPermissions),
     AuthZCannotListAllTasks(AuthZCannotListAllTasks),
+    AuthorizerValidationFailed(AuthzBadRequest),
     // Hide the existence of the namespace
     AuthZCannotUseWarehouseId(AuthZCannotUseWarehouseId),
     // Propagated directly
@@ -161,12 +162,33 @@ pub enum RequireWarehouseActionError {
     DatabaseIntegrityError(DatabaseIntegrityError),
 }
 
+impl RequireWarehouseActionError {
+    /// `true` if the failure is "the caller cannot see this warehouse" (existent or
+    /// not), as opposed to a forbidden action on a warehouse the caller *can* see.
+    /// Name-keyed endpoints use this to mask the failure as a generic not-found so a
+    /// name lookup can't become an existence/UUID oracle. Kept next to the variants so
+    /// the predicate can't drift if the enum changes.
+    #[must_use]
+    pub fn is_warehouse_hidden(&self) -> bool {
+        matches!(self, Self::AuthZCannotUseWarehouseId(_))
+    }
+}
+
 impl From<BackendUnavailableOrCountMismatch> for RequireWarehouseActionError {
     fn from(err: BackendUnavailableOrCountMismatch) -> Self {
         match err {
             BackendUnavailableOrCountMismatch::AuthorizationBackendUnavailable(e) => e.into(),
             BackendUnavailableOrCountMismatch::AuthorizationCountMismatch(e) => e.into(),
-            BackendUnavailableOrCountMismatch::CannotInspectPermissions(e) => e.into(),
+        }
+    }
+}
+impl From<IsAllowedActionError> for RequireWarehouseActionError {
+    fn from(err: IsAllowedActionError) -> Self {
+        match err {
+            IsAllowedActionError::AuthorizationBackendUnavailable(e) => e.into(),
+            IsAllowedActionError::CannotInspectPermissions(e) => e.into(),
+            IsAllowedActionError::BadRequest(e) => e.into(),
+            IsAllowedActionError::CountMismatch(e) => e.into(),
         }
     }
 }
@@ -178,7 +200,8 @@ delegate_authorization_failure_source!(RequireWarehouseActionError => {
     AuthZCannotUseWarehouseId,
     CatalogBackendError,
     DatabaseIntegrityError,
-    AuthZCannotListAllTasks
+    AuthZCannotListAllTasks,
+    AuthorizerValidationFailed
 });
 
 impl From<CatalogGetWarehouseByIdError> for RequireWarehouseActionError {
@@ -252,7 +275,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         for_user: Option<&UserOrRole>,
         warehouse: &ResolvedWarehouse,
         action: impl Into<Self::WarehouseAction> + Clone + Send + Sync,
-    ) -> Result<MustUse<bool>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_warehouse_actions_arr(metadata, for_user, &[(warehouse, action)])
             .await?
@@ -268,7 +291,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A); N],
-    ) -> Result<MustUse<[bool; N]>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<[bool; N]>, IsAllowedActionError> {
         let result = self
             .are_allowed_warehouse_actions_vec(metadata, for_user, warehouses_with_actions)
             .await?
@@ -287,12 +310,12 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A)],
-    ) -> Result<MustUse<Vec<bool>>, BackendUnavailableOrCountMismatch> {
+    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
 
-        if metadata.has_admin_privileges() && for_user.is_none() {
+        if metadata.bypasses_control_plane_authz(for_user) {
             Ok(vec![true; warehouses_with_actions.len()])
         } else {
             let converted: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =

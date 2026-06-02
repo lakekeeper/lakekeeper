@@ -9,14 +9,15 @@ use crate::{
             ApiServer,
             warehouse::{
                 RenameWarehouseRequest, Service, TabularDeleteProfile,
-                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
+                UpdateWarehouseStorageRequest,
             },
         },
     },
     implementations::postgres::PostgresBackend,
     service::{
-        CachePolicy, CatalogStore, CatalogWarehouseOps, Transaction, WarehouseStatus,
-        authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE,
+        CachePolicy, CatalogStore, CatalogWarehouseOps, Transaction, WarehouseFormatVersionPolicy,
+        WarehouseStatus, authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE,
     },
     tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
@@ -47,6 +48,7 @@ async fn test_create_warehouse(pool: PgPool) {
         storage_profile.clone(),
         TabularDeleteProfile::Hard {},
         None,
+        WarehouseFormatVersionPolicy::default(),
         transaction.transaction(),
     )
     .await
@@ -55,7 +57,7 @@ async fn test_create_warehouse(pool: PgPool) {
     transaction.commit().await.unwrap();
 
     // Verify warehouse was created
-    assert_eq!(warehouse.project_id, project_id);
+    assert_eq!(*warehouse.project_id, project_id);
     assert_eq!(warehouse.status, WarehouseStatus::Active);
     assert!(matches!(
         warehouse.tabular_delete_profile,
@@ -94,6 +96,7 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
             expiration_seconds: chrono::TimeDelta::seconds(86400),
         },
         Some(secret_id),
+        WarehouseFormatVersionPolicy::default(),
         transaction.transaction(),
     )
     .await
@@ -134,6 +137,7 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
         storage_profile.clone(),
         TabularDeleteProfile::Hard {},
         None,
+        WarehouseFormatVersionPolicy::default(),
         transaction.transaction(),
     )
     .await;
@@ -248,7 +252,7 @@ async fn test_get_warehouse_by_name(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     // Get warehouse by name
     let warehouse = PostgresBackend::get_warehouse_by_name(
@@ -278,7 +282,7 @@ async fn test_get_warehouse_by_name_not_found(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     // Get warehouse by non-existent name
     let warehouse = PostgresBackend::get_warehouse_by_name(
@@ -318,7 +322,7 @@ async fn test_list_warehouses(pool: PgPool) {
     // Verify all warehouses are active
     for warehouse in &warehouses {
         assert_eq!(warehouse.status, WarehouseStatus::Active);
-        assert_eq!(warehouse.project_id, project_id);
+        assert_eq!(*warehouse.project_id, project_id);
     }
 
     // Verify main warehouse is in the list
@@ -1017,7 +1021,7 @@ async fn test_get_by_name_uses_cache(pool: PgPool) {
         .setup()
         .await;
 
-    let project_id = ProjectId::from(Uuid::nil());
+    let project_id = std::sync::Arc::new(ProjectId::from(Uuid::nil()));
 
     let warehouse1 = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -1302,4 +1306,101 @@ async fn test_cache_invalidation_on_api_update_delete_profile(pool: PgPool) {
         warehouse_after.tabular_delete_profile,
         TabularDeleteProfile::Soft { .. }
     ));
+}
+
+/// Test that the per-warehouse format version policy can be set via the API and
+/// is persisted and reflected in the cache.
+#[sqlx::test]
+async fn test_update_format_version_policy(pool: PgPool) {
+    use iceberg::spec::FormatVersion;
+
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    // New warehouses default to all format versions allowed.
+    let before = PostgresBackend::get_warehouse_by_id(
+        warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        before.allowed_format_versions.as_slice(),
+        &[FormatVersion::V1, FormatVersion::V2, FormatVersion::V3]
+    );
+    assert_eq!(before.default_format_version, None);
+
+    // Restrict to v2/v3 with a v3 default.
+    let response = ApiServer::update_warehouse_format_version_policy(
+        warehouse_resp.warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V3, FormatVersion::V2],
+            default_format_version: Some(FormatVersion::V3),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        response.allowed_format_versions,
+        vec![FormatVersion::V2, FormatVersion::V3]
+    );
+    assert_eq!(response.default_format_version, Some(FormatVersion::V3));
+
+    // Give the async event handler time to update the cache.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let after = PostgresBackend::get_warehouse_by_id(
+        warehouse_resp.warehouse_id,
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        after.allowed_format_versions.as_slice(),
+        &[FormatVersion::V2, FormatVersion::V3]
+    );
+    assert_eq!(after.default_format_version, Some(FormatVersion::V3));
+}
+
+/// Test that a default version outside the allowed set is rejected.
+#[sqlx::test]
+async fn test_update_format_version_policy_invalid_default(pool: PgPool) {
+    use iceberg::spec::FormatVersion;
+
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let result = ApiServer::update_warehouse_format_version_policy(
+        warehouse_resp.warehouse_id,
+        UpdateWarehouseFormatVersionPolicyRequest {
+            allowed_format_versions: vec![FormatVersion::V2],
+            default_format_version: Some(FormatVersion::V3),
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+
+    let err = result.unwrap_err();
+    assert_eq!(err.error.r#type, "DefaultFormatVersionNotAllowed");
 }

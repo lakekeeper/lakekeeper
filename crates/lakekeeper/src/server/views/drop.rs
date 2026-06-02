@@ -1,19 +1,24 @@
 use std::sync::Arc;
 
+use http::StatusCode;
+use iceberg_ext::catalog::rest::ErrorModel;
+
 use crate::{
     api::{
         ApiContext,
+        endpoints::EndpointFlat,
         iceberg::{types::DropParams, v1::ViewParameters},
         management::v1::{DeleteKind, warehouse::TabularDeleteProfile},
     },
     request_metadata::RequestMetadata,
     server::{require_warehouse_id, tables::validate_table_or_view_ident},
     service::{
-        AuthZViewInfo as _, CatalogStore, CatalogTabularOps, NamedEntity, Result, SecretStore,
-        State, TabularId, TabularListFlags, Transaction,
+        AuthZViewInfo as _, CatalogIdempotencyOps, CatalogStore, CatalogTabularOps, NamedEntity,
+        Result, SecretStore, State, TabularId, TabularListFlags, Transaction,
         authz::{AuthZViewOps, Authorizer, CatalogViewAction},
         contract_verification::ContractVerification,
         events::{APIEventContext, context::ResolvedView},
+        idempotency::IdempotencyInfo,
         tasks::{
             ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
@@ -37,7 +42,17 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     let warehouse_id = require_warehouse_id(prefix.as_ref())?;
     validate_table_or_view_ident(view)?;
 
-    // ------------------- AUTHZ -------------------
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            return Ok(());
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
     let authorizer = state.v1_state.authz;
 
     let event_ctx = APIEventContext::for_view(
@@ -75,8 +90,15 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
         .into_result()?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
+
+    let delete_profile = if force {
+        TabularDeleteProfile::Hard {}
+    } else {
+        warehouse.tabular_delete_profile
+    };
     let project_id = &warehouse.project_id;
-    match warehouse.tabular_delete_profile {
+
+    match delete_profile {
         TabularDeleteProfile::Hard {} => {
             let location = C::drop_tabular(warehouse_id, view_id, force, t.transaction()).await?;
 
@@ -103,15 +125,7 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                     event_ctx.resolved().view.view_ident()
                 );
             }
-            t.commit().await?;
-
-            authorizer
-                .delete_view(warehouse_id, view_id)
-                .await
-                .inspect_err(|e| {
-                    tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
-                })
-                .ok();
+            // authorizer cleanup happens after commit (below)
         }
         TabularDeleteProfile::Soft { expiration_seconds } => {
             let _ = TabularExpirationTask::schedule_task::<C>(
@@ -147,15 +161,47 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                 "Queued expiration task for dropped view '{}' with id '{view_id}' in warehouse {warehouse_id}.",
                 event_ctx.resolved().view.view_ident()
             );
-            t.commit().await?;
         }
     }
 
-    let drop_params = DropParams {
+    // Insert idempotency key and commit — shared across both delete profiles.
+    if let Some(ref key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1DropView)
+                .http_status(StatusCode::NO_CONTENT)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
+    t.commit().await?;
+
+    // Post-commit: best-effort authz cleanup for hard deletes
+    if matches!(delete_profile, TabularDeleteProfile::Hard {}) {
+        authorizer
+            .delete_view(warehouse_id, view_id)
+            .await
+            .inspect_err(|e| {
+                tracing::error!(?e, "Failed to delete view from authorizer: {}", e.error);
+            })
+            .ok();
+    }
+
+    event_ctx.emit_view_dropped_async(DropParams {
         purge_requested,
         force,
-    };
-    event_ctx.emit_view_dropped_async(drop_params);
+    });
 
     Ok(())
 }
@@ -184,7 +230,9 @@ mod test {
         server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-        service::tasks::WarehouseTaskEntityId,
+        service::tasks::{
+            WarehouseTaskEntityId, tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME,
+        },
         tests::{create_view_request, random_request_metadata},
     };
 
@@ -417,7 +465,7 @@ mod test {
         .expect("Protected View should be droppable via force");
 
         let error = load_view(
-            api_context,
+            api_context.clone(),
             ViewParameters {
                 prefix: Some(Prefix(prefix.clone())),
                 view: TableIdent::from_strs(table_ident).unwrap(),
@@ -427,5 +475,26 @@ mod test {
         .expect_err("View should no longer exist");
 
         assert_eq!(error.error.code, StatusCode::NOT_FOUND);
+
+        // force=true must perform an immediate hard delete even in a soft-delete warehouse:
+        // no tabular_expiration task should be scheduled for the view.
+        let expiration_tasks = ManagementApiServer::list_tasks(
+            whi,
+            ListTasksRequest::builder()
+                .entities(Some(vec![WarehouseTaskEntityFilter::View {
+                    view_id: loaded_view.metadata.uuid().into(),
+                }]))
+                .queue_name(Some(vec![EXPIRATION_QUEUE_NAME.clone()]))
+                .build(),
+            api_context,
+            random_request_metadata(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            expiration_tasks.tasks.len(),
+            0,
+            "force-drop in soft-delete warehouse must not schedule a tabular_expiration task"
+        );
     }
 }

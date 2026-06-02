@@ -14,17 +14,23 @@ use crate::{
                 CatalogActionCheckItem, CatalogActionCheckOperation, NamespaceIdentOrUuid,
                 TabularIdentOrUuid,
             },
+            task_queue::ScheduleTaskRequest,
             tasks::{ControlTasksRequest, ListTasksRequest},
         },
     },
     service::{
-        NamespaceId, NamespaceIdentOrId, NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId,
-        TableIdentOrId, TableInfo, TabularId, UserId, ViewIdentOrId, ViewInfo,
+        ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
+        NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
+        TabularId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
-        authz::{ActionDescriptor, CatalogAction, CatalogTableAction, CatalogViewAction},
+        authz::{
+            ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
+            CatalogViewAction, UserOrRoleId,
+        },
         events::{
-            AuthorizationError, AuthorizationFailedEvent, AuthorizationFailureSource,
-            AuthorizationSucceededEvent, EventDispatcher,
+            Authorization, AuthorizationError, AuthorizationFailedEvent,
+            AuthorizationFailureReason, AuthorizationFailureSource, AuthorizationSucceededEvent,
+            EventDispatcher,
         },
         storage::StoragePermissions,
         tasks::TaskId,
@@ -43,8 +49,11 @@ pub const FIELD_NAME_VIEW: &str = "view";
 pub const FIELD_NAME_VIEW_ID: &str = "view-id";
 pub const FIELD_NAME_TASK_ID: &str = "task-id";
 pub const FIELD_NAME_ROLE_ID: &str = "role-id";
+pub const FIELD_NAME_ROLE_SOURCE_ID: &str = "role-source-id";
+pub const FIELD_NAME_ROLE_PROVIDER_ID: &str = "role-provider-id";
 pub const FIELD_NAME_USER_ID: &str = "user-id";
-pub const FIELD_FOR_USER: &str = "for-user";
+pub const FIELD_NAME_GENERIC_TABLE: &str = "generic-table";
+pub const FIELD_NAME_GENERIC_TABLE_ID: &str = "generic-table-id";
 
 pub const ENTITY_TYPE_SERVER: &str = "server";
 pub const ENTITY_TYPE_PROJECT: &str = "project";
@@ -55,6 +64,7 @@ pub const ENTITY_TYPE_VIEW: &str = "view";
 pub const ENTITY_TYPE_TASK: &str = "task";
 pub const ENTITY_TYPE_ROLE: &str = "role";
 pub const ENTITY_TYPE_USER: &str = "user";
+pub const ENTITY_TYPE_GENERIC_TABLE: &str = "generic-table";
 
 // ── Traits ──────────────────────────────────────────────────────────────────
 
@@ -180,6 +190,13 @@ pub struct ResolvedView {
     pub view: Arc<ViewInfo>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResolvedGenericTable {
+    pub warehouse: Arc<ResolvedWarehouse>,
+    pub generic_table: Arc<GenericTableInfo>,
+    pub storage_permissions: Option<StoragePermissions>,
+}
+
 // ── User-provided entity types ──────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -204,6 +221,45 @@ impl UserProvidedEntity for UserProvidedNamespace {
         EventEntities::one(match &self.namespace {
             NamespaceIdentOrId::Name(ident) => desc.field(FIELD_NAME_NAMESPACE, ident),
             NamespaceIdentOrId::Id(id) => desc.field(FIELD_NAME_NAMESPACE_ID, id),
+        })
+    }
+}
+
+#[derive(Hash, Clone, Debug, PartialEq, Eq)]
+pub enum UserProvidedRole {
+    Id {
+        role_id: RoleId,
+    },
+    Ident {
+        project_id: ProjectId,
+        ident: ArcRoleIdent,
+    },
+}
+
+impl std::fmt::Display for UserProvidedRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UserProvidedRole::Id { role_id } => write!(f, "Role(id={role_id})"),
+            UserProvidedRole::Ident { project_id, ident } => write!(
+                f,
+                "Role(provider_id={}, source_id={}, project_id={})",
+                ident.provider_id(),
+                ident.source_id(),
+                project_id
+            ),
+        }
+    }
+}
+
+impl UserProvidedEntity for UserProvidedRole {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_ROLE);
+        EventEntities::one(match self {
+            UserProvidedRole::Id { role_id } => desc.field(FIELD_NAME_ROLE_ID, role_id),
+            UserProvidedRole::Ident { project_id, ident } => desc
+                .field(FIELD_NAME_PROJECT_ID, project_id)
+                .field(FIELD_NAME_ROLE_PROVIDER_ID, ident.provider_id())
+                .field(FIELD_NAME_ROLE_SOURCE_ID, ident.source_id()),
         })
     }
 }
@@ -259,6 +315,11 @@ impl UserProvidedEntity for UserProvidedTabularsIDs {
                 TabularId::View(view_id) => EntityDescriptor::new(ENTITY_TYPE_VIEW)
                     .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
                     .field(FIELD_NAME_VIEW_ID, view_id),
+                TabularId::GenericTable(generic_table_id) => {
+                    EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
+                        .field(FIELD_NAME_GENERIC_TABLE_ID, generic_table_id)
+                }
             }
         }))
     }
@@ -301,6 +362,35 @@ impl UserProvidedEntity for UserProvidedView {
 }
 
 #[derive(Clone, Debug)]
+pub struct UserProvidedGenericTable {
+    pub warehouse_id: WarehouseId,
+    pub generic_table: GenericTableIdentOrId,
+}
+
+impl UserProvidedGenericTable {
+    #[must_use]
+    pub fn new(warehouse_id: WarehouseId, generic_table: impl Into<GenericTableIdentOrId>) -> Self {
+        Self {
+            warehouse_id,
+            generic_table: generic_table.into(),
+        }
+    }
+}
+
+impl UserProvidedEntity for UserProvidedGenericTable {
+    fn event_entities(&self) -> EventEntities {
+        let desc = EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+            .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id);
+        EventEntities::one(match &self.generic_table {
+            GenericTableIdentOrId::Ident(ident) => desc
+                .field(FIELD_NAME_NAMESPACE, &ident.namespace)
+                .field(FIELD_NAME_GENERIC_TABLE, &ident.name),
+            GenericTableIdentOrId::Id(id) => desc.field(FIELD_NAME_GENERIC_TABLE_ID, id),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct UserProvidedTask {
     pub warehouse_id: WarehouseId,
     pub task_id: TaskId,
@@ -318,7 +408,7 @@ impl UserProvidedEntity for UserProvidedTask {
 impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
     fn event_entities(&self) -> EventEntities {
         EventEntities::many(self.1.iter().map(|item| {
-            let mut desc = match &item.operation {
+            match &item.operation {
                 CatalogActionCheckOperation::Server { .. } => {
                     EntityDescriptor::new(ENTITY_TYPE_SERVER).field(FIELD_NAME_SERVER_ID, &self.0)
                 }
@@ -379,11 +469,25 @@ impl UserProvidedEntity for (ServerId, Vec<CatalogActionCheckItem>) {
                         .field(FIELD_NAME_NAMESPACE, namespace)
                         .field(FIELD_NAME_VIEW, table),
                 },
-            };
-            if let Some(identity) = &item.identity {
-                desc = desc.field(FIELD_FOR_USER, identity);
+                CatalogActionCheckOperation::GenericTable { generic_table, .. } => {
+                    match generic_table {
+                        TabularIdentOrUuid::IdInWarehouse {
+                            warehouse_id,
+                            table_id,
+                        } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                            .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                            .field(FIELD_NAME_GENERIC_TABLE_ID, table_id),
+                        TabularIdentOrUuid::Name {
+                            namespace,
+                            table,
+                            warehouse_id,
+                        } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                            .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                            .field(FIELD_NAME_NAMESPACE, namespace)
+                            .field(FIELD_NAME_GENERIC_TABLE, table),
+                    }
+                }
             }
-            desc
         }))
     }
 }
@@ -403,8 +507,8 @@ impl_user_provided_entity!(ServerId, ENTITY_TYPE_SERVER, FIELD_NAME_SERVER_ID);
 impl_user_provided_entity!(ProjectId, ENTITY_TYPE_PROJECT, FIELD_NAME_PROJECT_ID);
 impl_user_provided_entity!(WarehouseId, ENTITY_TYPE_WAREHOUSE, FIELD_NAME_WAREHOUSE_ID);
 impl_user_provided_entity!(NamespaceId, ENTITY_TYPE_NAMESPACE, FIELD_NAME_NAMESPACE_ID);
-impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
 impl_user_provided_entity!(UserId, ENTITY_TYPE_USER, FIELD_NAME_USER_ID);
+impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
 
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]
@@ -487,25 +591,50 @@ impl APIEventActions for ControlTasksRequest {
     }
 }
 
+impl APIEventActions for ScheduleTaskRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("schedule_task")
+                .build(),
+        ]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TabularAction {
     pub table_action: CatalogTableAction,
     pub view_action: CatalogViewAction,
+    pub generic_table_action: CatalogGenericTableAction,
 }
 
 impl APIEventActions for TabularAction {
     fn event_actions(&self) -> Vec<ActionDescriptor> {
         let table_actions = self.table_action.event_actions();
         let view_actions = self.view_action.event_actions();
-        if table_actions
+        let generic_actions = self.generic_table_action.event_actions();
+        let log_string = |d: &ActionDescriptor| d.log_string();
+        // Collapse to a single descriptor when all three log identically — the
+        // common case (e.g. all three are "undrop"). Otherwise emit each set
+        // so audit logs can distinguish them.
+        let table_eq_view = table_actions
             .iter()
-            .map(ActionDescriptor::log_string)
-            .eq(view_actions.iter().map(ActionDescriptor::log_string))
-        {
+            .map(log_string)
+            .eq(view_actions.iter().map(log_string));
+        let table_eq_generic = table_actions
+            .iter()
+            .map(log_string)
+            .eq(generic_actions.iter().map(log_string));
+        if table_eq_view && table_eq_generic {
             table_actions
         } else {
             let mut actions = table_actions;
-            actions.extend(view_actions);
+            if !table_eq_view {
+                actions.extend(view_actions);
+            }
+            if !table_eq_generic {
+                actions.extend(generic_actions);
+            }
             actions
         }
     }
@@ -542,6 +671,17 @@ where
     pub(super) resolved_entity: R,
     pub(super) _authz: std::marker::PhantomData<Z>,
     pub(super) extra_context: HashMap<String, String>,
+    /// When `Some`, replaces the per-(entity, action) default that
+    /// `emit_authz`/`emit_authz_failure_event` would otherwise synthesise.
+    /// Used by batch-style call sites (e.g. `introspect_permissions`) to
+    /// attach one entry per inner check.
+    pub(super) authorizations_override: Option<Vec<Authorization>>,
+    /// When `Some`, the synthesised default authorisation entries are stamped
+    /// with this principal in their `for_principal` field. Lets endpoints that
+    /// introspect another user's permissions (`for_user=...`) record the
+    /// audit-relevant principal without overriding the whole entry list.
+    /// Ignored when `authorizations_override` is set.
+    pub(super) for_principal_override: Option<UserOrRoleId>,
 }
 
 // ── Core impl (Unresolved) ──────────────────────────────────────────────────
@@ -563,6 +703,8 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             action: Arc::new(action),
             _authz: std::marker::PhantomData,
             extra_context: HashMap::new(),
+            authorizations_override: None,
+            for_principal_override: None,
         }
     }
 
@@ -581,6 +723,8 @@ impl<P: UserProvidedEntity, A: APIEventActions> APIEventContext<P, Unresolved, A
             action,
             _authz: std::marker::PhantomData,
             extra_context: HashMap::new(),
+            authorizations_override: None,
+            for_principal_override: None,
         }
     }
 }
@@ -603,6 +747,8 @@ impl<P: UserProvidedEntity, A: APIEventActions, Z: AuthzState>
             action: self.action,
             _authz: std::marker::PhantomData,
             extra_context: self.extra_context,
+            authorizations_override: self.authorizations_override,
+            for_principal_override: self.for_principal_override,
         }
     }
 }
@@ -630,6 +776,16 @@ impl<A: APIEventActions> APIEventContext<ProjectId, Unresolved, A> {
         action: A,
     ) -> Self {
         Self::new(request_metadata, dispatcher, project_id, action)
+    }
+
+    #[must_use]
+    pub fn for_project_arc(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        project_id: Arc<ProjectId>,
+        action: Arc<A>,
+    ) -> Self {
+        Self::new_arc(request_metadata, dispatcher, project_id, action)
     }
 }
 
@@ -807,6 +963,27 @@ impl<A: APIEventActions> APIEventContext<UserProvidedView, Unresolved, A> {
     }
 }
 
+impl<A: APIEventActions> APIEventContext<UserProvidedGenericTable, Unresolved, A> {
+    #[must_use]
+    pub fn for_generic_table(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        warehouse_id: WarehouseId,
+        generic_table: impl Into<GenericTableIdentOrId>,
+        action: A,
+    ) -> Self {
+        Self::new(
+            request_metadata,
+            dispatcher,
+            UserProvidedGenericTable {
+                warehouse_id,
+                generic_table: generic_table.into(),
+            },
+            action,
+        )
+    }
+}
+
 impl<A: APIEventActions> APIEventContext<UserProvidedTask, Unresolved, A> {
     #[must_use]
     pub fn for_task(
@@ -854,6 +1031,15 @@ where
     pub fn user_provided_entity(&self) -> &P {
         &self.user_provided_entity
     }
+    #[must_use]
+    pub fn user_provided_entity_arc_ref(&self) -> &Arc<P> {
+        &self.user_provided_entity
+    }
+
+    #[must_use]
+    pub fn user_provided_entity_arc(&self) -> Arc<P> {
+        self.user_provided_entity.clone()
+    }
 
     #[must_use]
     pub fn request_metadata(&self) -> &RequestMetadata {
@@ -867,6 +1053,38 @@ where
 
     pub fn push_extra_context(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.extra_context.insert(key.into(), value.into());
+    }
+
+    /// Replace the per-decision `authorizations` list that will be attached to
+    /// the emitted event.
+    ///
+    /// Call this from batch-style endpoints (e.g. `introspect_permissions`)
+    /// where the audit-relevant unit of work is each inner check rather than
+    /// the wrapping API call. When unset, the emit path synthesises one entry
+    /// per (entity, action) pair from the context's existing fields.
+    pub fn set_authorizations(&mut self, authorizations: Vec<Authorization>) {
+        // Treat an empty Vec as "unset" so the emit-path's synthesised
+        // fallback still produces a non-empty `authorizations[]` array.
+        // Storing `Some(vec![])` here would clobber the fallback and break
+        // the always-non-empty invariant audit consumers rely on.
+        self.authorizations_override = if authorizations.is_empty() {
+            None
+        } else {
+            Some(authorizations)
+        };
+    }
+
+    /// Record that this event's authorisation check is being made on behalf
+    /// of a different principal than the request actor (e.g. an introspection
+    /// endpoint with `?for_user=...`).
+    ///
+    /// The synthesised default `authorizations[]` will stamp every entry with
+    /// this principal in `for_principal`. The top-level `actor` field still
+    /// reflects the API caller, so audit consumers can see both: who asked
+    /// (the actor) and whose permissions were evaluated (`for_principal`).
+    /// Has no effect when `set_authorizations` has been called.
+    pub fn set_for_principal(&mut self, principal: UserOrRoleId) {
+        self.for_principal_override = Some(principal);
     }
 
     #[must_use]
@@ -920,11 +1138,23 @@ impl<R: ResolutionState, A: APIEventActions, P: UserProvidedEntity>
     {
         match result {
             Ok(value) => {
+                let entities = Arc::new(self.user_provided_entity.event_entities());
+                let actions = Arc::new(self.action.event_actions());
+                let authorizations =
+                    Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
+                        synthesise_authorizations(
+                            &entities,
+                            &actions,
+                            self.for_principal_override.as_ref(),
+                            Some(true),
+                        )
+                    }));
                 let event = AuthorizationSucceededEvent {
                     request_metadata: self.request_metadata.clone(),
-                    entities: Arc::new(self.user_provided_entity.event_entities()),
-                    actions: Arc::new(self.action.event_actions()),
+                    entities,
+                    actions,
                     extra_context: Arc::new(self.extra_context.clone()),
+                    authorizations,
                 };
                 let dispatcher = self.dispatcher.clone();
                 let span = tracing::Span::current();
@@ -972,13 +1202,25 @@ impl<T: ResolutionState, A: APIEventActions, P: UserProvidedEntity, Z: AuthzStat
             error.skip_log = true; // Already emitted in more detail by audit logger
         }
 
+        let entities = Arc::new(self.user_provided_entity.event_entities());
+        let actions = Arc::new(self.action.event_actions());
+        let synthesised_allowed = synthesised_allowed_for_failure(&failure_reason);
+        let authorizations = Arc::new(self.authorizations_override.clone().unwrap_or_else(|| {
+            synthesise_authorizations(
+                &entities,
+                &actions,
+                self.for_principal_override.as_ref(),
+                synthesised_allowed,
+            )
+        }));
         let event = AuthorizationFailedEvent {
             request_metadata: self.request_metadata.clone(),
-            entities: Arc::new(self.user_provided_entity.event_entities()),
-            actions: Arc::new(self.action.event_actions()),
+            entities,
+            actions,
             failure_reason,
             error: Arc::new(AuthorizationError::clone_from_error_model(&error)),
             extra_context: Arc::new(self.extra_context.clone()),
+            authorizations,
         };
         let dispatcher = self.dispatcher.clone();
         let span = tracing::Span::current();
@@ -1024,6 +1266,78 @@ where
             resolved_entity: context.resolved_entity,
             _authz: std::marker::PhantomData,
             extra_context: context.extra_context,
+            authorizations_override: context.authorizations_override,
+            for_principal_override: context.for_principal_override,
         }
+    }
+}
+
+/// Synthesise a default `authorizations` list for an event whose call site
+/// did not explicitly populate one. Produces one entry per (entity, action)
+/// pair so the array is never empty for a well-formed event; if either input
+/// is empty (shouldn't happen for real events) we still emit a single entry
+/// describing whatever is available, since downstream consumers expect at
+/// least one row.
+fn synthesise_authorizations(
+    entities: &EventEntities,
+    actions: &[ActionDescriptor],
+    for_principal: Option<&UserOrRoleId>,
+    allowed: Option<bool>,
+) -> Vec<Authorization> {
+    let mut out = Vec::with_capacity(entities.entities.len().max(1) * actions.len().max(1));
+    for entity in &entities.entities {
+        for action in actions {
+            out.push(Authorization {
+                id: None,
+                for_principal: for_principal.cloned(),
+                action: action.clone(),
+                entity: entity.clone(),
+                allowed,
+            });
+        }
+    }
+    if out.is_empty() {
+        // Defensive: never emit a zero-length array. Real events always have
+        // at least one entity and one action, but if a degenerate event slips
+        // through we still want a row consumers can rely on.
+        out.push(Authorization {
+            id: None,
+            for_principal: for_principal.cloned(),
+            action: actions
+                .first()
+                .cloned()
+                .unwrap_or_else(|| ActionDescriptor {
+                    action_name: "unknown",
+                    context: Vec::new(),
+                }),
+            entity: entities
+                .entities
+                .first()
+                .cloned()
+                .unwrap_or_else(|| EntityDescriptor::new("unknown")),
+            allowed,
+        });
+    }
+    out
+}
+
+/// Map a top-level [`AuthorizationFailureReason`] to the per-entry `allowed`
+/// value used when synthesising a default `authorizations[]` list for a
+/// failed event.
+///
+/// Definitive denials (`ActionForbidden`, `ResourceNotFound`,
+/// `CannotSeeResource`) become `Some(false)`. Outcomes where the system
+/// could not actually decide (`InternalAuthorizationError`,
+/// `InternalCatalogError`, `InvalidRequestData`) become `None`, so the audit
+/// log records "we never reached a verdict" instead of misrepresenting a
+/// backend failure as an explicit deny.
+fn synthesised_allowed_for_failure(reason: &AuthorizationFailureReason) -> Option<bool> {
+    match reason {
+        AuthorizationFailureReason::ActionForbidden
+        | AuthorizationFailureReason::ResourceNotFound
+        | AuthorizationFailureReason::CannotSeeResource => Some(false),
+        AuthorizationFailureReason::InternalAuthorizationError
+        | AuthorizationFailureReason::InternalCatalogError
+        | AuthorizationFailureReason::InvalidRequestData => None,
     }
 }

@@ -27,10 +27,16 @@ pub mod error;
 mod health;
 mod migration;
 mod models;
+mod reconcile;
 mod relations;
+mod tuples;
 
 pub use config::CONFIG;
 pub use migration::migrate;
+pub use reconcile::{
+    RECONCILE_LOCK_KEY, RebuildReport, ReconcileMode, ReconcileReport,
+    rebuild_hierarchy_tuples_from_catalog, reconcile_hierarchy_tuples_from_catalog,
+};
 
 const MAX_TUPLES_PER_WRITE: i32 = 100;
 
@@ -72,6 +78,8 @@ pub enum FgaType {
     Table,
     #[strum(serialize = "lakekeeper_view")]
     View,
+    #[strum(serialize = "lakekeeper_generic_table")]
+    GenericTable,
     ModelVersion,
     AuthModelId,
 }

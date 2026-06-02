@@ -14,6 +14,7 @@ use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
 use crate::{
     CONFIG,
     api::{
+        endpoints::EndpointFlat,
         iceberg::v1::{
             ApiContext, CreateNamespaceRequest, CreateNamespaceResponse, ErrorModel,
             GetNamespaceResponse, ListNamespacesQuery, ListNamespacesResponse, NamespaceParameters,
@@ -25,8 +26,9 @@ use crate::{
     request_metadata::RequestMetadata,
     server,
     service::{
-        CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTaskOps, NamedEntity, NamespaceId,
-        ResolvedWarehouse, State, TabularId, Transaction,
+        CachePolicy, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore, CatalogTaskOps,
+        NamedEntity, NamespaceHierarchy, NamespaceId, ResolvedWarehouse, State, TabularId,
+        Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
             NamespaceParent,
@@ -37,7 +39,9 @@ use crate::{
                 ResolvedNamespace, Unresolved, UserProvidedNamespace, authz_to_error_no_audit,
             },
         },
+        idempotency::IdempotencyInfo,
         secrets::SecretStore,
+        storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
@@ -159,8 +163,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                         Vec<bool>,
                     ) = masks
                         .into_iter()
-                        .zip(responses.into_iter())
-                        .zip(tokens.into_iter())
+                        .zip(responses)
+                        .zip(tokens)
                         .map(|((allowed, namespace), token)| {
                             let namespace_id = namespace.namespace_id();
                             (namespace, namespace_id, token, allowed)
@@ -195,6 +199,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn create_namespace(
         prefix: Option<Prefix>,
         request: CreateNamespaceRequest,
@@ -226,11 +231,36 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into());
         }
 
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                let ns = Self::load_namespace_metadata(
+                    NamespaceParameters {
+                        prefix,
+                        namespace: namespace.clone(),
+                    },
+                    GetNamespacePropertiesQuery { return_uuid: false },
+                    state,
+                    request_metadata,
+                )
+                .await?;
+                return Ok(CreateNamespaceResponse {
+                    namespace: ns.namespace,
+                    properties: ns.properties.map(|arc| (*arc).clone()),
+                });
+            }
+        }
+
         // ------------------- AUTHZ -------------------
-        let authorizer = state.v1_state.authz;
+        let authorizer = state.v1_state.authz.clone();
 
         let properties_btree: Arc<std::collections::BTreeMap<String, String>> =
             Arc::new(properties.clone().unwrap_or_default().into_iter().collect());
+
+        let namespace_name = namespace.as_ref().last().cloned().unwrap_or_default();
 
         let event_ctx = create_namespace_or_warehouse_event_context(
             namespace.parent().clone(),
@@ -238,9 +268,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.events,
             warehouse_id,
             CatalogNamespaceAction::CreateNamespace {
+                name: Some(namespace_name.clone()),
                 properties: properties_btree.clone(),
             },
             CatalogWarehouseAction::CreateNamespace {
+                name: Some(namespace_name),
                 properties: properties_btree.clone(),
             },
         );
@@ -249,7 +281,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             &authorizer,
             event_ctx.request_metadata(),
             warehouse_id,
-            namespace.parent().as_ref(),
+            namespace,
             state.v1_state.catalog.clone(),
             properties_btree,
         )
@@ -274,8 +306,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut namespace_props = NamespaceProperties::try_from_maybe_props(properties.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
-        // Set location if not specified - validate location if specified
-        set_namespace_location_property(&mut namespace_props, &warehouse, namespace_id)?;
+        set_namespace_location_property(
+            &mut namespace_props,
+            &warehouse,
+            namespace,
+            namespace_id,
+            parent_namespace.as_ref(),
+        )?;
         remove_managed_namespace_properties(&mut namespace_props);
 
         let mut request = request;
@@ -283,6 +320,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         let r = C::create_namespace(warehouse_id, namespace_id, request, t.transaction()).await?;
+        // Insert idempotency key in the same transaction — atomic with the mutation.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1CreateNamespace)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            // Concurrent request committed the same key — rollback and replay.
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         let authz_parent = if let Some(parent_namespace) = &parent_namespace {
             NamespaceParent::Namespace(parent_namespace.namespace_id())
         } else {
@@ -291,6 +351,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         authorizer
             .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
+
         t.commit().await?;
 
         event_ctx.emit_namespace_created_async(r.clone());
@@ -422,6 +483,23 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .into());
         }
 
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        // Idempotency is not supported for recursive drops — they manage their own
+        // transaction internally, so we cannot insert the key atomically. A retry of
+        // a recursive drop will get 404 (namespace already gone), which is correct.
+        let idempotency_key = if flags.recursive {
+            None
+        } else {
+            request_metadata.idempotency_key().copied()
+        };
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                return Ok(());
+            }
+        }
+
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
@@ -455,7 +533,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         //  ------------------- BUSINESS LOGIC -------------------
         let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
-        let r = if flags.recursive {
+        if flags.recursive {
+            // recursive drop manages its own transaction
             try_recursive_drop::<_, C>(
                 flags,
                 authorizer,
@@ -464,26 +543,45 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 namespace_id,
                 &request_metadata,
             )
-            .await
+            .await?;
         } else {
             C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
+            if let Some(ref key) = idempotency_key
+                && !C::try_insert_idempotency_key(
+                    warehouse_id,
+                    &IdempotencyInfo::builder()
+                        .key(*key)
+                        .endpoint(EndpointFlat::CatalogV1DropNamespace)
+                        .http_status(StatusCode::NO_CONTENT)
+                        .build(),
+                    t.transaction(),
+                )
+                .await?
+            {
+                t.rollback()
+                    .await
+                    .inspect_err(|e| {
+                        tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                    })
+                    .ok();
+                return Err(ErrorModel::request_in_progress().into());
+            }
+            t.commit().await?;
             authorizer
                 .delete_namespace(&request_metadata, namespace_id)
-                .await?;
-            t.commit().await?;
-            Ok(())
-        };
-
-        match r {
-            Ok(()) => {
-                event_ctx.emit_namespace_dropped_async();
-                Ok(())
-            }
-            Err(err) => Err(err),
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
+                })
+                .ok();
         }
+
+        event_ctx.emit_namespace_dropped_async();
+        Ok(())
     }
 
     /// Set or remove properties on a namespace
+    #[allow(clippy::too_many_lines)]
     async fn update_namespace_properties(
         parameters: NamespaceParameters,
         request: UpdateNamespacePropertiesRequest,
@@ -507,6 +605,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut updates = NamespaceProperties::try_from_maybe_props(updates.clone())
             .map_err(|e| ErrorModel::bad_request(e.to_string(), e.err_type(), None))?;
         remove_managed_namespace_properties(&mut updates);
+
+        // ------------------- IDEMPOTENCY CHECK -------------------
+        let idempotency_key = request_metadata.idempotency_key().copied();
+        if let Some(ref key) = idempotency_key {
+            let check =
+                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            if check.is_replay() {
+                let ns = Self::load_namespace_metadata(
+                    parameters,
+                    GetNamespacePropertiesQuery { return_uuid: false },
+                    state,
+                    request_metadata,
+                )
+                .await?;
+                let properties = ns.properties.map(|arc| (*arc).clone());
+                let (_props, response) = update_namespace_properties(properties, updates, removals);
+                return Ok(response);
+            }
+        }
+
         //  ------------------- AUTHZ -------------------
         let authorizer = state.v1_state.authz;
 
@@ -555,6 +673,30 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             t.transaction(),
         )
         .await?;
+
+        // Insert idempotency key in the same transaction.
+        if let Some(ref key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1UpdateNamespaceProperties)
+                    .http_status(StatusCode::OK)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            // Concurrent request won — rollback and replay.
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         t.commit().await?;
 
         event_ctx.emit_namespace_properties_updated_async(updated_namespace, Arc::new(r.clone()));
@@ -595,6 +737,9 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 
         if flags.purge {
             for (tabular_id, tabular_location, tabular_ident) in &drop_info.child_tables {
+                if tabular_id.is_generic_table() {
+                    continue;
+                }
                 TabularPurgeTask::schedule_task::<C>(
                     ScheduleTaskMetadata {
                         project_id: project_id.clone(),
@@ -652,6 +797,18 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         .inspect_err(|err| {
                             tracing::error!(
                                 "Failed to delete view '{tabular_ident}' with id '{view_id}' from authorizer after recursive namespace drop: {}",
+                                err.error
+                            );
+                        })
+                        .ok();
+                }
+                TabularId::GenericTable(generic_table_id) => {
+                    authorizer
+                        .delete_generic_table(warehouse.warehouse_id, generic_table_id)
+                        .await
+                        .inspect_err(|err| {
+                            tracing::error!(
+                                "Failed to delete generic table '{tabular_ident}' with id '{generic_table_id}' from authorizer after recursive namespace drop: {}",
                                 err.error
                             );
                         })
@@ -724,7 +881,7 @@ where
 pub(crate) fn validate_namespace_ident(namespace: &NamespaceIdent) -> Result<()> {
     if namespace.len() > MAX_NAMESPACE_DEPTH as usize {
         return Err(ErrorModel::bad_request(
-            format!("Namespace exceeds maximum depth of {MAX_NAMESPACE_DEPTH}",),
+            format!("Namespace exceeds maximum depth of {MAX_NAMESPACE_DEPTH}"),
             "NamespaceDepthExceeded".to_string(),
             None,
         )
@@ -779,7 +936,9 @@ fn remove_managed_namespace_properties(namespace_props: &mut NamespaceProperties
 fn set_namespace_location_property(
     namespace_props: &mut NamespaceProperties,
     warehouse: &ResolvedWarehouse,
+    namespace_ident: &NamespaceIdent,
     namespace_id: NamespaceId,
+    namespace_parents: Option<&NamespaceHierarchy>,
 ) -> Result<()> {
     let mut location = namespace_props.get_location();
 
@@ -794,9 +953,28 @@ fn set_namespace_location_property(
             .require_allowed_location(&location)?;
         location
     } else {
+        let namespace_name = namespace_ident.last().ok_or_else(|| {
+            ErrorModel::internal("Namespace must have a name", "NamespaceNameMissing", None)
+        })?;
+        let namespace_name_context = NamespaceNameContext {
+            name: namespace_name.clone(),
+            uuid: namespace_id.into(),
+        };
+        let mut namespace_name_contexts = if let Some(parent) = namespace_parents {
+            let mut contexts = vec![NamespaceNameContext::try_from(&parent.namespace)?];
+            for ancestor in &parent.parents {
+                contexts.push(NamespaceNameContext::try_from(ancestor)?);
+            }
+            contexts.reverse();
+            contexts
+        } else {
+            Vec::new()
+        };
+        namespace_name_contexts.push(namespace_name_context);
+        let namespace_path = NamespacePath::new(namespace_name_contexts);
         warehouse
             .storage_profile
-            .default_namespace_location(namespace_id)?
+            .default_namespace_location(&namespace_path)?
     };
 
     namespace_props.insert(&location);

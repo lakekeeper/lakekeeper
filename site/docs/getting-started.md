@@ -9,6 +9,7 @@ Lakekeeper is currently only compatible with Postgres >= 15.
 ## Deployment
 
 ### Option 1: 🐳 Examples
+
 !!! note
 
     Our docker compose examples are not designed to be used with compute outside of the docker network (e.g. external Spark).
@@ -43,8 +44,8 @@ All docker compose examples come with batteries included (Identity Provider, Sto
 
 Then open your browser and head to `localhost:8888` to load the example Jupyter notebooks or head to `localhost:8181` for the Lakekeeper UI.
 
-
 ### Option 2: 🐳 Docker Compose
+
 For a Docker-Compose deployment that is used with external object storage, and external Identity Providers, you can use the [`docker-compose` Setup](https://github.com/lakekeeper/lakekeeper/tree/main/docker-compose). Please also check the [Examples](#option-1-examples) and our [User Guides](./docs/nightly/docs/configuration.md) for additional information on customization.
 
 While you can start the "🐳 Unsecured" variant without any external dependencies, you will need at least an external object store (S3, ADLS, GCS) to create a Warehouse.
@@ -72,12 +73,13 @@ While you can start the "🐳 Unsecured" variant without any external dependenci
     ```
 
 ### Option 3: ☸️ Kubernetes
+
 We recommend deploying the catalog on Kubernetes using our [Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree/main/charts/lakekeeper). Please check the Helm Chart's documentation for possible values. To enable Authentication and Authorization, an external identity provider is required.
 
 A community driven [Kubernetes Operator](https://github.com/lakekeeper/lakekeeper-operator) is currently in development.
 
-
 ### Option 4: ⚙️ Binary
+
 For single node deployments, you can also download the Binary for your architecture from [GitHub Releases](https://github.com/lakekeeper/lakekeeper/releases). A basic configuration via environment variables would look like this:
 
 ```bash
@@ -90,29 +92,34 @@ export LAKEKEEPER__PG_ENCRYPTION_KEY="MySecretEncryptionKeyThatIBetterNotLoose"
 ```
 
 To expose Lakekeeper behind a reverse proxy, most deployments also set:
+
 ```bash
-export LAKEKEEPER__BASE_URI=<https://<Url-where-Lakekeeper-is-externally-reachable>
+export LAKEKEEPER__BASE_URI="http://<Url-where-Lakekeeper-is-externally-reachable>"
 ```
-The default `LAKEKEEPER__BASE_URI` is `https://localhost:8181`.
+
+The default `LAKEKEEPER__BASE_URI` is `http://localhost:8181`.
 
 ### Option 5: 👨‍💻 Build from Sources
-To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](./docs/nightly/docs/developer-guide.md) for more information. 
+
+To customize Lakekeeper, for example to connect to your own Authorization system, you might want to build the binary yourself. Please check the [Developer Guide](./docs/nightly/docs/developer-guide.md) for more information.
 
 ## First Steps
 
 Now that the catalog is up-and-running, the following endpoints are available:
 
-1. `<LAKEKEEPER__BASE_URI>/ui/` - the UI - by default: [http://localhost:8181/ui/](https://localhost:8181/ui/)
+1. `<LAKEKEEPER__BASE_URI>/ui/` - the UI - by default: [http://localhost:8181/ui/](http://localhost:8181/ui/)
 1. `<LAKEKEEPER__BASE_URI>/catalog` is the Iceberg REST API
 1. `<LAKEKEEPER__BASE_URI>/management` contains the management API
 1. `<LAKEKEEPER__BASE_URI>/swagger-ui` hosts Swagger to inspect the API specifications
 
 ### Bootstrapping
+
 Our self-contained docker compose examples are already bootstrapped and require no further actions.
 
 After the initial deployment, Lakekeeper needs to be bootstrapped. This can be done via the UI or the bootstrap endpoint. Among others, bootstrapping sets the initial administrator of Lakekeeper and creates the first project. Please find more information on bootstrapping in the [Bootstrap Docs](docs/nightly/bootstrap.md).
 
 ### Creating a Warehouse
+
 Now that the server is running, we need to create a new warehouse. We recommend to do this via the UI.
 
 <br>
@@ -121,7 +128,6 @@ Now that the server is running, we need to create a new warehouse. We recommend 
   <figcaption>Create a Warehouse via UI</figcaption>
 </figure>
 <br>
-
 
 Alternatively, we can use the REST-API directly. For an S3 backed warehouse, create a file called `create-warehouse-request.json`:
 

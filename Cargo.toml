@@ -10,10 +10,10 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.11.2"
+version = "0.12.3"
 homepage = "https://lakekeeper.io/"
 repository = "https://github.com/lakekeeper/lakekeeper.git"
-rust-version = "1.88.0"
+rust-version = "1.94"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -21,7 +21,7 @@ anyhow = "^1.0"
 assert-json-diff = "2.0.2"
 async-channel = { version = "2.3.1" }
 async-compression = { version = "^0.4", features = ["tokio", "gzip"] }
-async-nats = { version = "0.46.0", default-features = false, features = [
+async-nats = { git = "https://github.com/lakekeeper/nats.rs.git", tag = "async-nats/v0.46.0-lakekeeper.1", default-features = false, features = [
     "server_2_10",
     "server_2_11",
     "server_2_12",
@@ -33,8 +33,19 @@ async-stream = "0.3.6"
 async-trait = "0.1.89"
 aws-config = { version = "1.8.10", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1.2" }
-aws-sdk-s3 = { version = "1.121" }
-aws-sdk-sts = "1.82.0"
+# `rustls` feature is excluded because it pulls in the legacy hyper-rustls 0.24 /
+# rustls 0.21 / rustls-webpki 0.101 stack (RUSTSEC-2026-0098). `default-https-client`
+# (also a default feature) provides the modern rustls 0.23 / hyper-rustls 0.27 path.
+aws-sdk-s3 = { version = "1.121", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
+aws-sdk-sts = { version = "1.82.0", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+] }
 aws-sigv4 = { version = "1.2" }
 aws-smithy-async = { version = "1.2.5" }
 aws-smithy-http = "0.62.3"
@@ -65,6 +76,7 @@ base64 = "0.22.1"
 bytes = "1.10"
 chrono = "^0.4"
 cloudevents-sdk = { version = "0.9.0" }
+crc = "3"
 derive_more = { version = "^2.0.0", features = ["from", "debug"] }
 fastrand = "2.3.0"
 figment = { version = "^0.10", features = ["env"] }
@@ -72,12 +84,12 @@ figment_file_provider_adapter = "0.1.1"
 flate2 = "^1.0"
 futures = "^0.3"
 gcloud-token = "1.0.0"
-google-cloud-auth = { package = "gcloud-auth", version = "1.2", features = [
+google-cloud-auth = { package = "gcloud-auth", version = "~1.2", features = [
     "rustls-tls",
     "jwt-aws-lc-rs",
     "external-account",
 ], default-features = false }
-google-cloud-storage = { package = "gcloud-storage", version = "1.1", default-features = false, features = [
+google-cloud-storage = { package = "gcloud-storage", version = "~1.2", default-features = false, features = [
     "rustls-tls",
     "auth",
 ] }
@@ -87,20 +99,16 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "c440a001488a4a5606bef349f46c5e5b7cc41bd9", features = [
-    "storage-gcs",
-    "storage-azdls",
-    "storage-s3",
-] }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
-jwks_client_rs = { version = "0.5.1", default-features = false, features = [
-    "rustls-tls",
-] }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { version = "0.3.1", features = ["kubernetes", "axum", "rustls-tls"] }
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = [
+    "kubernetes",
+    "axum",
+    "rustls-tls",
+] }
 maplit = "1.0.2"
 md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }
@@ -123,15 +131,19 @@ reqwest = { version = "0.12.23", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
 ] }
+reqwest-middleware = "0.4"
+reqwest-retry = "0.8"
 semver = "1.0.27"
 serde = { version = "^1.0", features = ["rc"] }
 serde_derive = "^1.0"
 serde_json = { version = "^1.0", features = ["raw_value"] }
 serde_norway = "0.9.42"
+serde_urlencoded = "0.7.1"
 serde_with = "^3.4"
 similar = "2.6.0"
-sqlx = { version = "0.8.6", default-features = false, features = [
+sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",
@@ -143,13 +155,19 @@ sqlx = { version = "0.8.6", default-features = false, features = [
 ] }
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
+tempfile = "3.20"
 thiserror = "2.0.0"
+tikv-jemallocator = { version = "0.6" }
 time = "0.3.36"
 tokio = { version = "1.41", default-features = false, features = [
     "signal",
     "rt-multi-thread",
     "macros",
     "time",
+] }
+tokio-metrics = { version = "0.4.9", features = [
+    "metrics-rs-integration",
+    "rt",
 ] }
 tokio-util = { version = "^0.7" }
 tower = { version = "^0.5" }
@@ -170,7 +188,9 @@ tracing-subscriber = { version = "0.3.18", features = [
 tracing-test = "0.2.5"
 tryhard = { version = "0.5.1" }
 typed-builder = "^0.23.0"
+typetag = "0.2.21"
 unicase = "2.8.1"
+unicode-general-category = "1.1.0"
 
 url = { version = "^2.5", features = ["serde"] }
 urlencoding = "^2.1"
@@ -186,6 +206,7 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 valuable = "0.1.1"
 veil = "0.2.0"
+webpki-root-certs = "1.0"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
 [profile.dev.build-override]

@@ -1,25 +1,28 @@
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures::stream::{self, BoxStream, StreamExt};
 use tokio::sync::RwLock;
 
 use crate::{
-    DeleteBatchError, DeleteError, IOError, InvalidLocationError, LakekeeperStorage, Location,
-    ReadError, WriteError, error::ErrorKind,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
+    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
 };
+
+type MemoryFile = (Bytes, DateTime<Utc>);
 
 /// In-memory storage implementation for testing and development purposes.
 /// All data is stored in memory and persists across instances within the same thread.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
-    data: Arc<RwLock<HashMap<String, Bytes>>>,
+    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
     use_global_store: bool,
 }
 
 thread_local! {
     #[allow(clippy::type_complexity)]
-    static GLOBAL_MEMORY_STORE: RefCell<Option<Arc<RwLock<HashMap<String, Bytes>>>>> = const { RefCell::new(None) };
+    static GLOBAL_MEMORY_STORE: RefCell<Option<Arc<RwLock<HashMap<String, (Bytes, DateTime<Utc>)>>>>> = const { RefCell::new(None) };
 }
 
 impl Default for MemoryStorage {
@@ -83,6 +86,20 @@ impl MemoryStorage {
     /// This creates an isolated instance not connected to the global store.
     #[must_use]
     pub fn with_data(data: HashMap<String, Bytes>) -> Self {
+        let data = data
+            .into_iter()
+            .map(|(k, v)| (k, (v, Utc::now())))
+            .collect::<HashMap<_, _>>();
+        MemoryStorage {
+            data: Arc::new(RwLock::new(data)),
+            use_global_store: false,
+        }
+    }
+
+    /// Create a new memory storage instance with pre-populated data and custom timestamps.
+    /// This creates an isolated instance not connected to the global store.
+    #[must_use]
+    pub fn with_timed_data(data: HashMap<String, (Bytes, DateTime<Utc>)>) -> Self {
         MemoryStorage {
             data: Arc::new(RwLock::new(data)),
             use_global_store: false,
@@ -135,10 +152,10 @@ fn normalize_memory_path(path: &str) -> Result<String, InvalidLocationError> {
     Ok(key.to_string())
 }
 
+#[async_trait::async_trait]
 impl LakekeeperStorage for MemoryStorage {
-    async fn delete(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path_str = path.as_ref();
-        let key = normalize_memory_path(path_str)?;
+    async fn delete(&self, path: &str) -> Result<(), DeleteError> {
+        let key = normalize_memory_path(path)?;
 
         let mut data = self.data.write().await;
         data.remove(&key);
@@ -146,81 +163,164 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(())
     }
 
-    async fn delete_batch(
-        &self,
-        paths: impl IntoIterator<Item = impl AsRef<str>> + Send,
-    ) -> Result<(), DeleteBatchError> {
-        let paths: Vec<String> = paths.into_iter().map(|p| p.as_ref().to_string()).collect();
-
+    async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
         for path_str in paths {
-            match self.delete(&path_str).await {
-                Ok(()) => {}
-                Err(e) => {
-                    return Err(DeleteBatchError::from(e));
-                }
-            }
+            self.delete(path_str).await?;
         }
-
         Ok(())
     }
 
-    async fn write(&self, path: impl AsRef<str>, bytes: Bytes) -> Result<(), WriteError> {
-        let path_str = path.as_ref();
-        let key = normalize_memory_path(path_str)?;
+    async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
+        let key = normalize_memory_path(path)?;
 
         let mut data = self.data.write().await;
-        data.insert(key, bytes);
+        data.insert(key, (bytes, Utc::now()));
         Ok(())
     }
 
-    async fn read(&self, path: impl AsRef<str>) -> Result<Bytes, ReadError> {
-        let path_str = path.as_ref();
-        let key = normalize_memory_path(path_str)?;
+    async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
+        let key = normalize_memory_path(path)?;
+        Ok(Box::new(MemoryFileWrite {
+            data: self.data.clone(),
+            key,
+            buffer: Vec::new(),
+            closed: false,
+        }))
+    }
+
+    async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
+        let key = normalize_memory_path(path)?;
 
         let data = self.data.read().await;
         match data.get(&key) {
-            Some(bytes) => Ok(bytes.clone()),
+            Some((bytes, _)) => Ok(bytes.clone()),
             None => Err(ReadError::IOError(IOError::new(
                 ErrorKind::NotFound,
                 "Object not found in memory storage",
-                path_str.to_string(),
+                key,
             ))),
         }
     }
 
-    async fn read_single(&self, path: impl AsRef<str> + Send) -> Result<Bytes, ReadError> {
+    async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         self.read(path).await
+    }
+
+    async fn read_range(
+        &self,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> Result<Bytes, ReadError> {
+        if range.end < range.start {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!(
+                    "Invalid range: start ({}) > end ({})",
+                    range.start, range.end
+                ),
+                path.to_string(),
+            )));
+        }
+        if range.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        let key = normalize_memory_path(path)?;
+        let data = self.data.read().await;
+        let (bytes, _) = data.get(&key).ok_or_else(|| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::NotFound,
+                "Object not found in memory storage",
+                key.clone(),
+            ))
+        })?;
+
+        let start = usize::try_from(range.start).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range start {} too large for this platform", range.start),
+                key.clone(),
+            ))
+        })?;
+        let end = usize::try_from(range.end).map_err(|_| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range end {} too large for this platform", range.end),
+                key.clone(),
+            ))
+        })?;
+        if end > bytes.len() {
+            return Err(ReadError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                format!("Range end {end} exceeds file size {}", bytes.len()),
+                key.clone(),
+            )));
+        }
+        Ok(bytes.slice(start..end))
+    }
+
+    async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
+        let key = normalize_memory_path(path)?;
+
+        let data = self.data.read().await;
+        let (bytes, last_modified) = data.get(&key).ok_or_else(|| {
+            ReadError::IOError(IOError::new(
+                ErrorKind::NotFound,
+                "Object not found in memory storage",
+                key.clone(),
+            ))
+        })?;
+
+        let location_str = format!("{MEMORY_PREFIX}{key}");
+        let location = location_str.parse::<Location>().map_err(|e| {
+            ReadError::IOError(
+                IOError::new(
+                    ErrorKind::Unexpected,
+                    format!("Failed to parse location: {e}"),
+                    location_str.clone(),
+                )
+                .set_source(anyhow::anyhow!(e)),
+            )
+        })?;
+
+        Ok(FileInfo::new(
+            Some(*last_modified),
+            location,
+            Some(bytes.len() as u64),
+        ))
     }
 
     async fn list(
         &self,
-        path: impl AsRef<str> + Send,
+        path: &str,
         page_size: Option<usize>,
-    ) -> Result<BoxStream<'_, Result<Vec<Location>, IOError>>, InvalidLocationError> {
-        let path_str = path.as_ref();
-        let prefix = if path_str.ends_with('/') {
-            normalize_memory_path(path_str)?
+    ) -> Result<BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError> {
+        let prefix = if path.ends_with('/') {
+            normalize_memory_path(path)?
         } else {
-            format!("{}/", normalize_memory_path(path_str)?)
+            format!("{}/", normalize_memory_path(path)?)
         };
 
         let data = self.data.read().await;
-        let mut matching_keys: Vec<String> = data
-            .keys()
-            .filter(|key| key.starts_with(&prefix))
-            .cloned()
+        let mut matching_files: Vec<(String, DateTime<Utc>, u64)> = data
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, (bytes, last_modified))| (key.clone(), *last_modified, bytes.len() as u64))
             .collect();
 
         // Sort for consistent ordering
-        matching_keys.sort();
+        matching_files.sort_by(|a, b| a.0.cmp(&b.0));
 
         let page_size = page_size.unwrap_or(1000);
 
-        let mut all_locations = Vec::new();
-        for key in matching_keys {
+        let mut all_file_infos = Vec::new();
+        for (key, last_modified, size) in matching_files {
             let location_str = format!("{MEMORY_PREFIX}{key}");
             match location_str.parse::<Location>() {
-                Ok(location) => all_locations.push(location),
+                Ok(location) => {
+                    let file_info = FileInfo::new(Some(last_modified), location, Some(size));
+                    all_file_infos.push(file_info);
+                }
                 Err(e) => {
                     let error = IOError::new(
                         ErrorKind::Unexpected,
@@ -234,10 +334,10 @@ impl LakekeeperStorage for MemoryStorage {
             }
         }
 
-        // Convert to Vec<Vec<Location>> by chunking, then create an iterator over those chunks
-        let chunks: Vec<Vec<Location>> = all_locations
+        // Convert to Vec<Vec<FileInfo>> by chunking, then create an iterator over those chunks
+        let chunks: Vec<Vec<FileInfo>> = all_file_infos
             .chunks(page_size)
-            .map(<[Location]>::to_vec)
+            .map(<[FileInfo]>::to_vec)
             .collect();
 
         // Create a stream that returns pages of locations
@@ -246,25 +346,62 @@ impl LakekeeperStorage for MemoryStorage {
         Ok(stream.boxed())
     }
 
-    async fn remove_all(&self, path: impl AsRef<str>) -> Result<(), DeleteError> {
-        let path_str = path.as_ref();
-        let prefix = if path_str.ends_with('/') {
-            normalize_memory_path(path_str)?
+    /// Native in-memory recursive delete via direct `HashMap` key scan.
+    ///
+    /// Overrides the default streamed list+batch-delete implementation because
+    /// the in-memory backend has no I/O to batch and can drain matching keys
+    /// from the underlying `HashMap` in a single write-lock acquisition.
+    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
+        let prefix = if path.ends_with('/') {
+            normalize_memory_path(path)?
         } else {
-            format!("{}/", normalize_memory_path(path_str)?)
+            format!("{}/", normalize_memory_path(path)?)
         };
 
         let mut data = self.data.write().await;
-        let keys_to_remove: Vec<String> = data
-            .keys()
-            .filter(|key| key.starts_with(&prefix))
-            .cloned()
-            .collect();
+        data.retain(|key, _| !key.starts_with(&prefix));
+        Ok(())
+    }
+}
 
-        for key in keys_to_remove {
-            data.remove(&key);
+/// Streaming writer for the in-memory backend.
+///
+/// Buffers all written bytes locally and inserts them into the shared
+/// store on `close`. Calling `write` after `close` returns an error.
+#[derive(Debug)]
+pub(crate) struct MemoryFileWrite {
+    data: Arc<RwLock<HashMap<String, MemoryFile>>>,
+    key: String,
+    buffer: Vec<u8>,
+    closed: bool,
+}
+
+#[async_trait::async_trait]
+impl LakekeeperFileWrite for MemoryFileWrite {
+    async fn write(&mut self, bytes: Bytes) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Cannot write to closed writer",
+                self.key.clone(),
+            )));
         }
+        self.buffer.extend_from_slice(&bytes);
+        Ok(())
+    }
 
+    async fn close(&mut self) -> Result<(), WriteError> {
+        if self.closed {
+            return Err(WriteError::IOError(IOError::new(
+                ErrorKind::ConditionNotMatch,
+                "Writer already closed",
+                self.key.clone(),
+            )));
+        }
+        let bytes = Bytes::from(std::mem::take(&mut self.buffer));
+        let mut data = self.data.write().await;
+        data.insert(self.key.clone(), (bytes, Utc::now()));
+        self.closed = true;
         Ok(())
     }
 }
@@ -300,6 +437,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_memory_writer_round_trip() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/streaming.bin";
+        {
+            let mut writer = storage.writer(path).await.unwrap();
+            writer.write(Bytes::from("hello, ")).await.unwrap();
+            writer.write(Bytes::from("world!")).await.unwrap();
+            writer.close().await.unwrap();
+        }
+        let data = storage.read(path).await.unwrap();
+        assert_eq!(data, Bytes::from("hello, world!"));
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_close_twice_errors() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/twice.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("data")).await.unwrap();
+        writer.close().await.unwrap();
+        assert!(writer.close().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_writer_write_after_close_errors() {
+        let storage = MemoryStorage::new_isolated();
+        let path = "memory://writer/after_close.bin";
+        let mut writer = storage.writer(path).await.unwrap();
+        writer.write(Bytes::from("data")).await.unwrap();
+        writer.close().await.unwrap();
+        assert!(writer.write(Bytes::from("more")).await.is_err());
+    }
+
+    #[tokio::test]
     async fn test_memory_storage_without_prefix() {
         let storage = MemoryStorage::new();
 
@@ -317,10 +488,10 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create multiple test files
-        let test_paths = vec![
-            "memory://test/file1.txt",
-            "memory://test/file2.txt",
-            "memory://test/file3.txt",
+        let test_paths: Vec<String> = vec![
+            "memory://test/file1.txt".to_string(),
+            "memory://test/file2.txt".to_string(),
+            "memory://test/file3.txt".to_string(),
         ];
 
         let test_data = Bytes::from("Test data");
@@ -331,7 +502,7 @@ mod tests {
         }
 
         // Batch delete
-        storage.delete_batch(test_paths.clone()).await.unwrap();
+        storage.delete_batch(&test_paths).await.unwrap();
 
         // Verify files are deleted
         for path in &test_paths {
@@ -363,18 +534,18 @@ mod tests {
         let list_path = "memory://data/subdir";
         let mut stream = storage.list(list_path, None).await.unwrap();
 
-        let mut all_locations = Vec::new();
+        let mut all_file_infos = Vec::new();
         while let Some(result) = stream.next().await {
-            let locations = result.unwrap();
-            all_locations.extend(locations);
+            let file_infos = result.unwrap();
+            all_file_infos.extend(file_infos);
         }
 
-        assert_eq!(all_locations.len(), 2);
+        assert_eq!(all_file_infos.len(), 2);
 
         // Verify the locations match our test files
-        let location_strings: Vec<String> = all_locations
+        let location_strings: Vec<String> = all_file_infos
             .iter()
-            .map(std::string::ToString::to_string)
+            .map(|file_info| file_info.location().to_string())
             .collect();
 
         assert!(location_strings.contains(&"memory://data/subdir/file1.txt".to_string()));

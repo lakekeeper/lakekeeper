@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM view_schema\n        WHERE warehouse_id = $1 AND view_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b79714d727614192d0b44dd6814576e49b3e824a7393c92a17ee62c2ee5a5aa"
+}

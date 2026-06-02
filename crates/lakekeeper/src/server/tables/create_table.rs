@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use http::StatusCode;
 use iceberg::spec::{
     FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, TableProperties,
     UnboundPartitionSpec,
@@ -14,9 +15,12 @@ use super::{
 };
 use crate::{
     WarehouseId,
-    api::iceberg::v1::{
-        ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters, Result,
-        TableIdent, tables::DataAccessMode,
+    api::{
+        endpoints::EndpointFlat,
+        iceberg::v1::{
+            ApiContext, CreateTableRequest, ErrorModel, LoadTableResult, NamespaceParameters,
+            Result, TableIdent, TableParameters, tables::DataAccessMode,
+        },
     },
     request_metadata::RequestMetadata,
     server::{
@@ -24,15 +28,16 @@ use crate::{
         tabular::determine_tabular_location,
     },
     service::{
-        CachePolicy, CatalogStore, CatalogTableOps, State, TableCreation, TableId, TabularId,
-        Transaction,
+        AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
+        State, TableCreation, TableId, TabularId, Transaction,
         authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
-        storage::{StorageLocations as _, StoragePermissions, ValidationError},
+        storage::{StoragePermissions, ValidationError},
     },
 };
 
@@ -92,7 +97,7 @@ impl<A: Authorizer> TableCreationGuard<A> {
         }
 
         if let Some((io, metadata_location)) = self.metadata_location.take()
-            && let Err(e) = io.delete(&metadata_location).await
+            && let Err(e) = io.delete(metadata_location.as_str()).await
         {
             tracing::warn!(
                 "Failed to cleanup metadata file at {metadata_location} after failed transaction: {e}",
@@ -110,8 +115,32 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadTableResult> {
-    let authorizer = state.v1_state.authz.clone();
     let warehouse_id = require_warehouse_id(parameters.prefix.as_ref())?;
+
+    // ------------------- IDEMPOTENCY CHECK -------------------
+    let idempotency_key = request_metadata.idempotency_key().copied();
+    if let Some(ref key) = idempotency_key {
+        let check =
+            C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+        if check.is_replay() {
+            let table_ident = TableIdent::new(parameters.namespace.clone(), request.name.clone());
+            let load_params = TableParameters {
+                prefix: parameters.prefix.clone(),
+                table: table_ident,
+            };
+            return super::replay_load_table::<C, A, S>(
+                load_params,
+                data_access.into(),
+                state,
+                request_metadata,
+                "createTable",
+            )
+            .await;
+        }
+    }
+
+    // ------------------- AUTHZ + BUSINESS LOGIC -------------------
+    let authorizer = state.v1_state.authz.clone();
     let table_id = TableId::from(Uuid::now_v7());
 
     let mut guard = TableCreationGuard::new(authorizer.clone(), warehouse_id, table_id);
@@ -122,6 +151,7 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
         data_access,
         state,
         request_metadata,
+        idempotency_key.as_ref(),
         &mut guard,
     )
     .await
@@ -146,6 +176,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     data_access: impl Into<DataAccessMode> + Send,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
     guard: &mut TableCreationGuard<A>,
 ) -> Result<LoadTableResult> {
     let data_access = data_access.into();
@@ -164,6 +195,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let authorizer = state.v1_state.authz.clone();
 
     let action = CatalogNamespaceAction::CreateTable {
+        name: Some(request.name.clone()),
+        table_id: Some(guard.table_id()),
         properties: Arc::new(
             request
                 .properties
@@ -207,9 +240,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let storage_profile = &warehouse.storage_profile;
 
     let table_location = determine_tabular_location(
-        &ns_hierarchy.namespace.namespace,
+        &ns_hierarchy,
         request.location.clone(),
         tabular_id,
+        &table,
         storage_profile,
     )?;
 
@@ -230,7 +264,12 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         ))
     };
 
-    let table_metadata = create_table_request_into_table_metadata(table_id, request.clone())?;
+    let table_metadata = create_table_request_into_table_metadata(
+        table_id,
+        request.clone(),
+        &warehouse.allowed_format_versions,
+        warehouse.default_format_version,
+    )?;
 
     let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
     let (table_info, staged_table_id) = C::create_table(
@@ -322,6 +361,28 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     guard.mark_authorizer_created();
 
+    // Insert idempotency key in the same transaction.
+    if let Some(key) = idempotency_key
+        && !C::try_insert_idempotency_key(
+            warehouse_id,
+            &IdempotencyInfo::builder()
+                .key(*key)
+                .endpoint(EndpointFlat::CatalogV1CreateTable)
+                .http_status(StatusCode::OK)
+                .build(),
+            t.transaction(),
+        )
+        .await?
+    {
+        t.rollback()
+            .await
+            .inspect_err(|e| {
+                tracing::warn!("Rollback failed after idempotency conflict: {e}");
+            })
+            .ok();
+        return Err(ErrorModel::request_in_progress().into());
+    }
+
     // Commit transaction
     t.commit().await?;
 
@@ -348,6 +409,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 pub(crate) fn create_table_request_into_table_metadata(
     table_id: TableId,
     request: CreateTableRequest,
+    allowed_format_versions: &AllowedFormatVersions,
+    default_format_version: Option<FormatVersion>,
 ) -> Result<TableMetadata> {
     let CreateTableRequest {
         name: _,
@@ -370,7 +433,7 @@ pub(crate) fn create_table_request_into_table_metadata(
         )
     })?;
 
-    let format_version = properties
+    let requested_format_version = properties
         .as_mut()
         .and_then(|props| props.remove(TableProperties::PROPERTY_FORMAT_VERSION))
         .map(|s| match s.as_str() {
@@ -383,8 +446,17 @@ pub(crate) fn create_table_request_into_table_metadata(
                 None,
             )),
         })
-        .transpose()?
-        .unwrap_or(FormatVersion::V2);
+        .transpose()?;
+
+    // When a version is requested explicitly it must be permitted by the
+    // warehouse policy; when omitted, fall back to the warehouse default.
+    let format_version = match requested_format_version {
+        Some(version) => {
+            ensure_format_version_allowed(version, allowed_format_versions)?;
+            version
+        }
+        None => allowed_format_versions.resolve_default(default_format_version),
+    };
 
     let table_metadata = TableMetadataBuilder::new(
         schema,
@@ -407,4 +479,29 @@ pub(crate) fn create_table_request_into_table_metadata(
     .metadata;
 
     Ok(table_metadata)
+}
+
+/// Reject a format version that is not permitted by the warehouse policy.
+pub(crate) fn ensure_format_version_allowed(
+    version: FormatVersion,
+    allowed_format_versions: &AllowedFormatVersions,
+) -> Result<()> {
+    if allowed_format_versions.contains(version) {
+        return Ok(());
+    }
+    let allowed = allowed_format_versions
+        .as_slice()
+        .iter()
+        .map(|v| (*v as u8).to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(ErrorModel::bad_request(
+        format!(
+            "Table format version 'v{}' is not allowed in this warehouse. Allowed versions: [{allowed}]",
+            version as u8
+        ),
+        "FormatVersionNotAllowed",
+        None,
+    )
+    .into())
 }
