@@ -178,7 +178,7 @@ impl From<IOErrorExt> for IcebergErrorResponse {
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use futures::StreamExt;
 

@@ -1085,14 +1085,14 @@ pub(crate) async fn is_empty(
     Ok(true)
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use std::{collections::HashMap, str::FromStr};
 
     use iceberg::spec::{PartitionSpec, Schema, SortOrder, TableMetadata, TableMetadataBuilder};
 
     use super::{
-        s3::{S3AwsSystemIdentityCredential, S3CloudflareR2Credential},
+        s3::{S3AwsSystemIdentityCredential, S3CloudflareR2Credential, test::test_block_on},
         *,
     };
     use crate::{
@@ -1384,7 +1384,7 @@ mod tests {
 
         #[test]
         fn test_vended_aws() {
-            lakekeeper_storage_postgres::tests::test_block_on(
+            test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let bucket = std::env::var("LAKEKEEPER_TEST__AWS_S3_BUCKET").unwrap();
@@ -1444,7 +1444,7 @@ mod tests {
         fn test_vended_s3_compat() {
             use super::super::s3::test::minio_integration_tests::storage_profile;
 
-            lakekeeper_storage_postgres::tests::test_block_on(
+            test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);
