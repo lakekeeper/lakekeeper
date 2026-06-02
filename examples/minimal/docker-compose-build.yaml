@@ -20,5 +20,5 @@ services:
       - "2345:5432"
   seaweedfs:
     ports:
-      # SeaweedFS filer UI, handy for browsing stored objects while developing.
-      - "8888:8888"
+      # SeaweedFS filer UI (host 8889 to avoid colliding with Jupyter on 8888).
+      - "8889:8888"
