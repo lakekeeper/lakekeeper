@@ -3834,6 +3834,7 @@ version = "0.12.3"
 dependencies = [
  "anyhow",
  "assert-json-diff",
+ "async-channel 2.5.0",
  "async-trait",
  "aws-sdk-s3",
  "bytes",
@@ -3857,6 +3858,7 @@ dependencies = [
  "serde_json",
  "similar",
  "sqlx",
+ "strum",
  "tempfile",
  "tokio",
  "tower",

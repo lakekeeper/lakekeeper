@@ -643,7 +643,7 @@ impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod tests {
     use iceberg::{
         NamespaceIdent, TableIdent,

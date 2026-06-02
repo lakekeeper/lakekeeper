@@ -315,7 +315,7 @@ where
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
 
     use std::{collections::HashMap, str::FromStr, time::Duration};

@@ -14,8 +14,8 @@ use lakekeeper::{
         CachePolicy, CatalogNamespaceOps, CatalogStore, CreateNamespaceRequest, NamespaceId,
         NamespaceVersion, Transaction, authz::AllowAllAuthorizer, namespace_cache::NAMESPACE_CACHE,
     },
-    tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
+use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
 use lakekeeper_storage_postgres::PostgresBackend;
 
 /// Test basic namespace creation

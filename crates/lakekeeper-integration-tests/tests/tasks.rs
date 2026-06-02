@@ -2,8 +2,12 @@ use sqlx::PgPool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-use lakekeeper_storage_postgres::PostgresBackend;
-use lakekeeper_storage_postgres::SecretsState;
+use lakekeeper::{
+    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
+    service::{State, UserId, authz::AllowAllAuthorizer},
+};
+use lakekeeper_integration_tests::TestWarehouseResponse;
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 
 mod test {
     use std::sync::{Arc, LazyLock, Mutex};
@@ -11,9 +15,9 @@ mod test {
     use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
     use uuid::Uuid;
-use lakekeeper::{
-    api::management::v1::task_queue::{QueueConfig, SetTaskQueueConfigRequest},
-    service::{
+    use lakekeeper::{
+        api::management::v1::task_queue::{QueueConfig, SetTaskQueueConfigRequest},
+        service::{
             CatalogStore, CatalogTaskOps, Transaction,
             tasks::{
                 QueueRegistration, QueueScope, ScheduleTaskMetadata, SpecializedTask,
@@ -21,8 +25,8 @@ use lakekeeper::{
                 TaskInput, TaskQueueName, TaskQueueRegistry, UserScheduling, WarehouseTaskEntityId,
             },
         },
-};
-use lakekeeper_storage_postgres::PostgresBackend;
+    };
+    use lakekeeper_storage_postgres::PostgresBackend;
 
     #[sqlx::test]
     async fn test_task_queue_config_lands_in_task_worker(pool: PgPool) {
@@ -107,7 +111,7 @@ use lakekeeper_storage_postgres::PostgresBackend;
             Some(setup.warehouse.warehouse_id),
             &QUEUE_NAME,
             &SetTaskQueueConfigRequest {
-                queue_config: QueueConfig(
+                queue_config: QueueConfig::from_json(
                     serde_json::to_value(Config {
                         some_val: "test_value".to_string(),
                     })

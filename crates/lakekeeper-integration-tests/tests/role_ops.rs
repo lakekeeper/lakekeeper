@@ -17,8 +17,8 @@ use lakekeeper::{
         SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction, authn::Actor,
         authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
     },
-    tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
+use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
 use lakekeeper_storage_postgres::PostgresBackend;
 
 fn request_metadata_with_project(project_id: &ProjectId) -> RequestMetadata {

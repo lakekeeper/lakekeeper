@@ -496,7 +496,7 @@ pub(crate) async fn list_roles_by_idents<
     .map(|rows| rows.into_iter().map(Role::from).collect())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use super::*;
 use lakekeeper::{

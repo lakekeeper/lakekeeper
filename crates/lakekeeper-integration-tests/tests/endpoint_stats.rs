@@ -10,11 +10,9 @@ use lakekeeper::{
         authz::AllowAllAuthorizer,
         endpoint_statistics::{EndpointStatisticsTracker, FlushMode},
     },
-    tests::TestWarehouseResponse,
 };
-use crate::{endpoint_statistics::sink::PostgresStatisticsSink};
-use lakekeeper_storage_postgres::PostgresBackend;
-use lakekeeper_storage_postgres::SecretsState;
+use lakekeeper_integration_tests::TestWarehouseResponse;
+use lakekeeper_storage_postgres::{PostgresBackend, PostgresStatisticsSink, SecretsState};
 
 mod test {
     use std::{
@@ -29,10 +27,10 @@ mod test {
     use maplit::hashmap;
     use sqlx::PgPool;
     use strum::IntoEnumIterator;
-use lakekeeper::{
-    DEFAULT_PROJECT_ID,
-    ProjectId,
-    api::{
+    use lakekeeper::{
+        DEFAULT_PROJECT_ID, ProjectId,
+        api::{
+            RequestMetadata,
             endpoints::{CatalogV1Endpoint, Endpoint},
             management::v1::{
                 ApiServer, DeleteWarehouseQuery,
@@ -43,13 +41,12 @@ use lakekeeper::{
                 warehouse::Service,
             },
         },
-    request_metadata::RequestMetadata,
-    service::{
+        service::{
             Actor,
             endpoint_statistics::{EndpointStatisticsMessage, FlushMode},
         },
-    tests::endpoint_stats::StatsSetup,
-};
+    };
+    use super::StatsSetup;
 
     #[sqlx::test]
     async fn test_stats_task_produces_correct_values(pool: PgPool) {

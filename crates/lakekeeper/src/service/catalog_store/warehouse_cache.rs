@@ -90,8 +90,8 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), Warehou
     });
 
 #[derive(Debug, Clone)]
-pub(crate) struct CachedWarehouse {
-    pub(super) warehouse: Arc<ResolvedWarehouse>,
+pub struct CachedWarehouse {
+    pub warehouse: Arc<ResolvedWarehouse>,
 }
 
 #[allow(dead_code)] // Not required for all features

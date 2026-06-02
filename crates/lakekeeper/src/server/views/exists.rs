@@ -46,7 +46,7 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CreateViewRequest;

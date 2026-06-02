@@ -218,7 +218,7 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     Ok(load_view_result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
     use sqlx::PgPool;

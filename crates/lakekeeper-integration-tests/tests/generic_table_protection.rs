@@ -20,7 +20,9 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{GenericTableId, State, authz::AllowAllAuthorizer},
-    tests::{create_generic_table, create_ns, memory_io_profile, random_request_metadata, setup},
+};
+use lakekeeper_integration_tests::{
+    create_generic_table, create_ns, memory_io_profile, random_request_metadata, setup,
 };
 use lakekeeper_storage_postgres::PostgresBackend;
 use lakekeeper_storage_postgres::SecretsState;

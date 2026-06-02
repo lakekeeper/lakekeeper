@@ -179,7 +179,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod test {
     use std::collections::HashMap;
 

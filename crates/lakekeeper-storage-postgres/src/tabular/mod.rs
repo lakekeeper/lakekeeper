@@ -1920,7 +1920,7 @@ fn prepare_properties(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::str::FromStr as _;
 

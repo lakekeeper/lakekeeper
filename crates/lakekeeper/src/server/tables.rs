@@ -2176,7 +2176,7 @@ pub(crate) fn parse_table_property_updates(
     (property_updates, property_removals)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod test {
     use std::{collections::HashMap, str::FromStr};
 

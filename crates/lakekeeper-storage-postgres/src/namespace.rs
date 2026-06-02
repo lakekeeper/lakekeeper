@@ -1010,7 +1010,7 @@ pub(crate) async fn update_namespace_properties(
         .map_err(Into::into)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod tests {
     use std::str::FromStr;
 

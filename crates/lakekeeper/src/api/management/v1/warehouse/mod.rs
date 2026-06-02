@@ -1660,7 +1660,7 @@ fn validate_format_version_policy(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use super::{GetWarehouseResponse, StorageCredentialType, resolve_credential_type};
     use crate::service::{

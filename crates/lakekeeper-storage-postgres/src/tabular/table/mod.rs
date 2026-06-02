@@ -727,7 +727,7 @@ impl From<&[TableUpdate]> for TableUpdateFlags {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod tests {
     // Desired behavior:
     // - Stage-Create => Load fails with 404

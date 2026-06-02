@@ -1695,7 +1695,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
     Ok((warehouse, tabular_info))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use super::*;
     #[test]

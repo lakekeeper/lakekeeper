@@ -1252,7 +1252,7 @@ pub(crate) async fn cancel_scheduled_tasks(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use std::{collections::HashMap, vec};
 

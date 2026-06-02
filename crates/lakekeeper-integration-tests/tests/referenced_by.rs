@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use iceberg::{NamespaceIdent, TableIdent};
 use sqlx::PgPool;
 use lakekeeper::{
-    WarehouseId,
+    MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
     api::{
-        ApiContext,
+        ApiContext, RequestMetadata,
         iceberg::{
             types::{Prefix, ReferencingView},
             v1::{
@@ -15,16 +15,14 @@ use lakekeeper::{
             },
         },
     },
-    config::{MatchedEngines, TrinoEngineConfig, TrustedEngine},
-    request_metadata::RequestMetadata,
     server::CatalogServer,
     service::{
         AuthZTableInfo as _, AuthZViewInfo as _, CatalogTabularOps as _, State, TabularListFlags,
         UserId,
         authz::{AllowAllAuthorizer, Authorizer, UserOrRole, tests::HidingAuthorizer},
     },
-    tests::{SetupTestCatalog, create_view_request, random_request_metadata},
 };
+use lakekeeper_integration_tests::{SetupTestCatalog, create_view_request, random_request_metadata};
 use lakekeeper_storage_postgres::PostgresBackend;
 use lakekeeper_storage_postgres::SecretsState;
 

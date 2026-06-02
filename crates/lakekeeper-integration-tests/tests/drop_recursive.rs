@@ -2,8 +2,12 @@ use sqlx::PgPool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-use lakekeeper_storage_postgres::PostgresBackend;
-use lakekeeper_storage_postgres::SecretsState;
+use lakekeeper::{
+    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
+    service::{State, UserId, authz::AllowAllAuthorizer},
+};
+use lakekeeper_integration_tests::TestWarehouseResponse;
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 
 mod test {
     use iceberg::NamespaceIdent;
@@ -11,29 +15,29 @@ mod test {
     use sqlx::PgPool;
 use lakekeeper::{
     api::{
-            RequestMetadata,
-            iceberg::{
-                types::{PageToken, Prefix},
-                v1::{
-                    ListTablesQuery, NamespaceParameters,
-                    namespace::{NamespaceDropFlags, NamespaceService},
-                    tables::TablesService,
-                    views::ViewService,
-                },
-            },
-            management::v1::{
-                ApiServer, namespace::NamespaceManagementService,
-                table::TableManagementService as _, view::ViewManagementService as _,
-                warehouse::TabularDeleteProfile,
+        RequestMetadata,
+        iceberg::{
+            types::{PageToken, Prefix},
+            v1::{
+                ListTablesQuery, NamespaceParameters,
+                namespace::{NamespaceDropFlags, NamespaceService},
+                tables::TablesService,
+                views::ViewService,
             },
         },
+        management::v1::{
+            ApiServer, namespace::NamespaceManagementService,
+            table::TableManagementService as _, view::ViewManagementService as _,
+            warehouse::TabularDeleteProfile,
+        },
+    },
     server::CatalogServer,
     service::{ListNamespacesQuery, NamespaceId, TableId},
-    tests::{
-            create_ns, create_table, drop_namespace, drop_recursive::setup_drop_test,
-            random_request_metadata,
-        },
 };
+use lakekeeper_integration_tests::{
+    create_ns, create_table, drop_namespace, random_request_metadata,
+};
+use super::setup_drop_test;
 
     #[sqlx::test]
     async fn test_recursive_drop_drops(pool: PgPool) {
@@ -62,7 +66,7 @@ use lakekeeper::{
         assert_eq!(tables.identifiers.len(), 1);
         assert_eq!(tables.identifiers[0].name, "tab0");
 
-        super::super::drop_namespace(
+        drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -158,7 +162,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        super::super::drop_namespace(
+        drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -229,7 +233,7 @@ use lakekeeper::{
             namespace: NamespaceIdent::new("ns0".to_string()),
         };
 
-        let e = super::super::drop_namespace(
+        let e = drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -242,7 +246,7 @@ use lakekeeper::{
         .unwrap_err();
         assert_eq!(e.error.code, 400);
 
-        super::super::drop_namespace(
+        drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: true,
@@ -293,7 +297,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        let e = super::super::drop_namespace(
+        let e = drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -316,7 +320,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        super::super::drop_namespace(
+        drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -398,7 +402,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        let e = super::super::drop_namespace(
+        let e = drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -421,7 +425,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        super::super::drop_namespace(
+        drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: true,
@@ -473,7 +477,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        let e = super::super::drop_namespace(
+        let e = drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,
@@ -496,7 +500,7 @@ use lakekeeper::{
         .await
         .unwrap();
 
-        super::super::drop_namespace(
+        drop_namespace(
             ctx.clone(),
             NamespaceDropFlags {
                 force: false,

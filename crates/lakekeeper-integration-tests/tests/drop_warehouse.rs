@@ -18,8 +18,8 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::authz::AllowAllAuthorizer,
-    tests::{random_request_metadata, spawn_build_in_queues},
 };
+use lakekeeper_integration_tests::{random_request_metadata, spawn_build_in_queues};
 
 #[sqlx::test]
 async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {

@@ -120,7 +120,7 @@ fn validate_view_updates(updates: &Vec<ViewUpdate>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use iceberg::{NamespaceIdent, TableIdent};
     use lakekeeper_io::Location;

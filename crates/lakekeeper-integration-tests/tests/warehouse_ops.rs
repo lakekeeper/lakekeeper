@@ -19,7 +19,9 @@ use lakekeeper::{
         CachePolicy, CatalogStore, CatalogWarehouseOps, Transaction, WarehouseFormatVersionPolicy,
         WarehouseStatus, authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE,
     },
-    tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
+};
+use lakekeeper_integration_tests::{
+    SetupTestCatalog, memory_io_profile, random_request_metadata,
 };
 use lakekeeper_storage_postgres::PostgresBackend;
 

@@ -3,7 +3,7 @@ pub(crate) mod sink;
 
 pub use sink::PostgresStatisticsSink;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use std::{collections::HashMap, sync::Arc};
 

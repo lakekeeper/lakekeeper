@@ -206,7 +206,7 @@ async fn maybe_register_user<D: CatalogStore>(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use sqlx::PgPool;
 

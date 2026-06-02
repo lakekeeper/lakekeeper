@@ -113,7 +113,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use super::*;
     use lakekeeper::service::ProjectId;

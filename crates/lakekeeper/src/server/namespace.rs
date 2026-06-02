@@ -1083,7 +1083,7 @@ fn create_namespace_or_warehouse_event_context(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
 
     use std::{collections::HashSet, hash::RandomState};

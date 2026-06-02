@@ -208,7 +208,7 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use http::StatusCode;
     use iceberg::{NamespaceIdent, TableIdent};

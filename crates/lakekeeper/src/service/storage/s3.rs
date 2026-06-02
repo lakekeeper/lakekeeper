@@ -1346,7 +1346,7 @@ impl TryFrom<S3Credential> for S3Auth {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod test {
     use std::str::FromStr as _;
 

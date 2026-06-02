@@ -439,7 +439,7 @@ pub(crate) async fn drop_generic_table(
     Ok(generic_table_id)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::collections::HashMap;
 

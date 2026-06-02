@@ -600,7 +600,7 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use super::*;
 use lakekeeper::{

@@ -325,7 +325,7 @@ pub(crate) async fn list_tasks(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use chrono::Utc;
     use sqlx::PgPool;

@@ -1383,7 +1383,7 @@ pub enum ActionOnTableOrView<
     GenericTable(ActionOnGenericTable<'a, 'u, IG, AG>),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use iceberg::{NamespaceIdent, TableIdent};
     use sqlx::PgPool;

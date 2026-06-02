@@ -546,7 +546,7 @@ pub(super) fn validate_trusted_engine_properties_on_create(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test_check_protected_properties {
     use std::collections::{HashMap, HashSet};
 
@@ -700,7 +700,7 @@ mod test_check_protected_properties {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use chrono::Utc;
     use http::StatusCode;

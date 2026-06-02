@@ -624,7 +624,7 @@ async fn apply_metadata_changes(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 

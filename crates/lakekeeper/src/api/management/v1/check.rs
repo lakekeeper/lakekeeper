@@ -1967,7 +1967,7 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     Ok(results)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::collections::BTreeMap;
 

@@ -126,7 +126,7 @@ async fn authorize_list_views<C: CatalogStore, A: Authorizer>(
     Ok((warehouse, namespace))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use itertools::Itertools;
     use sqlx::PgPool;

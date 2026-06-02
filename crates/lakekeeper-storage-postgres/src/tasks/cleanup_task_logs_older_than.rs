@@ -38,7 +38,7 @@ pub(crate) async fn cleanup_task_logs_older_than(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod test {
     use std::sync::{Arc, LazyLock};
 

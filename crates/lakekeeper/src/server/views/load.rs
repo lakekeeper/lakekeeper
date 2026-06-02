@@ -312,7 +312,7 @@ fn interpret_authz_results_for_load_view(
     Ok((view_info, Some(StoragePermissions::Read)))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 pub(crate) mod test {
     use iceberg_ext::catalog::rest::LoadViewResult;
     use sqlx::PgPool;

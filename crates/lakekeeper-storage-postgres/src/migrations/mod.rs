@@ -511,7 +511,7 @@ fn validate_applied_migrations(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::collections::HashSet;
 

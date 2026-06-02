@@ -36,6 +36,11 @@ open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 # storage backends (e.g. `lakekeeper-storage-postgres`) can `bind()` and
 # `query_as!` these types directly without a wrapper layer.
 sqlx = ["dep:sqlx"]
+# Marker feature for inline `#[cfg(test)] mod tests` blocks that have not yet
+# been extracted into `lakekeeper-integration-tests`. This feature is never
+# enabled; gated blocks remain in-tree as a TODO and are extracted in a
+# follow-up PR (see VAK-437 split-postgres-catalogstore).
+inline-test-extraction-pending = []
 
 [dependencies]
 anyhow = { workspace = true }

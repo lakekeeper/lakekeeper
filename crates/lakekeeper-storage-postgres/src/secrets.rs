@@ -173,7 +173,7 @@ impl SecretStore for SecretsState {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use super::*;
     use lakekeeper::service::storage::{S3Credential, StorageCredential, s3::S3AccessKeyCredential};

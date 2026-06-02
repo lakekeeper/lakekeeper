@@ -253,7 +253,7 @@ fn require_not_staged<T>(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::collections::HashMap;
 

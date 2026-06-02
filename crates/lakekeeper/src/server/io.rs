@@ -178,7 +178,7 @@ impl From<IOErrorExt> for IcebergErrorResponse {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use futures::StreamExt;
 

@@ -1805,12 +1805,12 @@ pub mod tests {
             true
         }
 
-        pub(crate) fn hide(&self, object: &str) {
+        pub fn hide(&self, object: &str) {
             self.hidden.write().unwrap().insert(object.to_string());
         }
 
         /// Hide an object for a specific user only. Other users can still see it.
-        pub(crate) fn hide_for_user(&self, user: &UserOrRole, object: &str) {
+        pub fn hide_for_user(&self, user: &UserOrRole, object: &str) {
             let user_key = format!("{user:?}");
             self.hidden_for_user
                 .write()

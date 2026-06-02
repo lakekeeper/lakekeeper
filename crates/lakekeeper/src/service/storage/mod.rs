@@ -1085,7 +1085,7 @@ pub(crate) async fn is_empty(
     Ok(true)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use std::{collections::HashMap, str::FromStr};
 

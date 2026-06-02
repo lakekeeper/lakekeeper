@@ -29,8 +29,8 @@ use lakekeeper::{
         NamespaceId, TabularId, authz::AllowAllAuthorizer,
         tasks::tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME,
     },
-    tests::random_request_metadata,
 };
+use lakekeeper_integration_tests::random_request_metadata;
 
 #[sqlx::test]
 async fn test_soft_deletion(pool: PgPool) {

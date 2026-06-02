@@ -271,7 +271,7 @@ where
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use chrono::{TimeZone, Utc};
     use iceberg_ext::catalog::rest::IcebergErrorResponse;

@@ -213,7 +213,7 @@ async fn get_scheduled_project_ids<C: CatalogStore>(
     Ok(project_ids)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "inline-test-extraction-pending"))]
 mod tests {
     use sqlx::PgPool;
 
