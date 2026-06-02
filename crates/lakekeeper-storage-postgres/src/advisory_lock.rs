@@ -79,7 +79,7 @@ impl PostgresAdvisoryLock {
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use sqlx::PgPool;
 

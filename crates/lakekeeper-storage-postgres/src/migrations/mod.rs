@@ -508,7 +508,7 @@ fn validate_applied_migrations(
     Ok(())
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 

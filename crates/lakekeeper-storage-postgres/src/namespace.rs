@@ -1009,7 +1009,7 @@ pub(crate) async fn update_namespace_properties(
         .map_err(Into::into)
 }
 
-#[cfg(any())]
+#[cfg(test)]
 pub(crate) mod tests {
     use std::str::FromStr;
 

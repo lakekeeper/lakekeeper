@@ -285,7 +285,7 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     Ok(SearchUserResponse { users })
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use lakekeeper::api::iceberg::types::PageToken;
 

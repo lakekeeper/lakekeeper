@@ -124,11 +124,12 @@ fn get_config() -> DynAppConfig {
         .expect("Valid Postgres Configuration")
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::result_large_err)] // figment::Error is wide; not worth boxing in test setup.
     fn test_pg_ssl_mode_case_insensitive() {
         for s in ["DISABLED", "DisaBled", "disabled", "disable", "Disable"] {
             figment::Jail::expect_with(|jail| {

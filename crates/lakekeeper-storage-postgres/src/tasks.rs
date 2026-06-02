@@ -35,7 +35,7 @@ pub(crate) use resolve_tasks::resolve_tasks;
 #[derive(Debug)]
 pub(crate) struct InsertResult {
     pub task_id: TaskId,
-    #[cfg(any())]
+    #[cfg(test)]
     pub entity_id: Option<WarehouseTaskEntityId>,
 }
 
@@ -284,7 +284,7 @@ pub(crate) async fn queue_task_batch(
             .into_iter()
             .map(|record| InsertResult {
                 task_id: record.task_id.into(),
-                #[cfg(any())]
+                #[cfg(test)]
                 entity_id: match record.entity_type {
                     TaskEntityTypeDB::View => Some(WarehouseTaskEntityId::View {
                         view_id: record.entity_id.unwrap().into(),
@@ -1250,7 +1250,7 @@ pub(crate) async fn cancel_scheduled_tasks(
     Ok(())
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use std::{collections::HashMap, vec};
 
@@ -1261,10 +1261,6 @@ mod test {
             task_queue::QueueConfig, tasks::TaskStatus as ApiTaskStatus,
             warehouse::TabularDeleteProfile,
         },
-        implementations::{
-            CatalogState,
-            postgres::{PostgresBackend, PostgresTransaction},
-        },
         service::{
             CatalogStore, Transaction,
             authz::AllowAllAuthorizer,
@@ -1273,13 +1269,13 @@ mod test {
                 TaskIntermediateStatus, WarehouseTaskEntityId,
             },
         },
-        tests::SetupTestCatalog,
     };
     use serde_json::Value;
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
+    use crate::{CatalogState, PostgresBackend, PostgresTransaction, tests::SetupTestCatalog};
 
     #[allow(clippy::too_many_arguments)]
     async fn queue_task(
@@ -2218,7 +2214,7 @@ mod test {
         );
 
         let config = SetTaskQueueConfigRequest {
-            queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
+            queue_config: QueueConfig::from_json(serde_json::json!({"max_attempts": 5})),
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
@@ -2259,7 +2255,7 @@ mod test {
         let warehouse_task_queue_name = generate_tq_name();
         let warehouse_queue_config = serde_json::json!({"answer": 42});
         let warehouse_config = SetTaskQueueConfigRequest {
-            queue_config: QueueConfig(warehouse_queue_config),
+            queue_config: QueueConfig::from_json(warehouse_queue_config),
             max_seconds_since_last_heartbeat: None,
         };
         set_task_queue_config(
@@ -2276,7 +2272,7 @@ mod test {
         let project_task_queue_name = generate_tq_name();
         let project_queue_config = serde_json::json!({"message": "Hello, World!"});
         let project_config = SetTaskQueueConfigRequest {
-            queue_config: QueueConfig(project_queue_config.clone()),
+            queue_config: QueueConfig::from_json(project_queue_config.clone()),
             max_seconds_since_last_heartbeat: None,
         };
         set_task_queue_config(
@@ -2315,7 +2311,7 @@ mod test {
         // Add warehouse-level task config
         let warehouse_queue_config = serde_json::json!({"answer": 42});
         let warehouse_config = SetTaskQueueConfigRequest {
-            queue_config: QueueConfig(warehouse_queue_config),
+            queue_config: QueueConfig::from_json(warehouse_queue_config),
             max_seconds_since_last_heartbeat: None,
         };
         set_task_queue_config(
@@ -2331,7 +2327,7 @@ mod test {
         // Add project-level task config
         let project_queue_config = serde_json::json!({"message": "Hello, World!"});
         let project_config = SetTaskQueueConfigRequest {
-            queue_config: QueueConfig(project_queue_config.clone()),
+            queue_config: QueueConfig::from_json(project_queue_config.clone()),
             max_seconds_since_last_heartbeat: None,
         };
         set_task_queue_config(
@@ -2364,7 +2360,7 @@ mod test {
         let tq_name = generate_tq_name();
 
         let config = SetTaskQueueConfigRequest {
-            queue_config: QueueConfig(serde_json::json!({"max_attempts": 5})),
+            queue_config: QueueConfig::from_json(serde_json::json!({"max_attempts": 5})),
             max_seconds_since_last_heartbeat: Some(3600),
         };
 
@@ -3454,7 +3450,7 @@ mod test {
             project_id,
             warehouse_id,
             &SetTaskQueueConfigRequest {
-                queue_config: QueueConfig(config),
+                queue_config: QueueConfig::from_json(config),
                 max_seconds_since_last_heartbeat: None,
             },
         )

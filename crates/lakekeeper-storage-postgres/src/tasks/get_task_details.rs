@@ -271,7 +271,7 @@ where
     })
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
     use iceberg_ext::catalog::rest::IcebergErrorResponse;

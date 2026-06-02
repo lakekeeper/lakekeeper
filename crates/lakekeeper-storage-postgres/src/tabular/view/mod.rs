@@ -644,7 +644,7 @@ impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 pub(crate) mod tests {
     use iceberg::{
         NamespaceIdent, TableIdent,
@@ -983,9 +983,7 @@ pub(crate) mod tests {
                     warehouse_id,
                 },
             },
-            TabularExpirationPayload {
-                deletion_kind: DeleteKind::Purge,
-            },
+            TabularExpirationPayload::new(DeleteKind::Purge),
             &mut tx,
         )
         .await

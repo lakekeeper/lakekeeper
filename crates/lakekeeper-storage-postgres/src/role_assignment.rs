@@ -600,7 +600,7 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use lakekeeper::{
         ProjectId,

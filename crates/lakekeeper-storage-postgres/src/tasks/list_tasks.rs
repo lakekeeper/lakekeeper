@@ -324,7 +324,7 @@ pub(crate) async fn list_tasks(
     })
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use chrono::Utc;
     use lakekeeper::{
@@ -345,14 +345,16 @@ mod tests {
                 TaskIntermediateStatus, TaskOutcome, TaskQueueName, WarehouseTaskEntityId,
             },
         },
-        tests::get_api_context,
     };
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
-    use crate::tasks::{
-        pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
+    use crate::{
+        tasks::{
+            pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
+        },
+        tests::get_api_context,
     };
 
     #[test]

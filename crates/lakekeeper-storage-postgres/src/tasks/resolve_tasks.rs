@@ -174,7 +174,7 @@ where
     Ok(result)
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
 
     use chrono::{Duration, Utc};

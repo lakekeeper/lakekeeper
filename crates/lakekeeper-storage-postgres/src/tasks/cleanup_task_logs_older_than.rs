@@ -34,21 +34,16 @@ pub(crate) async fn cleanup_task_logs_older_than(
     Ok(())
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use std::sync::{Arc, LazyLock};
 
     use chrono::{DateTime, Utc};
+    #[cfg(feature = "open-api")]
+    use lakekeeper::utoipa;
     use lakekeeper::{
         WarehouseId,
         api::management::v1::{tasks::ListTasksRequest, warehouse::TabularDeleteProfile},
-        implementations::{
-            CatalogState,
-            postgres::{
-                PostgresBackend,
-                warehouse::{create_project, create_warehouse},
-            },
-        },
         service::{
             ArcProjectId, CatalogTaskOps, WarehouseFormatVersionPolicy,
             storage::{MemoryProfile, StorageProfile},
@@ -63,6 +58,10 @@ mod test {
     use uuid::Uuid;
 
     use super::*;
+    use crate::{
+        CatalogState, PostgresBackend,
+        warehouse::{create_project, create_warehouse},
+    };
 
     const QN_STR: &str = "dummy";
     static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());

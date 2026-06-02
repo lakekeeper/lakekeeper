@@ -3,7 +3,7 @@ pub(crate) mod sink;
 
 pub use sink::PostgresStatisticsSink;
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use std::{collections::HashMap, sync::Arc};
 

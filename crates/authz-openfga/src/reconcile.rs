@@ -842,7 +842,7 @@ fn log_done(report: &ReconcileReport, fn_label: &str) {
 // Tests
 // ============================================================================
 
-#[cfg(any())]
+#[cfg(test)]
 mod openfga_integration_tests {
     use std::collections::HashSet;
 
@@ -855,16 +855,15 @@ mod openfga_integration_tests {
                 role::{CreateRoleRequest, Service as RoleService},
             },
         },
-        implementations::postgres::{CatalogState, PostgresAdvisoryLock, PostgresBackend},
         server::{CatalogServer, NAMESPACE_ID_PROPERTY},
         service::{
             NamespaceIdent, RoleId,
             authn::UserId,
             authz::{Authorizer as _, NamespaceParent},
         },
-        sqlx,
-        tests::SetupTestCatalog,
     };
+    use lakekeeper_integration_tests::SetupTestCatalog;
+    use lakekeeper_storage_postgres::{CatalogState, PostgresAdvisoryLock, PostgresBackend};
     use openfga_client::client::{
         BasicOpenFgaClient, ConsistencyPreference, ReadRequestTupleKey, TupleKey,
         TupleKeyWithoutCondition,
@@ -910,7 +909,7 @@ mod openfga_integration_tests {
         pool: &sqlx::PgPool,
         operator_id: &UserId,
     ) -> (
-        lakekeeper_storage_postgres::tests::TestWarehouseResponse,
+        lakekeeper_integration_tests::TestWarehouseResponse,
         NamespaceId,
         NamespaceId,
         RoleId,

@@ -23,6 +23,8 @@ pub mod tasks;
 pub(crate) mod user;
 pub(crate) mod warehouse;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 use std::{str::FromStr, sync::Arc};
 
 pub use advisory_lock::PostgresAdvisoryLock;
@@ -42,6 +44,8 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 pub use tabular::DeletionKind;
+#[cfg(test)]
+pub(crate) use test_utils as tests;
 use tokio::sync::RwLock;
 
 use self::{

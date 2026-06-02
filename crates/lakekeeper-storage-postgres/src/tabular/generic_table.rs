@@ -438,7 +438,7 @@ pub(crate) async fn drop_generic_table(
     Ok(generic_table_id)
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 

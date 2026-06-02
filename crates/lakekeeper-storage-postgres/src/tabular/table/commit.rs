@@ -625,7 +625,7 @@ async fn apply_metadata_changes(
     Ok(())
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
@@ -639,19 +639,16 @@ mod tests {
     };
     use lakekeeper::{
         api::iceberg::v1::tables::LoadTableFilters,
-        implementations::{
-            CatalogState,
-            postgres::{
-                PostgresBackend, namespace::tests::initialize_namespace,
-                warehouse::test::initialize_warehouse,
-            },
-        },
         server::tables::calculate_diffs,
         service::{CatalogTableOps, TableCreation, TableInfo},
     };
     use lakekeeper_io::Location;
 
     use super::*;
+    use crate::{
+        CatalogState, PostgresBackend, namespace::tests::initialize_namespace,
+        warehouse::test::initialize_warehouse,
+    };
 
     const TEST_LOCATION: &str = "s3://bucket/test/location";
 

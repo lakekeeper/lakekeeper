@@ -22,7 +22,7 @@ use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
 pub(crate) mod authorize_load;
-pub(crate) mod create_table;
+pub mod create_table;
 mod load_table;
 mod rename_table;
 
@@ -1795,7 +1795,7 @@ impl CommitContext {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn calculate_diffs(
+pub fn calculate_diffs(
     new_metadata: &TableMetadata,
     previous_metadata: &TableMetadata,
     added_metadata_log: usize,

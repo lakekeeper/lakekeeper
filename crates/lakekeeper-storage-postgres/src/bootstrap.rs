@@ -147,12 +147,12 @@ pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx:
     Ok(success)
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
-    use lakekeeper::{CatalogState, migrations::migrate_core_only};
     use sqlx::PgPool;
 
     use super::*;
+    use crate::{CatalogState, migrations::migrate_core_only};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {

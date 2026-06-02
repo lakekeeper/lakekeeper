@@ -1919,7 +1919,7 @@ fn prepare_properties(
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use std::str::FromStr as _;
 

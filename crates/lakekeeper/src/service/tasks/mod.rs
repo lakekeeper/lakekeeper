@@ -29,9 +29,8 @@ pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
 
-#[cfg(any())]
-pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
-    chrono::Duration::seconds(300);
+#[cfg(any(test, feature = "test-utils"))]
+pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration = chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
 
 #[cfg(feature = "open-api")]

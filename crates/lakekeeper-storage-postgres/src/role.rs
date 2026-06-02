@@ -496,7 +496,7 @@ pub(crate) async fn list_roles_by_idents<
     .map(|rows| rows.into_iter().map(Role::from).collect())
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use lakekeeper::{
         api::iceberg::v1::PageToken,

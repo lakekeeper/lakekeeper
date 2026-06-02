@@ -727,7 +727,7 @@ impl From<&[TableUpdate]> for TableUpdateFlags {
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 pub(crate) mod tests {
     // Desired behavior:
     // - Stage-Create => Load fails with 404
@@ -753,19 +753,6 @@ pub(crate) mod tests {
             },
             management::v1::{DeleteKind, warehouse::WarehouseStatus},
         },
-        implementations::{
-            CatalogState,
-            postgres::{
-                PostgresBackend,
-                namespace::tests::initialize_namespace,
-                tabular::{
-                    drop_tabular, get_tabular_infos_by_idents, get_tabular_infos_by_ids,
-                    get_tabular_infos_by_s3_location, list_tabulars, mark_tabular_as_deleted,
-                    rename_tabular, table::create::create_table,
-                },
-                warehouse::{set_warehouse_status, test::initialize_warehouse},
-            },
-        },
         server::tables::create_table::create_table_request_into_table_metadata,
         service::{
             AllowedFormatVersions, CreateTableError, NamedEntity, NamespaceId, RenameTabularError,
@@ -780,6 +767,16 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::{
+        CatalogState, PostgresBackend,
+        namespace::tests::initialize_namespace,
+        tabular::{
+            drop_tabular, get_tabular_infos_by_idents, get_tabular_infos_by_ids,
+            get_tabular_infos_by_s3_location, list_tabulars, mark_tabular_as_deleted,
+            rename_tabular, table::create::create_table,
+        },
+        warehouse::{set_warehouse_status, test::initialize_warehouse},
+    };
 
     fn create_request(
         stage_create: Option<bool>,
@@ -1875,9 +1872,7 @@ pub(crate) mod tests {
                     entity_name: table.table_ident.into_name_parts(),
                 },
             },
-            TabularExpirationPayload {
-                deletion_kind: DeleteKind::Purge,
-            },
+            TabularExpirationPayload::new(DeleteKind::Purge),
             &mut transaction,
         )
         .await

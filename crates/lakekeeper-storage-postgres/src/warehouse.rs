@@ -926,7 +926,7 @@ pub(crate) async fn get_warehouse_stats(
     })
 }
 
-#[cfg(any())]
+#[cfg(test)]
 pub(crate) mod test {
     use http::StatusCode;
     use lakekeeper::{

@@ -172,7 +172,7 @@ impl SecretStore for SecretsState {
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use lakekeeper::service::storage::{
         S3Credential, StorageCredential, s3::S3AccessKeyCredential,

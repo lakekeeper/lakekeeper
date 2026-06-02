@@ -112,7 +112,7 @@ where
     }
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use lakekeeper::service::ProjectId;
 
