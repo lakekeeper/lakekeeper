@@ -236,10 +236,11 @@ jobs:
           netstat -tlnp || echo "netstat failed"
 
       - name: Upload junit
-        uses: actions/upload-artifact@v5
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: junit
-          path: target/nextest/ci/junit.xml
+          path: target/nextest/${{ env.NEXTEST_PROFILE }}/junit.xml
       - name: Doc Test
         run: cargo test --no-fail-fast --doc --all-features --workspace
         env:
