@@ -19,10 +19,11 @@ services:
   db:
     ports:
       - "2345:5432"
-  minio:
+  seaweedfs:
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # S3 endpoint + SeaweedFS filer UI, handy while developing.
+      - "8333:8333"
+      - "8888:8888"
   openfga-db:
     ports:
       - "2346:5432"
