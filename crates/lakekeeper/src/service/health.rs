@@ -22,14 +22,19 @@ pub trait HealthExt: Send + Sync + 'static {
                 break;
             }
 
-            if tokio::time::timeout(refresh_interval, self.update_health())
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    timeout_seconds = refresh_interval.as_secs_f64(),
-                    "Health check timed out"
-                );
+            // Bound the update by `refresh_interval`, but also watch the
+            // cancellation token so a stuck provider update cannot delay
+            // shutdown until the timeout elapses.
+            tokio::select! {
+                () = cancellation_token.cancelled() => break,
+                res = tokio::time::timeout(refresh_interval, self.update_health()) => {
+                    if res.is_err() {
+                        tracing::warn!(
+                            timeout_seconds = refresh_interval.as_secs_f64(),
+                            "Health check timed out"
+                        );
+                    }
+                }
             }
 
             // Jitter is a random value between 0 and 500 milliseconds (inclusive)
@@ -230,10 +235,13 @@ mod tests {
     async fn update_health_loop_exits_after_a_provider_update_times_out() {
         let provider = Arc::new(HangingProvider::default());
         let cancellation_token = CancellationToken::new();
+        // A long interval keeps the loop parked inside the first (hanging)
+        // `update_health` call when we cancel, so cancellation must win the
+        // select rather than the test relying on the jittered sleep.
         let handle = tokio::spawn(
             provider
                 .clone()
-                .update_health_loop(Duration::from_millis(1), cancellation_token.clone()),
+                .update_health_loop(Duration::from_secs(30), cancellation_token.clone()),
         );
 
         tokio::time::sleep(Duration::from_millis(10)).await;
