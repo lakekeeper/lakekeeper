@@ -1130,5 +1130,371 @@ mod tests {
                 .unwrap();
             }
         }
+
+        /// Assigning a role through the management endpoint with OpenFGA as the
+        /// authorizer writes the assignment as an OpenFGA tuple and leaves the
+        /// catalog `role_assignment` table empty. The assignee can read their
+        /// own assignments back.
+        #[sqlx::test]
+        async fn test_role_assignment_endpoint_uses_openfga(pool: sqlx::PgPool) {
+            use lakekeeper::{
+                api::{
+                    iceberg::v1::PaginationQuery,
+                    management::v1::{
+                        role_assignment::{
+                            CreateRoleAssignmentRequest, ListRoleAssignmentsQuery,
+                            Service as RoleAssignmentService,
+                        },
+                        user::{UserLastUpdatedWith, UserType},
+                    },
+                },
+                service::{CatalogStore, RoleAssignmentFilter, Transaction, authz::Authorizer},
+            };
+
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let (ctx, warehouse, _namespace) = setup(operator_id.clone(), pool.clone()).await;
+            let operator_metadata = RequestMetadata::test_user(operator_id.clone());
+
+            // The OpenFGA authorizer is the source of truth for assignments.
+            assert!(ctx.v1_state.authz.manages_role_assignments());
+
+            let role_id = ApiServer::create_role(
+                CreateRoleRequest::builder()
+                    .name("assignable_role".to_string())
+                    .build(),
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+
+            let member_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            // The handler requires the assignee to exist; provision it first.
+            // OpenFGA still owns the assignment tuple (no catalog row written).
+            let mut tx = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap();
+            PostgresBackend::create_or_update_user(
+                &member_id,
+                &format!("User {member_id}"),
+                None,
+                UserLastUpdatedWith::CreateEndpoint,
+                UserType::Human,
+                tx.transaction(),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            ApiServer::create_role_assignment(
+                ctx.clone(),
+                operator_metadata.clone(),
+                CreateRoleAssignmentRequest {
+                    user_id: member_id.clone(),
+                    role_id,
+                },
+            )
+            .await
+            .unwrap();
+
+            // The catalog table stays empty — OpenFGA owns the assignment.
+            let table_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM role_assignment")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(table_count, 0);
+
+            // The tuple is present: listing by-role (via the authorizer) returns
+            // the member.
+            let by_role = ctx
+                .v1_state
+                .authz
+                .list_role_assignments(
+                    &operator_metadata,
+                    warehouse.project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert_eq!(by_role.assignments.len(), 1);
+            assert_eq!(by_role.assignments[0].user_id, member_id);
+            assert_eq!(by_role.assignments[0].role_id, role_id);
+
+            // The assignee can read their own assignments through the endpoint.
+            let member_metadata = RequestMetadata::test_user(member_id.clone());
+            let by_user = ApiServer::list_role_assignments(
+                ctx.clone(),
+                member_metadata,
+                ListRoleAssignmentsQuery {
+                    user_id: Some(member_id.clone()),
+                    role_id: None,
+                    page_token: None,
+                    page_size: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(by_user.assignments.len(), 1);
+            assert_eq!(by_user.assignments[0].user_id, member_id);
+            assert_eq!(by_user.assignments[0].role_id, role_id);
+
+            // Revoke through the endpoint: OpenFGA removes the tuple and the
+            // catalog table must *still* be empty (it was never the source of
+            // truth, neither create nor delete touches it).
+            ApiServer::delete_role_assignment(
+                ctx.clone(),
+                operator_metadata.clone(),
+                member_id.clone(),
+                role_id,
+            )
+            .await
+            .unwrap();
+
+            let table_count_after_delete: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM role_assignment")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(table_count_after_delete, 0);
+
+            // The tuple is gone: by-role now returns nothing.
+            let by_role_after = ctx
+                .v1_state
+                .authz
+                .list_role_assignments(
+                    &operator_metadata,
+                    warehouse.project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert_eq!(by_role_after.assignments.len(), 0);
+        }
+
+        /// `list_role_assignments` with a `ByUser` filter must be scoped to the
+        /// requested project: a user assigned to roles in *multiple* projects
+        /// only sees the assignments whose role belongs to the queried project.
+        ///
+        /// Regression test for the bug where the OpenFGA `ByUser` path returned
+        /// the user's assignee tuples across ALL projects (the `role#project`
+        /// membership was not checked). Project A and project B each hold one
+        /// role; user `U` is assigned to both. Listing scoped to A must return
+        /// only `roleA`, and scoped to B only `roleB`.
+        #[sqlx::test]
+        async fn test_list_role_assignments_by_user_is_project_scoped(pool: sqlx::PgPool) {
+            use std::collections::HashSet;
+
+            use lakekeeper::{
+                api::{
+                    iceberg::v1::PaginationQuery,
+                    management::v1::{
+                        project::{CreateProjectRequest, Service as ProjectService},
+                        user::{UserLastUpdatedWith, UserType},
+                    },
+                },
+                service::{CatalogStore, RoleAssignmentFilter, Transaction, authz::Authorizer},
+            };
+
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            // `setup` bootstraps `operator_id` as a global operator and creates a
+            // warehouse in project A; reuse project A as the first project.
+            let (ctx, warehouse, _namespace) = setup(operator_id.clone(), pool.clone()).await;
+            let operator_metadata = RequestMetadata::test_user(operator_id.clone());
+
+            assert!(ctx.v1_state.authz.manages_role_assignments());
+
+            let project_a = warehouse.project_id.clone();
+
+            // Create a second, independent project B.
+            let project_b = ApiServer::create_project(
+                CreateProjectRequest {
+                    project_name: "project_b".to_string(),
+                    project_id: None,
+                },
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .project_id;
+            assert_ne!(project_a, project_b);
+
+            // One role per project. Pin the project explicitly on the request so
+            // each role's `role#project@project:<id>` tuple points where we want.
+            let role_a = ApiServer::create_role(
+                CreateRoleRequest::builder()
+                    .name("role_a".to_string())
+                    .project_id(Some((*project_a).clone()))
+                    .build(),
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+            let role_b = ApiServer::create_role(
+                CreateRoleRequest::builder()
+                    .name("role_b".to_string())
+                    .project_id(Some((*project_b).clone()))
+                    .build(),
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+
+            // Provision the assignee `U` (the handler requires the user to exist).
+            let user_u = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let mut tx = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+                ctx.v1_state.catalog.clone(),
+            )
+            .await
+            .unwrap();
+            PostgresBackend::create_or_update_user(
+                &user_u,
+                &format!("User {user_u}"),
+                None,
+                UserLastUpdatedWith::CreateEndpoint,
+                UserType::Human,
+                tx.transaction(),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            // Assign `U` to `role_a` (project A) and `role_b` (project B) via the
+            // authorizer write the service uses. The assignee tuple is just
+            // `user -> role`, so both project assignments now exist for `U`.
+            ctx.v1_state
+                .authz
+                .add_role_assignments(
+                    &operator_metadata,
+                    project_a.clone(),
+                    &[(user_u.clone(), role_a)],
+                )
+                .await
+                .unwrap();
+            ctx.v1_state
+                .authz
+                .add_role_assignments(
+                    &operator_metadata,
+                    project_b.clone(),
+                    &[(user_u.clone(), role_b)],
+                )
+                .await
+                .unwrap();
+
+            // Scoped to project A: exactly `(U, role_a)`, never `role_b`.
+            let by_user_in_a = ctx
+                .v1_state
+                .authz
+                .list_role_assignments(
+                    &operator_metadata,
+                    project_a.clone(),
+                    RoleAssignmentFilter::ByUser(user_u.clone()),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert!(by_user_in_a.next_page_token.is_none());
+            assert_eq!(by_user_in_a.assignments.len(), 1);
+            assert_eq!(by_user_in_a.assignments[0].user_id, user_u);
+            assert_eq!(by_user_in_a.assignments[0].role_id, role_a);
+            let roles_in_a: HashSet<_> =
+                by_user_in_a.assignments.iter().map(|a| a.role_id).collect();
+            assert_eq!(roles_in_a, HashSet::from([role_a]));
+            assert!(!roles_in_a.contains(&role_b));
+
+            // Symmetrically, scoped to project B: exactly `(U, role_b)`.
+            let by_user_in_b = ctx
+                .v1_state
+                .authz
+                .list_role_assignments(
+                    &operator_metadata,
+                    project_b.clone(),
+                    RoleAssignmentFilter::ByUser(user_u.clone()),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert!(by_user_in_b.next_page_token.is_none());
+            assert_eq!(by_user_in_b.assignments.len(), 1);
+            assert_eq!(by_user_in_b.assignments[0].user_id, user_u);
+            assert_eq!(by_user_in_b.assignments[0].role_id, role_b);
+            let roles_in_b: HashSet<_> =
+                by_user_in_b.assignments.iter().map(|a| a.role_id).collect();
+            assert_eq!(roles_in_b, HashSet::from([role_b]));
+            assert!(!roles_in_b.contains(&role_a));
+        }
+
+        /// On the OpenFGA path, the require-user-exists guard still applies:
+        /// assigning a role to a user with no `users` row → 404
+        /// `RoleAssignmentUserNotFound`, and no OpenFGA tuple is written.
+        #[sqlx::test]
+        async fn test_role_assignment_openfga_unknown_user_404(pool: sqlx::PgPool) {
+            use lakekeeper::{
+                api::{
+                    iceberg::v1::PaginationQuery,
+                    management::v1::role_assignment::{
+                        CreateRoleAssignmentRequest, Service as RoleAssignmentService,
+                    },
+                },
+                service::{RoleAssignmentFilter, authz::Authorizer},
+            };
+
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let (ctx, warehouse, _namespace) = setup(operator_id.clone(), pool.clone()).await;
+            let operator_metadata = RequestMetadata::test_user(operator_id.clone());
+
+            assert!(ctx.v1_state.authz.manages_role_assignments());
+
+            let role_id = ApiServer::create_role(
+                CreateRoleRequest::builder()
+                    .name("unknown_user_role".to_string())
+                    .build(),
+                ctx.clone(),
+                operator_metadata.clone(),
+            )
+            .await
+            .unwrap()
+            .id;
+
+            // A user that was never provisioned (no `users` row).
+            let ghost_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+
+            let err = ApiServer::create_role_assignment(
+                ctx.clone(),
+                operator_metadata.clone(),
+                CreateRoleAssignmentRequest {
+                    user_id: ghost_id.clone(),
+                    role_id,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.error.r#type, "RoleAssignmentUserNotFound");
+            assert_eq!(err.error.code, http::StatusCode::NOT_FOUND.as_u16());
+
+            // No tuple was written: by-role listing is empty.
+            let by_role = ctx
+                .v1_state
+                .authz
+                .list_role_assignments(
+                    &operator_metadata,
+                    warehouse.project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert_eq!(by_role.assignments.len(), 0);
+        }
     }
 }

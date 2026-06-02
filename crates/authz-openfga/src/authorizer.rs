@@ -6,13 +6,14 @@ use std::{
 use futures::future::try_join_all;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata, iceberg::v1::PaginationQuery},
     async_trait,
     axum::Router,
     service::{
         Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
-        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
+        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, ListRoleAssignmentsResultPage,
+        NamespaceId, NamespaceWithParent, ResolvedWarehouse, Role, RoleAssignmentFilter,
+        RoleAssignmentRow, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
@@ -344,6 +345,7 @@ impl Authorizer for OpenFGAAuthorizer {
                     CatalogUserAction::Read => true,
                     CatalogUserAction::Update => can_update,
                     CatalogUserAction::Delete => can_delete,
+                    CatalogUserAction::ReadRoleAssignments => is_allowed_to_know,
                 };
                 results.push((idx, allowed));
             }
@@ -733,6 +735,171 @@ impl Authorizer for OpenFGAAuthorizer {
         role_id: RoleId,
     ) -> AuthorizerResult<()> {
         self.delete_all_relations(&role_id).await
+    }
+
+    fn manages_role_assignments(&self) -> bool {
+        true
+    }
+
+    async fn add_role_assignments(
+        &self,
+        _metadata: &RequestMetadata,
+        _project_id: ArcProjectId,
+        assignments: &[(UserId, RoleId)],
+    ) -> AuthorizerResult<()> {
+        if assignments.is_empty() {
+            return Ok(());
+        }
+
+        // Authz is already performed at the handler — issue a raw, idempotent write.
+        // The tuple shape mirrors `update_role_assignments_by_id` with
+        // `RoleAssignment::Assignee(UserOrRole::User(user_id))`.
+        let tuples: Vec<TupleKey> = assignments
+            .iter()
+            .map(|(user_id, role_id)| role_assignee_tuple(user_id, *role_id))
+            .collect();
+
+        for chunk in tuples.chunks(MAX_TUPLES_PER_WRITE as usize) {
+            self.client
+                .write_with_options(Some(chunk.to_vec()), None, WriteOptions::new_idempotent())
+                .await
+                .inspect_err(|e| tracing::error!("Failed to add role assignments to OpenFGA: {e}"))
+                .map_err(OpenFGAError::from)
+                .map_err(authz_to_error_no_audit)?;
+        }
+
+        Ok(())
+    }
+
+    async fn remove_role_assignments(
+        &self,
+        _metadata: &RequestMetadata,
+        _project_id: ArcProjectId,
+        assignments: &[(UserId, RoleId)],
+    ) -> AuthorizerResult<()> {
+        if assignments.is_empty() {
+            return Ok(());
+        }
+
+        let tuples: Vec<TupleKeyWithoutCondition> = assignments
+            .iter()
+            .map(|(user_id, role_id)| {
+                let t = role_assignee_tuple(user_id, *role_id);
+                TupleKeyWithoutCondition {
+                    user: t.user,
+                    relation: t.relation,
+                    object: t.object,
+                }
+            })
+            .collect();
+
+        for chunk in tuples.chunks(MAX_TUPLES_PER_WRITE as usize) {
+            self.client
+                .write_with_options(None, Some(chunk.to_vec()), WriteOptions::new_idempotent())
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Failed to remove role assignments from OpenFGA: {e}");
+                })
+                .map_err(OpenFGAError::from)
+                .map_err(authz_to_error_no_audit)?;
+        }
+
+        Ok(())
+    }
+
+    async fn list_role_assignments(
+        &self,
+        _metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+    ) -> AuthorizerResult<ListRoleAssignmentsResultPage> {
+        // Single, cursor-paginated read: map the API page token <-> FGA
+        // continuation token and the API page size <-> FGA page size.
+        let read_tuple = match &filter {
+            RoleAssignmentFilter::ByRole(role_id) => ReadRequestTupleKey {
+                // Assignees of role:<role_id>.
+                user: String::new(),
+                relation: RoleRelation::Assignee.to_string(),
+                object: role_id.to_openfga(),
+            },
+            RoleAssignmentFilter::ByUser(user_id) => ReadRequestTupleKey {
+                // Tuples with user:<user_id> as assignee of any role.
+                user: user_id.to_openfga(),
+                relation: RoleRelation::Assignee.to_string(),
+                object: format!("{}:", FgaType::Role),
+            },
+        };
+
+        let page_size = pagination
+            .page_size
+            .and_then(|s| i32::try_from(s).ok())
+            .unwrap_or(MAX_TUPLES_PER_WRITE);
+        let continuation_token = pagination.page_token.as_option().map(ToString::to_string);
+
+        let response = self
+            .read(page_size, read_tuple, continuation_token)
+            .await
+            .map_err(authz_to_error_no_audit)?;
+
+        let next_page_token = if response.continuation_token.is_empty() {
+            None
+        } else {
+            Some(response.continuation_token)
+        };
+
+        let mut assignments = response
+            .tuples
+            .into_iter()
+            .filter_map(|t| t.key)
+            .map(|key| -> AuthorizerResult<RoleAssignmentRow> {
+                let user_id =
+                    UserId::parse_from_openfga(&key.user).map_err(authz_to_error_no_audit)?;
+                let role_id =
+                    RoleId::parse_from_openfga(&key.object).map_err(authz_to_error_no_audit)?;
+                Ok(RoleAssignmentRow {
+                    user_id,
+                    role_id,
+                    created_at: None,
+                })
+            })
+            .collect::<AuthorizerResult<Vec<_>>>()?;
+
+        // `ByUser` reads the user's `assignee` tuples across ALL roles, in every
+        // project; scope them to `project_id` so the result matches the postgres
+        // path (which joins `role` on `project_id`). `ByRole` needs no filter —
+        // the caller already resolved that role within `project_id`.
+        //
+        // The role -> project link is the `role#project@project:<id>` tuple, so we
+        // confirm membership with one batched check per role (results preserve
+        // input order). Note: filtering happens after the page read, so a page may
+        // return fewer rows than `page_size` (or be empty) while `next_page_token`
+        // is still set — consumers must page until the token is `None`.
+        if matches!(filter, RoleAssignmentFilter::ByUser(_)) && !assignments.is_empty() {
+            let checks: Vec<CheckRequestTupleKey> = assignments
+                .iter()
+                .map(|row| CheckRequestTupleKey {
+                    user: project_id.to_openfga(),
+                    relation: RoleRelation::Project.to_string(),
+                    object: row.role_id.to_openfga(),
+                })
+                .collect();
+            let in_project = self
+                .batch_check(checks)
+                .await
+                .map_err(OpenFGAError::from)
+                .map_err(authz_to_error_no_audit)?;
+            assignments = assignments
+                .into_iter()
+                .zip(in_project)
+                .filter_map(|(row, keep)| keep.then_some(row))
+                .collect();
+        }
+
+        Ok(ListRoleAssignmentsResultPage {
+            assignments,
+            next_page_token,
+        })
     }
 
     async fn create_project(
@@ -1302,6 +1469,20 @@ impl OpenFGAAuthorizer {
             .await
             .map_err(Into::into)
             .map(|response| response.into_inner().objects)
+    }
+}
+
+/// Build the assignee tuple for a `(user_id, role_id)` pair.
+///
+/// Identical shape to the legacy `update_role_assignments_by_id` write for
+/// `RoleAssignment::Assignee(UserOrRole::User(user_id))`: user = `user:<id>`,
+/// relation = `assignee`, object = `role:<role_id>`.
+fn role_assignee_tuple(user_id: &UserId, role_id: RoleId) -> TupleKey {
+    TupleKey {
+        user: user_id.to_openfga(),
+        relation: RoleRelation::Assignee.to_string(),
+        object: role_id.to_openfga(),
+        condition: None,
     }
 }
 
@@ -1986,6 +2167,166 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             assert_eq!(results, vec![false, false]);
+        }
+
+        // ---------------------- role assignment hooks ----------------------
+
+        /// Read the raw set of assignee `(user_string, role_object)` tuples for a role.
+        async fn read_assignee_tuples(
+            authorizer: &OpenFGAAuthorizer,
+            role_id: RoleId,
+        ) -> Vec<(String, String)> {
+            authorizer
+                .read_all(Some(ReadRequestTupleKey {
+                    user: String::new(),
+                    relation: RoleRelation::Assignee.to_string(),
+                    object: role_id.to_openfga(),
+                }))
+                .await
+                .unwrap()
+                .into_iter()
+                .filter_map(|t| t.key)
+                .map(|k| (k.user, k.object))
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn test_manages_role_assignments_is_true() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            assert!(authorizer.manages_role_assignments());
+        }
+
+        #[tokio::test]
+        async fn test_add_role_assignment_parity_with_legacy_tuple() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::new_unauthenticated();
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+
+            authorizer
+                .add_role_assignments(&metadata, project_id.clone(), &[(user_id.clone(), role_id)])
+                .await
+                .unwrap();
+
+            // Exact tuple parity with what the legacy assignee write produces.
+            let tuples = read_assignee_tuples(&authorizer, role_id).await;
+            assert_eq!(tuples, vec![(user_id.to_openfga(), role_id.to_openfga())]);
+
+            // remove deletes it.
+            authorizer
+                .remove_role_assignments(&metadata, project_id, &[(user_id, role_id)])
+                .await
+                .unwrap();
+            let tuples = read_assignee_tuples(&authorizer, role_id).await;
+            assert_eq!(tuples, Vec::<(String, String)>::new());
+        }
+
+        #[tokio::test]
+        async fn test_add_role_assignments_batch_and_idempotent() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::new_unauthenticated();
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user1 = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            let user2 = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+
+            let batch = vec![(user1.clone(), role_id), (user2.clone(), role_id)];
+            authorizer
+                .add_role_assignments(&metadata, project_id.clone(), &batch)
+                .await
+                .unwrap();
+
+            let mut tuples = read_assignee_tuples(&authorizer, role_id).await;
+            tuples.sort();
+            let mut expected = vec![
+                (user1.to_openfga(), role_id.to_openfga()),
+                (user2.to_openfga(), role_id.to_openfga()),
+            ];
+            expected.sort();
+            assert_eq!(tuples, expected);
+
+            // Add again -> idempotent Ok, still exactly the same two.
+            authorizer
+                .add_role_assignments(&metadata, project_id.clone(), &batch)
+                .await
+                .unwrap();
+            let mut tuples = read_assignee_tuples(&authorizer, role_id).await;
+            tuples.sort();
+            assert_eq!(tuples, expected);
+
+            // Remove an absent pair -> idempotent Ok.
+            let absent_user = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            authorizer
+                .remove_role_assignments(&metadata, project_id.clone(), &[(absent_user, role_id)])
+                .await
+                .unwrap();
+            let mut tuples = read_assignee_tuples(&authorizer, role_id).await;
+            tuples.sort();
+            assert_eq!(tuples, expected);
+
+            // Empty slice is a no-op Ok.
+            authorizer
+                .add_role_assignments(&metadata, project_id, &[])
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_list_role_assignments_by_role_and_by_user() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::new_unauthenticated();
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string());
+            let role_id = RoleId::new(uuid::Uuid::now_v7());
+
+            // Link the role to the project: the `ByUser` path scopes results to
+            // `project_id` via the `role#project@project:<id>` membership tuple,
+            // which `create_role` writes. `create_role` also writes an ownership
+            // tuple, so it needs a concrete (non-anonymous) actor.
+            let owner_metadata = RequestMetadata::test_user(UserId::new_unchecked(
+                "oidc",
+                &uuid::Uuid::now_v7().to_string(),
+            ));
+            authorizer
+                .create_role(&owner_metadata, role_id, project_id.clone())
+                .await
+                .unwrap();
+
+            authorizer
+                .add_role_assignments(&metadata, project_id.clone(), &[(user_id.clone(), role_id)])
+                .await
+                .unwrap();
+
+            // ByRole lists the user.
+            let by_role = authorizer
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert_eq!(by_role.assignments.len(), 1);
+            assert_eq!(by_role.assignments[0].user_id, user_id);
+            assert_eq!(by_role.assignments[0].role_id, role_id);
+            assert_eq!(by_role.assignments[0].created_at, None);
+
+            // ByUser lists the role.
+            let by_user = authorizer
+                .list_role_assignments(
+                    &metadata,
+                    project_id,
+                    RoleAssignmentFilter::ByUser(user_id.clone()),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert_eq!(by_user.assignments.len(), 1);
+            assert_eq!(by_user.assignments[0].user_id, user_id);
+            assert_eq!(by_user.assignments[0].role_id, role_id);
+            assert_eq!(by_user.assignments[0].created_at, None);
         }
     }
 }

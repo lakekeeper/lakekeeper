@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            ra.user_id    AS \"user_id!\",\n            ra.role_id    AS \"role_id!\",\n            ra.created_at AS \"created_at!\"\n        FROM role_assignment ra\n        JOIN \"role\" r ON r.id = ra.role_id AND r.project_id = $1\n        WHERE ($2::TEXT IS NULL OR ra.user_id = $2)\n          AND ($3::UUID IS NULL OR ra.role_id = $3)\n          AND (\n                $4::TIMESTAMPTZ IS NULL\n             OR ra.created_at > $4\n             OR (ra.created_at = $4 AND (ra.role_id, ra.user_id) > ($5, $6))\n          )\n        ORDER BY ra.created_at, ra.role_id, ra.user_id ASC\n        LIMIT $7\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "role_assignment",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "role_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "role_assignment",
+            "name": "role_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "role_assignment",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "665f9608b78fddbfe3f069cef5b1d0754cd10b5d02615ad079c52b06ccc15e6b"
+}

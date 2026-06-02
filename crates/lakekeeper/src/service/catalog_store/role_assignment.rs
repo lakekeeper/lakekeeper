@@ -5,10 +5,13 @@ use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
     ProjectId,
-    api::management::v1::user::{UserLastUpdatedWith, UserType},
+    api::{
+        iceberg::v1::PaginationQuery,
+        management::v1::user::{UserLastUpdatedWith, UserType},
+    },
     service::{
-        ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId, RoleIdent,
-        RoleNameAlreadyExists, RoleProviderId, Transaction,
+        ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId,
+        RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleProviderId, Transaction,
         authn::{UserId, UserIdRef},
         define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
@@ -130,6 +133,38 @@ pub struct ListRoleMembersResult {
     /// `None` if the role's members have never been synced by an external
     /// provider (e.g. all assignments are manually managed).
     pub last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+// ----------------------------------------------------------------------------
+// Single-assignment list types
+// ----------------------------------------------------------------------------
+
+/// Filter selecting which `role_assignment` rows a
+/// [`CatalogRoleAssignmentOps::list_role_assignments`] call returns.
+#[derive(Debug, Clone)]
+pub enum RoleAssignmentFilter {
+    /// All assignments of the given user (varying `role_id`).
+    ByUser(UserId),
+    /// All assignments to the given role (varying `user_id`).
+    ByRole(RoleId),
+}
+
+/// A single `(user_id, role_id)` assignment row.
+#[derive(Debug, Clone)]
+pub struct RoleAssignmentRow {
+    pub user_id: UserId,
+    pub role_id: RoleId,
+    /// `None` when the backend has no timestamp (used by the OpenFGA reader
+    /// later); the postgres backend always sets `Some`.
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// One page of [`RoleAssignmentRow`]s, distinct from the bulk
+/// [`ListUserRoleAssignmentsResult`].
+#[derive(Debug, Clone)]
+pub struct ListRoleAssignmentsResultPage {
+    pub assignments: Vec<RoleAssignmentRow>,
+    pub next_page_token: Option<String>,
 }
 
 /// Outcome of a [`CatalogRoleAssignmentOps::sync_role_members_by_ident`] call.
@@ -423,6 +458,31 @@ define_transparent_error! {
     ]
 }
 
+define_transparent_error! {
+    pub enum AssignRoleError,
+    stack_message: "Error assigning role in catalog",
+    variants: [
+        CatalogBackendError,
+        RoleIdNotFoundInProject
+    ]
+}
+
+define_transparent_error! {
+    pub enum RevokeRoleError,
+    stack_message: "Error revoking role in catalog",
+    variants: [
+        CatalogBackendError
+    ]
+}
+
+define_transparent_error! {
+    pub enum ListRoleAssignmentsError,
+    stack_message: "Error listing role assignments in catalog",
+    variants: [
+        CatalogBackendError
+    ]
+}
+
 // ============================================================================
 // Trait
 // ============================================================================
@@ -432,6 +492,56 @@ pub trait CatalogRoleAssignmentOps
 where
     Self: CatalogStore,
 {
+    // -----------------------------------------------------------------------
+    // WRITE: batch assignment (catalog source-of-truth)
+    // -----------------------------------------------------------------------
+
+    /// Add a batch of `(user_id, role_id)` assignments within `project_id`.
+    ///
+    /// Idempotent: re-adding an existing pair returns the existing `created_at`
+    /// and writes no new row. Every role must exist in `project_id` — a batch
+    /// containing a cross-project or unknown role yields
+    /// [`AssignRoleError::RoleIdNotFoundInProject`].
+    ///
+    /// Returns one [`RoleAssignmentRow`] per distinct requested pair, with
+    /// `created_at: Some(_)` (the existing timestamp for already-present pairs).
+    ///
+    /// Does not touch caches; the committing caller is responsible for
+    /// invalidation after the surrounding transaction commits.
+    async fn add_role_assignments<'a>(
+        project_id: &ProjectId,
+        assignments: &[(UserId, RoleId)],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<RoleAssignmentRow>, AssignRoleError> {
+        Self::add_role_assignments_impl(project_id, assignments, transaction).await
+    }
+
+    /// Remove a batch of `(user_id, role_id)` assignments. Idempotent: removing
+    /// pairs that do not exist is a no-op and still returns `Ok(())`.
+    ///
+    /// Does not touch caches; the committing caller is responsible for
+    /// invalidation after the surrounding transaction commits.
+    async fn remove_role_assignments<'a>(
+        assignments: &[(UserId, RoleId)],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), RevokeRoleError> {
+        Self::remove_role_assignments_impl(assignments, transaction).await
+    }
+
+    /// List `role_assignment` rows in `project_id` matching `filter`, paginated.
+    ///
+    /// Project-scoped: only assignments to roles owned by `project_id` are
+    /// returned. Ordered by `(created_at, role_id, user_id)` with a keyset
+    /// continuation token in [`ListRoleAssignmentsResultPage::next_page_token`].
+    async fn list_role_assignments<'a>(
+        project_id: &ProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError> {
+        Self::list_role_assignments_impl(project_id, filter, pagination, transaction).await
+    }
+
     // -----------------------------------------------------------------------
     // WRITE: bulk sync
     // -----------------------------------------------------------------------

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM role_assignment\n        WHERE (user_id, role_id) IN (SELECT * FROM unnest($1::text[], $2::uuid[]))\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4025ba2192afe0d58eab722171a2d4f144ab77261b120683ece51f3a8f55fa11"
+}

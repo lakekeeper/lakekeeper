@@ -58,33 +58,34 @@ use crate::{
         },
     },
     service::{
-        ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
-        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
-        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        ArcProjectId, AssignRoleError, CatalogBackendError, CatalogCreateNamespaceError,
+        CatalogCreateRoleRequest, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
+        CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
+        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogListRolesByIdFilter,
+        CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
+        CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
+        CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
         DropTabularError, GenericTableCreation, GenericTableId, GenericTableInfo,
         GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListGenericTablesError, ListNamespacesQuery,
-        ListRoleMembersResult, ListRolesError, ListRolesResponse, ListTabularsError,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
-        NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
-        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
-        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
-        WarehouseId, WarehouseStatus,
+        ListRoleAssignmentsError, ListRoleAssignmentsResultPage, ListRoleMembersResult,
+        ListRolesError, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result,
+        RevokeRoleError, Role, RoleAssignmentFilter, RoleAssignmentRow, RoleId, RoleIdent,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
+        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
+        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
+        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
+        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -451,6 +452,31 @@ impl CatalogStore for super::PostgresBackend {
             &catalog_state.read_pool(),
         )
         .await
+    }
+
+    async fn add_role_assignments_impl<'a>(
+        project_id: &ProjectId,
+        assignments: &[(UserId, RoleId)],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<RoleAssignmentRow>, AssignRoleError> {
+        super::role_assignment::add_role_assignments(project_id, assignments, transaction).await
+    }
+
+    async fn remove_role_assignments_impl<'a>(
+        assignments: &[(UserId, RoleId)],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), RevokeRoleError> {
+        super::role_assignment::remove_role_assignments(assignments, transaction).await
+    }
+
+    async fn list_role_assignments_impl<'a>(
+        project_id: &ProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError> {
+        super::role_assignment::list_role_assignments(project_id, filter, pagination, transaction)
+            .await
     }
 
     // ---------------- User Management API ----------------

@@ -675,6 +675,24 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
+    async fn add_role_assignments_impl<'a>(
+        project_id: &ProjectId,
+        assignments: &[(UserId, RoleId)],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<RoleAssignmentRow>, AssignRoleError>;
+
+    async fn remove_role_assignments_impl<'a>(
+        assignments: &[(UserId, RoleId)],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), RevokeRoleError>;
+
+    async fn list_role_assignments_impl<'a>(
+        project_id: &ProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError>;
+
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
         user_id: &UserId,

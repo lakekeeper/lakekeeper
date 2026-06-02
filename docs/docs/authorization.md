@@ -15,6 +15,68 @@ Lakekeeper currently supports the following Authorizers:
 
 Check the [Authorization Configuration](./configuration.md#authorization) for setup details.
 
+## Role assignments
+
+Roles are granted to users through the role-assignments API:
+
+- `POST /management/v1/role-assignments` — assign a role to a user. Idempotent;
+  returns `200` with the assignment.
+- `DELETE /management/v1/role-assignments/{user_id}/{role_id}` — revoke. Idempotent
+  (revoking an absent assignment is a no-op); returns `204`.
+- `GET /management/v1/role-assignments?userId=… | roleId=…` — list assignments.
+  Exactly one of `userId` or `roleId` must be supplied; neither or both returns
+  `400 RoleAssignmentFilterRequired`. Paginated via an opaque `pageToken`: page
+  until the response has no `nextPageToken` — a page may be shorter than
+  `pageSize` (or empty) yet still carry a token (under OpenFGA, project scoping
+  is applied after each page read).
+
+### Storage is authorizer-specific
+
+The endpoint routes through the active Authorizer, which is the single source of
+truth for assignments:
+
+- Under **OpenFGA**, assignments are stored as relationship tuples. This API
+  models only `(user, role)` **assignee** membership: an assign/revoke writes or
+  removes exactly the same `assignee` tuple the legacy
+  `/management/v1/permissions/role/{role_id}/assignments` endpoint would. It does
+  **not** fully replace that endpoint, which exposes the complete `RoleAssignment`
+  relation — including role **ownership** (and role-to-role assignees). Managing
+  ownership still requires the legacy endpoint.
+- Under **Cedar** and **AllowAll**, assignments are stored as rows in the
+  `role_assignment` Postgres table.
+
+There is **no dual-write**: under OpenFGA the `role_assignment` table is not
+written by this endpoint.
+
+### Only catalog-managed roles are manually assignable
+
+Only roles whose provider is `lakekeeper` (the default) or `system` may be
+assigned or revoked here. A role owned by an external role provider (LDAP/OIDC
+sync today, SCIM in future) is rejected with `409 RoleNotManuallyAssignable` —
+its assignments are owned by the provider and would be overwritten on the next
+sync.
+
+### The user must already exist
+
+Assigning to a `user_id` with no user record returns `404 RoleAssignmentUserNotFound`.
+This endpoint does not create users — provision them first via login/JIT,
+role-provider sync, or the user API. (Revoke does not perform this check.)
+
+### Authorization
+
+Writes require the `manage_role_assignments` action on the role. List requires
+`read_role_assignments` — on the role when filtering by `role_id`, or on the user
+when filtering by `user_id`. `INSTANCE_ADMINS` bypass these checks (used by
+control-plane provisioning).
+
+### Cross-authorizer caveats
+
+"Which roles does a user have" must be queried through the active Authorizer;
+there is no canonical cross-authorizer read. Switching Authorizers
+(OpenFGA ↔ Cedar) is not runtime-portable — existing assignments live in the
+previous Authorizer's store and would require a separate one-time migration tool
+(out of scope).
+
 ## Instance Admins
 
 *Available since Lakekeeper 0.12.1.*

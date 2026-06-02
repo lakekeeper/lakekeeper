@@ -13,11 +13,15 @@ use super::{
     State, TableId, ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
-    api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
+    api::{
+        iceberg::v1::{ErrorModel, PaginationQuery, Result},
+        management::v1::check::UserOrRole as AuthzUserOrRole,
+    },
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
-        AuthZViewInfo, NamespaceWithParent, ResolvedWarehouse, Role, ServerId, TableInfo,
+        AuthZViewInfo, ListRoleAssignmentsResultPage, NamespaceWithParent, ResolvedWarehouse, Role,
+        RoleAssignmentFilter, ServerId, TableInfo,
     },
 };
 
@@ -259,6 +263,8 @@ pub enum CatalogUserAction {
     Update,
     /// Can delete this user
     Delete,
+    /// List the role assignments held by this user.
+    ReadRoleAssignments,
 }
 
 impl CatalogAction for CatalogUserAction {
@@ -436,6 +442,10 @@ pub enum CatalogRoleAction {
     ReadMetadata,
     Delete,
     Update,
+    /// Assign/revoke this role to/from users.
+    ManageRoleAssignments,
+    /// List the assignees of this role.
+    ReadRoleAssignments,
 }
 impl CatalogAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {
@@ -1169,6 +1179,67 @@ where
     /// Hook that is called when a role is deleted.
     /// This is used to clean up permissions for the role.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
+
+    /// True if this authorizer is the source of truth for role assignments
+    /// (e.g. OpenFGA tuples). When false (default), Lakekeeper persists
+    /// assignments to the `role_assignment` table and the hooks below are NEVER called.
+    fn manages_role_assignments(&self) -> bool {
+        false
+    }
+
+    /// Persist a batch of `(user_id, role_id)` assignments in the authorizer's
+    /// own store. Idempotent.
+    /// Only called when `manages_role_assignments()` is true.
+    async fn add_role_assignments(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        assignments: &[(UserId, RoleId)],
+    ) -> Result<()> {
+        let _ = (metadata, project_id, assignments);
+        Err(ErrorModel::internal(
+            "Authorizer does not manage role assignments",
+            "RoleAssignmentNotManaged",
+            None,
+        )
+        .into())
+    }
+
+    /// Remove a batch of `(user_id, role_id)` assignments from the authorizer's
+    /// own store. Idempotent.
+    /// Only called when `manages_role_assignments()` is true.
+    async fn remove_role_assignments(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        assignments: &[(UserId, RoleId)],
+    ) -> Result<()> {
+        let _ = (metadata, project_id, assignments);
+        Err(ErrorModel::internal(
+            "Authorizer does not manage role assignments",
+            "RoleAssignmentNotManaged",
+            None,
+        )
+        .into())
+    }
+
+    /// List assignments from the authorizer's own store.
+    /// Only called when `manages_role_assignments()` is true.
+    async fn list_role_assignments(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+    ) -> Result<ListRoleAssignmentsResultPage> {
+        let _ = (metadata, project_id, filter, pagination);
+        Err(ErrorModel::internal(
+            "Authorizer does not manage role assignments",
+            "RoleAssignmentNotManaged",
+            None,
+        )
+        .into())
+    }
 
     /// Hook that is called when a new project is created.
     /// This is used to set up the initial permissions for the project.

@@ -128,7 +128,10 @@
                 "management-v1-get-generic-table-actions",
                 "management-v1-get-generic-table-protection",
                 "management-v1-set-generic-table-protection",
-                "management-v1-update-warehouse-format-version-policy"
+                "management-v1-update-warehouse-format-version-policy",
+                "management-v1-create-role-assignment",
+                "management-v1-list-role-assignments",
+                "management-v1-delete-role-assignment"
               ]
             }
           }

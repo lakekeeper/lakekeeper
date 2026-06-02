@@ -1966,6 +1966,175 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role-assignments:
+    get:
+      tags:
+        - role
+      summary: List Role Assignments
+      description: |-
+        List role assignments filtered by exactly one of `userId` or `roleId`.
+        Providing neither or both returns 400 `RoleAssignmentFilterRequired`.
+
+        Filtering by `roleId` requires `read_role_assignments` on the role;
+        filtering by `userId` requires `read_role_assignments` on the user.
+        When OpenFGA is the authorizer, assignments are read from its tuples
+        rather than the catalog `role_assignment` table.
+
+        Pagination is cursor-based: pass the returned `nextPageToken` back as
+        `pageToken` for the next page. A page may contain fewer than `pageSize`
+        items — or be empty — while still returning a `nextPageToken` (notably
+        under OpenFGA, where project scoping is applied after each page is read).
+        Continue until the response has no `nextPageToken`; do not treat a short
+        or empty page as the end of the results.
+      operationId: list_role_assignments
+      parameters:
+        - name: userId
+          in: query
+          description: List all assignments held by this user.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: roleId
+          in: query
+          description: List all assignments to this role.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: List of role assignments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleAssignmentsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - role
+      summary: Assign Role
+      description: |-
+        Grant a role to a user. Idempotent: re-assigning an existing
+        `(user, role)` pair returns 200 with the existing assignment.
+
+        The acting principal must hold `manage_role_assignments` on the target
+        role. Assigning a role that belongs to a different project is rejected
+        (the role cannot be resolved in the request's project). Only
+        catalog-managed roles (provider `lakekeeper` or `system`) may be assigned
+        manually; roles owned by any other provider are synced and reject manual
+        assignment with 409 `RoleNotManuallyAssignable`. The target user must
+        already exist; assigning to an unknown user returns 404
+        `RoleAssignmentUserNotFound`.
+
+        When OpenFGA is the authorizer, this writes the same assignee tuple the
+        legacy `/permissions/role/{id}/assignments` endpoint produces.
+      operationId: create_role_assignment
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleAssignmentRequest'
+        required: true
+      responses:
+        '200':
+          description: Role assigned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleAssignmentResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role-assignments/{user_id}/{role_id}:
+    delete:
+      tags:
+        - role
+      summary: Revoke Role
+      description: |-
+        Remove a role from a user. Idempotent: revoking an assignment that does
+        not exist still returns 204.
+
+        Same authorization and provider-managed rejection rules as assigning.
+        When OpenFGA is the authorizer, this removes the assignee tuple that the
+        legacy `/permissions/role/{id}/assignments` endpoint manages.
+      operationId: delete_role_assignment
+      parameters:
+        - name: user_id
+          in: path
+          description: User ID
+          required: true
+          schema:
+            type: string
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Role revoked successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role/{role_id}:
     get:
       tags:
@@ -4337,6 +4506,20 @@ components:
         project-id:
           type: string
           description: ID of the created project.
+    CreateRoleAssignmentRequest:
+      type: object
+      description: Request body for assigning a role to a user.
+      required:
+        - user-id
+        - role-id
+      properties:
+        role-id:
+          type: string
+          format: uuid
+          description: The role that should be granted to the user.
+        user-id:
+          type: string
+          description: The user that should be granted the role.
     CreateRoleRequest:
       type: object
       required:
@@ -5798,6 +5981,22 @@ components:
               type: string
               enum:
                 - update
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_role_assignments
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_role_assignments
     LakekeeperServerAction:
       oneOf:
         - type: object
@@ -5981,6 +6180,14 @@ components:
               type: string
               enum:
                 - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_role_assignments
     LakekeeperViewAction:
       oneOf:
         - type: object
@@ -6391,6 +6598,20 @@ components:
           items:
             $ref: '#/components/schemas/GetProjectResponse'
           description: List of projects
+    ListRoleAssignmentsResponse:
+      type: object
+      description: Response body for listing role assignments.
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleAssignmentResponse'
+        next-page-token:
+          type:
+            - string
+            - 'null'
     ListRolesResponse:
       type: object
       required:
@@ -7011,6 +7232,28 @@ components:
                   enum:
                     - ownership
           title: RoleAssignmentOwnership
+    RoleAssignmentResponse:
+      type: object
+      description: A single `(user_id, role_id)` assignment.
+      required:
+        - user-id
+        - role-id
+      properties:
+        created-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the assignment was created. `None` when the authorizer (e.g.
+            OpenFGA) is the source of truth and does not track a timestamp.
+        role-id:
+          type: string
+          format: uuid
+          description: The role held by the user.
+        user-id:
+          type: string
+          description: The user that holds the role.
     RoleMetadata:
       type: object
       description: |-

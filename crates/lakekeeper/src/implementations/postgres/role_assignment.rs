@@ -4,14 +4,18 @@ use uuid::Uuid;
 
 use super::{
     dbutils::DBErrorHandler,
+    pagination::{PaginateToken, V1PaginateToken},
     user::{DbUserLastUpdatedWith, DbUserType},
 };
 use crate::{
-    ProjectId,
+    CONFIG, ProjectId,
+    api::iceberg::v1::PaginationQuery,
     service::{
-        ArcRoleIdent, AssignedRole, AssignedUser, CatalogBackendError, CatalogRoleForAssignment,
-        CatalogUserRoleAssignmentUser, DatabaseIntegrityError, ListRoleMembersResult,
-        ListUserRoleAssignmentsResult, RoleId, RoleIdent, RoleNameAlreadyExists, RoleProviderId,
+        ArcRoleIdent, AssignRoleError, AssignedRole, AssignedUser, CatalogBackendError,
+        CatalogRoleForAssignment, CatalogUserRoleAssignmentUser, DatabaseIntegrityError,
+        ListRoleAssignmentsError, ListRoleAssignmentsResultPage, ListRoleMembersResult,
+        ListUserRoleAssignmentsResult, RevokeRoleError, RoleAssignmentFilter, RoleAssignmentRow,
+        RoleId, RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleProviderId,
         SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
         SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles, UserProviderSyncInfo,
         authn::UserId,
@@ -596,6 +600,221 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
     .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
     rows_to_list_role_members_result(rows).map_err(CatalogBackendError::new_unexpected)
+}
+
+// ─── add_role_assignments ───────────────────────────────────────────────────
+//
+// Project-scoped, idempotent batch insert returning one row per inserted /
+// existing pair with its `created_at`.  The `unnest` of the two input arrays is
+// joined to "role" filtered by `project_id`, so any pair whose role is not in
+// `project_id` (cross-project or unknown) contributes no RETURNING row.  The
+// `ON CONFLICT … DO UPDATE SET created_at = role_assignment.created_at` is a
+// no-op write that forces `RETURNING` to fire on an existing row, so re-adding
+// returns the original timestamp.
+//
+// Cross-project / unknown-role detection: the input pairs are de-duplicated;
+// when the number of RETURNING rows is fewer than the number of distinct input
+// pairs, at least one role was not in `project_id`.  We identify the offending
+// role as the first requested role_id absent from the returned set.
+pub(crate) async fn add_role_assignments(
+    project_id: &ProjectId,
+    assignments: &[(UserId, RoleId)],
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<Vec<RoleAssignmentRow>, AssignRoleError> {
+    // De-dup input pairs so the RETURNING-row count can be compared against the
+    // number of distinct requested pairs to detect cross-project roles.
+    let mut seen: HashSet<(String, Uuid)> = HashSet::with_capacity(assignments.len());
+    let mut user_ids: Vec<String> = Vec::with_capacity(assignments.len());
+    let mut role_ids: Vec<Uuid> = Vec::with_capacity(assignments.len());
+    for (user_id, role_id) in assignments {
+        let key = (user_id.to_string(), **role_id);
+        if seen.insert(key.clone()) {
+            user_ids.push(key.0);
+            role_ids.push(key.1);
+        }
+    }
+
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rows = sqlx::query!(
+        r#"
+        INSERT INTO role_assignment (user_id, role_id)
+        SELECT t.u, t.r
+        FROM unnest($1::text[], $2::uuid[]) AS t(u, r)
+        JOIN "role" rr ON rr.id = t.r AND rr.project_id = $3
+        ON CONFLICT (user_id, role_id) DO UPDATE SET created_at = role_assignment.created_at
+        RETURNING user_id AS "user_id!", role_id AS "role_id!", created_at AS "created_at!"
+        "#,
+        &user_ids as &[String],
+        &role_ids as &[Uuid],
+        project_id.as_str(),
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    // Fewer returned rows than distinct input pairs ⇒ at least one role was not
+    // in `project_id`.  Name the first requested role_id absent from the result.
+    if rows.len() < user_ids.len() {
+        let returned: HashSet<Uuid> = rows.iter().map(|r| r.role_id).collect();
+        if let Some(missing) = role_ids.iter().find(|r| !returned.contains(r)) {
+            return Err(RoleIdNotFoundInProject::new(
+                RoleId::new(*missing),
+                Arc::new(project_id.clone()),
+            )
+            .into());
+        }
+    }
+
+    rows.into_iter()
+        .map(|r| {
+            user_id_from_db(&r.user_id)
+                .map(|user_id| RoleAssignmentRow {
+                    user_id,
+                    role_id: RoleId::new(r.role_id),
+                    created_at: Some(r.created_at),
+                })
+                .map_err(|e| CatalogBackendError::new_unexpected(e).into())
+        })
+        .collect()
+}
+
+// ─── remove_role_assignments ──────────────────────────────────────────────────
+//
+// Idempotent batch delete: pairs that are absent affect 0 rows and are still Ok.
+pub(crate) async fn remove_role_assignments(
+    assignments: &[(UserId, RoleId)],
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<(), RevokeRoleError> {
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    let user_ids: Vec<String> = assignments.iter().map(|(u, _)| u.to_string()).collect();
+    let role_ids: Vec<Uuid> = assignments.iter().map(|(_, r)| **r).collect();
+
+    sqlx::query!(
+        r#"
+        DELETE FROM role_assignment
+        WHERE (user_id, role_id) IN (SELECT * FROM unnest($1::text[], $2::uuid[]))
+        "#,
+        &user_ids as &[String],
+        &role_ids as &[Uuid],
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(())
+}
+
+// ─── list_role_assignments ────────────────────────────────────────────────────
+//
+// Project-scoped, keyset-paginated list of `(user_id, role_id, created_at)`
+// rows.  Ordered by `(created_at, role_id, user_id)`; the continuation token
+// carries the last row's `(created_at, "{role_id}|{user_id}")` tuple, mirroring
+// the V1 token used by `list_roles`.
+pub(crate) async fn list_role_assignments(
+    project_id: &ProjectId,
+    filter: RoleAssignmentFilter,
+    PaginationQuery {
+        page_size,
+        page_token,
+    }: PaginationQuery,
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError> {
+    let page_size = CONFIG.page_size_or_pagination_default(page_size);
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<String>::try_from)
+        .transpose()
+        .map_err(CatalogBackendError::new_unexpected)?;
+
+    // Split the composite tiebreaker "{role_id}|{user_id}" back into its parts.
+    let (token_ts, token_role_id, token_user_id) = match token.as_ref() {
+        Some(PaginateToken::V1(V1PaginateToken { created_at, id })) => {
+            let (role_part, user_part) = id.split_once('|').ok_or_else(|| {
+                CatalogBackendError::new_unexpected(DatabaseIntegrityError::new(
+                    "Invalid role-assignment pagination token: missing '|' separator",
+                ))
+            })?;
+            let role_uuid = Uuid::parse_str(role_part).map_err(|e| {
+                CatalogBackendError::new_unexpected(DatabaseIntegrityError::new(format!(
+                    "Invalid role-assignment pagination token role_id: {e}"
+                )))
+            })?;
+            (
+                Some(*created_at),
+                Some(role_uuid),
+                Some(user_part.to_string()),
+            )
+        }
+        None => (None, None, None),
+    };
+
+    let (filter_user_id, filter_role_id) = match &filter {
+        RoleAssignmentFilter::ByUser(user_id) => (Some(user_id.to_string()), None),
+        RoleAssignmentFilter::ByRole(role_id) => (None, Some(**role_id)),
+    };
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            ra.user_id    AS "user_id!",
+            ra.role_id    AS "role_id!",
+            ra.created_at AS "created_at!"
+        FROM role_assignment ra
+        JOIN "role" r ON r.id = ra.role_id AND r.project_id = $1
+        WHERE ($2::TEXT IS NULL OR ra.user_id = $2)
+          AND ($3::UUID IS NULL OR ra.role_id = $3)
+          AND (
+                $4::TIMESTAMPTZ IS NULL
+             OR ra.created_at > $4
+             OR (ra.created_at = $4 AND (ra.role_id, ra.user_id) > ($5, $6))
+          )
+        ORDER BY ra.created_at, ra.role_id, ra.user_id ASC
+        LIMIT $7
+        "#,
+        project_id.as_str(),
+        filter_user_id,
+        filter_role_id,
+        token_ts,
+        token_role_id,
+        token_user_id,
+        page_size,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let assignments = rows
+        .iter()
+        .map(|r| {
+            UserId::try_from(r.user_id.as_str())
+                .map(|user_id| RoleAssignmentRow {
+                    user_id,
+                    role_id: RoleId::new(r.role_id),
+                    created_at: Some(r.created_at),
+                })
+                .map_err(|e| {
+                    CatalogBackendError::new_unexpected(DatabaseIntegrityError::new(e.message))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let next_page_token = rows.last().map(|r| {
+        PaginateToken::V1(V1PaginateToken::<String> {
+            created_at: r.created_at,
+            id: format!("{}|{}", r.role_id, r.user_id),
+        })
+        .to_string()
+    });
+
+    Ok(ListRoleAssignmentsResultPage {
+        assignments,
+        next_page_token,
+    })
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -1958,5 +2177,249 @@ mod tests {
             sync_prov_ids.contains(&provider_b),
             "provider_b sync record present"
         );
+    }
+
+    // ── batch: add_role_assignments / remove_role_assignments / list_role_assignments ──
+
+    /// Create a role with a fresh [`RoleId`] in `project_id`, returning its id.
+    async fn make_role_in_project(
+        state: &CatalogState,
+        project_id: &ProjectId,
+        source_id: &str,
+    ) -> RoleId {
+        use crate::service::{
+            CatalogCreateRoleRequest, CatalogRoleOps, RoleProviderId, RoleSourceId,
+        };
+        let role_id = RoleId::new_random();
+        let source = RoleSourceId::new_unchecked(source_id);
+        let provider = RoleProviderId::new_unchecked("test");
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::create_role(
+            project_id,
+            CatalogCreateRoleRequest::builder()
+                .role_id(role_id)
+                .role_name(source_id)
+                .source_id(&source)
+                .provider_id(&provider)
+                .build(),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        role_id
+    }
+
+    /// Create a user with the given id.
+    async fn make_db_user(state: &CatalogState, user_id: &UserId) {
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::create_or_update_user(
+            user_id,
+            "Test User",
+            None,
+            UserLastUpdatedWith::ConfigCallCreation,
+            UserType::Human,
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+    }
+
+    fn empty_pagination() -> PaginationQuery {
+        PaginationQuery {
+            page_token: crate::api::iceberg::v1::PageToken::Empty,
+            page_size: Some(100),
+        }
+    }
+
+    #[sqlx::test]
+    async fn add_role_assignments_inserts_batch_and_is_idempotent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_a = make_role_in_project(&state, &project_id, "role-a").await;
+        let role_b = make_role_in_project(&state, &project_id, "role-b").await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        make_db_user(&state, &user_id).await;
+
+        let batch = [(user_id.clone(), role_a), (user_id.clone(), role_b)];
+
+        // First add: 2 rows inserted.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first = add_role_assignments(&project_id, &batch, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(first.len(), 2, "both pairs must be inserted");
+        for row in &first {
+            assert_eq!(row.user_id, user_id);
+            assert!(row.created_at.is_some(), "postgres must set created_at");
+        }
+        let first_ts: std::collections::HashMap<RoleId, _> =
+            first.iter().map(|r| (r.role_id, r.created_at)).collect();
+
+        // Re-add the same batch: idempotent — same created_at, still 2 rows.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let second = add_role_assignments(&project_id, &batch, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(second.len(), 2, "re-add must return exactly 2 rows");
+        for row in &second {
+            assert_eq!(
+                row.created_at, first_ts[&row.role_id],
+                "idempotent re-add must return the same created_at"
+            );
+        }
+
+        let count: i64 = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM role_assignment WHERE user_id = $1"#,
+            user_id.to_string(),
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 2, "exactly two assignment rows must exist");
+    }
+
+    #[sqlx::test]
+    async fn add_role_assignments_rejects_cross_project(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_a = make_project(&state).await;
+        let project_b = make_project(&state).await;
+        // role_a is in project_a, role_b is in project_b.
+        let role_a = make_role_in_project(&state, &project_a, "role-a").await;
+        let role_b = make_role_in_project(&state, &project_b, "role-b").await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        make_db_user(&state, &user_id).await;
+
+        // Batch targets project_a but includes role_b (which lives in project_b).
+        let batch = [(user_id.clone(), role_a), (user_id.clone(), role_b)];
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = add_role_assignments(&project_a, &batch, t.transaction()).await;
+        t.commit().await.unwrap();
+
+        match result {
+            Err(AssignRoleError::RoleIdNotFoundInProject(e)) => {
+                assert_eq!(e.role_id, role_b);
+                assert_eq!(e.project_id.as_ref(), &project_a);
+            }
+            other => panic!("expected RoleIdNotFoundInProject, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test]
+    async fn remove_role_assignments_batch_then_list(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role_a = make_role_in_project(&state, &project_id, "role-a").await;
+        let role_b = make_role_in_project(&state, &project_id, "role-b").await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        make_db_user(&state, &user_id).await;
+
+        // Assign both roles in one batch.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_assignments(
+            &project_id,
+            &[(user_id.clone(), role_a), (user_id.clone(), role_b)],
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // List by user → exactly 2 rows.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let page = list_role_assignments(
+            &project_id,
+            RoleAssignmentFilter::ByUser(user_id.clone()),
+            empty_pagination(),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(page.assignments.len(), 2);
+        let role_ids: HashSet<RoleId> = page.assignments.iter().map(|a| a.role_id).collect();
+        assert!(role_ids.contains(&role_a));
+        assert!(role_ids.contains(&role_b));
+        for a in &page.assignments {
+            assert_eq!(a.user_id, user_id);
+            assert!(a.created_at.is_some(), "postgres must set created_at");
+        }
+
+        // Keyset round-trip: continuing from the returned token yields no more rows.
+        let next_token = page
+            .next_page_token
+            .clone()
+            .expect("a token is emitted for the last returned row");
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let next_page = list_role_assignments(
+            &project_id,
+            RoleAssignmentFilter::ByUser(user_id.clone()),
+            PaginationQuery {
+                page_token: crate::api::iceberg::v1::PageToken::Present(next_token),
+                page_size: Some(100),
+            },
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(
+            next_page.assignments.len(),
+            0,
+            "continuation past the last row must return no further assignments"
+        );
+
+        // Remove role_a (as a batch) → 1 row remains.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        remove_role_assignments(&[(user_id.clone(), role_a)], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let page = list_role_assignments(
+            &project_id,
+            RoleAssignmentFilter::ByUser(user_id.clone()),
+            empty_pagination(),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(page.assignments.len(), 1);
+        assert_eq!(page.assignments[0].role_id, role_b);
+
+        // Removing the already-absent role_a is a no-op and still Ok.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        remove_role_assignments(&[(user_id.clone(), role_a)], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
     }
 }

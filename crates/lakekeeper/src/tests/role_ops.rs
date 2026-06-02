@@ -1301,3 +1301,682 @@ async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
         "expected RoleSourceIdConflict, got: {err:?}"
     );
 }
+
+// ==================== Role-assignment API tests ====================
+
+mod role_assignment_api_tests {
+    use sqlx::PgPool;
+
+    use super::{db_create_role, make_source_id};
+    use crate::{
+        ProjectId,
+        api::management::v1::{
+            ApiServer,
+            role_assignment::{
+                CreateRoleAssignmentRequest, ListRoleAssignmentsQuery, Service as _,
+            },
+            user::{UserLastUpdatedWith, UserType},
+        },
+        implementations::postgres::PostgresBackend,
+        service::{
+            CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
+            Transaction, authn::UserId, authz::AllowAllAuthorizer,
+        },
+        tests::{SetupTestCatalog, memory_io_profile},
+    };
+
+    fn random_user() -> UserId {
+        UserId::new_unchecked("oidc", &uuid::Uuid::now_v7().to_string())
+    }
+
+    /// Provision a user row so it can be a role-assignment target.
+    async fn provision_user(ctx: &TestCtx, user_id: &UserId) {
+        let mut tx = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::create_or_update_user(
+            user_id,
+            &format!("User {user_id}"),
+            None,
+            UserLastUpdatedWith::CreateEndpoint,
+            UserType::Human,
+            tx.transaction(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    type TestCtx = crate::api::ApiContext<
+        crate::service::State<
+            AllowAllAuthorizer,
+            PostgresBackend,
+            crate::implementations::postgres::SecretsState,
+        >,
+    >;
+
+    /// Create a role with a specific provider id in a given project, directly
+    /// via the catalog (no API guard, no events).
+    async fn db_create_role_with_provider(
+        ctx: &TestCtx,
+        project_id: &ProjectId,
+        role_name: &str,
+        source_id: &str,
+        provider_id: &RoleProviderId,
+    ) -> RoleId {
+        let sid = make_source_id(source_id);
+        let role_id = RoleId::new_random();
+        let mut tx = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        let role = PostgresBackend::create_role(
+            project_id,
+            CatalogCreateRoleRequest::builder()
+                .role_id(role_id)
+                .role_name(role_name)
+                .source_id(&sid)
+                .provider_id(provider_id)
+                .build(),
+            tx.transaction(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        role.id()
+    }
+
+    async fn assignment_count(ctx: &TestCtx, user_id: &UserId, role_id: RoleId) -> i64 {
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM role_assignment
+               WHERE user_id = $1 AND role_id = $2"#,
+            user_id.to_string(),
+            *role_id,
+        )
+        .fetch_one(&ctx.v1_state.catalog.read_pool())
+        .await
+        .unwrap()
+    }
+
+    /// `AllowAll` + postgres: assign creates a row; revoke removes it.
+    ///
+    /// HTTP status note: these tests drive the service-layer trait fns directly,
+    /// which return typed values rather than an HTTP response. The handler layer
+    /// in `api/management/mod.rs` maps `create_role_assignment` →
+    /// `(StatusCode::OK, Json(..))` (200) and `delete_role_assignment` →
+    /// `(StatusCode::NO_CONTENT, ())` (204); those mappings are total (`.map(..)`
+    /// over the `Result`) and are pinned by the `OpenAPI` `responses` annotations
+    /// on those handlers. Here we assert the typed values the service fns return.
+    #[sqlx::test]
+    async fn test_assign_and_revoke_roundtrip(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+        let role = db_create_role(&ctx, &warehouse.project_id, "ra-role", "ra-src").await;
+        let user = random_user();
+        provision_user(&ctx, &user).await;
+
+        // POST (handler → 200): returns the assignment with a populated timestamp.
+        let resp = ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: user.clone(),
+                role_id: role.id(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.user_id, user);
+        assert_eq!(resp.role_id, role.id());
+        assert!(resp.created_at.is_some());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 1);
+
+        // DELETE (handler → 204): returns `()`; row removed.
+        let deleted: () = ApiServer::delete_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            user.clone(),
+            role.id(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted, ());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 0);
+
+        // DELETE again on the now-absent pair (handler → 204): idempotent no-op.
+        let deleted_again: () = ApiServer::delete_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            user.clone(),
+            role.id(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted_again, ());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 0);
+    }
+
+    /// Assigning a role to a user that has not been provisioned → 404
+    /// `RoleAssignmentUserNotFound`, and no assignment row is written.
+    #[sqlx::test]
+    async fn test_assign_unknown_user_404(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+        let role = db_create_role(&ctx, &warehouse.project_id, "nouser-role", "nouser-src").await;
+        let user = random_user();
+
+        let err = ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: user.clone(),
+                role_id: role.id(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.r#type, "RoleAssignmentUserNotFound");
+        assert_eq!(err.error.code, http::StatusCode::NOT_FOUND.as_u16());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 0);
+    }
+
+    /// POST is idempotent (200 twice); DELETE is idempotent (204 twice, even
+    /// when absent).
+    #[sqlx::test]
+    async fn test_assign_revoke_idempotent(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+        let role = db_create_role(&ctx, &warehouse.project_id, "idem-role", "idem-src").await;
+        let user = random_user();
+        provision_user(&ctx, &user).await;
+
+        let req = || CreateRoleAssignmentRequest {
+            user_id: user.clone(),
+            role_id: role.id(),
+        };
+        // First POST (handler → 200): creates the row, stamps created_at.
+        let first = ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            req(),
+        )
+        .await
+        .unwrap();
+        // Second POST on the same pair (handler → 200): idempotent upsert.
+        let second = ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            req(),
+        )
+        .await
+        .unwrap();
+        // Idempotent: the second POST returns the *same* original created_at
+        // (not a new timestamp), proving it did not re-insert the row.
+        let first_created_at = first.created_at.expect("postgres path stamps created_at");
+        let second_created_at = second.created_at.expect("postgres path stamps created_at");
+        assert_eq!(first_created_at, second_created_at);
+        assert_eq!(second.user_id, user);
+        assert_eq!(second.role_id, role.id());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 1);
+
+        // First DELETE (handler → 204): removes the row.
+        let first_delete: () = ApiServer::delete_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            user.clone(),
+            role.id(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_delete, ());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 0);
+
+        // Second DELETE on the now-absent pair (handler → 204): no-op.
+        let second_delete: () = ApiServer::delete_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            user.clone(),
+            role.id(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second_delete, ());
+        assert_eq!(assignment_count(&ctx, &user, role.id()).await, 0);
+    }
+
+    /// Assigning a role that lives in a different project is rejected with the
+    /// resolved-role not-found error (404 `RoleIdNotFoundInProject`).
+    #[sqlx::test]
+    async fn test_assign_cross_project_role_rejected(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+
+        // Create a second project + a role inside it.
+        let other_project = ProjectId::new(uuid::Uuid::now_v7());
+        let mut tx = <PostgresBackend as CatalogStore>::Transaction::begin_write(
+            ctx.v1_state.catalog.clone(),
+        )
+        .await
+        .unwrap();
+        PostgresBackend::create_project(&other_project, "other".to_string(), tx.transaction())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let foreign_role =
+            db_create_role(&ctx, &other_project, "foreign-role", "foreign-src").await;
+
+        let err = ApiServer::create_role_assignment(
+            ctx.clone(),
+            // Request scoped to the *warehouse* project, not the role's project.
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: random_user(),
+                role_id: foreign_role.id(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.r#type, "RoleNotFoundInProject");
+        assert_eq!(err.error.code, http::StatusCode::NOT_FOUND.as_u16());
+    }
+
+    /// list: missing both filters → 400; both filters → 400.
+    #[sqlx::test]
+    async fn test_list_filter_required(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+
+        let none = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: None,
+                role_id: None,
+                page_token: None,
+                page_size: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(none.error.r#type, "RoleAssignmentFilterRequired");
+        assert_eq!(none.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+
+        let both = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: Some(random_user()),
+                role_id: Some(RoleId::new_random()),
+                page_token: None,
+                page_size: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(both.error.r#type, "RoleAssignmentFilterRequired");
+        assert_eq!(both.error.code, http::StatusCode::BAD_REQUEST.as_u16());
+    }
+
+    /// list by-user and by-role each return the assignment.
+    #[sqlx::test]
+    async fn test_list_by_user_and_by_role(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+        let role = db_create_role(&ctx, &warehouse.project_id, "list-role", "list-src").await;
+        let user = random_user();
+        provision_user(&ctx, &user).await;
+        ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: user.clone(),
+                role_id: role.id(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let by_user = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: Some(user.clone()),
+                role_id: None,
+                page_token: None,
+                page_size: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_user.assignments.len(), 1);
+        assert_eq!(by_user.assignments[0].user_id, user);
+        assert_eq!(by_user.assignments[0].role_id, role.id());
+
+        let by_role = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: None,
+                role_id: Some(role.id()),
+                page_token: None,
+                page_size: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_role.assignments.len(), 1);
+        assert_eq!(by_role.assignments[0].user_id, user);
+        assert_eq!(by_role.assignments[0].role_id, role.id());
+    }
+
+    /// A role whose provider is neither `lakekeeper` nor `system` rejects manual
+    /// assignment with 409 `RoleNotManuallyAssignable`; a default
+    /// (`lakekeeper`-provider) role is allowed.
+    #[sqlx::test]
+    async fn test_non_catalog_managed_provider_rejected(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+
+        let provider = RoleProviderId::try_new("oidc").unwrap();
+        let managed_role = db_create_role_with_provider(
+            &ctx,
+            &warehouse.project_id,
+            "managed-role",
+            "managed-src",
+            &provider,
+        )
+        .await;
+
+        let user = random_user();
+        provision_user(&ctx, &user).await;
+
+        let err = ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: user.clone(),
+                role_id: managed_role,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.r#type, "RoleNotManuallyAssignable");
+        assert_eq!(err.error.code, http::StatusCode::CONFLICT.as_u16());
+
+        // A lakekeeper-provider (default) role is unaffected.
+        let ok_role = db_create_role(&ctx, &warehouse.project_id, "ok-role", "ok-src").await;
+        let ok_user = random_user();
+        provision_user(&ctx, &ok_user).await;
+        ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: ok_user,
+                role_id: ok_role.id(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// A `system`-provider role *is* manually assignable: `is_system()` is in
+    /// the allowlist. Proves the positive path (the rejection tests only cover
+    /// non-catalog providers). Assign succeeds and the row is visible via list.
+    #[sqlx::test]
+    async fn test_assign_system_role_succeeds(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+
+        // Seed a real system-provider role (provider_id = "system").
+        let role_id = super::seed_test_system_role(&ctx, &warehouse.project_id, "sys_assign").await;
+        let user = random_user();
+        provision_user(&ctx, &user).await;
+
+        // Assign (handler → 200): succeeds for a system role and writes a row.
+        let resp = ApiServer::create_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            CreateRoleAssignmentRequest {
+                user_id: user.clone(),
+                role_id,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.user_id, user);
+        assert_eq!(resp.role_id, role_id);
+        assert!(resp.created_at.is_some());
+        assert_eq!(assignment_count(&ctx, &user, role_id).await, 1);
+
+        // Visible in the by-role listing.
+        let by_role = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: None,
+                role_id: Some(role_id),
+                page_token: None,
+                page_size: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_role.assignments.len(), 1);
+        assert_eq!(by_role.assignments[0].user_id, user);
+        assert_eq!(by_role.assignments[0].role_id, role_id);
+    }
+
+    /// The allowlist guards DELETE too, not just POST: revoking an assignment on
+    /// a role owned by a non-catalog provider (here `oidc`) is rejected with
+    /// 409 `RoleNotManuallyAssignable`.
+    #[sqlx::test]
+    async fn test_delete_non_catalog_managed_provider_rejected(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+
+        let provider = RoleProviderId::try_new("oidc").unwrap();
+        let managed_role = db_create_role_with_provider(
+            &ctx,
+            &warehouse.project_id,
+            "managed-del-role",
+            "managed-del-src",
+            &provider,
+        )
+        .await;
+        let user = random_user();
+        provision_user(&ctx, &user).await;
+
+        let err = ApiServer::delete_role_assignment(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            user.clone(),
+            managed_role,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error.r#type, "RoleNotManuallyAssignable");
+        assert_eq!(err.error.code, http::StatusCode::CONFLICT.as_u16());
+    }
+
+    /// Pagination round-trip over `ByRole`: three assignments, `page_size` = 2.
+    /// First page yields exactly 2 rows + a `next_page_token`. Feeding the token
+    /// back yields the remaining 1 row (plus a token — the keyset paginator emits
+    /// a token whenever the page is non-empty); the *next* request with that
+    /// token returns an empty page with `next_page_token == None`, signalling the
+    /// end. Across all pages no row is dropped or repeated and the union equals
+    /// exactly the assigned set.
+    #[sqlx::test]
+    async fn test_list_pagination_round_trip(pool: PgPool) {
+        let (ctx, warehouse) = SetupTestCatalog::builder()
+            .pool(pool.clone())
+            .storage_profile(memory_io_profile())
+            .authorizer(AllowAllAuthorizer::default())
+            .number_of_warehouses(1)
+            .build()
+            .setup()
+            .await;
+        let role = db_create_role(&ctx, &warehouse.project_id, "page-role", "page-src").await;
+
+        // Three distinct users assigned to the same role.
+        let mut expected_users = std::collections::HashSet::new();
+        for _ in 0..3 {
+            let user = random_user();
+            provision_user(&ctx, &user).await;
+            ApiServer::create_role_assignment(
+                ctx.clone(),
+                random_request_metadata_with_project(&warehouse.project_id),
+                CreateRoleAssignmentRequest {
+                    user_id: user.clone(),
+                    role_id: role.id(),
+                },
+            )
+            .await
+            .unwrap();
+            expected_users.insert(user);
+        }
+        assert_eq!(expected_users.len(), 3);
+
+        // Page 1: page_size = 2 → exactly 2 rows + a next_page_token.
+        let page1 = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: None,
+                role_id: Some(role.id()),
+                page_token: None,
+                page_size: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page1.assignments.len(), 2);
+        let token1 = page1
+            .next_page_token
+            .clone()
+            .expect("a next_page_token is returned when a full page of rows was read");
+
+        // Page 2: feed the token back → the remaining 1 row. The keyset paginator
+        // still emits a token for a non-empty page (it does not look ahead).
+        let page2 = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: None,
+                role_id: Some(role.id()),
+                page_token: Some(token1),
+                page_size: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page2.assignments.len(), 1);
+        let token2 = page2
+            .next_page_token
+            .clone()
+            .expect("a token is emitted for any non-empty page");
+
+        // Page 3: the token from the final non-empty page yields an empty page
+        // with no further token — this is the end-of-stream signal.
+        let page3 = ApiServer::list_role_assignments(
+            ctx.clone(),
+            random_request_metadata_with_project(&warehouse.project_id),
+            ListRoleAssignmentsQuery {
+                user_id: None,
+                role_id: Some(role.id()),
+                page_token: Some(token2),
+                page_size: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page3.assignments.len(), 0);
+        assert_eq!(page3.next_page_token, None);
+
+        // Every page row is for this role; collect the user set across pages.
+        let mut seen_users = std::collections::HashSet::new();
+        for a in page1
+            .assignments
+            .iter()
+            .chain(page2.assignments.iter())
+            .chain(page3.assignments.iter())
+        {
+            assert_eq!(a.role_id, role.id());
+            // No duplicate across pages.
+            assert!(
+                seen_users.insert(a.user_id.clone()),
+                "user {} appeared on more than one page",
+                a.user_id
+            );
+        }
+        // Union of all pages equals exactly the assigned set (none skipped).
+        assert_eq!(seen_users, expected_users);
+    }
+
+    fn random_request_metadata_with_project(project_id: &ProjectId) -> crate::api::RequestMetadata {
+        crate::api::RequestMetadata::new_test(
+            None,
+            None,
+            crate::service::authn::Actor::Anonymous,
+            Some(project_id.clone().into()),
+            None,
+            http::Method::default(),
+        )
+    }
+}

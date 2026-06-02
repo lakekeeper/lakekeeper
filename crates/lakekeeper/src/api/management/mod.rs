@@ -7,6 +7,7 @@ pub mod v1 {
     pub mod namespace;
     pub mod project;
     pub mod role;
+    pub mod role_assignment;
     pub mod server;
     pub mod table;
     pub mod tabular;
@@ -25,7 +26,7 @@ pub mod v1 {
         Extension, Json, Router,
         extract::{Path, Query, State as AxumState},
         response::{IntoResponse, Response},
-        routing::{get, post, put},
+        routing::{delete, get, post, put},
     };
     use generic_table::GenericTableManagementService as _;
     use http::StatusCode;
@@ -51,6 +52,10 @@ pub mod v1 {
     };
     use role::{
         CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest, Service as _, UpdateRoleRequest,
+    };
+    use role_assignment::{
+        CreateRoleAssignmentRequest, ListRoleAssignmentsQuery, ListRoleAssignmentsResponse,
+        RoleAssignmentResponse, Service as _,
     };
     use serde::{Deserialize, Serialize};
     use server::{BootstrapRequest, ServerInfo, Service as _};
@@ -641,6 +646,111 @@ pub mod v1 {
                 allowed_actions: relations,
             }),
         ))
+    }
+
+    /// Assign Role
+    ///
+    /// Grant a role to a user. Idempotent: re-assigning an existing
+    /// `(user, role)` pair returns 200 with the existing assignment.
+    ///
+    /// The acting principal must hold `manage_role_assignments` on the target
+    /// role. Assigning a role that belongs to a different project is rejected
+    /// (the role cannot be resolved in the request's project). Only
+    /// catalog-managed roles (provider `lakekeeper` or `system`) may be assigned
+    /// manually; roles owned by any other provider are synced and reject manual
+    /// assignment with 409 `RoleNotManuallyAssignable`. The target user must
+    /// already exist; assigning to an unknown user returns 404
+    /// `RoleAssignmentUserNotFound`.
+    ///
+    /// When OpenFGA is the authorizer, this writes the same assignee tuple the
+    /// legacy `/permissions/role/{id}/assignments` endpoint produces.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "role",
+        path = ManagementV1Endpoint::CreateRoleAssignment.path(),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
+        request_body = CreateRoleAssignmentRequest,
+        responses(
+            (status = 200, description = "Role assigned successfully", body = RoleAssignmentResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn create_role_assignment<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<CreateRoleAssignmentRequest>,
+    ) -> Result<(StatusCode, Json<RoleAssignmentResponse>)> {
+        ApiServer::<C, A, S>::create_role_assignment(api_context, metadata, request)
+            .await
+            .map(|assignment| (StatusCode::OK, Json(assignment)))
+    }
+
+    /// Revoke Role
+    ///
+    /// Remove a role from a user. Idempotent: revoking an assignment that does
+    /// not exist still returns 204.
+    ///
+    /// Same authorization and provider-managed rejection rules as assigning.
+    /// When OpenFGA is the authorizer, this removes the assignee tuple that the
+    /// legacy `/permissions/role/{id}/assignments` endpoint manages.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "role",
+        path = ManagementV1Endpoint::DeleteRoleAssignment.path(),
+        params(
+            ("user_id" = String, Path, description = "User ID"),
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),
+        ),
+        responses(
+            (status = 204, description = "Role revoked successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_role_assignment<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((user_id, role_id)): Path<(UserId, RoleId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_role_assignment(api_context, metadata, user_id, role_id)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Role Assignments
+    ///
+    /// List role assignments filtered by exactly one of `userId` or `roleId`.
+    /// Providing neither or both returns 400 `RoleAssignmentFilterRequired`.
+    ///
+    /// Filtering by `roleId` requires `read_role_assignments` on the role;
+    /// filtering by `userId` requires `read_role_assignments` on the user.
+    /// When OpenFGA is the authorizer, assignments are read from its tuples
+    /// rather than the catalog `role_assignment` table.
+    ///
+    /// Pagination is cursor-based: pass the returned `nextPageToken` back as
+    /// `pageToken` for the next page. A page may contain fewer than `pageSize`
+    /// items — or be empty — while still returning a `nextPageToken` (notably
+    /// under OpenFGA, where project scoping is applied after each page is read).
+    /// Continue until the response has no `nextPageToken`; do not treat a short
+    /// or empty page as the end of the results.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleAssignments.path(),
+        params(ListRoleAssignmentsQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "List of role assignments", body = ListRoleAssignmentsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_assignments<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Query(query): Query<ListRoleAssignmentsQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<ListRoleAssignmentsResponse>)> {
+        ApiServer::<C, A, S>::list_role_assignments(api_context, metadata, query)
+            .await
+            .map(|response| (StatusCode::OK, Json(response)))
     }
 
     /// Create Warehouse
@@ -2224,6 +2334,14 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetRoleMetadata.path_in_management_v1(),
                     get(get_role_metadata),
+                )
+                .route(
+                    "/role-assignments",
+                    get(list_role_assignments).post(create_role_assignment),
+                )
+                .route(
+                    "/role-assignments/{user_id}/{role_id}",
+                    delete(delete_role_assignment),
                 )
                 // User management
                 .route("/whoami", get(whoami))
