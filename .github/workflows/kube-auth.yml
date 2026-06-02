@@ -35,7 +35,7 @@ jobs:
         with:
           version: "v0.24.0"
       - name: Restore binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: lakekeeper-image
           path: artifacts
@@ -45,8 +45,10 @@ jobs:
 
       - name: Restore Docker image
         run:  docker load -i artifacts/lakekeeper-local-amd64.tar &&  kind load docker-image localhost/lakekeeper-local:amd64
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         id: install
+        with:
+          version: v3.18.3
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
       - name: Install lakekeeper (wait 300s)

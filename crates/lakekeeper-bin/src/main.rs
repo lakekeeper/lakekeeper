@@ -82,7 +82,7 @@ enum Commands {
         )]
         force_start: bool,
     },
-    /// Check the health of the server
+    /// Check the health endpoint of the server
     Healthcheck {
         #[clap(
             default_value = "false",
@@ -219,11 +219,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Healthcheck {
             check_all,
-            mut check_db,
-            mut check_server,
+            check_db,
+            check_server,
         }) => {
-            check_db |= check_all;
-            check_server |= check_all;
+            let (check_db, check_server) =
+                healthcheck::normalize_checks(check_all, check_db, check_server);
             healthcheck::health(check_db, check_server).await?;
         }
         Some(Commands::Version {}) => {
@@ -352,15 +352,27 @@ async fn openfga_reconcile(
     let authorizer =
         lakekeeper_authz_openfga::new_authorizer_from_default_config(server_id).await?;
 
-    tracing::info!("openfga reconcile: starting (mode={mode:?}, dry_run={dry_run})");
-    let report = lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog(
-        catalog_state,
-        authorizer.client(),
-        server_id,
-        mode,
-        dry_run,
+    let lock = lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire(
+        &catalog_state,
+        lakekeeper_authz_openfga::RECONCILE_LOCK_KEY,
     )
-    .await?;
+    .await?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "openfga reconcile: another reconcile is already running (advisory lock {:#x} held)",
+            lakekeeper_authz_openfga::RECONCILE_LOCK_KEY
+        )
+    })?;
+    let report =
+        lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            catalog_state,
+            lock,
+            authorizer.client(),
+            server_id,
+            mode,
+            dry_run,
+        )
+        .await?;
 
     let action = if report.dry_run { "would" } else { "did" };
     println!();

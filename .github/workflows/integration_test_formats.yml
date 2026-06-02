@@ -37,14 +37,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Restore binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: lakekeeper-image
           path: artifacts
       - name: Restore Docker image
         run: docker load -i artifacts/lakekeeper-local-amd64.tar
       - name: Test Lance Generic Table API
-        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         with:
           max_attempts: 2
           timeout_minutes: 15

@@ -34,8 +34,8 @@ mod tuples;
 pub use config::CONFIG;
 pub use migration::migrate;
 pub use reconcile::{
-    RebuildReport, ReconcileMode, ReconcileReport, rebuild_hierarchy_tuples_from_catalog,
-    reconcile_hierarchy_tuples_from_catalog,
+    RECONCILE_LOCK_KEY, RebuildReport, ReconcileMode, ReconcileReport,
+    rebuild_hierarchy_tuples_from_catalog, reconcile_hierarchy_tuples_from_catalog,
 };
 
 const MAX_TUPLES_PER_WRITE: i32 = 100;

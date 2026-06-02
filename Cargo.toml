@@ -76,6 +76,7 @@ base64 = "0.22.1"
 bytes = "1.10"
 chrono = "^0.4"
 cloudevents-sdk = { version = "0.9.0" }
+crc = "3"
 derive_more = { version = "^2.0.0", features = ["from", "debug"] }
 fastrand = "2.3.0"
 figment = { version = "^0.10", features = ["env"] }

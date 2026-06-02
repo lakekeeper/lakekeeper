@@ -17,16 +17,26 @@
   ],
   "packageRules": [
     {
-      "description": "Group minor and patch dependency updates",
-      "matchPackagePatterns": [
-        "*"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
-      "groupName": "all non-major dependencies",
-      "groupSlug": "all-minor-patch"
+      "description": "Group all GitHub Actions updates (digest, minor, major) into one PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "groupSlug": "github-actions"
+    },
+    {
+      "description": "Group non-major Rust crate updates (1.x crates)",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": ">=1.0.0",
+      "groupName": "rust crates (non-major, 1.x+)",
+      "groupSlug": "cargo-stable-minor-patch"
+    },
+    {
+      "description": "Group pre-1.0 Rust crate bumps separately — Cargo treats 0.x→0.y as breaking even though Renovate calls it minor",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "<1.0.0",
+      "groupName": "rust crates (pre-1.0)",
+      "groupSlug": "cargo-pre1-minor-patch"
     }
   ]
 }
