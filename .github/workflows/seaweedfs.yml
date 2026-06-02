@@ -11,7 +11,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.88
+  RUST_TOOLCHAIN: 1.94.1
   RUSTFLAGS: --cfg tracing_unstable -D warnings
 
 permissions:
@@ -52,6 +52,7 @@ jobs:
         ports:
           - 5432:5432
     env:
+      RUSTFLAGS: --cfg tracing_unstable -D warnings -C debuginfo=0
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
