@@ -21,9 +21,9 @@ use itertools::Itertools;
 use lakekeeper_io::Location;
 use serde::Serialize;
 use uuid::Uuid;
-pub(crate) mod authorize_load;
+pub mod authorize_load;
 pub mod create_table;
-mod load_table;
+pub mod load_table;
 mod rename_table;
 
 pub(crate) use authorize_load::*;
@@ -1075,7 +1075,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
 /// to its corresponding action. This avoids relying on positional indices.
 ///
 /// Returns `(TableInfo, Option<StoragePermissions>)` for the target table.
-fn interpret_authz_results_for_load_table(
+pub fn interpret_authz_results_for_load_table(
     actions: &[TabularAuthzAction<'_>],
     authz_results: &[bool],
     warehouse_id: WarehouseId,
@@ -1744,7 +1744,7 @@ async fn try_commit_tables<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
     Ok(Arc::new(commits))
 }
 
-pub(crate) fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
+pub fn extract_count_from_metadata_location(location: &Location) -> Option<usize> {
     let last_segment = location
         .as_str()
         .trim_end_matches('/')
@@ -2075,7 +2075,7 @@ pub(crate) fn delete_after_commit_enabled(properties: &HashMap<String, String>) 
         })
 }
 
-pub(crate) fn validate_table_properties<'a, I>(properties: I) -> Result<()>
+pub fn validate_table_properties<'a, I>(properties: I) -> Result<()>
 where
     I: IntoIterator<Item = &'a String>,
 {
@@ -2155,7 +2155,7 @@ pub(crate) fn maybe_body_to_json(request: impl Serialize) -> serde_json::Value {
 /// Returns a tuple of (updates, removals) where:
 /// - updates: `BtreeMap` of property key-value pairs to set
 /// - removals: `Vec` of property keys to remove
-pub(crate) fn parse_table_property_updates(
+pub fn parse_table_property_updates(
     updates: &[TableUpdate],
 ) -> (BTreeMap<String, String>, Vec<String>) {
     let mut property_updates = BTreeMap::new();

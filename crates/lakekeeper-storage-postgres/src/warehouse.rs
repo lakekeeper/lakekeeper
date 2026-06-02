@@ -926,8 +926,9 @@ pub(crate) async fn get_warehouse_stats(
     })
 }
 
-#[cfg(test)]
-pub(crate) mod test {
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(unused_imports, dead_code)]
+pub mod test {
     use http::StatusCode;
     use lakekeeper::{
         api::iceberg::types::PageToken,
@@ -940,7 +941,7 @@ pub(crate) mod test {
     use super::*;
     use crate::{PostgresBackend, PostgresTransaction};
 
-    pub(crate) async fn initialize_warehouse(
+    pub async fn initialize_warehouse(
         state: CatalogState,
         storage_profile: Option<StorageProfile>,
         project_id: Option<&ProjectId>,

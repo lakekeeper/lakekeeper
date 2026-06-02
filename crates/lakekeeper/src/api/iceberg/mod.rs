@@ -222,7 +222,7 @@ pub mod v1 {
                 })
         }
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         pub fn remove(&mut self, key: &T) -> Option<V> {
             let (idx, _) = self.ordering.iter().find_position(|item| **item == *key)?;
             self.ordering.remove(idx);

@@ -644,8 +644,9 @@ impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(unused_imports, dead_code)]
+pub mod tests {
     use iceberg::{
         NamespaceIdent, TableIdent,
         spec::{ViewMetadata, ViewMetadataBuilder},
@@ -675,7 +676,7 @@ pub(crate) mod tests {
         warehouse::test::initialize_warehouse,
     };
 
-    pub(crate) fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
+    pub fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
         serde_json::from_value(json!({
   "format-version": 1,
   "view-uuid": view_id.unwrap_or_else(Uuid::now_v7).to_string(),

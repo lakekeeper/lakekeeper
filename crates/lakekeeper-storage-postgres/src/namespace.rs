@@ -1009,8 +1009,9 @@ pub(crate) async fn update_namespace_properties(
         .map_err(Into::into)
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(unused_imports, dead_code)]
+pub mod tests {
     use std::str::FromStr;
 
     use lakekeeper::{
@@ -1030,7 +1031,7 @@ pub(crate) mod tests {
         },
     };
 
-    pub(crate) async fn initialize_namespace(
+    pub async fn initialize_namespace(
         state: CatalogState,
         warehouse_id: WarehouseId,
         namespace: &NamespaceIdent,

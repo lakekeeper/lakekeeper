@@ -1,8 +1,8 @@
-pub(crate) mod generic_table;
+pub mod generic_table;
 mod load_by_location;
 mod protection;
 pub mod table;
-pub(crate) mod view;
+pub mod view;
 
 use std::{collections::HashMap, default::Default, fmt::Debug, str::FromStr as _};
 

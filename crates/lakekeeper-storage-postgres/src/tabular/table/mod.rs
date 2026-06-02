@@ -727,8 +727,9 @@ impl From<&[TableUpdate]> for TableUpdateFlags {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(unused_imports, dead_code)]
+pub mod tests {
     // Desired behavior:
     // - Stage-Create => Load fails with 404
     // - No Stage-Create => Next create fails with 409, load succeeds
@@ -852,12 +853,12 @@ pub(crate) mod tests {
         namespace.namespace_id.into()
     }
 
-    pub(crate) struct InitializedTable {
+    pub struct InitializedTable {
         #[allow(dead_code)]
-        pub(crate) namespace_id: NamespaceId,
-        pub(crate) namespace: NamespaceIdent,
-        pub(crate) table_id: TableId,
-        pub(crate) table_ident: TableIdent,
+        pub namespace_id: NamespaceId,
+        pub namespace: NamespaceIdent,
+        pub table_id: TableId,
+        pub table_ident: TableIdent,
     }
 
     /// Creates a table in the given warehouse.
@@ -866,7 +867,7 @@ pub(crate) mod tests {
     ///
     /// * `namespace`: If provided creates the table in that namespace, otherwise creates new one.
     /// * `table_id`: If provided uses this as the table's id, otherwise creates a random id.
-    pub(crate) async fn initialize_table(
+    pub async fn initialize_table(
         warehouse_id: WarehouseId,
         state: CatalogState,
         staged: bool,
@@ -1724,7 +1725,7 @@ pub(crate) mod tests {
     }
 
     #[sqlx::test]
-    #[tracing_test::traced_test]
+    #[cfg_attr(test, tracing_test::traced_test)]
     async fn test_get_id_by_location(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
 

@@ -21,6 +21,134 @@ pub use internal_helper::*;
 // need to add a direct dep.
 pub use pastey;
 
+/// Lightweight setup specifically for the views test suite: applies
+/// migrations, initializes one warehouse + one namespace via the storage
+/// backend's `initialize_*` helpers (skipping the bootstrap / API flow used
+/// by [`setup`]).
+///
+/// Returns `(ctx, namespace_ident, warehouse_id, project_id)` — the original
+/// `crate::server::views::test::setup` signature.
+pub async fn views_test_setup(
+    pool: sqlx::PgPool,
+    namespace_name: Option<Vec<String>>,
+) -> (
+    lakekeeper::api::ApiContext<
+        lakekeeper::service::State<
+            lakekeeper::service::authz::AllowAllAuthorizer,
+            lakekeeper_storage_postgres::PostgresBackend,
+            lakekeeper_storage_postgres::SecretsState,
+        >,
+    >,
+    iceberg::NamespaceIdent,
+    lakekeeper::WarehouseId,
+    lakekeeper::service::ArcProjectId,
+) {
+    use lakekeeper::service::{
+        authz::AllowAllAuthorizer,
+        storage::{MemoryProfile, StorageProfile},
+    };
+    use lakekeeper_storage_postgres::{
+        migrations::migrate_core_only, namespace::tests::initialize_namespace,
+        warehouse::test::initialize_warehouse,
+    };
+
+    migrate_core_only(&pool).await.unwrap();
+    let api_context = get_api_context(&pool, AllowAllAuthorizer::default()).await;
+    let state = api_context.v1_state.catalog.clone();
+    let (project_id, warehouse_id) = initialize_warehouse(
+        state.clone(),
+        Some(StorageProfile::Memory(MemoryProfile::default())),
+        None,
+        None,
+        true,
+    )
+    .await;
+
+    let namespace = initialize_namespace(
+        state,
+        warehouse_id,
+        &iceberg::NamespaceIdent::from_vec(
+            namespace_name.unwrap_or_else(|| vec![uuid::Uuid::now_v7().to_string()]),
+        )
+        .unwrap(),
+        None,
+    )
+    .await
+    .namespace_ident()
+    .clone();
+    (api_context, namespace, warehouse_id, project_id)
+}
+
+/// Mirrors the original `crate::server::views::load::test::load_view` test
+/// helper — dispatches through `CatalogServer` so request validation and
+/// authz fire as in production.
+pub async fn load_view_helper(
+    api_context: lakekeeper::api::ApiContext<
+        lakekeeper::service::State<
+            lakekeeper::service::authz::AllowAllAuthorizer,
+            lakekeeper_storage_postgres::PostgresBackend,
+            lakekeeper_storage_postgres::SecretsState,
+        >,
+    >,
+    parameters: lakekeeper::api::iceberg::v1::ViewParameters,
+) -> lakekeeper::api::Result<iceberg_ext::catalog::rest::LoadViewResult> {
+    use lakekeeper::{
+        api::iceberg::v1::views::{LoadViewRequest, ViewService},
+        server::CatalogServer,
+        service::{State, authz::AllowAllAuthorizer},
+    };
+    use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+
+    <CatalogServer<PostgresBackend, AllowAllAuthorizer, SecretsState> as ViewService<
+        State<AllowAllAuthorizer, PostgresBackend, SecretsState>,
+    >>::load_view(
+        parameters,
+        LoadViewRequest::default(),
+        api_context,
+        lakekeeper::api::RequestMetadata::new_unauthenticated(),
+    )
+    .await
+}
+
+/// Wraps [`lakekeeper::server::views::create::create_view`] with default
+/// `DataAccess` and `RequestMetadata` so test files don't have to import
+/// every type at every call site. Mirrors the original
+/// `crate::server::views::create::test::create_view` test helper.
+pub async fn create_view_helper(
+    api_context: lakekeeper::api::ApiContext<
+        lakekeeper::service::State<
+            lakekeeper::service::authz::AllowAllAuthorizer,
+            lakekeeper_storage_postgres::PostgresBackend,
+            lakekeeper_storage_postgres::SecretsState,
+        >,
+    >,
+    namespace: iceberg::NamespaceIdent,
+    rq: iceberg_ext::catalog::rest::CreateViewRequest,
+    prefix: Option<String>,
+) -> lakekeeper::api::Result<iceberg_ext::catalog::rest::LoadViewResult> {
+    use lakekeeper::api::iceberg::{
+        types::Prefix,
+        v1::{DataAccess, NamespaceParameters},
+    };
+
+    Box::pin(lakekeeper::server::views::create::create_view(
+        NamespaceParameters {
+            namespace,
+            prefix: Some(Prefix(prefix.unwrap_or_else(|| {
+                "b8683712-3484-11ef-a305-1bc8771ed40c".to_string()
+            }))),
+        },
+        rq,
+        api_context,
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        lakekeeper::api::RequestMetadata::new_unauthenticated(),
+    ))
+    .await
+}
+
 /// 6-argument wrapper around [`setup`] that defaults `number_of_warehouses=1`
 /// and `project_id=None`. Preserves the original `crate::server::test::setup`
 /// signature for tests extracted from lakekeeper that pre-date the

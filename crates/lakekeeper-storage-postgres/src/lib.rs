@@ -13,7 +13,7 @@ pub(crate) mod dbutils;
 pub mod endpoint_statistics;
 pub(crate) mod idempotency;
 pub mod migrations;
-pub(crate) mod namespace;
+pub mod namespace;
 mod pagination;
 pub mod role;
 pub(crate) mod role_assignment;

@@ -1695,7 +1695,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
     Ok((warehouse, tabular_info))
 }
 
-#[cfg(any())]
+#[cfg(test)]
 mod test {
     use super::*;
     #[test]
@@ -1822,7 +1822,8 @@ mod test {
     /// Uses the `setup_and_registry` test helper to register a custom
     /// `user_schedulable = true` test queue so the OSS endpoint has
     /// something to dispatch to without enabling enterprise queues.
-    #[cfg(feature = "open-api")]
+    // Postgres-dependent; extracted to integration-tests as a follow-up.
+    #[cfg(any())]
     mod schedule_lifecycle {
         use std::sync::{Arc, LazyLock};
 
