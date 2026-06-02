@@ -73,11 +73,11 @@ check-opa:
     cd authz/opa-bridge && regal lint policies/
 
 update-management-openapi:
-    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run --features open-api management-openapi > docs/docs/api/management-open-api.yaml
+    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml
 
 update-generic-table-openapi:
-    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run --features open-api generic-table-openapi > docs/docs/api/generic-table-open-api.yaml
+    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- generic-table-openapi > docs/docs/api/generic-table-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/generic-table-open-api.yaml
 
 add-return-uuid-to-rest-openapi:
