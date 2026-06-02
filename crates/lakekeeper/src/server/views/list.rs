@@ -130,9 +130,8 @@ async fn authorize_list_views<C: CatalogStore, A: Authorizer>(
 mod test {
     use itertools::Itertools;
     use sqlx::PgPool;
-
-    use crate::{
-        api::{
+use crate::{
+    api::{
             ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
@@ -140,12 +139,17 @@ mod test {
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        request_metadata::RequestMetadata,
-        server::{CatalogServer, test::impl_pagination_tests},
-        service::{State, UserId, authz::tests::HidingAuthorizer},
-        tests::create_view_request,
-    };
+    request_metadata::RequestMetadata,
+    server::{CatalogServer, test::impl_pagination_tests},
+    service::{State, UserId, authz::tests::HidingAuthorizer},
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+};
+use lakekeeper_storage_postgres::tests::{
+    create_view_request,
+};
 
     async fn pagination_test_setup(
         pool: PgPool,

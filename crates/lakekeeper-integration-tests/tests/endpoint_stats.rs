@@ -12,11 +12,9 @@ use lakekeeper::{
     },
     tests::TestWarehouseResponse,
 };
-use crate::{
-    PostgresBackend,
-    SecretsState,
-    endpoint_statistics::sink::PostgresStatisticsSink,
-};
+use crate::{endpoint_statistics::sink::PostgresStatisticsSink};
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 mod test {
     use std::{
@@ -626,8 +624,8 @@ async fn setup_stats_test(
         .ok();
     configure_trigger(&pool).await;
 
-    let prof = crate::tests::memory_io_profile();
-    let (ctx, warehouse) = crate::tests::setup(
+    let prof = lakekeeper_integration_tests::memory_io_profile();
+    let (ctx, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
         prof,
         None,

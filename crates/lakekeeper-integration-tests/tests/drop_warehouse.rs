@@ -23,10 +23,10 @@ use lakekeeper::{
 
 #[sqlx::test]
 async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
-    let storage_profile = crate::tests::memory_io_profile();
+    let storage_profile = lakekeeper_integration_tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
 
-    let (api_context, _) = crate::tests::setup(
+    let (api_context, _) = lakekeeper_integration_tests::setup(
         pool.clone(),
         storage_profile.clone(),
         None,
@@ -69,7 +69,7 @@ async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {
     // Create tables
     for i in 0..2 {
         let table_name = format!("table_{i}");
-        let _ = crate::tests::create_table(
+        let _ = lakekeeper_integration_tests::create_table(
             api_context.clone(),
             &warehouse.warehouse_id().to_string(),
             &ns_name.to_string(),

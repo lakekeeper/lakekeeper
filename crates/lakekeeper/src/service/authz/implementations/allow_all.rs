@@ -32,7 +32,7 @@ pub struct AllowAllAuthorizer {
     pub server_id: ServerId,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl std::default::Default for AllowAllAuthorizer {
     fn default() -> Self {
         Self {

@@ -20,7 +20,7 @@ use crate::{
 };
 
 const QN_STR: &str = "tabular_expiration";
-pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
     LazyLock::new(|| super::QueueApiConfig {
@@ -326,19 +326,23 @@ mod test {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
-        implementations::postgres::{
-            CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
-            namespace::tests::initialize_namespace, tabular::table::tests::initialize_table,
-            warehouse::test::initialize_warehouse,
-        },
-        service::{
+use crate::{
+    api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
+    service::{
             CatalogGenericTableOps, CatalogStore, CatalogTabularOps, GenericTableCreation,
             GenericTableFormat, GenericTableId, Location, NamedEntity, TabularListFlags,
             Transaction, authz::AllowAllAuthorizer, storage::MemoryProfile,
         },
-    };
+};
+use lakekeeper_storage_postgres::{
+    CatalogState,
+    PostgresBackend,
+    PostgresTransaction,
+    SecretsState,
+    namespace::tests::initialize_namespace,
+    tabular::table::tests::initialize_table,
+    warehouse::test::initialize_warehouse,
+};
 
     #[sqlx::test]
     #[traced_test]

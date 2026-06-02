@@ -1269,8 +1269,8 @@ where
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-utils"))]
+pub mod tests {
     use std::{
         collections::HashSet,
         sync::{Arc, RwLock},
@@ -1763,9 +1763,9 @@ pub(crate) mod tests {
     ///
     /// Due to `can_list_everything`, permissions on hidden objects may behave unexpectedly.
     /// Consider calling [`Self::block_can_list_everything`] in such cases.
-    pub(crate) struct HidingAuthorizer {
+    pub struct HidingAuthorizer {
         /// Strings encode `object_type:object_id` e.g. `namespace:id_of_namespace_to_hide`.
-        pub(crate) hidden: Arc<RwLock<HashSet<String>>>,
+        pub hidden: Arc<RwLock<HashSet<String>>>,
         /// Strings encode `object_type:action` e.g. `namespace:can_create_table`.
         blocked_actions: Arc<RwLock<HashSet<String>>>,
         /// Per-user object hiding. Key: `format!("{user:?}")`, Value: set of object strings.
@@ -1776,7 +1776,7 @@ pub(crate) mod tests {
     }
 
     impl HidingAuthorizer {
-        pub(crate) fn new() -> Self {
+        pub fn new() -> Self {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),

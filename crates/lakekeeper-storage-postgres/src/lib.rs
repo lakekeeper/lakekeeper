@@ -20,8 +20,6 @@ pub(crate) mod role_assignment;
 pub(crate) mod secrets;
 pub mod tabular;
 pub mod tasks;
-#[cfg(any(test, feature = "test-utils"))]
-pub mod tests;
 pub(crate) mod user;
 pub(crate) mod warehouse;
 

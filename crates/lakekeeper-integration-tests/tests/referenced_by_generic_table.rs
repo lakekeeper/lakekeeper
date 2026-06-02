@@ -27,10 +27,8 @@ use lakekeeper::{
     },
     tests::{SetupTestCatalog, create_view_request, random_request_metadata},
 };
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 type Server<A> = CatalogServer<PostgresBackend, A, SecretsState>;
 
@@ -73,11 +71,11 @@ fn table_ident(ns_name: &str, name: &str) -> TableIdent {
     TableIdent::new(NamespaceIdent::new(ns_name.to_string()), name.to_string())
 }
 
-fn prefix(wh: &crate::tests::TestWarehouseResponse) -> Prefix {
+fn prefix(wh: &lakekeeper_integration_tests::TestWarehouseResponse) -> Prefix {
     Prefix(wh.warehouse_id.to_string())
 }
 
-fn ns_params(wh: &crate::tests::TestWarehouseResponse, ns_name: &str) -> NamespaceParameters {
+fn ns_params(wh: &lakekeeper_integration_tests::TestWarehouseResponse, ns_name: &str) -> NamespaceParameters {
     NamespaceParameters {
         prefix: Some(prefix(wh)),
         namespace: NamespaceIdent::new(ns_name.to_string()),
@@ -89,7 +87,7 @@ fn referenced_by(views: &[TableIdent]) -> Vec<ReferencingView> {
 }
 
 fn gt_params(
-    wh: &crate::tests::TestWarehouseResponse,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
     ns_name: &str,
     name: &str,
 ) -> GenericTableParameters {
@@ -102,18 +100,18 @@ fn gt_params(
 
 async fn setup_ns_and_generic_table<A: Authorizer>(
     ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
-    wh: &crate::tests::TestWarehouseResponse,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
 ) {
     let p = wh.warehouse_id.to_string();
-    crate::tests::create_ns(ctx.clone(), p.clone(), "ns".into()).await;
-    crate::tests::create_generic_table(ctx.clone(), p, "ns", "my_gt")
+    lakekeeper_integration_tests::create_ns(ctx.clone(), p.clone(), "ns".into()).await;
+    lakekeeper_integration_tests::create_generic_table(ctx.clone(), p, "ns", "my_gt")
         .await
         .unwrap();
 }
 
 async fn create_invoker_view<A: Authorizer>(
     ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
-    wh: &crate::tests::TestWarehouseResponse,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
     name: &str,
 ) {
     Server::create_view(
@@ -129,7 +127,7 @@ async fn create_invoker_view<A: Authorizer>(
 
 async fn create_definer_view<A: Authorizer>(
     ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
-    wh: &crate::tests::TestWarehouseResponse,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
     name: &str,
     owner: &str,
 ) {
@@ -192,7 +190,7 @@ async fn view_object_key(
 
 async fn load_credentials<A: Authorizer + Clone>(
     ctx: &ApiContext<State<A, PostgresBackend, SecretsState>>,
-    wh: &crate::tests::TestWarehouseResponse,
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
     gt_name: &str,
     refs: Option<Vec<TableIdent>>,
     request_metadata: RequestMetadata,

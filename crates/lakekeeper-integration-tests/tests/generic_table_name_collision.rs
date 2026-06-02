@@ -28,10 +28,8 @@ use lakekeeper::{
         random_request_metadata, setup,
     },
 };
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 type TestApiContext = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 

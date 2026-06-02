@@ -1,15 +1,9 @@
 use sqlx::PgPool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use lakekeeper::{
-    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
-    service::{State, UserId, authz::AllowAllAuthorizer},
-    tests::TestWarehouseResponse,
-};
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 mod test {
     use std::time::Duration;
@@ -74,7 +68,7 @@ use lakekeeper::{
         let tn = Uuid::now_v7().to_string();
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
-        let _ = crate::tests::create_table(
+        let _ = lakekeeper_integration_tests::create_table(
             setup.ctx.clone(),
             &setup.warehouse.warehouse_id.to_string(),
             setup.namespace_name.as_str(),
@@ -178,8 +172,8 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
         .try_init()
         .ok();
     configure_trigger(&pool).await;
-    let prof = crate::tests::memory_io_profile();
-    let (ctx, warehouse) = crate::tests::setup(
+    let prof = lakekeeper_integration_tests::memory_io_profile();
+    let (ctx, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
         prof,
         None,
@@ -193,7 +187,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
 
     let ns_name = "ns1";
 
-    let _ = crate::tests::create_ns(
+    let _ = lakekeeper_integration_tests::create_ns(
         ctx.clone(),
         warehouse.warehouse_id.to_string(),
         ns_name.to_string(),
@@ -202,7 +196,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
     for i in 0..n_tabs {
         let tab_name = format!("tab{i}");
 
-        let _ = crate::tests::create_table(
+        let _ = lakekeeper_integration_tests::create_table(
             ctx.clone(),
             &warehouse.warehouse_id.to_string(),
             ns_name,
@@ -215,7 +209,7 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
 
     for i in 0..n_views {
         let view_name = format!("view{i}");
-        crate::tests::create_view(
+        lakekeeper_integration_tests::create_view(
             ctx.clone(),
             &warehouse.warehouse_id.to_string(),
             ns_name,

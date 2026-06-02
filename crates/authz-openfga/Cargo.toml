@@ -44,6 +44,7 @@ fastrand = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 itertools = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["test-utils"] }
-lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres", features = ["test-utils"] }
+lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
+lakekeeper-integration-tests = { path = "../lakekeeper-integration-tests" }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid"] }
 tracing-test = { workspace = true }

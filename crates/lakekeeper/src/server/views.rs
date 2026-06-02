@@ -126,31 +126,33 @@ mod test {
     use lakekeeper_io::Location;
     use sqlx::PgPool;
     use uuid::Uuid;
-
-    use crate::{
-        WarehouseId,
-        api::{
+use crate::{
+    WarehouseId,
+    api::{
             ApiContext, RequestMetadata,
             iceberg::v1::{DropParams, PaginationQuery, ViewParameters, views::ViewService},
             management::v1::warehouse::TabularDeleteProfile,
         },
-        implementations::postgres::{
-            PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
-            tabular::view::tests::view_request, warehouse::test::initialize_warehouse,
-        },
-        server::{
+    server::{
             CatalogServer, test::tabular_test_multi_warehouse_setup,
             views::validate_view_properties,
         },
-        service::{
+    service::{
             ArcProjectId, CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State,
             TabularListFlags, ViewId,
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
         },
-    };
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+    namespace::tests::initialize_namespace,
+    tabular::view::tests::view_request,
+    warehouse::test::initialize_warehouse,
+};
 
-    pub(crate) async fn setup(
+    pub async fn setup(
         pool: PgPool,
         namespace_name: Option<Vec<String>>,
     ) -> (

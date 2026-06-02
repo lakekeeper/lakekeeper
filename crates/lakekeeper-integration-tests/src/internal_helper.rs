@@ -25,12 +25,10 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{CatalogStore, SecretStore, State, authz::Authorizer},
-    tests::random_request_metadata,
 };
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+
+use crate::random_request_metadata;
 
 static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -40,7 +38,7 @@ static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
 });
 
 #[track_caller]
-pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
+pub fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
     {
         if common_runtime {
             return COMMON_RUNTIME.block_on(f);
@@ -53,7 +51,7 @@ pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output 
     }
 }
 
-pub(crate) async fn create_ns<T: Authorizer>(
+pub async fn create_ns<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: String,
     ns_name: String,
@@ -71,7 +69,7 @@ pub(crate) async fn create_ns<T: Authorizer>(
     .unwrap()
 }
 
-pub(crate) async fn create_table<T: Authorizer>(
+pub async fn create_table<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: impl Into<String>,
     ns_name: impl Into<String>,
@@ -91,7 +89,7 @@ pub(crate) async fn create_table<T: Authorizer>(
     .await
 }
 
-pub(crate) async fn drop_table<T: Authorizer>(
+pub async fn drop_table<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: &str,
     ns_name: &str,
@@ -114,7 +112,7 @@ pub(crate) async fn drop_table<T: Authorizer>(
     .await
 }
 
-pub(crate) async fn create_view<T: Authorizer>(
+pub async fn create_view<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: &str,
     ns_name: &str,
@@ -134,7 +132,7 @@ pub(crate) async fn create_view<T: Authorizer>(
     .await
 }
 
-pub(crate) async fn drop_namespace<A: Authorizer, C: CatalogStore, S: SecretStore>(
+pub async fn drop_namespace<A: Authorizer, C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<A, C, S>>,
     flags: NamespaceDropFlags,
     namespace_parameters: NamespaceParameters,
@@ -148,7 +146,7 @@ pub(crate) async fn drop_namespace<A: Authorizer, C: CatalogStore, S: SecretStor
     .await
 }
 
-pub(crate) fn create_view_request(name: Option<&str>, location: Option<&str>) -> CreateViewRequest {
+pub fn create_view_request(name: Option<&str>, location: Option<&str>) -> CreateViewRequest {
     serde_json::from_value(json!({
     "name": name.unwrap_or("myview"),
     "location": location,
@@ -191,7 +189,7 @@ pub(crate) fn create_view_request(name: Option<&str>, location: Option<&str>) ->
     .unwrap()
 }
 
-pub(crate) fn create_table_request(
+pub fn create_table_request(
     table_name: Option<String>,
     stage_create: Option<bool>,
 ) -> CreateTableRequest {
@@ -218,7 +216,7 @@ pub(crate) fn create_table_request(
     }
 }
 
-pub(crate) async fn create_generic_table<T: Authorizer>(
+pub async fn create_generic_table<T: Authorizer>(
     api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
     prefix: impl Into<String>,
     ns_name: impl Into<String>,

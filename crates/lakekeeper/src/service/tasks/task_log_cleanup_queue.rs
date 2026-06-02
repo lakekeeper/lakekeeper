@@ -23,7 +23,7 @@ use crate::{
 };
 
 const QN_STR: &str = "task_log_cleanup";
-pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {

@@ -1,4 +1,14 @@
+//! Integration-test helpers and harnesses for Lakekeeper.
+//!
+//! Today these are pinned to `lakekeeper-storage-postgres` as the
+//! backend; the helpers are structured so that a future SQLite or
+//! FoundationDB backend can be slotted in with minimal churn.
+//!
+//! Individual test files live under `tests/` (cargo's per-file
+//! integration-test convention) and import from this crate root.
+
 use std::sync::Arc;
+
 use lakekeeper::{
     ProjectId,
     api::{
@@ -8,10 +18,6 @@ use lakekeeper::{
             server::{APACHE_LICENSE_STATUS, BootstrapRequest, DEFAULT_BUILD_INFO, Service as _},
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
         },
-    },
-    implementations::{
-        CatalogState,
-        postgres::{PostgresBackend, SecretsState, migrations::migrate_core_only},
     },
     service::{
         ArcProjectId, UserId,
@@ -23,33 +29,9 @@ use lakekeeper::{
         warehouse_cache::WarehouseCacheEventListener,
     },
 };
-
-#[cfg(test)]
-mod drop_recursive;
-#[cfg(test)]
-mod drop_warehouse;
-#[cfg(test)]
-mod endpoint_stats;
-#[cfg(test)]
-mod generic_table_name_collision;
-#[cfg(test)]
-mod generic_table_protection;
-#[cfg(test)]
-mod namespace_ops;
-#[cfg(test)]
-mod referenced_by;
-#[cfg(test)]
-mod referenced_by_generic_table;
-#[cfg(test)]
-mod role_ops;
-#[cfg(test)]
-mod soft_deletion;
-#[cfg(test)]
-mod stats;
-#[cfg(test)]
-mod tasks;
-#[cfg(test)]
-mod warehouse_ops;
+use lakekeeper_storage_postgres::{
+    CatalogState, PostgresBackend, SecretsState, migrations::migrate_core_only,
+};
 use lakekeeper::{
     CONFIG,
     WarehouseId,
@@ -57,13 +39,10 @@ use lakekeeper::{
     service::{State, authz::Authorizer, tasks::TaskQueueRegistry},
 };
 
-#[cfg(test)]
 mod internal_helper;
-#[cfg(test)]
-pub(crate) use internal_helper::*;
+pub use internal_helper::*;
 use sqlx::PgPool;
 
-#[cfg(feature = "test-utils")]
 #[must_use]
 pub fn memory_io_profile() -> StorageProfile {
     lakekeeper::service::storage::MemoryProfile::default().into()
@@ -149,7 +128,7 @@ impl<T: Authorizer> SetupTestCatalog<T> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn setup<T: Authorizer>(
+pub async fn setup<T: Authorizer>(
     pool: PgPool,
     storage_profile: StorageProfile,
     storage_credential: Option<StorageCredential>,
@@ -183,7 +162,7 @@ pub(crate) async fn setup<T: Authorizer>(
 /// so a later `register_queue` call is visible to subsequent endpoint
 /// invocations on `ctx` — no rebuild needed.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn setup_with_registry<T: Authorizer>(
+pub async fn setup_with_registry<T: Authorizer>(
     pool: PgPool,
     storage_profile: StorageProfile,
     storage_credential: Option<StorageCredential>,
@@ -327,6 +306,6 @@ pub(crate) async fn get_api_context_with_registry<T: Authorizer>(
     (ctx, task_queues)
 }
 
-pub(crate) fn random_request_metadata() -> RequestMetadata {
+pub fn random_request_metadata() -> RequestMetadata {
     RequestMetadata::new_unauthenticated()
 }

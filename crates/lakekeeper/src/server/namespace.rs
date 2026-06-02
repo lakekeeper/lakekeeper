@@ -1091,9 +1091,8 @@ mod tests {
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
     use sqlx::PgPool;
-
-    use crate::{
-        api::{
+use crate::{
+    api::{
             ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
@@ -1107,14 +1106,17 @@ mod tests {
                 warehouse::TabularDeleteProfile,
             },
         },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        request_metadata::RequestMetadata,
-        server::{CatalogServer, NAMESPACE_ID_PROPERTY, test::impl_pagination_tests},
-        service::{
+    request_metadata::RequestMetadata,
+    server::{CatalogServer, NAMESPACE_ID_PROPERTY, test::impl_pagination_tests},
+    service::{
             ListNamespacesQuery, NamespaceId, State, UserId,
             authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
         },
-    };
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+};
 
     async fn ns_paginate_test_setup(
         pool: PgPool,

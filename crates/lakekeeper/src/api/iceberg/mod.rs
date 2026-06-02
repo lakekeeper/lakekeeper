@@ -230,13 +230,13 @@ pub mod v1 {
             self.entities.remove(key)
         }
 
-        #[cfg(test)]
-        pub(crate) fn into_hashmap(self) -> HashMap<T, V> {
+        #[cfg(any(test, feature = "test-utils"))]
+        pub fn into_hashmap(self) -> HashMap<T, V> {
             self.entities
         }
 
-        #[cfg(test)]
-        pub(crate) fn next_token(&self) -> Option<&str> {
+        #[cfg(any(test, feature = "test-utils"))]
+        pub fn next_token(&self) -> Option<&str> {
             self.next_page_tokens.last().map(String::as_str)
         }
 

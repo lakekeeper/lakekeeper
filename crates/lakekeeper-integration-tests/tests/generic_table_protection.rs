@@ -22,10 +22,8 @@ use lakekeeper::{
     service::{GenericTableId, State, authz::AllowAllAuthorizer},
     tests::{create_generic_table, create_ns, memory_io_profile, random_request_metadata, setup},
 };
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 type TestApiContext = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 

@@ -19,9 +19,7 @@ use lakekeeper::{
     },
     tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
-use crate::{
-    PostgresBackend,
-};
+use lakekeeper_storage_postgres::PostgresBackend;
 
 fn request_metadata_with_project(project_id: &ProjectId) -> RequestMetadata {
     RequestMetadata::new_test(
@@ -48,7 +46,7 @@ async fn db_create_role(
         lakekeeper::service::State<
             AllowAllAuthorizer,
             PostgresBackend,
-            crate::SecretsState,
+            lakekeeper_storage_postgres::SecretsState,
         >,
     >,
     project_id: &ProjectId,
@@ -940,7 +938,7 @@ async fn seed_test_system_role(
         lakekeeper::service::State<
             AllowAllAuthorizer,
             PostgresBackend,
-            crate::SecretsState,
+            lakekeeper_storage_postgres::SecretsState,
         >,
     >,
     project_id: &ProjectId,

@@ -2199,9 +2199,9 @@ pub(crate) mod test {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        WarehouseId,
-        api::{
+use crate::{
+    WarehouseId,
+    api::{
             ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
@@ -2215,21 +2215,26 @@ pub(crate) mod test {
                 warehouse::TabularDeleteProfile,
             },
         },
-        implementations::postgres::{
-            PostgresBackend, SecretsState, tabular::table::tests::initialize_table,
-        },
-        request_metadata::RequestMetadata,
-        server::{
+    request_metadata::RequestMetadata,
+    server::{
             CatalogServer, CatalogStore,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
-        service::{
+    service::{
             Actor, NamespaceHierarchy, SecretStore, State, TableId, TabularListFlags, UserId,
             ViewInfo, ViewOrTableInfo,
             authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
         },
-        tests::{create_table_request as create_request, random_request_metadata},
-    };
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+    tabular::table::tests::initialize_table,
+};
+use lakekeeper_storage_postgres::tests::{
+    create_table_request as create_request,
+    random_request_metadata,
+};
 
     #[test]
     fn test_parse_table_property_updates() {

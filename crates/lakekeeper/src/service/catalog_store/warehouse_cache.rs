@@ -22,7 +22,7 @@ use crate::{
 };
 
 // Main cache: stores warehouses by ID only
-pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> =
+pub static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> =
     LazyLock::new(|| {
         Cache::builder()
             .max_capacity(CONFIG.cache.warehouse.capacity)
@@ -191,7 +191,7 @@ pub(super) async fn warehouse_cache_get_by_name(
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct WarehouseCacheEventListener;
+pub struct WarehouseCacheEventListener;
 
 #[cfg(feature = "router")]
 impl std::fmt::Display for WarehouseCacheEventListener {

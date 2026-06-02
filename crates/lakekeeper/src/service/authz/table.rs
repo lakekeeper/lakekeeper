@@ -1389,10 +1389,9 @@ mod tests {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::{
-        api::ApiContext,
-        implementations::postgres::PostgresBackend,
-        service::{
+use crate::{
+    api::ApiContext,
+    service::{
             CatalogGenericTableOps, CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo,
             TabularIdentBorrowed, Transaction, ViewInfo,
             authz::{
@@ -1401,11 +1400,18 @@ mod tests {
             },
             catalog_store::TabularListFlags,
         },
-        tests::{
-            SetupTestCatalog, create_generic_table, create_ns, create_table, create_view,
-            memory_io_profile,
-        },
-    };
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+};
+use lakekeeper_storage_postgres::tests::{
+    SetupTestCatalog,
+    create_generic_table,
+    create_ns,
+    create_table,
+    create_view,
+    memory_io_profile,
+};
 
     /// Fully-specified tabular action type for tests where not all enum variants are present.
     type TestTabularAction<'a> = ActionOnTableOrView<

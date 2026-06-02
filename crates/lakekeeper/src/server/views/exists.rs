@@ -53,11 +53,13 @@ mod test {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::{
-        api::iceberg::{types::Prefix, v1::ViewParameters},
-        server::views::{create::test::create_view, test::setup},
-        tests::create_view_request,
-    };
+use crate::{
+    api::iceberg::{types::Prefix, v1::ViewParameters},
+    server::views::{create::test::create_view, test::setup},
+};
+use lakekeeper_storage_postgres::tests::{
+    create_view_request,
+};
 
     #[sqlx::test]
     async fn test_view_exists(pool: PgPool) {

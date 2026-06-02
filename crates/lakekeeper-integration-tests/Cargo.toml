@@ -1,0 +1,50 @@
+[package]
+name = "lakekeeper-integration-tests"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+description = "Integration tests for Lakekeeper exercising the service layer against a concrete storage backend (today: Postgres; future: SQLite, FoundationDB, ...)."
+publish = false
+
+[lib]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+fastrand = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+iceberg = { workspace = true }
+iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
+itertools = { workspace = true }
+lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router", "sqlx"] }
+lakekeeper-authz-openfga = { path = "../authz-openfga" }
+lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
+lakekeeper-secrets-kv2 = { path = "../lakekeeper-secrets-kv2" }
+lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
+maplit = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+typed-builder = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+assert-json-diff = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
+mockall = { workspace = true }
+pretty_assertions = { workspace = true }
+similar = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true }

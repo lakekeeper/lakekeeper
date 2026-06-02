@@ -1,15 +1,9 @@
 use sqlx::PgPool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use lakekeeper::{
-    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
-    service::{State, UserId, authz::AllowAllAuthorizer},
-    tests::TestWarehouseResponse,
-};
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 mod test {
     use std::sync::{Arc, LazyLock, Mutex};
@@ -28,9 +22,7 @@ use lakekeeper::{
             },
         },
 };
-use crate::{
-    PostgresBackend,
-};
+use lakekeeper_storage_postgres::PostgresBackend;
 
     #[sqlx::test]
     async fn test_task_queue_config_lands_in_task_worker(pool: PgPool) {
@@ -190,8 +182,8 @@ async fn setup_tasks_test(pool: PgPool) -> TasksSetup {
         )
         .try_init()
         .ok();
-    let prof = crate::tests::memory_io_profile();
-    let (ctx, warehouse) = crate::tests::setup(
+    let prof = lakekeeper_integration_tests::memory_io_profile();
+    let (ctx, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
         prof,
         None,

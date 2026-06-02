@@ -1868,10 +1868,9 @@ mod test {
     use iceberg::TableIdent;
     use itertools::Itertools;
     use sqlx::PgPool;
-
-    use crate::{
-        WarehouseId,
-        api::{
+use crate::{
+    WarehouseId,
+    api::{
             ApiContext,
             iceberg::{
                 types::Prefix,
@@ -1884,12 +1883,17 @@ mod test {
                 warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
             },
         },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        request_metadata::RequestMetadata,
-        server::{CatalogServer, test::impl_pagination_tests},
-        service::{State, UserId, authz::tests::HidingAuthorizer},
-        tests::create_view_request,
-    };
+    request_metadata::RequestMetadata,
+    server::{CatalogServer, test::impl_pagination_tests},
+    service::{State, UserId, authz::tests::HidingAuthorizer},
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+};
+use lakekeeper_storage_postgres::tests::{
+    create_view_request,
+};
 
     async fn setup_pagination_test(
         pool: sqlx::PgPool,

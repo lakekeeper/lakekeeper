@@ -3777,6 +3777,7 @@ dependencies = [
  "http 1.4.0",
  "itertools 0.14.0",
  "lakekeeper",
+ "lakekeeper-integration-tests",
  "lakekeeper-storage-postgres",
  "openfga-client",
  "serde",
@@ -3825,6 +3826,45 @@ dependencies = [
  "mime_guess",
  "moka",
  "rust-embed",
+]
+
+[[package]]
+name = "lakekeeper-integration-tests"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "assert-json-diff",
+ "async-trait",
+ "aws-sdk-s3",
+ "bytes",
+ "chrono",
+ "fastrand 2.3.0",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "iceberg",
+ "iceberg-ext",
+ "itertools 0.14.0",
+ "lakekeeper",
+ "lakekeeper-authz-openfga",
+ "lakekeeper-io",
+ "lakekeeper-secrets-kv2",
+ "lakekeeper-storage-postgres",
+ "maplit",
+ "mockall",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "similar",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-test",
+ "typed-builder 0.23.2",
+ "uuid",
 ]
 
 [[package]]

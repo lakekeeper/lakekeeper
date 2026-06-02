@@ -13,7 +13,10 @@
 mod config;
 pub mod server;
 pub mod service;
-pub use config::{AuthZBackend, CONFIG, DEFAULT_PROJECT_ID, SecretBackend};
+pub use config::{
+    AuthZBackend, CONFIG, DEFAULT_PROJECT_ID, MatchedEngines, SecretBackend, TrinoEngineConfig,
+    TrustedEngine,
+};
 pub use service::{ProjectId, SecretId, WarehouseId};
 
 #[cfg(feature = "router")]

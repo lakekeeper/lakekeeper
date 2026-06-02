@@ -32,7 +32,7 @@ use crate::{
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
 /// Create a view in the given namespace
-pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -225,16 +225,19 @@ pub(crate) mod test {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{
-        api::iceberg::{types::Prefix, v1::DataAccess},
-        implementations::postgres::{
-            namespace::tests::initialize_namespace, secrets::SecretsState,
-        },
-        service::authz::AllowAllAuthorizer,
-        tests::create_view_request,
-    };
+use crate::{
+    api::iceberg::{types::Prefix, v1::DataAccess},
+    service::authz::AllowAllAuthorizer,
+};
+use lakekeeper_storage_postgres::{
+    namespace::tests::initialize_namespace,
+    secrets::SecretsState,
+};
+use lakekeeper_storage_postgres::tests::{
+    create_view_request,
+};
 
-    pub(crate) async fn create_view(
+    pub async fn create_view(
         api_context: ApiContext<
             State<
                 AllowAllAuthorizer,

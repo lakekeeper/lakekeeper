@@ -116,7 +116,7 @@ async fn backfill_registered_system_roles<C: CatalogStore>(state: C::State) -> a
 /// Downstream test crates reach this via the `pub` wrapper exported from
 /// [`lakekeeper_storage_postgres::tests::upsert_system_roles_in_all_projects`], gated on the
 /// `test-utils` feature.
-pub(crate) async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
+pub async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
     state: C::State,
     roles: &[SystemRoleSpec],
 ) -> anyhow::Result<()> {
@@ -218,11 +218,15 @@ mod tests {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::{
-        ProjectId,
-        implementations::postgres::{CatalogState, PostgresBackend, PostgresTransaction},
-        service::{RoleSourceId, SYSTEM_ROLE_PROVIDER_ID},
-    };
+use crate::{
+    ProjectId,
+    service::{RoleSourceId, SYSTEM_ROLE_PROVIDER_ID},
+};
+use lakekeeper_storage_postgres::{
+    CatalogState,
+    PostgresBackend,
+    PostgresTransaction,
+};
 
     fn spec(source_id: &str, name: &'static str, description: &'static str) -> SystemRoleSpec {
         SystemRoleSpec {
@@ -240,10 +244,13 @@ mod tests {
         pool: &PgPool,
         project_id: &ProjectId,
     ) -> Vec<(String, String, Option<String>, i64)> {
-        use crate::{
-            api::iceberg::v1::PageToken, implementations::postgres::role::list_roles,
-            service::CatalogListRolesByIdFilter,
-        };
+use crate::{
+    api::iceberg::v1::PageToken,
+    service::CatalogListRolesByIdFilter,
+};
+use lakekeeper_storage_postgres::{
+    role::list_roles,
+};
         let provider = &*SYSTEM_ROLE_PROVIDER_ID;
         let providers = [provider];
         let filter = CatalogListRolesByIdFilter::builder()

@@ -268,8 +268,8 @@ mod tests {
     use sqlx::PgPool;
 
     use super::{create_etag, load_table};
-    use crate::{
-        api::{
+use crate::{
+    api::{
             ApiContext,
             iceberg::v1::{
                 NamespaceParameters, TableParameters,
@@ -281,11 +281,16 @@ mod tests {
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        server::{CatalogServer, test::setup},
-        service::{State, authz::AllowAllAuthorizer},
-        tests::random_request_metadata,
-    };
+    server::{CatalogServer, test::setup},
+    service::{State, authz::AllowAllAuthorizer},
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+};
+use lakekeeper_storage_postgres::tests::{
+    random_request_metadata,
+};
 
     fn create_test_schema() -> Schema {
         Schema::builder()

@@ -640,7 +640,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
 }
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     /// List tasks with optional filtering
     async fn list_tasks(
         warehouse_id: WarehouseId,
@@ -1830,9 +1830,8 @@ mod test {
         use iceberg_ext::catalog::rest::CreateTableRequest;
         use serde::{Deserialize, Serialize};
         use sqlx::PgPool;
-
-        use crate::{
-            api::{
+use crate::{
+    api::{
                 iceberg::v1::{
                     DataAccess, NamespaceParameters, Prefix, tables::TablesService as _,
                 },
@@ -1843,9 +1842,9 @@ mod test {
                     warehouse::TabularDeleteProfile,
                 },
             },
-            request_metadata::RequestMetadata,
-            server::CatalogServer,
-            service::{
+    request_metadata::RequestMetadata,
+    server::CatalogServer,
+    service::{
                 TableId,
                 authz::AllowAllAuthorizer,
                 tasks::{
@@ -1853,8 +1852,11 @@ mod test {
                     UserScheduling, WarehouseTaskEntityId,
                 },
             },
-            tests::{memory_io_profile, setup_with_registry},
-        };
+};
+use lakekeeper_storage_postgres::tests::{
+    memory_io_profile,
+    setup_with_registry,
+};
 
         static TEST_QUEUE_NAME: LazyLock<TaskQueueName> =
             LazyLock::new(|| "test_schedulable_lifecycle".into());

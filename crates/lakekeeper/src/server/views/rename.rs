@@ -216,12 +216,16 @@ mod test {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::{
-        api::iceberg::v1::ViewParameters,
-        implementations::postgres::namespace::tests::initialize_namespace,
-        server::views::{create::test::create_view, load::test::load_view, test::setup},
-        tests::create_view_request,
-    };
+use crate::{
+    api::iceberg::v1::ViewParameters,
+    server::views::{create::test::create_view, load::test::load_view, test::setup},
+};
+use lakekeeper_storage_postgres::{
+    namespace::tests::initialize_namespace,
+};
+use lakekeeper_storage_postgres::tests::{
+    create_view_request,
+};
 
     #[sqlx::test]
     async fn test_rename_view_without_namespace(pool: PgPool) {

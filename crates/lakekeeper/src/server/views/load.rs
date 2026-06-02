@@ -316,16 +316,18 @@ fn interpret_authz_results_for_load_view(
 pub(crate) mod test {
     use iceberg_ext::catalog::rest::LoadViewResult;
     use sqlx::PgPool;
-
-    use crate::{
-        api::iceberg::v1::{
+use crate::{
+    api::iceberg::v1::{
             ViewParameters,
             views::{LoadViewRequest, ViewService},
         },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        server::CatalogServer,
-        service::{Result, State, authz::AllowAllAuthorizer},
-    };
+    server::CatalogServer,
+    service::{Result, State, authz::AllowAllAuthorizer},
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+};
 
     pub(crate) async fn load_view(
         api_context: crate::api::ApiContext<

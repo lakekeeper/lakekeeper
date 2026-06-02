@@ -348,7 +348,7 @@ pub(crate) mod test {
         (profile, cred)
     }
 
-    pub(crate) async fn create_ns<T: Authorizer>(
+    pub async fn create_ns<T: Authorizer>(
         api_context: ApiContext<State<T, PostgresBackend, SecretsState>>,
         prefix: String,
         ns_name: String,
@@ -366,7 +366,7 @@ pub(crate) mod test {
         .unwrap()
     }
 
-    pub(crate) async fn setup<T: Authorizer>(
+    pub async fn setup<T: Authorizer>(
         pool: PgPool,
         storage_profile: StorageProfile,
         storage_credential: Option<StorageCredential>,

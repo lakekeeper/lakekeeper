@@ -186,9 +186,8 @@ pub(crate) mod test {
     use http::StatusCode;
     use iceberg::NamespaceIdent;
     use sqlx::PgPool;
-
-    use crate::{
-        api::{
+use crate::{
+    api::{
             ApiContext,
             data::v1::generic_tables::{
                 CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
@@ -199,19 +198,23 @@ pub(crate) mod test {
                 v1::{DataAccessMode, namespace::NamespaceParameters},
             },
         },
-        implementations::postgres::{
-            PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
-            warehouse::test::initialize_warehouse,
-        },
-        server::CatalogServer,
-        service::{
+    server::CatalogServer,
+    service::{
             CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _,
             authz::AllowAllAuthorizer,
             idempotency::IdempotencyKey,
             storage::{MemoryProfile, StorageProfile},
         },
-        tests::random_request_metadata,
-    };
+};
+use lakekeeper_storage_postgres::{
+    PostgresBackend,
+    SecretsState,
+    namespace::tests::initialize_namespace,
+    warehouse::test::initialize_warehouse,
+};
+use lakekeeper_storage_postgres::tests::{
+    random_request_metadata,
+};
 
     type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 

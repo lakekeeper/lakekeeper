@@ -1,15 +1,9 @@
 use sqlx::PgPool;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use lakekeeper::{
-    api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
-    service::{State, UserId, authz::AllowAllAuthorizer},
-    tests::TestWarehouseResponse,
-};
-use crate::{
-    PostgresBackend,
-    SecretsState,
-};
+
+use lakekeeper_storage_postgres::PostgresBackend;
+use lakekeeper_storage_postgres::SecretsState;
 
 mod test {
     use iceberg::NamespaceIdent;
@@ -600,8 +594,8 @@ async fn setup_drop_test(
         .try_init()
         .ok();
 
-    let prof = crate::tests::memory_io_profile();
-    let (ctx, warehouse) = crate::tests::setup(
+    let prof = lakekeeper_integration_tests::memory_io_profile();
+    let (ctx, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
         prof,
         None,
@@ -616,7 +610,7 @@ async fn setup_drop_test(
     for ns in 0..n_namespaces {
         let ns_name = format!("ns{ns}");
 
-        let _ = crate::tests::create_ns(
+        let _ = lakekeeper_integration_tests::create_ns(
             ctx.clone(),
             warehouse.warehouse_id.to_string(),
             ns_name.clone(),
@@ -625,7 +619,7 @@ async fn setup_drop_test(
         for i in 0..n_tabs {
             let tab_name = format!("tab{i}");
 
-            let _ = crate::tests::create_table(
+            let _ = lakekeeper_integration_tests::create_table(
                 ctx.clone(),
                 &warehouse.warehouse_id.to_string(),
                 &ns_name,
@@ -638,7 +632,7 @@ async fn setup_drop_test(
 
         for i in 0..n_views {
             let view_name = format!("view{i}");
-            crate::tests::create_view(
+            lakekeeper_integration_tests::create_view(
                 ctx.clone(),
                 &warehouse.warehouse_id.to_string(),
                 &ns_name,

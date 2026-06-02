@@ -34,10 +34,10 @@ use lakekeeper::{
 
 #[sqlx::test]
 async fn test_soft_deletion(pool: PgPool) {
-    let storage_profile = crate::tests::memory_io_profile();
+    let storage_profile = lakekeeper_integration_tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
 
-    let (api_context, warehouse) = crate::tests::setup(
+    let (api_context, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
         storage_profile.clone(),
         None,
@@ -85,7 +85,7 @@ async fn test_soft_deletion(pool: PgPool) {
         tokio::spawn(async move {
             (
                 table_name.clone(),
-                crate::tests::create_table(
+                lakekeeper_integration_tests::create_table(
                     api_context.clone(),
                     &warehouse_id,
                     &ns_name,
@@ -282,10 +282,10 @@ async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
         iceberg::types::DropParams,
     };
 
-    let storage_profile = crate::tests::memory_io_profile();
+    let storage_profile = lakekeeper_integration_tests::memory_io_profile();
     let authorizer = AllowAllAuthorizer::default();
 
-    let (api_context, warehouse) = crate::tests::setup(
+    let (api_context, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
         storage_profile,
         None,
@@ -302,10 +302,10 @@ async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
     let prefix = warehouse.warehouse_id.to_string();
     let ns_name = format!("test_namespace_{}", Uuid::now_v7());
 
-    crate::tests::create_ns(api_context.clone(), prefix.clone(), ns_name.clone()).await;
+    lakekeeper_integration_tests::create_ns(api_context.clone(), prefix.clone(), ns_name.clone()).await;
 
     let gt_name = "my_gt";
-    crate::tests::create_generic_table(
+    lakekeeper_integration_tests::create_generic_table(
         api_context.clone(),
         prefix.clone(),
         ns_name.clone(),

@@ -16,9 +16,7 @@ use lakekeeper::{
     },
     tests::{SetupTestCatalog, memory_io_profile, random_request_metadata},
 };
-use crate::{
-    PostgresBackend,
-};
+use lakekeeper_storage_postgres::PostgresBackend;
 
 /// Test basic namespace creation
 #[sqlx::test]

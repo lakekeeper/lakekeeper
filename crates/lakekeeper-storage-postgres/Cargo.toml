@@ -12,7 +12,6 @@ keywords = ["iceberg", "rest", "lakekeeper", "postgres"]
 [lib]
 
 [features]
-test-utils = ["lakekeeper/test-utils"]
 
 [dependencies]
 anyhow = { workspace = true }
