@@ -544,8 +544,8 @@ pub struct Task {
     pub id: TaskAttemptId,
     pub status: TaskIntermediateStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub(crate) config: Option<serde_json::Value>,
-    pub(crate) data: serde_json::Value,
+    pub config: Option<serde_json::Value>,
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1288,9 +1288,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
-#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(
-    feature = "sqlx-postgres",
+    feature = "sqlx",
     sqlx(type_name = "task_intermediate_status", rename_all = "kebab-case")
 )]
 pub enum TaskIntermediateStatus {
@@ -1300,9 +1300,9 @@ pub enum TaskIntermediateStatus {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
 #[cfg_attr(
-    feature = "sqlx-postgres",
+    feature = "sqlx",
     sqlx(type_name = "task_final_status", rename_all = "kebab-case")
 )]
 pub enum TaskOutcome {

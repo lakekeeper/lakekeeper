@@ -17,7 +17,6 @@ ignored = ["cloudevents-sdk"]
 
 [features]
 all = [
-    "sqlx-postgres",
     "s3-signer",
     "router",
     "nats",
@@ -25,16 +24,18 @@ all = [
     "kafka",
     "open-api",
 ]
-sqlx-postgres = ["sqlx"]
-sqlx = ["dep:sqlx"]
 s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http", "dep:tower"]
 nats = ["dep:async-nats"]
-default = ["sqlx-postgres", "s3-signer", "router", "vendored-protoc"]
+default = ["s3-signer", "router", "vendored-protoc"]
 kafka = ["dep:rdkafka"]
 vendored-protoc = []
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
+# Enable `derive(sqlx::Type)` on lakekeeper's domain enums/newtypes so that
+# storage backends (e.g. `lakekeeper-storage-postgres`) can `bind()` and
+# `query_as!` these types directly without a wrapper layer.
+sqlx = ["dep:sqlx"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -55,7 +56,6 @@ azure_storage_blobs = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }
-crc = { workspace = true }
 derive_more = { workspace = true }
 fastrand = { workspace = true }
 figment = { workspace = true }

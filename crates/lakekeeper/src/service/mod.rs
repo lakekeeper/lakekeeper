@@ -17,8 +17,7 @@ pub use catalog_store::*;
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;
 mod post_migration_hooks;
 #[allow(unused_imports)]
-pub(crate) use identifier::tabular::TabularIdentBorrowed;
-pub use identifier::tabular::{TabularId, TabularIdentOwned};
+pub use identifier::tabular::{TabularId, TabularIdentBorrowed, TabularIdentOwned};
 pub use lakekeeper_io::Location;
 pub use secrets::{SecretId, SecretStore};
 use tasks::RegisteredTaskQueues;
@@ -37,7 +36,7 @@ mod identifier;
 
 pub use identifier::{generic::*, project::*, role::*};
 pub use post_migration_hooks::run_post_migration_hooks;
-#[cfg(any(test, all(feature = "test-utils", feature = "sqlx-postgres")))]
+#[cfg(any(test, all(feature = "test-utils", feature = "sqlx")))]
 pub(crate) use post_migration_hooks::upsert_system_roles_in_all_projects;
 
 // ---------------- State ----------------

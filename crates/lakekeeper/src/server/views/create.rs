@@ -238,7 +238,7 @@ pub(crate) mod test {
         api_context: ApiContext<
             State<
                 AllowAllAuthorizer,
-                crate::implementations::postgres::PostgresBackend,
+                lakekeeper_storage_postgres::PostgresBackend,
                 SecretsState,
             >,
         >,

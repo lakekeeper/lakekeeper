@@ -1519,7 +1519,7 @@ mod tests {
             .collect();
         let result = authz
             .are_allowed_tabular_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parents,
                 &actions,
@@ -1632,7 +1632,7 @@ mod tests {
 
         let result = authz
             .are_allowed_tabular_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parent_namespaces,
                 &actions,
@@ -1778,7 +1778,7 @@ mod tests {
 
         let result = authz
             .are_allowed_tabular_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parent_namespaces,
                 &actions,
@@ -1797,7 +1797,7 @@ mod tests {
             crate::service::State<
                 HidingAuthorizer,
                 PostgresBackend,
-                crate::implementations::postgres::SecretsState,
+                lakekeeper_storage_postgres::SecretsState,
             >,
         >,
         warehouse_id: crate::service::WarehouseId,
@@ -1882,7 +1882,7 @@ mod tests {
         };
         let result = authz
             .are_allowed_generic_table_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parents,
                 &[
@@ -1945,7 +1945,7 @@ mod tests {
         };
         let result = authz
             .are_allowed_generic_table_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parents,
                 &[
@@ -2006,7 +2006,7 @@ mod tests {
         };
         let result = authz
             .are_allowed_generic_table_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parents,
                 &[
@@ -2132,7 +2132,7 @@ mod tests {
 
         let result = authz
             .are_allowed_tabular_actions_vec(
-                &crate::tests::random_request_metadata(),
+                &lakekeeper_storage_postgres::tests::random_request_metadata(),
                 &warehouse,
                 &parent_namespaces,
                 &actions,

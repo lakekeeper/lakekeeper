@@ -340,8 +340,8 @@ impl<'slice, 'data> UniqueMembers<'slice, 'data> {
     /// # Caller contract
     /// Every `user_id` in `members` must be unique. Violating this contract
     /// causes a runtime database error, not memory unsafety.
-    #[cfg(feature = "sqlx-postgres")]
-    pub(crate) fn from_unchecked(members: &'slice [CatalogUserRoleAssignmentUser<'data>]) -> Self {
+    #[cfg(feature = "sqlx")]
+    pub fn from_unchecked(members: &'slice [CatalogUserRoleAssignmentUser<'data>]) -> Self {
         Self { inner: members }
     }
 }
@@ -385,8 +385,8 @@ impl<'slice, 'data> UniqueRoles<'slice, 'data> {
     /// # Caller contract
     /// Every `source_id` in `roles` must be unique. Violating this contract
     /// causes a runtime database error, not memory unsafety.
-    #[cfg(feature = "sqlx-postgres")]
-    pub(crate) fn from_unchecked(roles: &'slice [CatalogRoleForAssignment<'data>]) -> Self {
+    #[cfg(feature = "sqlx")]
+    pub fn from_unchecked(roles: &'slice [CatalogRoleForAssignment<'data>]) -> Self {
         Self { inner: roles }
     }
 }

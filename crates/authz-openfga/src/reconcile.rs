@@ -8,7 +8,7 @@
 //! * [`reconcile_hierarchy_tuples_from_catalog`] — additive **plus** drift
 //!   deletion. The caller passes a lock guard to serialize concurrent
 //!   reconciles; this module is agnostic to which lock primitive backs it.
-//!   For Postgres deployments use [`lakekeeper::implementations::postgres::PostgresAdvisoryLock`]
+//!   For Postgres deployments use [`lakekeeper_storage_postgres::PostgresAdvisoryLock`]
 //!   with [`RECONCILE_LOCK_KEY`]; single-replica deployments may pass `()`.
 //!
 //! The shape of every emitted tuple comes from the `hierarchy_tuples_for_*`
@@ -94,7 +94,7 @@ const WRITE_BATCH_SIZE: usize = 100;
 const READ_PAGE_SIZE: i32 = 100;
 /// Lock scope for OpenFGA reconcile-with-deletion. Pass this to the
 /// backend's lock primitive (e.g.
-/// `lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire`)
+/// `lakekeeper_storage_postgres::PostgresAdvisoryLock::try_acquire`)
 /// when calling [`reconcile_hierarchy_tuples_from_catalog`] in
 /// `AddMissingAndDeleteDrift` mode.
 ///
@@ -203,7 +203,7 @@ where
 /// call; this module never inspects it and the guard drops at function
 /// exit. Use it to serialize concurrent reconciles — e.g. acquire a
 /// Postgres advisory lock with
-/// `lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire(
+/// `lakekeeper_storage_postgres::PostgresAdvisoryLock::try_acquire(
 /// state, RECONCILE_LOCK_KEY)` and pass the guard in. Single-replica
 /// deployments may pass [`lakekeeper::service::maintenance::NoMaintenanceLock`]
 /// as an explicit opt-out.
@@ -910,7 +910,7 @@ mod openfga_integration_tests {
         pool: &sqlx::PgPool,
         operator_id: &UserId,
     ) -> (
-        lakekeeper::tests::TestWarehouseResponse,
+        lakekeeper_storage_postgres::tests::TestWarehouseResponse,
         NamespaceId,
         NamespaceId,
         RoleId,

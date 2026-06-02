@@ -348,7 +348,7 @@ mod test {
         let queues = crate::service::tasks::TaskQueueRegistry::new();
 
         let secrets =
-            crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
+            lakekeeper_storage_postgres::SecretsState::from_pools(pool.clone(), pool);
         let cat = catalog_state.clone();
         let sec = secrets.clone();
         let auth = AllowAllAuthorizer::default();
@@ -524,7 +524,7 @@ mod test {
 
         let queues = crate::service::tasks::TaskQueueRegistry::new();
         let secrets =
-            crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
+            lakekeeper_storage_postgres::SecretsState::from_pools(pool.clone(), pool);
         queues
             .register_built_in_queues::<PostgresBackend, SecretsState, AllowAllAuthorizer>(
                 catalog_state.clone(),

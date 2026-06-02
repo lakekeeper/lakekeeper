@@ -159,7 +159,7 @@ mod test {
         WarehouseId,
         ArcProjectId,
     ) {
-        let api_context = crate::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
+        let api_context = lakekeeper_storage_postgres::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
         let state = api_context.v1_state.catalog.clone();
         let (project_id, warehouse_id) = initialize_warehouse(
             state.clone(),

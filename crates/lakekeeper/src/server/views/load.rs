@@ -339,7 +339,7 @@ pub(crate) mod test {
             view,
             LoadViewRequest::default(),
             api_context,
-            crate::tests::random_request_metadata(),
+            lakekeeper_storage_postgres::tests::random_request_metadata(),
         )
         .await
     }
@@ -349,7 +349,7 @@ pub(crate) mod test {
         let (ctx, namespace, whi, _) = crate::server::views::test::setup(pool, None).await;
 
         let view_name = "my-view";
-        let rq = crate::tests::create_view_request(Some(view_name), None);
+        let rq = lakekeeper_storage_postgres::tests::create_view_request(Some(view_name), None);
         let prefix = whi.to_string();
         Box::pin(crate::server::views::create::test::create_view(
             ctx.clone(),

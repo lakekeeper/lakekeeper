@@ -114,7 +114,7 @@ async fn backfill_registered_system_roles<C: CatalogStore>(state: C::State) -> a
 ///
 /// `pub(crate)` for production use by [`backfill_registered_system_roles`].
 /// Downstream test crates reach this via the `pub` wrapper exported from
-/// [`crate::tests::upsert_system_roles_in_all_projects`], gated on the
+/// [`lakekeeper_storage_postgres::tests::upsert_system_roles_in_all_projects`], gated on the
 /// `test-utils` feature.
 pub(crate) async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
     state: C::State,

@@ -42,7 +42,7 @@ pub static SYSTEM_ROLE_PROVIDER_ID: LazyLock<RoleProviderId> = LazyLock::new(|| 
 /// upsert or delete catalog-managed system roles. Only upstream code
 /// can construct it (the `pub(crate) const fn new` constructor). The
 /// two trusted construction sites are
-/// [`crate::implementations::postgres::warehouse::create_project`]
+/// [`lakekeeper_storage_postgres::warehouse::create_project`]
 /// (atomic with project creation) and
 /// [`crate::service::post_migration_hooks::upsert_system_roles_in_all_projects`]
 /// (post-migration backfill).
@@ -64,9 +64,12 @@ pub static SYSTEM_ROLE_PROVIDER_ID: LazyLock<RoleProviderId> = LazyLock::new(|| 
 pub struct SystemRoleSeederCap(());
 
 impl SystemRoleSeederCap {
-    /// Constructs the capability token. `pub(crate)` so only upstream
-    /// code can mint one.
-    pub(crate) const fn new() -> Self {
+    /// Constructs the capability token. Only the storage-backend impl
+    /// crates (`lakekeeper-storage-postgres`, etc.) and the
+    /// post-migration hook in `lakekeeper` itself should mint one —
+    /// minting from API-facing code violates the bootstrap contract
+    /// the token is documenting.
+    pub const fn new() -> Self {
         Self(())
     }
 }

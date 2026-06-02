@@ -286,7 +286,7 @@ pub(crate) mod test {
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    pub(crate) use crate::tests::memory_io_profile;
+    pub(crate) use lakekeeper_storage_postgres::tests::memory_io_profile;
     use crate::{
         WarehouseId,
         api::{
@@ -377,7 +377,7 @@ pub(crate) mod test {
         ApiContext<State<T, PostgresBackend, SecretsState>>,
         TestWarehouseResponse,
     ) {
-        crate::tests::setup(
+        lakekeeper_storage_postgres::tests::setup(
             pool,
             storage_profile,
             storage_credential,
@@ -416,7 +416,7 @@ pub(crate) mod test {
     ) {
         let prof = crate::server::test::memory_io_profile();
         let base_loc = prof.base_location().unwrap().to_string();
-        let (ctx, res) = crate::tests::setup(
+        let (ctx, res) = lakekeeper_storage_postgres::tests::setup(
             pool.clone(),
             prof,
             None,
@@ -691,5 +691,5 @@ pub(crate) mod test {
     }
     pub(crate) use impl_pagination_tests;
 
-    use crate::tests::TestWarehouseResponse;
+    use lakekeeper_storage_postgres::tests::TestWarehouseResponse;
 }

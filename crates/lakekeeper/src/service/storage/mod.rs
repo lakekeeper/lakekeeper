@@ -1384,7 +1384,7 @@ mod tests {
 
         #[test]
         fn test_vended_aws() {
-            crate::tests::test_block_on(
+            lakekeeper_storage_postgres::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let bucket = std::env::var("LAKEKEEPER_TEST__AWS_S3_BUCKET").unwrap();
@@ -1444,7 +1444,7 @@ mod tests {
         fn test_vended_s3_compat() {
             use super::super::s3::test::minio_integration_tests::storage_profile;
 
-            crate::tests::test_block_on(
+            lakekeeper_storage_postgres::tests::test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);
