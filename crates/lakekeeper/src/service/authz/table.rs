@@ -1383,15 +1383,22 @@ pub enum ActionOnTableOrView<
     GenericTable(ActionOnGenericTable<'a, 'u, IG, AG>),
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use iceberg::{NamespaceIdent, TableIdent};
+    use lakekeeper_storage_postgres::{
+        PostgresBackend,
+        tests::{
+            SetupTestCatalog, create_generic_table, create_ns, create_table, create_view,
+            memory_io_profile,
+        },
+    };
     use sqlx::PgPool;
 
     use super::*;
-use crate::{
-    api::ApiContext,
-    service::{
+    use crate::{
+        api::ApiContext,
+        service::{
             CatalogGenericTableOps, CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo,
             TabularIdentBorrowed, Transaction, ViewInfo,
             authz::{
@@ -1400,18 +1407,7 @@ use crate::{
             },
             catalog_store::TabularListFlags,
         },
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-};
-use lakekeeper_storage_postgres::tests::{
-    SetupTestCatalog,
-    create_generic_table,
-    create_ns,
-    create_table,
-    create_view,
-    memory_io_profile,
-};
+    };
 
     /// Fully-specified tabular action type for tests where not all enum variants are present.
     type TestTabularAction<'a> = ActionOnTableOrView<

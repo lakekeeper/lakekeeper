@@ -8,8 +8,6 @@ use iceberg_ext::catalog::rest::{
     CreateNamespaceRequest, CreateNamespaceResponse, CreateTableRequest, CreateViewRequest,
     LoadTableResult, LoadViewResult,
 };
-use serde_json::json;
-use tokio::runtime::Runtime;
 use lakekeeper::{
     api::{
         ApiContext,
@@ -27,6 +25,8 @@ use lakekeeper::{
     service::{CatalogStore, SecretStore, State, authz::Authorizer},
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use serde_json::json;
+use tokio::runtime::Runtime;
 
 use crate::random_request_metadata;
 
@@ -222,13 +222,13 @@ pub async fn create_generic_table<T: Authorizer>(
     ns_name: impl Into<String>,
     name: impl Into<String>,
 ) -> lakekeeper::api::Result<lakekeeper::api::data::v1::generic_tables::LoadGenericTableResponse> {
-use lakekeeper::{
-    api::{
+    use lakekeeper::{
+        api::{
             data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
             iceberg::v1::namespace::NamespaceParameters,
         },
-    service::GenericTableFormat,
-};
+        service::GenericTableFormat,
+    };
 
     CatalogServer::create_generic_table(
         NamespaceParameters {

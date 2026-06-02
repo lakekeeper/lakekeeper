@@ -1,8 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use sqlx::PgPool;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
 use lakekeeper::{
     api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     service::{
@@ -13,6 +10,9 @@ use lakekeeper::{
 };
 use lakekeeper_integration_tests::TestWarehouseResponse;
 use lakekeeper_storage_postgres::{PostgresBackend, PostgresStatisticsSink, SecretsState};
+use sqlx::PgPool;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 mod test {
     use std::{
@@ -24,9 +24,6 @@ mod test {
 
     use chrono::{SubsecRound, Utc};
     use http::Method;
-    use maplit::hashmap;
-    use sqlx::PgPool;
-    use strum::IntoEnumIterator;
     use lakekeeper::{
         DEFAULT_PROJECT_ID, ProjectId,
         api::{
@@ -46,6 +43,10 @@ mod test {
             endpoint_statistics::{EndpointStatisticsMessage, FlushMode},
         },
     };
+    use maplit::hashmap;
+    use sqlx::PgPool;
+    use strum::IntoEnumIterator;
+
     use super::StatsSetup;
 
     #[sqlx::test]

@@ -1,20 +1,16 @@
-use sqlx::PgPool;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
-
 use lakekeeper::{
     api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     service::{State, UserId, authz::AllowAllAuthorizer},
 };
 use lakekeeper_integration_tests::TestWarehouseResponse;
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 mod test {
     use std::sync::{Arc, LazyLock, Mutex};
 
-    use serde::{Deserialize, Serialize};
-    use sqlx::PgPool;
-    use uuid::Uuid;
     use lakekeeper::{
         api::management::v1::task_queue::{QueueConfig, SetTaskQueueConfigRequest},
         service::{
@@ -27,6 +23,9 @@ mod test {
         },
     };
     use lakekeeper_storage_postgres::PostgresBackend;
+    use serde::{Deserialize, Serialize};
+    use sqlx::PgPool;
+    use uuid::Uuid;
 
     #[sqlx::test]
     async fn test_task_queue_config_lands_in_task_worker(pool: PgPool) {

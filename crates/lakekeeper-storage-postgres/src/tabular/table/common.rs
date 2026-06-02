@@ -4,13 +4,14 @@ use iceberg::spec::{
     EncryptedKey, MetadataLog, PartitionSpecRef, PartitionStatisticsFile, SchemaRef, SnapshotLog,
     SnapshotRef, SortOrderRef, StatisticsFile, TableMetadata,
 };
-use sqlx::{PgConnection, Postgres, Transaction};
 use lakekeeper::{
     WarehouseId,
     service::{
         CatalogBackendError, ConversionError, InternalBackendErrors, SerializationError, TableId,
     },
 };
+use sqlx::{PgConnection, Postgres, Transaction};
+
 use crate::{
     dbutils::DBErrorHandler,
     tabular::table::{assigned_rows_as_i64, first_row_id_as_i64},

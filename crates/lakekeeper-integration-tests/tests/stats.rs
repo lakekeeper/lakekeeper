@@ -1,24 +1,23 @@
-use sqlx::PgPool;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
-
 use lakekeeper::{
     api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     service::{State, UserId, authz::AllowAllAuthorizer},
 };
 use lakekeeper_integration_tests::TestWarehouseResponse;
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 mod test {
     use std::time::Duration;
 
-    use sqlx::PgPool;
-    use uuid::Uuid;
     use lakekeeper::api::{
         iceberg::types::PageToken,
         management::v1::{ApiServer, GetWarehouseStatisticsQuery, warehouse::Service},
     };
     use lakekeeper_integration_tests::{random_request_metadata, spawn_build_in_queues};
+    use sqlx::PgPool;
+    use uuid::Uuid;
 
     // The stats trigger truncates `now()` to the configured interval unit
     // ('second' under test, see `configure_trigger`) and pushes the previous

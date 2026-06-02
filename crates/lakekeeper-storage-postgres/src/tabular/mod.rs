@@ -7,16 +7,8 @@ pub(crate) mod view;
 use std::{collections::HashMap, default::Default, fmt::Debug, str::FromStr as _};
 
 use chrono::Utc;
-use lakekeeper_io::Location;
-pub(crate) use load_by_location::*;
-pub(crate) use protection::set_tabular_protected;
-use sqlx::FromRow;
-use uuid::Uuid;
-
-use super::dbutils::DBErrorHandler as _;
 use lakekeeper::{
-    CONFIG,
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     service::{
         CatalogSearchTabularInfo, CatalogSearchTabularResponse, ClearTabularDeletedAtError,
@@ -30,6 +22,13 @@ use lakekeeper::{
         ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location,
     },
 };
+use lakekeeper_io::Location;
+pub(crate) use load_by_location::*;
+pub(crate) use protection::set_tabular_protected;
+use sqlx::FromRow;
+use uuid::Uuid;
+
+use super::dbutils::DBErrorHandler as _;
 use crate::{
     namespace::parse_namespace_identifier_from_vec,
     pagination::{PaginateToken, V1PaginateToken},
@@ -1920,22 +1919,18 @@ fn prepare_properties(
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use std::str::FromStr as _;
 
+    use lakekeeper::service::AuthZTableInfo;
     use lakekeeper_io::Location;
     use uuid::Uuid;
 
     use super::*;
-use lakekeeper::{
-    service::AuthZTableInfo,
-};
-use crate::{
-    CatalogState,
-    namespace::tests::initialize_namespace,
-    warehouse::test::initialize_warehouse,
-};
+    use crate::{
+        CatalogState, namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
+    };
 
     pub(super) async fn setup_test_tabular(pool: &sqlx::PgPool, protected: bool) -> TableInfo {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());

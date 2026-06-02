@@ -10,8 +10,6 @@
 //! second call fails with `409 CONFLICT`.
 use http::StatusCode;
 use iceberg::{NamespaceIdent, TableIdent};
-use sqlx::PgPool;
-use uuid::Uuid;
 use lakekeeper::{
     api::{
         ApiContext,
@@ -28,8 +26,9 @@ use lakekeeper_integration_tests::{
     create_generic_table, create_ns, create_table, create_view, memory_io_profile,
     random_request_metadata, setup,
 };
-use lakekeeper_storage_postgres::PostgresBackend;
-use lakekeeper_storage_postgres::SecretsState;
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
+use uuid::Uuid;
 
 type TestApiContext = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 

@@ -206,17 +206,17 @@ async fn maybe_register_user<D: CatalogStore>(
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use sqlx::PgPool;
 
     use super::CatalogServer;
-use crate::{
-    api::iceberg::v1::config::{GetConfigQueryParams, Service as _},
-    request_metadata::RequestMetadata,
-    server::test::{memory_io_profile, setup},
-    service::authz::tests::HidingAuthorizer,
-};
+    use crate::{
+        api::iceberg::v1::config::{GetConfigQueryParams, Service as _},
+        request_metadata::RequestMetadata,
+        server::test::{memory_io_profile, setup},
+        service::authz::tests::HidingAuthorizer,
+    };
 
     fn config_query(project: &crate::ProjectId, warehouse_name: &str) -> GetConfigQueryParams {
         GetConfigQueryParams {

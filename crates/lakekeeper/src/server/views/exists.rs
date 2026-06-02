@@ -46,20 +46,18 @@ pub(crate) async fn view_exists<C: CatalogStore, A: Authorizer + Clone, S: Secre
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CreateViewRequest;
+    use lakekeeper_storage_postgres::tests::create_view_request;
     use sqlx::PgPool;
 
     use super::*;
-use crate::{
-    api::iceberg::{types::Prefix, v1::ViewParameters},
-    server::views::{create::test::create_view, test::setup},
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-};
+    use crate::{
+        api::iceberg::{types::Prefix, v1::ViewParameters},
+        server::views::{create::test::create_view, test::setup},
+    };
 
     #[sqlx::test]
     async fn test_view_exists(pool: PgPool) {

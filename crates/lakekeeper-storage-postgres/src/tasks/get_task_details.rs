@@ -3,10 +3,6 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration};
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::Itertools;
-use sqlx::postgres::types::PgInterval;
-use uuid::Uuid;
-
-use super::TaskEntityTypeDB;
 use lakekeeper::{
     ProjectId,
     api::management::v1::tasks::TaskAttempt,
@@ -18,6 +14,10 @@ use lakekeeper::{
         },
     },
 };
+use sqlx::postgres::types::PgInterval;
+use uuid::Uuid;
+
+use super::TaskEntityTypeDB;
 use crate::{
     dbutils::DBErrorHandler,
     tasks::{task_entity_from_db, task_status_from_db},
@@ -271,19 +271,14 @@ where
     })
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use chrono::{TimeZone, Utc};
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
-    use sqlx::{PgPool, postgres::types::PgInterval};
-    use uuid::Uuid;
-
-    use super::*;
-use lakekeeper::{
-    ProjectId,
-    WarehouseId,
-    api::management::v1::tasks::TaskStatus,
-    service::{
+    use lakekeeper::{
+        ProjectId, WarehouseId,
+        api::management::v1::tasks::TaskStatus,
+        service::{
             ArcProjectId,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ScheduleTaskMetadata, TaskCheckState,
@@ -291,13 +286,15 @@ use lakekeeper::{
                 WarehouseTaskEntityId,
             },
         },
-};
-use crate::{
-    tasks::{
-            check_and_heartbeat_task, pick_task, queue_task_batch, record_failure, record_success,
-            test::setup_warehouse,
-        },
-};
+    };
+    use sqlx::{PgPool, postgres::types::PgInterval};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::tasks::{
+        check_and_heartbeat_task, pick_task, queue_task_batch, record_failure, record_success,
+        test::setup_warehouse,
+    };
 
     #[allow(clippy::too_many_arguments)]
     fn create_test_row(

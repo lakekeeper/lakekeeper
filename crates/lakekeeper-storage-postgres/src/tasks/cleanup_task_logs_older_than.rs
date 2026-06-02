@@ -1,12 +1,8 @@
 use chrono::Duration;
+use lakekeeper::{ProjectId, api::Result};
 use sqlx::{PgConnection, query};
-use lakekeeper::{
-    ProjectId,
-    api::Result,
-};
-use crate::{
-    dbutils::DBErrorHandler as _,
-};
+
+use crate::dbutils::DBErrorHandler as _;
 
 pub(crate) async fn cleanup_task_logs_older_than(
     transaction: &mut PgConnection,
@@ -38,27 +34,22 @@ pub(crate) async fn cleanup_task_logs_older_than(
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use std::sync::{Arc, LazyLock};
 
     use chrono::{DateTime, Utc};
-    use serde::{Deserialize, Serialize};
-    use sqlx::PgPool;
-    use uuid::Uuid;
-
-    use super::*;
-use lakekeeper::{
-    WarehouseId,
-    api::management::v1::{tasks::ListTasksRequest, warehouse::TabularDeleteProfile},
-    implementations::{
+    use lakekeeper::{
+        WarehouseId,
+        api::management::v1::{tasks::ListTasksRequest, warehouse::TabularDeleteProfile},
+        implementations::{
             CatalogState,
             postgres::{
                 PostgresBackend,
                 warehouse::{create_project, create_warehouse},
             },
         },
-    service::{
+        service::{
             ArcProjectId, CatalogTaskOps, WarehouseFormatVersionPolicy,
             storage::{MemoryProfile, StorageProfile},
             tasks::{
@@ -66,7 +57,12 @@ use lakekeeper::{
                 TaskExecutionDetails, TaskFilter, TaskQueueName,
             },
         },
-};
+    };
+    use serde::{Deserialize, Serialize};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::*;
 
     const QN_STR: &str = "dummy";
     static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());

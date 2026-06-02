@@ -1,8 +1,6 @@
 use std::str::FromStr as _;
 
 use iceberg::TableIdent;
-use lakekeeper_io::Location;
-use sqlx::types::Json;
 use lakekeeper::{
     WarehouseId,
     service::{
@@ -11,6 +9,8 @@ use lakekeeper::{
         storage::{StorageProfile, join_location},
     },
 };
+use lakekeeper_io::Location;
+use sqlx::types::Json;
 
 use crate::{
     CatalogState,

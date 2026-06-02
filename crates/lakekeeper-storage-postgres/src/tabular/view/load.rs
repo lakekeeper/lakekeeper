@@ -13,9 +13,6 @@ use iceberg::{
     },
 };
 use itertools::izip;
-use lakekeeper_io::Location;
-use sqlx::{FromRow, PgConnection, types::Json};
-use uuid::Uuid;
 use lakekeeper::{
     WarehouseId,
     service::{
@@ -25,14 +22,17 @@ use lakekeeper::{
         ViewMetadataValidationFailedInternal, storage::join_location,
     },
 };
+use lakekeeper_io::Location;
+use sqlx::{FromRow, PgConnection, types::Json};
+use uuid::Uuid;
+
 use crate::{
-    PostgresBackend,
-    PostgresTransactionType,
+    PostgresBackend, PostgresTransactionType,
     dbutils::DBErrorHandler,
     tabular::{
-            prepare_properties,
-            view::{ViewFormatVersion, ViewRepresentationType},
-        },
+        prepare_properties,
+        view::{ViewFormatVersion, ViewRepresentationType},
+    },
 };
 
 pub(crate) async fn load_view(

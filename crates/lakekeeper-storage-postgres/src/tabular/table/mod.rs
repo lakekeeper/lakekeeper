@@ -14,8 +14,6 @@ use iceberg::{
     },
 };
 use iceberg_ext::spec::TableMetadata;
-use sqlx::types::Json;
-use uuid::Uuid;
 use lakekeeper::{
     WarehouseId,
     api::iceberg::v1::tables::{LoadTableFilters, SnapshotsQuery},
@@ -25,6 +23,8 @@ use lakekeeper::{
         storage::join_location,
     },
 };
+use sqlx::types::Json;
+use uuid::Uuid;
 
 const MAX_PARAMETERS: usize = 30000;
 
@@ -727,7 +727,7 @@ impl From<&[TableUpdate]> for TableUpdateFlags {
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod tests {
     // Desired behavior:
     // - Stage-Create => Load fails with 404
@@ -745,19 +745,15 @@ pub(crate) mod tests {
         },
     };
     use iceberg_ext::catalog::rest::CreateTableRequest;
-    use lakekeeper_io::Location;
-    use uuid::Uuid;
-
-    use super::*;
-use lakekeeper::{
-    api::{
+    use lakekeeper::{
+        api::{
             iceberg::{
                 types::PageToken,
                 v1::{PaginationQuery, tables::LoadTableFilters},
             },
             management::v1::{DeleteKind, warehouse::WarehouseStatus},
         },
-    implementations::{
+        implementations::{
             CatalogState,
             postgres::{
                 PostgresBackend,
@@ -770,8 +766,8 @@ use lakekeeper::{
                 warehouse::{set_warehouse_status, test::initialize_warehouse},
             },
         },
-    server::tables::create_table::create_table_request_into_table_metadata,
-    service::{
+        server::tables::create_table::create_table_request_into_table_metadata,
+        service::{
             AllowedFormatVersions, CreateTableError, NamedEntity, NamespaceId, RenameTabularError,
             TableCreation, TabularIdentBorrowed, TabularListFlags, ViewOrTableInfo,
             tasks::{
@@ -779,7 +775,11 @@ use lakekeeper::{
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             },
         },
-};
+    };
+    use lakekeeper_io::Location;
+    use uuid::Uuid;
+
+    use super::*;
 
     fn create_request(
         stage_create: Option<bool>,

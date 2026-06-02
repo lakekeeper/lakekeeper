@@ -315,34 +315,30 @@ where
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
 
     use std::{collections::HashMap, str::FromStr, time::Duration};
 
     use iceberg::NamespaceIdent;
+    use lakekeeper_storage_postgres::{
+        CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
+        namespace::tests::initialize_namespace, tabular::table::tests::initialize_table,
+        warehouse::test::initialize_warehouse,
+    };
     use sqlx::PgPool;
     use tracing_test::traced_test;
     use uuid::Uuid;
 
     use super::*;
-use crate::{
-    api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
-    service::{
+    use crate::{
+        api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
+        service::{
             CatalogGenericTableOps, CatalogStore, CatalogTabularOps, GenericTableCreation,
             GenericTableFormat, GenericTableId, Location, NamedEntity, TabularListFlags,
             Transaction, authz::AllowAllAuthorizer, storage::MemoryProfile,
         },
-};
-use lakekeeper_storage_postgres::{
-    CatalogState,
-    PostgresBackend,
-    PostgresTransaction,
-    SecretsState,
-    namespace::tests::initialize_namespace,
-    tabular::table::tests::initialize_table,
-    warehouse::test::initialize_warehouse,
-};
+    };
 
     #[sqlx::test]
     #[traced_test]
@@ -351,8 +347,7 @@ use lakekeeper_storage_postgres::{
 
         let queues = crate::service::tasks::TaskQueueRegistry::new();
 
-        let secrets =
-            lakekeeper_storage_postgres::SecretsState::from_pools(pool.clone(), pool);
+        let secrets = lakekeeper_storage_postgres::SecretsState::from_pools(pool.clone(), pool);
         let cat = catalog_state.clone();
         let sec = secrets.clone();
         let auth = AllowAllAuthorizer::default();
@@ -527,8 +522,7 @@ use lakekeeper_storage_postgres::{
         let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
 
         let queues = crate::service::tasks::TaskQueueRegistry::new();
-        let secrets =
-            lakekeeper_storage_postgres::SecretsState::from_pools(pool.clone(), pool);
+        let secrets = lakekeeper_storage_postgres::SecretsState::from_pools(pool.clone(), pool);
         queues
             .register_built_in_queues::<PostgresBackend, SecretsState, AllowAllAuthorizer>(
                 catalog_state.clone(),

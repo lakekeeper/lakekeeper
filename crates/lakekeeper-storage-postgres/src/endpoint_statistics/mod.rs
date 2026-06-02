@@ -3,22 +3,21 @@ pub(crate) mod sink;
 
 pub use sink::PostgresStatisticsSink;
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use std::{collections::HashMap, sync::Arc};
 
-    use strum::IntoEnumIterator;
-use lakekeeper::{
-    DEFAULT_PROJECT_ID,
-    api::{
+    use lakekeeper::{
+        DEFAULT_PROJECT_ID,
+        api::{
             endpoints::{Endpoint, EndpointFlat},
             management::v1::warehouse::TabularDeleteProfile,
         },
-    service::authz::AllowAllAuthorizer,
-};
-use crate::{
-    endpoint_statistics::sink::PostgresStatisticsSink,
-};
+        service::authz::AllowAllAuthorizer,
+    };
+    use strum::IntoEnumIterator;
+
+    use crate::endpoint_statistics::sink::PostgresStatisticsSink;
 
     #[sqlx::test]
     async fn test_can_insert_all_variants(pool: sqlx::PgPool) {

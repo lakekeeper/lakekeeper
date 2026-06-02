@@ -2,11 +2,8 @@ use std::sync::Arc;
 
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
-use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
-use uuid::Uuid;
 use lakekeeper::{
-    ProjectId,
-    WarehouseId,
+    ProjectId, WarehouseId,
     api::management::v1::{
         task_queue::{GetTaskQueueConfigResponse, QueueConfigResponse, SetTaskQueueConfigRequest},
         tasks::TaskStatus,
@@ -21,9 +18,10 @@ use lakekeeper::{
         },
     },
 };
-use crate::{
-    dbutils::DBErrorHandler,
-};
+use sqlx::{PgConnection, PgPool, postgres::types::PgInterval};
+use uuid::Uuid;
+
+use crate::dbutils::DBErrorHandler;
 
 mod cleanup_task_logs_older_than;
 mod get_task_details;
@@ -37,7 +35,7 @@ pub(crate) use resolve_tasks::resolve_tasks;
 #[derive(Debug)]
 pub(crate) struct InsertResult {
     pub task_id: TaskId,
-    #[cfg(test)]
+    #[cfg(any())]
     pub entity_id: Option<WarehouseTaskEntityId>,
 }
 
@@ -286,7 +284,7 @@ pub(crate) async fn queue_task_batch(
             .into_iter()
             .map(|record| InsertResult {
                 task_id: record.task_id.into(),
-                #[cfg(test)]
+                #[cfg(any())]
                 entity_id: match record.entity_type {
                     TaskEntityTypeDB::View => Some(WarehouseTaskEntityId::View {
                         view_id: record.entity_id.unwrap().into(),
@@ -1252,27 +1250,22 @@ pub(crate) async fn cancel_scheduled_tasks(
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use std::{collections::HashMap, vec};
 
     use chrono::{DateTime, Utc};
-    use serde_json::Value;
-    use sqlx::PgPool;
-    use uuid::Uuid;
-
-    use super::*;
-use lakekeeper::{
-    WarehouseId,
-    api::management::v1::{
+    use lakekeeper::{
+        WarehouseId,
+        api::management::v1::{
             task_queue::QueueConfig, tasks::TaskStatus as ApiTaskStatus,
             warehouse::TabularDeleteProfile,
         },
-    implementations::{
+        implementations::{
             CatalogState,
             postgres::{PostgresBackend, PostgresTransaction},
         },
-    service::{
+        service::{
             CatalogStore, Transaction,
             authz::AllowAllAuthorizer,
             tasks::{
@@ -1280,8 +1273,13 @@ use lakekeeper::{
                 TaskIntermediateStatus, WarehouseTaskEntityId,
             },
         },
-    tests::SetupTestCatalog,
-};
+        tests::SetupTestCatalog,
+    };
+    use serde_json::Value;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::*;
 
     #[allow(clippy::too_many_arguments)]
     async fn queue_task(

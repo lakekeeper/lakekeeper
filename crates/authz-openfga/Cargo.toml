@@ -14,11 +14,6 @@ keywords = ["iceberg", "rest", "lakekeeper", "openfga"]
 
 [features]
 open-api = ["dep:utoipa", "lakekeeper/open-api"]
-# Marker feature for inline `#[cfg(test)] mod tests` blocks that have not yet
-# been extracted into `lakekeeper-integration-tests`. This feature is never
-# enabled; gated blocks remain in-tree as a TODO and are extracted in a
-# follow-up PR (see VAK-437 split-postgres-catalogstore).
-inline-test-extraction-pending = []
 
 [dependencies]
 anyhow = { workspace = true }
@@ -49,7 +44,7 @@ fastrand = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 itertools = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["test-utils"] }
-lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
 lakekeeper-integration-tests = { path = "../lakekeeper-integration-tests" }
+lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid"] }
 tracing-test = { workspace = true }

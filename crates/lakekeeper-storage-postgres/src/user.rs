@@ -1,4 +1,3 @@
-use super::dbutils::DBErrorHandler;
 use lakekeeper::{
     CONFIG,
     api::{
@@ -9,9 +8,9 @@ use lakekeeper::{
     },
     service::{CreateOrUpdateUserResponse, Result, UserId},
 };
-use crate::{
-    pagination::{PaginateToken, V1PaginateToken},
-};
+
+use super::dbutils::DBErrorHandler;
+use crate::pagination::{PaginateToken, V1PaginateToken};
 
 #[derive(sqlx::Type, Debug, Clone, Copy)]
 #[sqlx(rename_all = "kebab-case", type_name = "user_last_updated_with")]
@@ -286,15 +285,12 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     Ok(SearchUserResponse { users })
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
+    use lakekeeper::api::iceberg::types::PageToken;
+
     use super::*;
-use lakekeeper::{
-    api::iceberg::types::PageToken,
-};
-use crate::{
-    CatalogState,
-};
+    use crate::CatalogState;
 
     #[sqlx::test]
     async fn test_create_or_update_user(pool: sqlx::PgPool) {

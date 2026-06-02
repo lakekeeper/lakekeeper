@@ -1083,16 +1083,18 @@ fn create_namespace_or_warehouse_event_context(
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
 
     use std::{collections::HashSet, hash::RandomState};
 
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+    use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
     use sqlx::PgPool;
-use crate::{
-    api::{
+
+    use crate::{
+        api::{
             ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
@@ -1106,17 +1108,13 @@ use crate::{
                 warehouse::TabularDeleteProfile,
             },
         },
-    request_metadata::RequestMetadata,
-    server::{CatalogServer, NAMESPACE_ID_PROPERTY, test::impl_pagination_tests},
-    service::{
+        request_metadata::RequestMetadata,
+        server::{CatalogServer, NAMESPACE_ID_PROPERTY, test::impl_pagination_tests},
+        service::{
             ListNamespacesQuery, NamespaceId, State, UserId,
             authz::{AllowAllAuthorizer, tests::HidingAuthorizer},
         },
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-};
+    };
 
     async fn ns_paginate_test_setup(
         pool: PgPool,

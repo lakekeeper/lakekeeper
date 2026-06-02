@@ -253,7 +253,7 @@ fn require_not_staged<T>(
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use std::collections::HashMap;
 
@@ -265,11 +265,14 @@ mod tests {
         },
     };
     use iceberg_ext::catalog::rest::{CreateTableRequest, LoadTableResult};
+    use lakekeeper_storage_postgres::{
+        PostgresBackend, SecretsState, tests::random_request_metadata,
+    };
     use sqlx::PgPool;
 
     use super::{create_etag, load_table};
-use crate::{
-    api::{
+    use crate::{
+        api::{
             ApiContext,
             iceberg::v1::{
                 NamespaceParameters, TableParameters,
@@ -281,16 +284,9 @@ use crate::{
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
-    server::{CatalogServer, test::setup},
-    service::{State, authz::AllowAllAuthorizer},
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-};
-use lakekeeper_storage_postgres::tests::{
-    random_request_metadata,
-};
+        server::{CatalogServer, test::setup},
+        service::{State, authz::AllowAllAuthorizer},
+    };
 
     fn create_test_schema() -> Schema {
         Schema::builder()

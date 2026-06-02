@@ -1,10 +1,6 @@
 use iceberg::TableIdent;
-use uuid::Uuid;
-
-use super::{super::dbutils::DBErrorHandler as _, CreateTabular, TabularType};
 use lakekeeper::{
-    CONFIG,
-    WarehouseId,
+    CONFIG, WarehouseId,
     service::{
         CatalogBackendError, CreateGenericTableError, DropGenericTableError,
         GenericTableAlreadyExists, GenericTableCreation, GenericTableFormat, GenericTableId,
@@ -13,6 +9,9 @@ use lakekeeper::{
         storage::join_location,
     },
 };
+use uuid::Uuid;
+
+use super::{super::dbutils::DBErrorHandler as _, CreateTabular, TabularType};
 use crate::{
     namespace::parse_namespace_identifier_from_vec,
     pagination::{PaginateToken, V1PaginateToken},
@@ -439,23 +438,21 @@ pub(crate) async fn drop_generic_table(
     Ok(generic_table_id)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use std::collections::HashMap;
 
     use iceberg::NamespaceIdent;
+    use lakekeeper::service::{
+        GenericTableCreation, GenericTableFormat, GenericTableId, NamespaceId,
+    };
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
-use lakekeeper::{
-    service::{GenericTableCreation, GenericTableFormat, GenericTableId, NamespaceId},
-};
-use crate::{
-    CatalogState,
-    namespace::tests::initialize_namespace,
-    warehouse::test::initialize_warehouse,
-};
+    use crate::{
+        CatalogState, namespace::tests::initialize_namespace, warehouse::test::initialize_warehouse,
+    };
 
     async fn setup(pool: PgPool) -> (CatalogState, PgPool, lakekeeper::WarehouseId, NamespaceId) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());

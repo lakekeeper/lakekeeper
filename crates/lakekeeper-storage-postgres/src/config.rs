@@ -124,7 +124,7 @@ fn get_config() -> DynAppConfig {
         .expect("Valid Postgres Configuration")
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use super::*;
 

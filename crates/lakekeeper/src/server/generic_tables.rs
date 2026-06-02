@@ -179,15 +179,20 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> GenericTableService
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod test {
     use std::collections::HashMap;
 
     use http::StatusCode;
     use iceberg::NamespaceIdent;
+    use lakekeeper_storage_postgres::{
+        PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
+        tests::random_request_metadata, warehouse::test::initialize_warehouse,
+    };
     use sqlx::PgPool;
-use crate::{
-    api::{
+
+    use crate::{
+        api::{
             ApiContext,
             data::v1::generic_tables::{
                 CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
@@ -198,28 +203,23 @@ use crate::{
                 v1::{DataAccessMode, namespace::NamespaceParameters},
             },
         },
-    server::CatalogServer,
-    service::{
+        server::CatalogServer,
+        service::{
             CatalogTabularOps as _, GenericTableFormat, State, TabularId, Transaction as _,
             authz::AllowAllAuthorizer,
             idempotency::IdempotencyKey,
             storage::{MemoryProfile, StorageProfile},
         },
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-    namespace::tests::initialize_namespace,
-    warehouse::test::initialize_warehouse,
-};
-use lakekeeper_storage_postgres::tests::{
-    random_request_metadata,
-};
+    };
 
     type Ctx = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 
     async fn setup(pool: PgPool) -> (Ctx, NamespaceIdent, crate::WarehouseId) {
-        let api_context = lakekeeper_storage_postgres::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
+        let api_context = lakekeeper_storage_postgres::tests::get_api_context(
+            &pool,
+            AllowAllAuthorizer::default(),
+        )
+        .await;
         let state = api_context.v1_state.catalog.clone();
         let (_project_id, warehouse_id) = initialize_warehouse(
             state.clone(),

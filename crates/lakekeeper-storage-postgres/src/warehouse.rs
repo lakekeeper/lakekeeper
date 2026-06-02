@@ -1,14 +1,8 @@
 use std::{collections::HashSet, ops::Deref, sync::Arc};
 
 use iceberg::spec::FormatVersion;
-use sqlx::{PgPool, types::Json};
-
-use super::CatalogState;
 use lakekeeper::{
-    CONFIG,
-    ProjectId,
-    SecretId,
-    WarehouseId,
+    CONFIG, ProjectId, SecretId, WarehouseId,
     api::{
         ErrorModel,
         iceberg::v1::PaginationQuery,
@@ -29,6 +23,9 @@ use lakekeeper::{
         WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
+use sqlx::{PgPool, types::Json};
+
+use super::CatalogState;
 use crate::{
     PostgresBackend,
     dbutils::DBErrorHandler,
@@ -929,22 +926,19 @@ pub(crate) async fn get_warehouse_stats(
     })
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod test {
     use http::StatusCode;
-
-    use super::*;
-use lakekeeper::{
-    api::iceberg::types::PageToken,
-    service::{
+    use lakekeeper::{
+        api::iceberg::types::PageToken,
+        service::{
             CatalogStore as _, CatalogWarehouseOps as _, Transaction,
             storage::{S3Flavor, S3Profile},
         },
-};
-use crate::{
-    PostgresBackend,
-    PostgresTransaction,
-};
+    };
+
+    use super::*;
+    use crate::{PostgresBackend, PostgresTransaction};
 
     pub(crate) async fn initialize_warehouse(
         state: CatalogState,
@@ -1404,15 +1398,11 @@ use crate::{
         // `set_updated_at_and_increment_version` trigger would otherwise
         // increment on any UPDATE that touched a row tuple). The returned
         // Vec must also be empty — no rows were inserted or changed.
-use lakekeeper::{
-    service::{
-                CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId,
-                SYSTEM_ROLE_PROVIDER_ID,
-            },
-};
-use crate::{
-    role::create_roles,
-};
+        use lakekeeper::service::{
+            CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID,
+        };
+
+        use crate::role::create_roles;
 
         let project_id = ProjectId::new_random();
         let mut t = pool.begin().await.unwrap();
@@ -1486,15 +1476,11 @@ use crate::{
         // with the same `(project, provider, source_id)` but a new
         // name/description must update the existing row in place,
         // preserving its id and bumping its version via the trigger.
-use lakekeeper::{
-    service::{
-                CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId,
-                SYSTEM_ROLE_PROVIDER_ID,
-            },
-};
-use crate::{
-    role::create_roles,
-};
+        use lakekeeper::service::{
+            CatalogCreateRoleRequest, OnRoleConflict, RoleId, RoleSourceId, SYSTEM_ROLE_PROVIDER_ID,
+        };
+
+        use crate::role::create_roles;
 
         let project_id = ProjectId::new_random();
         let mut t = pool.begin().await.unwrap();
@@ -1568,12 +1554,9 @@ use crate::{
         project_id: &ProjectId,
         source: &lakekeeper::service::RoleSourceId,
     ) -> std::sync::Arc<lakekeeper::service::Role> {
-use lakekeeper::{
-    service::{CatalogListRolesByIdFilter, SYSTEM_ROLE_PROVIDER_ID},
-};
-use crate::{
-    role::list_roles,
-};
+        use lakekeeper::service::{CatalogListRolesByIdFilter, SYSTEM_ROLE_PROVIDER_ID};
+
+        use crate::role::list_roles;
         let provider = &*SYSTEM_ROLE_PROVIDER_ID;
         let providers = [provider];
         let sources = [source];

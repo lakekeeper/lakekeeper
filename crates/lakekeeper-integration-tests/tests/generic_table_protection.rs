@@ -4,8 +4,6 @@
 //! drop with `force=true` bypasses protection.
 use http::StatusCode;
 use iceberg::NamespaceIdent;
-use sqlx::PgPool;
-use uuid::Uuid;
 use lakekeeper::{
     api::{
         ApiContext,
@@ -24,8 +22,9 @@ use lakekeeper::{
 use lakekeeper_integration_tests::{
     create_generic_table, create_ns, memory_io_profile, random_request_metadata, setup,
 };
-use lakekeeper_storage_postgres::PostgresBackend;
-use lakekeeper_storage_postgres::SecretsState;
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
+use uuid::Uuid;
 
 type TestApiContext = ApiContext<State<AllowAllAuthorizer, PostgresBackend, SecretsState>>;
 

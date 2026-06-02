@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use super::TaskEntityTypeDB;
 use lakekeeper::{
     ProjectId,
     service::{
@@ -11,10 +10,9 @@ use lakekeeper::{
         },
     },
 };
-use crate::{
-    dbutils::DBErrorHandler,
-    tasks::task_entity_from_db,
-};
+
+use super::TaskEntityTypeDB;
+use crate::{dbutils::DBErrorHandler, tasks::task_entity_from_db};
 
 /// Resolve tasks among all known active and historical tasks.
 /// Returns a map of `task_id` to (`TaskEntity`, `queue_name`).
@@ -176,31 +174,29 @@ where
     Ok(result)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
 
     use chrono::{Duration, Utc};
     use iceberg_ext::catalog::rest::IcebergErrorResponse;
-    use sqlx::PgPool;
-    use uuid::Uuid;
-
-    use super::*;
-use lakekeeper::{
-    WarehouseId,
-    service::{
+    use lakekeeper::{
+        WarehouseId,
+        service::{
             ArcProjectId,
             tasks::{
                 DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT, ResolvedTaskEntity, ScheduleTaskMetadata,
                 TaskEntity, TaskInput, TaskQueueName, WarehouseTaskEntityId,
             },
         },
-};
-use crate::{
-    tasks::{
-            pick_task, queue_task_batch, record_failure, record_success,
-            test::{setup_two_warehouses, setup_warehouse},
-        },
-};
+    };
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::tasks::{
+        pick_task, queue_task_batch, record_failure, record_success,
+        test::{setup_two_warehouses, setup_warehouse},
+    };
 
     #[allow(clippy::too_many_arguments)]
     async fn queue_task_helper(

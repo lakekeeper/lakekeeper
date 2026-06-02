@@ -279,14 +279,14 @@ where
     Ok((entities, entity_ids, next_page_token))
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
+    pub(crate) use lakekeeper_storage_postgres::tests::memory_io_profile;
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    pub(crate) use lakekeeper_storage_postgres::tests::memory_io_profile;
     use crate::{
         WarehouseId,
         api::{
@@ -690,6 +690,5 @@ pub(crate) mod test {
         };
     }
     pub(crate) use impl_pagination_tests;
-
     use lakekeeper_storage_postgres::tests::TestWarehouseResponse;
 }

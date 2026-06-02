@@ -63,12 +63,19 @@ pub static SYSTEM_ROLE_PROVIDER_ID: LazyLock<RoleProviderId> = LazyLock::new(|| 
 #[derive(Debug, Clone, Copy)]
 pub struct SystemRoleSeederCap(());
 
+impl Default for SystemRoleSeederCap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemRoleSeederCap {
     /// Constructs the capability token. Only the storage-backend impl
     /// crates (`lakekeeper-storage-postgres`, etc.) and the
     /// post-migration hook in `lakekeeper` itself should mint one —
     /// minting from API-facing code violates the bootstrap contract
     /// the token is documenting.
+    #[must_use]
     pub const fn new() -> Self {
         Self(())
     }

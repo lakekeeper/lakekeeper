@@ -842,7 +842,7 @@ fn log_done(report: &ReconcileReport, fn_label: &str) {
 // Tests
 // ============================================================================
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod openfga_integration_tests {
     use std::collections::HashSet;
 

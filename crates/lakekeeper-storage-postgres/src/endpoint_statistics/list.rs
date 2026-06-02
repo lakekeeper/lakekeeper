@@ -1,8 +1,6 @@
 use chrono::Utc;
 use iceberg_ext::catalog::rest::ErrorModel;
 use itertools::{Itertools, izip};
-use sqlx::PgPool;
-use uuid::Uuid;
 use lakekeeper::{
     api::{
         endpoints::{Endpoint, EndpointFlat},
@@ -13,6 +11,9 @@ use lakekeeper::{
     service::ArcProjectId,
     utils::time_conversion::iso_8601_duration_to_chrono,
 };
+use sqlx::PgPool;
+use uuid::Uuid;
+
 use crate::{
     dbutils::DBErrorHandler,
     pagination::{PaginateToken, V1PaginateToken},

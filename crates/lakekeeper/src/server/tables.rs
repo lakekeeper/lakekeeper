@@ -1408,7 +1408,7 @@ enum CommitTablesResult {
 impl CommitTablesResult {
     /// Unwrap the committed result, panicking if this is a replay.
     /// Only intended for use in tests.
-    #[cfg(test)]
+    #[cfg(any())]
     fn unwrap_committed(self) -> Arc<Vec<CommitContext>> {
         match self {
             Self::Committed(c) => c,
@@ -2176,7 +2176,7 @@ pub(crate) fn parse_table_property_updates(
     (property_updates, property_removals)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod test {
     use std::{collections::HashMap, str::FromStr};
 
@@ -2195,13 +2195,18 @@ pub(crate) mod test {
     };
     use itertools::Itertools;
     use lakekeeper_io::Location;
+    use lakekeeper_storage_postgres::{
+        PostgresBackend, SecretsState,
+        tabular::table::tests::initialize_table,
+        tests::{create_table_request as create_request, random_request_metadata},
+    };
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
-use crate::{
-    WarehouseId,
-    api::{
+    use crate::{
+        WarehouseId,
+        api::{
             ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
@@ -2215,26 +2220,17 @@ use crate::{
                 warehouse::TabularDeleteProfile,
             },
         },
-    request_metadata::RequestMetadata,
-    server::{
+        request_metadata::RequestMetadata,
+        server::{
             CatalogServer, CatalogStore,
             test::{impl_pagination_tests, tabular_test_multi_warehouse_setup},
         },
-    service::{
+        service::{
             Actor, NamespaceHierarchy, SecretStore, State, TableId, TabularListFlags, UserId,
             ViewInfo, ViewOrTableInfo,
             authz::{AllowAllAuthorizer, CatalogTableAction, tests::HidingAuthorizer},
         },
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-    tabular::table::tests::initialize_table,
-};
-use lakekeeper_storage_postgres::tests::{
-    create_table_request as create_request,
-    random_request_metadata,
-};
+    };
 
     #[test]
     fn test_parse_table_property_updates() {

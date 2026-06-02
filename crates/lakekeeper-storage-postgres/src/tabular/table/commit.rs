@@ -2,8 +2,6 @@ use std::{collections::HashSet, str::FromStr as _};
 
 use iceberg::spec::{TableMetadata, TableMetadataRef};
 use itertools::Itertools;
-use lakekeeper_io::Location;
-use sqlx::{FromRow, Postgres, Row, Transaction};
 use lakekeeper::{
     WarehouseId,
     server::tables::TableMetadataDiffs,
@@ -13,15 +11,18 @@ use lakekeeper::{
         TooManyUpdatesInCommit, UnexpectedTabularInResponse, ViewOrTableInfo,
     },
 };
+use lakekeeper_io::Location;
+use sqlx::{FromRow, Postgres, Row, Transaction};
+
 use crate::{
     dbutils::DBErrorHandler,
     tabular::{
-            FromTabularRowError, TabularRowCore,
-            table::{
-                DbTableFormatVersion, MAX_PARAMETERS, TableUpdateFlags,
-                common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
-            },
+        FromTabularRowError, TabularRowCore,
+        table::{
+            DbTableFormatVersion, MAX_PARAMETERS, TableUpdateFlags,
+            common::{self, expire_metadata_log_entries, remove_snapshot_log_entries},
         },
+    },
 };
 
 impl From<FromTabularRowError> for CommitTableTransactionError {
@@ -624,7 +625,7 @@ async fn apply_metadata_changes(
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
@@ -636,21 +637,21 @@ mod tests {
             Transform, Type, UnboundPartitionSpec,
         },
     };
-    use lakekeeper_io::Location;
-
-    use super::*;
-use lakekeeper::{
-    api::iceberg::v1::tables::LoadTableFilters,
-    implementations::{
+    use lakekeeper::{
+        api::iceberg::v1::tables::LoadTableFilters,
+        implementations::{
             CatalogState,
             postgres::{
                 PostgresBackend, namespace::tests::initialize_namespace,
                 warehouse::test::initialize_warehouse,
             },
         },
-    server::tables::calculate_diffs,
-    service::{CatalogTableOps, TableCreation, TableInfo},
-};
+        server::tables::calculate_diffs,
+        service::{CatalogTableOps, TableCreation, TableInfo},
+    };
+    use lakekeeper_io::Location;
+
+    use super::*;
 
     const TEST_LOCATION: &str = "s3://bucket/test/location";
 

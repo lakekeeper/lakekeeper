@@ -1695,7 +1695,7 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
     Ok((warehouse, tabular_info))
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use super::*;
     #[test]
@@ -1828,10 +1828,12 @@ mod test {
 
         use iceberg::spec::{Schema, UnboundPartitionSpec};
         use iceberg_ext::catalog::rest::CreateTableRequest;
+        use lakekeeper_storage_postgres::tests::{memory_io_profile, setup_with_registry};
         use serde::{Deserialize, Serialize};
         use sqlx::PgPool;
-use crate::{
-    api::{
+
+        use crate::{
+            api::{
                 iceberg::v1::{
                     DataAccess, NamespaceParameters, Prefix, tables::TablesService as _,
                 },
@@ -1842,9 +1844,9 @@ use crate::{
                     warehouse::TabularDeleteProfile,
                 },
             },
-    request_metadata::RequestMetadata,
-    server::CatalogServer,
-    service::{
+            request_metadata::RequestMetadata,
+            server::CatalogServer,
+            service::{
                 TableId,
                 authz::AllowAllAuthorizer,
                 tasks::{
@@ -1852,11 +1854,7 @@ use crate::{
                     UserScheduling, WarehouseTaskEntityId,
                 },
             },
-};
-use lakekeeper_storage_postgres::tests::{
-    memory_io_profile,
-    setup_with_registry,
-};
+        };
 
         static TEST_QUEUE_NAME: LazyLock<TaskQueueName> =
             LazyLock::new(|| "test_schedulable_lifecycle".into());

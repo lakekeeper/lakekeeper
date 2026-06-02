@@ -312,22 +312,20 @@ fn interpret_authz_results_for_load_view(
     Ok((view_info, Some(StoragePermissions::Read)))
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod test {
     use iceberg_ext::catalog::rest::LoadViewResult;
+    use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
     use sqlx::PgPool;
-use crate::{
-    api::iceberg::v1::{
+
+    use crate::{
+        api::iceberg::v1::{
             ViewParameters,
             views::{LoadViewRequest, ViewService},
         },
-    server::CatalogServer,
-    service::{Result, State, authz::AllowAllAuthorizer},
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-};
+        server::CatalogServer,
+        service::{Result, State, authz::AllowAllAuthorizer},
+    };
 
     pub(crate) async fn load_view(
         api_context: crate::api::ApiContext<

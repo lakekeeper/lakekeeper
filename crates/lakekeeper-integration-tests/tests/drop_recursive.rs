@@ -1,43 +1,43 @@
-use sqlx::PgPool;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
-
 use lakekeeper::{
     api::{ApiContext, management::v1::warehouse::TabularDeleteProfile},
     service::{State, UserId, authz::AllowAllAuthorizer},
 };
 use lakekeeper_integration_tests::TestWarehouseResponse;
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 mod test {
     use iceberg::NamespaceIdent;
     use iceberg_ext::catalog::rest::CreateNamespaceRequest;
-    use sqlx::PgPool;
-use lakekeeper::{
-    api::{
-        RequestMetadata,
-        iceberg::{
-            types::{PageToken, Prefix},
-            v1::{
-                ListTablesQuery, NamespaceParameters,
-                namespace::{NamespaceDropFlags, NamespaceService},
-                tables::TablesService,
-                views::ViewService,
+    use lakekeeper::{
+        api::{
+            RequestMetadata,
+            iceberg::{
+                types::{PageToken, Prefix},
+                v1::{
+                    ListTablesQuery, NamespaceParameters,
+                    namespace::{NamespaceDropFlags, NamespaceService},
+                    tables::TablesService,
+                    views::ViewService,
+                },
+            },
+            management::v1::{
+                ApiServer, namespace::NamespaceManagementService,
+                table::TableManagementService as _, view::ViewManagementService as _,
+                warehouse::TabularDeleteProfile,
             },
         },
-        management::v1::{
-            ApiServer, namespace::NamespaceManagementService,
-            table::TableManagementService as _, view::ViewManagementService as _,
-            warehouse::TabularDeleteProfile,
-        },
-    },
-    server::CatalogServer,
-    service::{ListNamespacesQuery, NamespaceId, TableId},
-};
-use lakekeeper_integration_tests::{
-    create_ns, create_table, drop_namespace, random_request_metadata,
-};
-use super::setup_drop_test;
+        server::CatalogServer,
+        service::{ListNamespacesQuery, NamespaceId, TableId},
+    };
+    use lakekeeper_integration_tests::{
+        create_ns, create_table, drop_namespace, random_request_metadata,
+    };
+    use sqlx::PgPool;
+
+    use super::setup_drop_test;
 
     #[sqlx::test]
     async fn test_recursive_drop_drops(pool: PgPool) {

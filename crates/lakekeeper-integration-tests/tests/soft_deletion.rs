@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use futures::future::join_all;
 use iceberg::{NamespaceIdent, TableIdent};
 use iceberg_ext::catalog::rest::CreateNamespaceRequest;
-use sqlx::PgPool;
-use uuid::Uuid;
 use lakekeeper::{
     api::{
         iceberg::{
@@ -31,6 +29,8 @@ use lakekeeper::{
     },
 };
 use lakekeeper_integration_tests::random_request_metadata;
+use sqlx::PgPool;
+use uuid::Uuid;
 
 #[sqlx::test]
 async fn test_soft_deletion(pool: PgPool) {
@@ -302,7 +302,8 @@ async fn test_soft_delete_and_undrop_generic_table(pool: PgPool) {
     let prefix = warehouse.warehouse_id.to_string();
     let ns_name = format!("test_namespace_{}", Uuid::now_v7());
 
-    lakekeeper_integration_tests::create_ns(api_context.clone(), prefix.clone(), ns_name.clone()).await;
+    lakekeeper_integration_tests::create_ns(api_context.clone(), prefix.clone(), ns_name.clone())
+        .await;
 
     let gt_name = "my_gt";
     lakekeeper_integration_tests::create_generic_table(

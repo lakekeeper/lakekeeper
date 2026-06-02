@@ -1,8 +1,5 @@
 use async_trait::async_trait;
 use http::StatusCode;
-use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
-
 use lakekeeper::{
     api::{ErrorModel, Result},
     service::{
@@ -10,6 +7,8 @@ use lakekeeper::{
         secrets::{Secret, SecretId, SecretStore},
     },
 };
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 
 use super::ReadWrite;
 use crate::config::CONFIG;
@@ -173,10 +172,13 @@ impl SecretStore for SecretsState {
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
+    use lakekeeper::service::storage::{
+        S3Credential, StorageCredential, s3::S3AccessKeyCredential,
+    };
+
     use super::*;
-    use lakekeeper::service::storage::{S3Credential, StorageCredential, s3::S3AccessKeyCredential};
 
     #[sqlx::test]
     async fn test_write_read_secret(pool: sqlx::PgPool) {

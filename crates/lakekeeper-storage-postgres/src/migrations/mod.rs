@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use futures::future::BoxFuture;
+use lakekeeper::service::{ServerId, Transaction};
 /// Re-exported for convenience so the `ExtensionMigrations::migrator` field
 /// type is reachable without naming `sqlx` in the caller's import list.
 ///
@@ -19,13 +20,9 @@ use sqlx::{
     migrate::{AppliedMigration, Migrate, MigrateError, Migration as SqlxMigration, Migrator},
 };
 use typed_builder::TypedBuilder;
-use lakekeeper::{
-    service::{ServerId, Transaction},
-};
+
 use crate::{
-    CatalogState,
-    PostgresTransaction,
-    bootstrap::get_or_set_server_id,
+    CatalogState, PostgresTransaction, bootstrap::get_or_set_server_id,
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
 
@@ -511,7 +508,7 @@ fn validate_applied_migrations(
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use std::collections::HashSet;
 
@@ -1080,22 +1077,19 @@ mod tests {
         use std::collections::HashMap;
 
         use iceberg_ext::NamespaceIdent;
+        use lakekeeper::service::{CatalogNamespaceOps as _, TabularId, Transaction as _};
         use lakekeeper_io::Location;
-use lakekeeper::{
-    service::{CatalogNamespaceOps as _, TabularId, Transaction as _},
-};
-use crate::{
-    CatalogState,
-    PostgresBackend,
-    PostgresTransaction,
-    namespace::tests::initialize_namespace,
-    tabular::{
-                    drop_tabular, set_tabular_protected,
-                    table::tests::initialize_table,
-                    view::{create_view, tests::view_request},
-                },
-    warehouse::test::initialize_warehouse,
-};
+
+        use crate::{
+            CatalogState, PostgresBackend, PostgresTransaction,
+            namespace::tests::initialize_namespace,
+            tabular::{
+                drop_tabular, set_tabular_protected,
+                table::tests::initialize_table,
+                view::{create_view, tests::view_request},
+            },
+            warehouse::test::initialize_warehouse,
+        };
 
         migrate_core_only(&pool)
             .await

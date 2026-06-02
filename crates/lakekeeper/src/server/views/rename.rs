@@ -208,24 +208,21 @@ async fn authorize_rename_view<C: CatalogStore, A: Authorizer + Clone>(
     })
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use http::StatusCode;
     use iceberg::{NamespaceIdent, TableIdent};
     use iceberg_ext::catalog::rest::CreateViewRequest;
+    use lakekeeper_storage_postgres::{
+        namespace::tests::initialize_namespace, tests::create_view_request,
+    };
     use sqlx::PgPool;
 
     use super::*;
-use crate::{
-    api::iceberg::v1::ViewParameters,
-    server::views::{create::test::create_view, load::test::load_view, test::setup},
-};
-use lakekeeper_storage_postgres::{
-    namespace::tests::initialize_namespace,
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-};
+    use crate::{
+        api::iceberg::v1::ViewParameters,
+        server::views::{create::test::create_view, load::test::load_view, test::setup},
+    };
 
     #[sqlx::test]
     async fn test_rename_view_without_namespace(pool: PgPool) {

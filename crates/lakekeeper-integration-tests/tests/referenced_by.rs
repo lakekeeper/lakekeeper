@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use iceberg::{NamespaceIdent, TableIdent};
-use sqlx::PgPool;
 use lakekeeper::{
     MatchedEngines, TrinoEngineConfig, TrustedEngine, WarehouseId,
     api::{
@@ -22,9 +21,11 @@ use lakekeeper::{
         authz::{AllowAllAuthorizer, Authorizer, UserOrRole, tests::HidingAuthorizer},
     },
 };
-use lakekeeper_integration_tests::{SetupTestCatalog, create_view_request, random_request_metadata};
-use lakekeeper_storage_postgres::PostgresBackend;
-use lakekeeper_storage_postgres::SecretsState;
+use lakekeeper_integration_tests::{
+    SetupTestCatalog, create_view_request, random_request_metadata,
+};
+use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
+use sqlx::PgPool;
 
 type Server<A> = CatalogServer<PostgresBackend, A, SecretsState>;
 
@@ -71,7 +72,10 @@ fn prefix(wh: &lakekeeper_integration_tests::TestWarehouseResponse) -> Prefix {
     Prefix(wh.warehouse_id.to_string())
 }
 
-fn ns_params(wh: &lakekeeper_integration_tests::TestWarehouseResponse, ns_name: &str) -> NamespaceParameters {
+fn ns_params(
+    wh: &lakekeeper_integration_tests::TestWarehouseResponse,
+    ns_name: &str,
+) -> NamespaceParameters {
     NamespaceParameters {
         prefix: Some(prefix(wh)),
         namespace: NamespaceIdent::new(ns_name.to_string()),

@@ -1967,34 +1967,32 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     Ok(results)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use std::collections::BTreeMap;
 
+    use lakekeeper_storage_postgres::tests::{create_generic_table, create_table_request};
+
     use super::*;
-use crate::{
-    api::{
+    use crate::{
+        api::{
             iceberg::{
                 types::Prefix,
                 v1::{DataAccess, NamespaceParameters, tables::TablesService},
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
-    implementations::{CatalogState, postgres::PostgresBackend},
-    request_metadata::RequestMetadata,
-    server::CatalogServer,
-    service::{
+        implementations::{CatalogState, postgres::PostgresBackend},
+        request_metadata::RequestMetadata,
+        server::CatalogServer,
+        service::{
             UserId,
             authz::{
                 CatalogNamespaceAction, CatalogServerAction, CatalogTableAction,
                 CatalogWarehouseAction, tests::HidingAuthorizer,
             },
         },
-};
-use lakekeeper_storage_postgres::tests::{
-    create_generic_table,
-    create_table_request,
-};
+    };
 
     #[sqlx::test]
     async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {

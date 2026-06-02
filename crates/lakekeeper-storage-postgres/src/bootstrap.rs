@@ -1,10 +1,7 @@
 use iceberg_ext::catalog::rest::ErrorModel;
-use lakekeeper::{
-    service::{Result, ServerId, ServerInfo},
-};
-use crate::{
-    dbutils::DBErrorHandler,
-};
+use lakekeeper::service::{Result, ServerId, ServerInfo};
+
+use crate::dbutils::DBErrorHandler;
 
 pub(super) async fn get_or_set_server_id<
     'e,
@@ -150,15 +147,12 @@ pub(super) async fn bootstrap<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx:
     Ok(success)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
+    use lakekeeper::{CatalogState, migrations::migrate_core_only};
     use sqlx::PgPool;
 
     use super::*;
-use lakekeeper::{
-    CatalogState,
-    migrations::migrate_core_only,
-};
 
     #[sqlx::test]
     async fn test_bootstrap(pool: PgPool) {

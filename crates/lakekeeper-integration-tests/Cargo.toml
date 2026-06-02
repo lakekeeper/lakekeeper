@@ -9,10 +9,16 @@ license = { workspace = true }
 description = "Integration tests for Lakekeeper exercising the service layer against a concrete storage backend (today: Postgres; future: SQLite, FoundationDB, ...)."
 publish = false
 
+[features]
+# Forwards lakekeeper's `open-api` to compile `utoipa::ToSchema` derives that
+# the `QueueConfig` trait bound requires when the upstream feature is on.
+open-api = ["lakekeeper/open-api", "dep:utoipa"]
+
 [lib]
 
 [dependencies]
 anyhow = { workspace = true }
+async-channel = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 fastrand = { workspace = true }
@@ -21,7 +27,7 @@ http = { workspace = true }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 itertools = { workspace = true }
-lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router", "sqlx"] }
+lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router", "sqlx-postgres"] }
 lakekeeper-authz-openfga = { path = "../authz-openfga" }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 lakekeeper-secrets-kv2 = { path = "../lakekeeper-secrets-kv2" }
@@ -31,10 +37,10 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid"] }
 strum = { workspace = true }
-async-channel = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 typed-builder = { workspace = true }
+utoipa = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

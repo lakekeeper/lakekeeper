@@ -686,7 +686,7 @@ pub(super) struct CheckResponse {
     allowed: bool,
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use lakekeeper::service::{NamespaceId, NamespaceIdent, UserId};
 

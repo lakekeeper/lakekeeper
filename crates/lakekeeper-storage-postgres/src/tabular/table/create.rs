@@ -1,9 +1,6 @@
 use std::str::FromStr;
 
 use iceberg::{TableIdent, spec::TableMetadata};
-use lakekeeper_io::Location;
-use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 use lakekeeper::{
     WarehouseId,
     service::{
@@ -12,16 +9,20 @@ use lakekeeper::{
         UnexpectedTabularInResponse,
     },
 };
+use lakekeeper_io::Location;
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
 use crate::{
     dbutils::DBErrorHandler,
     tabular::{
-            CreateTabular, TabularType, create_tabular,
-            table::{
-                DbTableFormatVersion,
-                common::{self},
-                next_row_id_as_i64,
-            },
+        CreateTabular, TabularType, create_tabular,
+        table::{
+            DbTableFormatVersion,
+            common::{self},
+            next_row_id_as_i64,
         },
+    },
 };
 
 #[allow(clippy::too_many_lines)]

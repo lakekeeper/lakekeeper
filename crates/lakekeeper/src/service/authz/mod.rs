@@ -1276,12 +1276,17 @@ pub mod tests {
         sync::{Arc, RwLock},
     };
 
+    #[allow(unused_imports)]
     use iceberg::NamespaceIdent;
     use pastey::paste;
+    #[allow(unused_imports)]
     use strum::EnumCount;
+    #[allow(unused_imports)]
     use uuid::Uuid;
 
+    #[allow(clippy::wildcard_imports)]
     use super::*;
+    #[allow(unused_imports)]
     use crate::service::{Namespace, NamespaceHierarchy, health::Health};
 
     #[test]
@@ -1775,7 +1780,14 @@ pub mod tests {
         server_id: ServerId,
     }
 
+    impl Default for HidingAuthorizer {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl HidingAuthorizer {
+        #[must_use]
         pub fn new() -> Self {
             Self {
                 hidden: Arc::new(RwLock::new(HashSet::new())),
@@ -1805,11 +1817,16 @@ pub mod tests {
             true
         }
 
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
         pub fn hide(&self, object: &str) {
             self.hidden.write().unwrap().insert(object.to_string());
         }
 
         /// Hide an object for a specific user only. Other users can still see it.
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
         pub fn hide_for_user(&self, user: &UserOrRole, object: &str) {
             let user_key = format!("{user:?}");
             self.hidden_for_user
@@ -1827,7 +1844,9 @@ pub mod tests {
             blocked.contains(action) || blocked.iter().any(|b| action.starts_with(b.as_str()))
         }
 
-        pub(crate) fn block_action(&self, object: &str) {
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn block_action(&self, object: &str) {
             self.blocked_actions
                 .write()
                 .unwrap()
@@ -1839,7 +1858,10 @@ pub mod tests {
         /// This is helpful for tests that hide a subset of objects, e.g. *some* but not all
         /// tables. `can_list_everything` may work against that when it triggers short check paths
         /// that skip checking individual permissions.
-        pub(crate) fn block_can_list_everything(&self) {
+        ///
+        /// # Panics
+        /// Panics if the internal `RwLock` is poisoned.
+        pub fn block_can_list_everything(&self) {
             self.block_action(
                 format!("namespace:{:?}", CatalogNamespaceAction::ListEverything).as_str(),
             );

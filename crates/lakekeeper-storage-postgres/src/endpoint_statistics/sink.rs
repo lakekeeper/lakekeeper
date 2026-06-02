@@ -1,19 +1,17 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use itertools::Itertools;
-use uuid::Uuid;
 use lakekeeper::{
-    ProjectId,
-    XXHashSet,
+    ProjectId, XXHashSet,
     api::endpoints::EndpointFlat,
     service::{
         ArcProjectId,
         endpoint_statistics::{EndpointIdentifier, EndpointStatisticsSink},
     },
 };
-use crate::{
-    dbutils::DBErrorHandler,
-};
+use uuid::Uuid;
+
+use crate::dbutils::DBErrorHandler;
 
 #[async_trait::async_trait]
 impl EndpointStatisticsSink for PostgresStatisticsSink {

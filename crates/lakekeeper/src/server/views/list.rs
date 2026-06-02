@@ -126,12 +126,14 @@ async fn authorize_list_views<C: CatalogStore, A: Authorizer>(
     Ok((warehouse, namespace))
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use itertools::Itertools;
+    use lakekeeper_storage_postgres::{PostgresBackend, SecretsState, tests::create_view_request};
     use sqlx::PgPool;
-use crate::{
-    api::{
+
+    use crate::{
+        api::{
             ApiContext,
             iceberg::{
                 types::{PageToken, Prefix},
@@ -139,17 +141,10 @@ use crate::{
             },
             management::v1::warehouse::TabularDeleteProfile,
         },
-    request_metadata::RequestMetadata,
-    server::{CatalogServer, test::impl_pagination_tests},
-    service::{State, UserId, authz::tests::HidingAuthorizer},
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-};
+        request_metadata::RequestMetadata,
+        server::{CatalogServer, test::impl_pagination_tests},
+        service::{State, UserId, authz::tests::HidingAuthorizer},
+    };
 
     async fn pagination_test_setup(
         pool: PgPool,

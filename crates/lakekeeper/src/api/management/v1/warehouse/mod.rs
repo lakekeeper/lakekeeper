@@ -1660,7 +1660,7 @@ fn validate_format_version_policy(
     })
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use super::{GetWarehouseResponse, StorageCredentialType, resolve_credential_type};
     use crate::service::{
@@ -1867,10 +1867,12 @@ mod test {
 
     use iceberg::TableIdent;
     use itertools::Itertools;
+    use lakekeeper_storage_postgres::{PostgresBackend, SecretsState, tests::create_view_request};
     use sqlx::PgPool;
-use crate::{
-    WarehouseId,
-    api::{
+
+    use crate::{
+        WarehouseId,
+        api::{
             ApiContext,
             iceberg::{
                 types::Prefix,
@@ -1883,17 +1885,10 @@ use crate::{
                 warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
             },
         },
-    request_metadata::RequestMetadata,
-    server::{CatalogServer, test::impl_pagination_tests},
-    service::{State, UserId, authz::tests::HidingAuthorizer},
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-};
+        request_metadata::RequestMetadata,
+        server::{CatalogServer, test::impl_pagination_tests},
+        service::{State, UserId, authz::tests::HidingAuthorizer},
+    };
 
     async fn setup_pagination_test(
         pool: sqlx::PgPool,

@@ -18,9 +18,9 @@ use lakekeeper_storage_postgres::{
     get_reader_pool, get_writer_pool,
 };
 
-use crate::{authorizer::AuthorizerEnum, secrets::SecretsEnum};
 #[cfg(feature = "ui")]
 use crate::ui;
+use crate::{authorizer::AuthorizerEnum, secrets::SecretsEnum};
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;

@@ -29,7 +29,7 @@ pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
 
-#[cfg(test)]
+#[cfg(any())]
 pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
     chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
@@ -1288,9 +1288,9 @@ impl<Q: TaskConfig, D: TaskData, E: TaskExecutionDetails> SpecializedTask<Q, D, 
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, EnumIter, Hash, Eq)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
-    feature = "sqlx",
+    feature = "sqlx-postgres",
     sqlx(type_name = "task_intermediate_status", rename_all = "kebab-case")
 )]
 pub enum TaskIntermediateStatus {
@@ -1300,9 +1300,9 @@ pub enum TaskIntermediateStatus {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
-    feature = "sqlx",
+    feature = "sqlx-postgres",
     sqlx(type_name = "task_final_status", rename_all = "kebab-case")
 )]
 pub enum TaskOutcome {

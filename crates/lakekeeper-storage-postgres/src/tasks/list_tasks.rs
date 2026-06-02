@@ -3,13 +3,8 @@ use std::{collections::HashSet, sync::Arc};
 use chrono::DateTime;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
-use sqlx::PgConnection;
-use uuid::Uuid;
-
-use super::TaskEntityTypeDB;
 use lakekeeper::{
-    CONFIG,
-    ProjectId,
+    CONFIG, ProjectId,
     api::management::v1::tasks::{ListTasksRequest, TaskStatus, WarehouseTaskEntityFilter},
     service::{
         TaskList,
@@ -19,6 +14,10 @@ use lakekeeper::{
         },
     },
 };
+use sqlx::PgConnection;
+use uuid::Uuid;
+
+use super::TaskEntityTypeDB;
 use crate::{
     dbutils::DBErrorHandler,
     pagination::{PaginateToken, V1PaginateToken},
@@ -325,17 +324,12 @@ pub(crate) async fn list_tasks(
     })
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use chrono::Utc;
-    use sqlx::PgPool;
-    use uuid::Uuid;
-
-    use super::*;
-use lakekeeper::{
-    ProjectId,
-    WarehouseId,
-    api::{
+    use lakekeeper::{
+        ProjectId, WarehouseId,
+        api::{
             RequestMetadata,
             management::v1::{
                 ApiServer,
@@ -343,7 +337,7 @@ use lakekeeper::{
                 tasks::{ListTasksRequest, TaskStatus},
             },
         },
-    service::{
+        service::{
             ArcProjectId,
             authz::AllowAllAuthorizer,
             tasks::{
@@ -351,13 +345,15 @@ use lakekeeper::{
                 TaskIntermediateStatus, TaskOutcome, TaskQueueName, WarehouseTaskEntityId,
             },
         },
-    tests::get_api_context,
-};
-use crate::{
-    tasks::{
-            pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
-        },
-};
+        tests::get_api_context,
+    };
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::tasks::{
+        pick_task, queue_task_batch, record_failure, record_success, test::setup_warehouse,
+    };
 
     #[test]
     fn test_split_task_status() {

@@ -79,7 +79,7 @@ impl PostgresAdvisoryLock {
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
     use sqlx::PgPool;
 

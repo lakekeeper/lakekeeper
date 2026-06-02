@@ -2,13 +2,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use iceberg::TableIdent;
 use itertools::izip;
-use sqlx::types::Json;
-use uuid::Uuid;
-
-use super::dbutils::DBErrorHandler;
 use lakekeeper::{
-    CONFIG,
-    WarehouseId,
+    CONFIG, WarehouseId,
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
@@ -23,6 +18,10 @@ use lakekeeper::{
         SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
+use sqlx::types::Json;
+use uuid::Uuid;
+
+use super::dbutils::DBErrorHandler;
 use crate::{
     pagination::{PaginateToken, V1PaginateToken},
     tabular::TabularType,
@@ -1010,26 +1009,26 @@ pub(crate) async fn update_namespace_properties(
         .map_err(Into::into)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod tests {
     use std::str::FromStr;
+
+    use lakekeeper::{
+        api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
+        service::{CachePolicy, CatalogNamespaceOps, Transaction as _},
+    };
 
     use super::{
         super::{PostgresBackend, warehouse::test::initialize_warehouse},
         *,
     };
-use lakekeeper::{
-    api::iceberg::{types::PageToken, v1::tables::LoadTableFilters},
-    service::{CachePolicy, CatalogNamespaceOps, Transaction as _},
-};
-use crate::{
-    CatalogState,
-    PostgresTransaction,
-    tabular::{
-                mark_tabular_as_deleted, set_tabular_protected,
-                table::{load_tables, tests::initialize_table},
-            },
-};
+    use crate::{
+        CatalogState, PostgresTransaction,
+        tabular::{
+            mark_tabular_as_deleted, set_tabular_protected,
+            table::{load_tables, tests::initialize_table},
+        },
+    };
 
     pub(crate) async fn initialize_namespace(
         state: CatalogState,

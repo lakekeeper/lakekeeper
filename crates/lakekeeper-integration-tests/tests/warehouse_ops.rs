@@ -1,9 +1,5 @@
-use sqlx::PgPool;
-use uuid::Uuid;
 use lakekeeper::{
-    ProjectId,
-    SecretId,
-    WarehouseId,
+    ProjectId, SecretId, WarehouseId,
     api::{
         RequestMetadata,
         management::v1::{
@@ -20,10 +16,10 @@ use lakekeeper::{
         WarehouseStatus, authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE,
     },
 };
-use lakekeeper_integration_tests::{
-    SetupTestCatalog, memory_io_profile, random_request_metadata,
-};
+use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
 use lakekeeper_storage_postgres::PostgresBackend;
+use sqlx::PgPool;
+use uuid::Uuid;
 
 /// Test basic warehouse creation
 #[sqlx::test]

@@ -32,7 +32,7 @@ use crate::{
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
 /// Create a view in the given namespace
-pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -218,32 +218,24 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     Ok(load_view_result)
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod test {
     use iceberg::NamespaceIdent;
+    use lakekeeper_storage_postgres::{
+        namespace::tests::initialize_namespace, secrets::SecretsState, tests::create_view_request,
+    };
     use sqlx::PgPool;
     use uuid::Uuid;
 
     use super::*;
-use crate::{
-    api::iceberg::{types::Prefix, v1::DataAccess},
-    service::authz::AllowAllAuthorizer,
-};
-use lakekeeper_storage_postgres::{
-    namespace::tests::initialize_namespace,
-    secrets::SecretsState,
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-};
+    use crate::{
+        api::iceberg::{types::Prefix, v1::DataAccess},
+        service::authz::AllowAllAuthorizer,
+    };
 
     pub async fn create_view(
         api_context: ApiContext<
-            State<
-                AllowAllAuthorizer,
-                lakekeeper_storage_postgres::PostgresBackend,
-                SecretsState,
-            >,
+            State<AllowAllAuthorizer, lakekeeper_storage_postgres::PostgresBackend, SecretsState>,
         >,
         namespace: NamespaceIdent,
         rq: CreateViewRequest,

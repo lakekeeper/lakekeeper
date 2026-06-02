@@ -3866,6 +3866,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "typed-builder 0.23.2",
+ "utoipa",
  "uuid",
 ]
 

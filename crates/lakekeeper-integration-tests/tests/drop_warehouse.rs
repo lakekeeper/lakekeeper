@@ -1,7 +1,5 @@
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::CreateNamespaceRequest;
-use sqlx::PgPool;
-use uuid::Uuid;
 use lakekeeper::{
     api::{
         iceberg::{
@@ -20,6 +18,8 @@ use lakekeeper::{
     service::authz::AllowAllAuthorizer,
 };
 use lakekeeper_integration_tests::{random_request_metadata, spawn_build_in_queues};
+use sqlx::PgPool;
+use uuid::Uuid;
 
 #[sqlx::test]
 async fn test_cannot_drop_warehouse_before_purge_tasks_completed(pool: PgPool) {

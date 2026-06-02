@@ -4,7 +4,6 @@ use std::{fmt::Display, str::FromStr};
 
 use base64::Engine;
 use chrono::Utc;
-
 use lakekeeper::service::InvalidPaginationToken;
 
 #[derive(Debug, PartialEq)]
@@ -113,10 +112,11 @@ where
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
-    use super::*;
     use lakekeeper::service::ProjectId;
+
+    use super::*;
 
     #[test]
     fn test_paginate_token() {

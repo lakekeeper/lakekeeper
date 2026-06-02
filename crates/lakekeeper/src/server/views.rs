@@ -120,37 +120,35 @@ fn validate_view_updates(updates: &Vec<ViewUpdate>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use iceberg::{NamespaceIdent, TableIdent};
     use lakekeeper_io::Location;
+    use lakekeeper_storage_postgres::{
+        PostgresBackend, SecretsState, namespace::tests::initialize_namespace,
+        tabular::view::tests::view_request, warehouse::test::initialize_warehouse,
+    };
     use sqlx::PgPool;
     use uuid::Uuid;
-use crate::{
-    WarehouseId,
-    api::{
+
+    use crate::{
+        WarehouseId,
+        api::{
             ApiContext, RequestMetadata,
             iceberg::v1::{DropParams, PaginationQuery, ViewParameters, views::ViewService},
             management::v1::warehouse::TabularDeleteProfile,
         },
-    server::{
+        server::{
             CatalogServer, test::tabular_test_multi_warehouse_setup,
             views::validate_view_properties,
         },
-    service::{
+        service::{
             ArcProjectId, CatalogTabularOps, CatalogViewOps as _, NamespaceWithParent, State,
             TabularListFlags, ViewId,
             authz::AllowAllAuthorizer,
             storage::{MemoryProfile, StorageProfile},
         },
-};
-use lakekeeper_storage_postgres::{
-    PostgresBackend,
-    SecretsState,
-    namespace::tests::initialize_namespace,
-    tabular::view::tests::view_request,
-    warehouse::test::initialize_warehouse,
-};
+    };
 
     pub async fn setup(
         pool: PgPool,
@@ -161,7 +159,11 @@ use lakekeeper_storage_postgres::{
         WarehouseId,
         ArcProjectId,
     ) {
-        let api_context = lakekeeper_storage_postgres::tests::get_api_context(&pool, AllowAllAuthorizer::default()).await;
+        let api_context = lakekeeper_storage_postgres::tests::get_api_context(
+            &pool,
+            AllowAllAuthorizer::default(),
+        )
+        .await;
         let state = api_context.v1_state.catalog.clone();
         let (project_id, warehouse_id) = initialize_warehouse(
             state.clone(),

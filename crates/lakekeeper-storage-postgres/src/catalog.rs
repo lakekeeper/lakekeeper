@@ -3,21 +3,6 @@ use std::collections::{HashMap, HashSet};
 use chrono::Duration;
 use iceberg::{NamespaceIdent, spec::ViewMetadata};
 use iceberg_ext::catalog::rest::ErrorModel;
-use lakekeeper_io::Location;
-
-use super::{
-    CatalogState, PostgresTransaction,
-    bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
-    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
-    tabular::table::load_tables,
-    warehouse::{
-        create_project, create_warehouse, delete_project, delete_warehouse, get_project,
-        get_warehouse_by_id, get_warehouse_by_name, list_projects, list_warehouses, rename_project,
-        rename_warehouse, set_warehouse_deletion_profile, set_warehouse_status,
-        update_storage_profile,
-    },
-};
 use lakekeeper::{
     SecretId,
     api::{
@@ -73,27 +58,42 @@ use lakekeeper::{
         },
     },
 };
+use lakekeeper_io::Location;
+
+use super::{
+    CatalogState, PostgresTransaction,
+    bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
+    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
+    role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
+    tabular::table::load_tables,
+    warehouse::{
+        create_project, create_warehouse, delete_project, delete_warehouse, get_project,
+        get_warehouse_by_id, get_warehouse_by_name, list_projects, list_warehouses, rename_project,
+        rename_warehouse, set_warehouse_deletion_profile, set_warehouse_status,
+        update_storage_profile,
+    },
+};
 use crate::{
     endpoint_statistics::list::list_statistics,
     namespace::{get_namespaces_by_id, get_namespaces_by_name, set_namespace_protected},
     role::{search_role, update_role_source_system},
     tabular::{
-            clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
-            get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
-            mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
-            table::{commit_table_transaction, create_table},
-            view::{commit_existing_view, create_view, load_view},
-        },
+        clear_tabular_deleted_at, drop_tabular, get_tabular_infos_by_idents,
+        get_tabular_infos_by_ids, get_tabular_infos_by_s3_location, list_tabulars,
+        mark_tabular_as_deleted, rename_tabular, search_tabular, set_tabular_protected,
+        table::{commit_table_transaction, create_table},
+        view::{commit_existing_view, create_view, load_view},
+    },
     tasks::{
-            cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
-            get_task_details, get_task_queue_config, list_tasks, pick_task, queue_task_batch,
-            record_failure, record_success, request_tasks_stop, reschedule_tasks_for,
-            resolve_tasks, set_task_queue_config,
-        },
+        cancel_scheduled_tasks, check_and_heartbeat_task, cleanup_task_logs_older_than,
+        get_task_details, get_task_queue_config, list_tasks, pick_task, queue_task_batch,
+        record_failure, record_success, request_tasks_stop, reschedule_tasks_for, resolve_tasks,
+        set_task_queue_config,
+    },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
-            get_warehouse_stats, set_warehouse_format_version_policy, set_warehouse_protection,
-        },
+        get_warehouse_stats, set_warehouse_format_version_policy, set_warehouse_protection,
+    },
 };
 
 #[async_trait::async_trait]
@@ -152,7 +152,9 @@ impl CatalogStore for super::PostgresBackend {
     where
         SOT: lakekeeper::service::StateOrTransaction<
                 Self::State,
-                <Self::Transaction as lakekeeper::service::Transaction<Self::State>>::Transaction<'a>,
+                <Self::Transaction as lakekeeper::service::Transaction<Self::State>>::Transaction<
+                    'a,
+                >,
             >,
         'a: 'b,
     {
@@ -175,7 +177,9 @@ impl CatalogStore for super::PostgresBackend {
     where
         SOT: lakekeeper::service::StateOrTransaction<
                 Self::State,
-                <Self::Transaction as lakekeeper::service::Transaction<Self::State>>::Transaction<'a>,
+                <Self::Transaction as lakekeeper::service::Transaction<Self::State>>::Transaction<
+                    'a,
+                >,
             >,
         'a: 'b,
     {

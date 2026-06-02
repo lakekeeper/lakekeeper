@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use lakekeeper::{
-    ProjectId,
+    CONFIG, ProjectId, WarehouseId,
     api::{
-        RequestMetadata,
+        ApiContext, RequestMetadata,
         management::v1::{
             ApiServer,
             server::{APACHE_LICENSE_STATUS, BootstrapRequest, DEFAULT_BUILD_INFO, Service as _},
@@ -20,23 +20,19 @@ use lakekeeper::{
         },
     },
     service::{
-        ArcProjectId, UserId,
+        ArcProjectId, State, UserId,
+        authz::Authorizer,
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
         namespace_cache::NamespaceCacheEventListener,
         role_cache::RoleCacheEventListener,
         storage::{StorageCredential, StorageProfile},
+        tasks::TaskQueueRegistry,
         warehouse_cache::WarehouseCacheEventListener,
     },
 };
 use lakekeeper_storage_postgres::{
     CatalogState, PostgresBackend, SecretsState, migrations::migrate_core_only,
-};
-use lakekeeper::{
-    CONFIG,
-    WarehouseId,
-    api::ApiContext,
-    service::{State, authz::Authorizer, tasks::TaskQueueRegistry},
 };
 
 mod internal_helper;

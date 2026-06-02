@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use iceberg::NamespaceIdent;
 use iceberg_ext::catalog::rest::UpdateNamespacePropertiesRequest;
-use sqlx::PgPool;
 use lakekeeper::{
     api::{
         RequestMetadata,
@@ -17,6 +16,7 @@ use lakekeeper::{
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
 use lakekeeper_storage_postgres::PostgresBackend;
+use sqlx::PgPool;
 
 /// Test basic namespace creation
 #[sqlx::test]

@@ -1,11 +1,5 @@
 use std::{collections::HashSet, sync::Arc};
 
-use uuid::Uuid;
-
-use super::{
-    dbutils::DBErrorHandler,
-    user::{DbUserLastUpdatedWith, DbUserType},
-};
 use lakekeeper::{
     ProjectId,
     service::{
@@ -16,6 +10,12 @@ use lakekeeper::{
         SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles, UserProviderSyncInfo,
         authn::UserId,
     },
+};
+use uuid::Uuid;
+
+use super::{
+    dbutils::DBErrorHandler,
+    user::{DbUserLastUpdatedWith, DbUserType},
 };
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -600,23 +600,20 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod tests {
-    use super::*;
-use lakekeeper::{
-    ProjectId,
-    api::management::v1::user::{UserLastUpdatedWith, UserType},
-    service::{
+    use lakekeeper::{
+        ProjectId,
+        api::management::v1::user::{UserLastUpdatedWith, UserType},
+        service::{
             CatalogRoleForAssignment, CatalogStore, CatalogUserRoleAssignmentUser, RoleIdent,
             RoleProviderId, Transaction, UniqueMembers, UniqueRoles,
             authn::{UserId, UserIdRef},
         },
-};
-use crate::{
-    CatalogState,
-    PostgresBackend,
-    PostgresTransaction,
-};
+    };
+
+    use super::*;
+    use crate::{CatalogState, PostgresBackend, PostgresTransaction};
 
     fn um<'s, 'd>(s: &'s [CatalogUserRoleAssignmentUser<'d>]) -> UniqueMembers<'s, 'd> {
         UniqueMembers::from_unchecked(s)

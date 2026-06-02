@@ -1,4 +1,3 @@
-use sqlx::PgPool;
 use lakekeeper::{
     ProjectId,
     api::{
@@ -20,6 +19,7 @@ use lakekeeper::{
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
 use lakekeeper_storage_postgres::PostgresBackend;
+use sqlx::PgPool;
 
 fn request_metadata_with_project(project_id: &ProjectId) -> RequestMetadata {
     RequestMetadata::new_test(

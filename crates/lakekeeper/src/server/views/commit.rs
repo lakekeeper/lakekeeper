@@ -546,7 +546,7 @@ pub(super) fn validate_trusted_engine_properties_on_create(
     )
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test_check_protected_properties {
     use std::collections::{HashMap, HashSet};
 
@@ -700,32 +700,30 @@ mod test_check_protected_properties {
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use chrono::Utc;
     use http::StatusCode;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CommitViewRequest;
+    use lakekeeper_storage_postgres::tests::{create_view_request, random_request_metadata};
     use maplit::hashmap;
     use serde_json::json;
     use sqlx::PgPool;
     use uuid::Uuid;
-use crate::{
-    WarehouseId,
-    api::{
+
+    use crate::{
+        WarehouseId,
+        api::{
             iceberg::{
                 types::DropParams,
                 v1::{DataAccess, Prefix, ViewParameters, views},
             },
             management::v1::{ApiServer as ManagementApiServer, view::ViewManagementService},
         },
-    request_metadata::RequestMetadata,
-    server::views::{create::test::create_view, drop::drop_view, test::setup},
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-    random_request_metadata,
-};
+        request_metadata::RequestMetadata,
+        server::views::{create::test::create_view, drop::drop_view, test::setup},
+    };
 
     #[sqlx::test]
     async fn test_commit_view(pool: PgPool) {

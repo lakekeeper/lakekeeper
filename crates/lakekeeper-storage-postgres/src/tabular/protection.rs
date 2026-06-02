@@ -1,8 +1,9 @@
-use super::TabularType;
 use lakekeeper::{
     WarehouseId,
     service::{SetTabularProtectionError, TabularId, TabularNotFound, ViewOrTableInfo},
 };
+
+use super::TabularType;
 use crate::{
     dbutils::DBErrorHandler,
     tabular::{FromTabularRowError, TabularRowWithProperties},

@@ -8,11 +8,6 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
-use lakekeeper_io::Location;
-pub(crate) use load::load_view;
-use serde::Deserialize;
-use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 use lakekeeper::{
     WarehouseId,
     service::{
@@ -21,6 +16,12 @@ use lakekeeper::{
         SerializationError, TabularNotFound, UnexpectedTabularInResponse, ViewId, ViewInfo,
     },
 };
+use lakekeeper_io::Location;
+pub(crate) use load::load_view;
+use serde::Deserialize;
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
 use crate::{
     dbutils::DBErrorHandler as _,
     tabular::{CreateTabular, TabularType, create_tabular},
@@ -643,21 +644,17 @@ impl From<iceberg::spec::ViewFormatVersion> for ViewFormatVersion {
     }
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 pub(crate) mod tests {
     use iceberg::{
         NamespaceIdent, TableIdent,
         spec::{ViewMetadata, ViewMetadataBuilder},
     };
     use iceberg_ext::configs::ParseFromStr;
-    use lakekeeper_io::Location;
-    use serde_json::json;
-    use sqlx::PgPool;
-    use uuid::Uuid;
-use lakekeeper::{
-    WarehouseId,
-    api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
-    service::{
+    use lakekeeper::{
+        WarehouseId,
+        api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
+        service::{
             ArcProjectId, CommitViewError, CreateViewError, DropTabularError, LoadViewError,
             TabularId, TabularIdentBorrowed, TabularListFlags, ViewId,
             tasks::{
@@ -665,14 +662,18 @@ use lakekeeper::{
                 tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             },
         },
-};
-use crate::{
-    CatalogState,
-    PostgresBackend,
-    namespace::tests::initialize_namespace,
-    tabular::{TabularType, mark_tabular_as_deleted, view::load_view},
-    warehouse::test::initialize_warehouse,
-};
+    };
+    use lakekeeper_io::Location;
+    use serde_json::json;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use crate::{
+        CatalogState, PostgresBackend,
+        namespace::tests::initialize_namespace,
+        tabular::{TabularType, mark_tabular_as_deleted, view::load_view},
+        warehouse::test::initialize_warehouse,
+    };
 
     pub(crate) fn view_request(view_id: Option<Uuid>, location: &Location) -> ViewMetadata {
         serde_json::from_value(json!({
@@ -775,12 +776,8 @@ use crate::{
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
         let view_uuid = ViewId::from(Uuid::now_v7());
         let location = "s3://my_bucket/my_table/metadata/bar"
             .parse::<Location>()
@@ -1086,12 +1083,8 @@ use crate::{
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
 
         let location = "s3://my_bucket/my_view/metadata/bar"
             .parse::<Location>()
@@ -1159,12 +1152,8 @@ use crate::{
         let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
             prepare_view(pool).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
 
         let stale_metadata_location: Location = format!(
             "s3://my_bucket/my_table/metadata/bar/metadata-{}.gz.json",
@@ -1205,12 +1194,8 @@ use crate::{
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
 
         // A view UUID that was never created.
         let absent_view_uuid = Uuid::now_v7();
@@ -1254,12 +1239,8 @@ use crate::{
         // (`s3://my_bucket/my_table/metadata/bar`).
         let (state, _, warehouse_id, namespace, _, _, _) = prepare_view(pool.clone()).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
 
         // Second view at a distinct location.
         let other_location = "s3://my_bucket/other_view/metadata"
@@ -1323,12 +1304,8 @@ use crate::{
         let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
             prepare_view(pool.clone()).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
         let view_uuid = metadata.uuid();
         let expected_schemas = i64::try_from(metadata.schemas_iter().len()).unwrap();
         let expected_versions = i64::try_from(metadata.versions().len()).unwrap();
@@ -1400,12 +1377,8 @@ use crate::{
         let namespace = NamespaceIdent::from_vec(vec!["my_namespace".to_string()]).unwrap();
         initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
         let namespace_id =
-            crate::tabular::table::tests::get_namespace_id(
-                state.clone(),
-                warehouse_id,
-                &namespace,
-            )
-            .await;
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
         let location = "s3://my_bucket/my_table/metadata/bar"
             .parse::<Location>()
             .unwrap();

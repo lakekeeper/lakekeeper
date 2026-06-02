@@ -1,13 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use http::StatusCode;
-
-use super::{PostgresBackend, dbutils::DBErrorHandler as _};
 use lakekeeper::{
     WarehouseId,
     api::{Result, endpoints::EndpointFlat},
     service::idempotency::{IdempotencyCheck, IdempotencyKey},
 };
+
+use super::{PostgresBackend, dbutils::DBErrorHandler as _};
 
 /// Epoch second when the last cleanup started. 0 = idle.
 /// If a cleanup is running, stores the start time. If it's been more than

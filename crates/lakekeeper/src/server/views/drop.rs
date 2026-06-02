@@ -206,15 +206,17 @@ pub(crate) async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretS
     Ok(())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
     use http::StatusCode;
     use iceberg::TableIdent;
     use iceberg_ext::catalog::rest::CreateViewRequest;
+    use lakekeeper_storage_postgres::tests::{create_view_request, random_request_metadata};
     use sqlx::PgPool;
-use crate::{
-    WarehouseId,
-    api::{
+
+    use crate::{
+        WarehouseId,
+        api::{
             iceberg::{
                 types::{DropParams, Prefix},
                 v1::ViewParameters,
@@ -225,18 +227,14 @@ use crate::{
                 view::ViewManagementService,
             },
         },
-    request_metadata::RequestMetadata,
-    server::views::{
+        request_metadata::RequestMetadata,
+        server::views::{
             create::test::create_view, drop::drop_view, load::test::load_view, test::setup,
         },
-    service::tasks::{
+        service::tasks::{
             WarehouseTaskEntityId, tabular_expiration_queue::QUEUE_NAME as EXPIRATION_QUEUE_NAME,
         },
-};
-use lakekeeper_storage_postgres::tests::{
-    create_view_request,
-    random_request_metadata,
-};
+    };
 
     #[sqlx::test]
     async fn test_drop_view(pool: PgPool) {

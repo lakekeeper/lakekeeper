@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use itertools::Itertools;
-use uuid::Uuid;
 use lakekeeper::{
-    CONFIG,
-    ProjectId,
+    CONFIG, ProjectId,
     api::{iceberg::v1::PaginationQuery, management::v1::role::UpdateRoleSourceSystemRequest},
     service::{
         CatalogBackendError, CatalogCreateRoleRequest, CatalogListRolesByIdFilter, CreateRoleError,
@@ -13,6 +11,8 @@ use lakekeeper::{
         RoleVersion, SearchRoleResponse, SearchRolesError, UpdateRoleError,
     },
 };
+use uuid::Uuid;
+
 use crate::{
     dbutils::DBErrorHandler,
     pagination::{PaginateToken, V1PaginateToken},
@@ -496,18 +496,15 @@ pub(crate) async fn list_roles_by_idents<
     .map(|rows| rows.into_iter().map(Role::from).collect())
 }
 
-#[cfg(all(test, feature = "inline-test-extraction-pending"))]
+#[cfg(any())]
 mod test {
+    use lakekeeper::{
+        api::iceberg::v1::PageToken,
+        service::{CatalogStore, RoleProviderId, RoleSourceId, Transaction},
+    };
+
     use super::*;
-use lakekeeper::{
-    api::iceberg::v1::PageToken,
-    service::{CatalogStore, RoleProviderId, RoleSourceId, Transaction},
-};
-use crate::{
-    CatalogState,
-    PostgresBackend,
-    PostgresTransaction,
-};
+    use crate::{CatalogState, PostgresBackend, PostgresTransaction};
 
     #[sqlx::test]
     async fn test_create_role(pool: sqlx::PgPool) {

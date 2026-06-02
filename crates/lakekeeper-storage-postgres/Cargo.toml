@@ -12,12 +12,6 @@ keywords = ["iceberg", "rest", "lakekeeper", "postgres"]
 [lib]
 
 [features]
-# Marker feature for inline `#[cfg(test)] mod tests` blocks whose imports
-# became stale during the postgres-extraction split (VAK-437). Enabling this
-# feature compiles the in-tree tests; while gated the blocks remain as TODOs
-# for a follow-up PR that either fixes the imports or extracts the cases into
-# `lakekeeper-integration-tests`.
-inline-test-extraction-pending = []
 
 [dependencies]
 anyhow = { workspace = true }
@@ -34,7 +28,7 @@ iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
-lakekeeper = { path = "../lakekeeper", features = ["sqlx"] }
+lakekeeper = { path = "../lakekeeper", features = ["sqlx-postgres"] }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
     "storage-adls",
