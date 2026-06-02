@@ -116,7 +116,7 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
     ports:
       - "8181:8181"
@@ -172,10 +172,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
-      createbuckets:
-        condition: service_completed_successfully
     networks:
       iceberg_net:
 
@@ -206,31 +204,26 @@ services:
     networks:
       iceberg_net:
 
-  minio:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
-    environment:
-      - MINIO_ROOT_USER=minio-root-user
-      - MINIO_ROOT_PASSWORD=minio-root-password
-    command: [ "server", "--console-address", ":9001", "/data" ]
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.31
+    # `mini` is SeaweedFS' single-process dev mode (master + volume + filer + S3).
+    # -bucket pre-creates the `examples` bucket, and the IAM config enables STS so
+    # Lakekeeper can vend short-lived credentials to query engines.
+    command:
+      - mini
+      - -dir=/data
+      - -bucket=examples
+      - -s3.config=/etc/seaweedfs/iam.json
+      - -s3.iam.config=/etc/seaweedfs/iam.json
+      - -s3.iam.readOnly=false
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8333/status" ]
       interval: 2s
       timeout: 10s
       retries: 2
       start_period: 15s
-    networks:
-      iceberg_net:
-
-  createbuckets:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
-    depends_on:
-      minio:
-        condition: service_healthy
-    restart: on-failure
-    entrypoint: >
-      /bin/sh -c " sleep 5; /usr/bin/mc alias set dockerminio http://minio:9000
-      minio-root-user minio-root-password; /usr/bin/mc mb dockerminio/examples;
-      exit 0; "
+    volumes:
+      - ./seaweedfs-iam.json:/etc/seaweedfs/iam.json:ro
     networks:
       iceberg_net:
 
