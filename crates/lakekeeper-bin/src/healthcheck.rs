@@ -43,6 +43,21 @@ pub(crate) async fn health(check_db: bool, check_server: bool) -> anyhow::Result
     Ok(())
 }
 
+pub(crate) fn normalize_checks(
+    check_all: bool,
+    check_db: bool,
+    check_server: bool,
+) -> (bool, bool) {
+    let check_db = check_db || check_all;
+    let check_server = check_server || check_all;
+
+    if !check_db && !check_server {
+        (false, true)
+    } else {
+        (check_db, check_server)
+    }
+}
+
 pub(crate) async fn db_health_check() -> anyhow::Result<()> {
     let reader = get_reader_pool(CONFIG.to_pool_opts().max_connections(1))
         .await
@@ -64,5 +79,24 @@ pub(crate) async fn db_health_check() -> anyhow::Result<()> {
         Ok(())
     } else {
         Err(anyhow::anyhow!("Database is not healthy."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bare_healthcheck_checks_server() {
+        assert_eq!(super::normalize_checks(false, false, false), (false, true));
+    }
+
+    #[test]
+    fn check_all_checks_db_and_server() {
+        assert_eq!(super::normalize_checks(true, false, false), (true, true));
+    }
+
+    #[test]
+    fn explicit_checks_are_preserved() {
+        assert_eq!(super::normalize_checks(false, true, false), (true, false));
+        assert_eq!(super::normalize_checks(false, false, true), (false, true));
     }
 }
