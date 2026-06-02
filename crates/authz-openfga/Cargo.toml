@@ -23,7 +23,7 @@ http = { workspace = true }
 lakekeeper = { path = "../lakekeeper", default-features = false, features = [
     "sqlx-postgres",
 ] }
-openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "6121e38", features = [
+openfga-client = { git = "https://github.com/vakamo-labs/openfga-client.git", rev = "8e37fb936cb608c5d045dbecae3e8021c7e146ce", features = [
     "auth-middle",
     "tls-rustls",
     "tls-webpki-roots",
