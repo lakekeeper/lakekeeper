@@ -18,7 +18,7 @@ services:
   db:
     ports:
       - "2345:5432"
-  minio:
+  seaweedfs:
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # SeaweedFS filer UI, handy for browsing stored objects while developing.
+      - "8888:8888"
