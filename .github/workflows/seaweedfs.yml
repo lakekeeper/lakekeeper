@@ -1,12 +1,11 @@
 name: SeaweedFS Tests
-# Trigger CI run for fix verification
 
 on:
   push:
     branches:
       - main
       - "manual-release-*"
-      - seaweedfs-workflow
+      - "rel-*"
   pull_request:
   workflow_dispatch:
 
