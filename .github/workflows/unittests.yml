@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:16
+        image: postgres:18
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -209,7 +209,7 @@ jobs:
         # old SKIP_SETCAP escape hatch is now ignored. Granting the capability
         # via `options: --cap-add IPC_LOCK` is the supported workaround. Pin
         # to a specific patch so an image refresh can't break CI again.
-        image: hashicorp/vault:1.21.4
+        image: hashicorp/vault:2.0.1
         ports:
           - 8200:8200
         env:
