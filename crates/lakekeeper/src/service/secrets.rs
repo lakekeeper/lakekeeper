@@ -114,8 +114,8 @@ where
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
-#[cfg_attr(feature = "sqlx", sqlx(transparent))]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx-postgres", sqlx(transparent))]
 #[serde(transparent)]
 // Is UUID here too strict?
 pub struct SecretId(uuid::Uuid);

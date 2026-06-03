@@ -38,7 +38,7 @@ use crate::{
     },
 };
 
-pub(crate) async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: ViewParameters,
     request: LoadViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -310,70 +310,4 @@ fn interpret_authz_results_for_load_view(
 
     // Views loaded via loadView always get read storage permissions
     Ok((view_info, Some(StoragePermissions::Read)))
-}
-
-#[cfg(test)]
-pub(crate) mod test {
-    use iceberg_ext::catalog::rest::LoadViewResult;
-    use sqlx::PgPool;
-
-    use crate::{
-        api::iceberg::v1::{
-            ViewParameters,
-            views::{LoadViewRequest, ViewService},
-        },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        server::CatalogServer,
-        service::{Result, State, authz::AllowAllAuthorizer},
-    };
-
-    pub(crate) async fn load_view(
-        api_context: crate::api::ApiContext<
-            State<AllowAllAuthorizer, PostgresBackend, SecretsState>,
-        >,
-        view: ViewParameters,
-    ) -> Result<LoadViewResult> {
-        <CatalogServer<PostgresBackend, AllowAllAuthorizer, SecretsState> as ViewService<
-            State<AllowAllAuthorizer, PostgresBackend, SecretsState>,
-        >>::load_view(
-            view,
-            LoadViewRequest::default(),
-            api_context,
-            crate::tests::random_request_metadata(),
-        )
-        .await
-    }
-
-    #[sqlx::test]
-    async fn test_load_view(pool: PgPool) {
-        let (ctx, namespace, whi, _) = crate::server::views::test::setup(pool, None).await;
-
-        let view_name = "my-view";
-        let rq = crate::tests::create_view_request(Some(view_name), None);
-        let prefix = whi.to_string();
-        Box::pin(crate::server::views::create::test::create_view(
-            ctx.clone(),
-            namespace.clone(),
-            rq,
-            Some(prefix.clone()),
-        ))
-        .await
-        .expect("create_view should succeed");
-
-        let mut view_ns = namespace.inner();
-        view_ns.push(view_name.into());
-        let view_ident = iceberg::TableIdent::from_strs(view_ns).unwrap();
-
-        let loaded_view = load_view(
-            ctx,
-            ViewParameters {
-                prefix: Some(crate::api::iceberg::types::Prefix(prefix)),
-                view: view_ident,
-            },
-        )
-        .await
-        .expect("load_view should succeed");
-
-        assert_eq!(loaded_view.metadata.current_version().schema_id(), 0);
-    }
 }

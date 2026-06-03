@@ -18,7 +18,7 @@ use crate::{
 };
 
 // Primary cache: RoleId → ArcRole
-pub(crate) static ROLE_CACHE: LazyLock<Cache<RoleId, ArcRole>> = LazyLock::new(|| {
+pub static ROLE_CACHE: LazyLock<Cache<RoleId, ArcRole>> = LazyLock::new(|| {
     Cache::builder()
         .max_capacity(CONFIG.cache.role.capacity)
         .initial_capacity(100)
@@ -69,7 +69,7 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
     });
 
 #[allow(dead_code)] // Not required for all features
-pub(crate) async fn role_cache_invalidate(role_id: RoleId) {
+pub async fn role_cache_invalidate(role_id: RoleId) {
     if CONFIG.cache.role.enabled {
         tracing::debug!("Invalidating role id {role_id} from cache");
         ROLE_CACHE.invalidate(&role_id).await;
@@ -188,7 +188,7 @@ pub(super) async fn role_cache_get_by_ident(
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct RoleCacheEventListener;
+pub struct RoleCacheEventListener;
 
 #[cfg(feature = "router")]
 impl std::fmt::Display for RoleCacheEventListener {

@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use figment::value::Uncased;
 use http::HeaderValue;
 use itertools::Itertools;
@@ -30,7 +30,6 @@ use crate::{
 };
 
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
-const DEFAULT_ENCRYPTION_KEY: &str = "<This is unsafe, please set a proper key>";
 
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
 pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> = LazyLock::new(|| {
@@ -134,14 +133,6 @@ fn get_config() -> DynAppConfig {
     if let Some(uri) = &config.base_uri {
         uri.join("catalog").expect("Valid URL");
         uri.join("management").expect("Valid URL");
-    }
-
-    if config.secret_backend == SecretBackend::Postgres
-        && config.pg_encryption_key == DEFAULT_ENCRYPTION_KEY
-    {
-        tracing::warn!(
-            "THIS IS UNSAFE! Using default encryption key for secrets in postgres, please set a proper key using ICEBERG_REST__PG_ENCRYPTION_KEY environment variable."
-        );
     }
 
     // `UserAssignmentsCache` entries may reference roles that are still live
@@ -403,27 +394,6 @@ pub struct DynAppConfig {
     /// Enable GCP System Identities
     pub(crate) enable_gcp_system_credentials: bool,
 
-    // ------------- POSTGRES IMPLEMENTATION -------------
-    #[redact]
-    pub(crate) pg_encryption_key: String,
-    pub(crate) pg_database_url_read: Option<String>,
-    pub(crate) pg_database_url_write: Option<String>,
-    pub(crate) pg_host_r: Option<String>,
-    pub(crate) pg_host_w: Option<String>,
-    pub(crate) pg_port: Option<u16>,
-    pub(crate) pg_user: Option<String>,
-    #[redact]
-    pub(crate) pg_password: Option<String>,
-    pub(crate) pg_database: Option<String>,
-    pub(crate) pg_ssl_mode: Option<PgSslMode>,
-    pub(crate) pg_ssl_root_cert: Option<PathBuf>,
-    pub(crate) pg_enable_statement_logging: bool,
-    pub(crate) pg_test_before_acquire: bool,
-    pub(crate) pg_connection_max_lifetime: Option<u64>,
-    pub pg_read_pool_connections: u32,
-    pub pg_write_pool_connections: u32,
-    pub pg_acquire_timeout: u64,
-
     // ------------- NATS CLOUDEVENTS -------------
     pub nats_address: Option<Url>,
     pub nats_topic: Option<String>,
@@ -521,8 +491,6 @@ pub struct DynAppConfig {
     // ------------- Health -------------
     pub health_check_frequency_seconds: u64,
 
-    // ------------- KV2 -------------
-    pub kv2: Option<KV2Config>,
     // ------------- Secrets -------------
     pub secret_backend: SecretBackend,
     #[serde(
@@ -839,15 +807,6 @@ pub struct DebugConfig {
     pub log_authorization_header: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Redact)]
-pub struct KV2Config {
-    pub url: Url,
-    pub user: String,
-    #[redact]
-    pub password: String,
-    pub secret_mount: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct AuditConfig {
     pub tracing: AuditTracingConfig,
@@ -1069,23 +1028,6 @@ impl Default for DynAppConfig {
                 "system".to_string(),
                 "examples".to_string(),
             ])),
-            pg_encryption_key: DEFAULT_ENCRYPTION_KEY.to_string(),
-            pg_database_url_read: None,
-            pg_database_url_write: None,
-            pg_host_r: None,
-            pg_host_w: None,
-            pg_port: None,
-            pg_user: None,
-            pg_password: None,
-            pg_database: None,
-            pg_ssl_mode: None,
-            pg_ssl_root_cert: None,
-            pg_enable_statement_logging: false,
-            pg_test_before_acquire: false,
-            pg_connection_max_lifetime: None,
-            pg_read_pool_connections: 10,
-            pg_write_pool_connections: 5,
-            pg_acquire_timeout: 5,
             enable_azure_system_credentials: false,
             enable_aws_system_credentials: false,
             s3_enable_direct_system_credentials: false,
@@ -1118,7 +1060,6 @@ impl Default for DynAppConfig {
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             health_check_frequency_seconds: 10,
-            kv2: None,
             secret_backend: SecretBackend::Postgres,
             task_poll_interval: Duration::from_secs(10),
             task_tabular_expiration_workers: 2,
@@ -1177,56 +1118,6 @@ impl DynAppConfig {
         page_size
             .unwrap_or(self.pagination_size_default.into())
             .clamp(1, self.pagination_size_max.into())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
-pub enum PgSslMode {
-    Disable,
-    Allow,
-    Prefer,
-    Require,
-    VerifyCa,
-    VerifyFull,
-}
-
-#[cfg(feature = "sqlx-postgres")]
-impl From<PgSslMode> for sqlx::postgres::PgSslMode {
-    fn from(value: PgSslMode) -> Self {
-        match value {
-            PgSslMode::Disable => sqlx::postgres::PgSslMode::Disable,
-            PgSslMode::Allow => sqlx::postgres::PgSslMode::Allow,
-            PgSslMode::Prefer => sqlx::postgres::PgSslMode::Prefer,
-            PgSslMode::Require => sqlx::postgres::PgSslMode::Require,
-            PgSslMode::VerifyCa => sqlx::postgres::PgSslMode::VerifyCa,
-            PgSslMode::VerifyFull => sqlx::postgres::PgSslMode::VerifyFull,
-        }
-    }
-}
-
-impl FromStr for PgSslMode {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_ref() {
-            "disabled" | "disable" => Ok(Self::Disable),
-            "allow" => Ok(Self::Allow),
-            "prefer" => Ok(Self::Prefer),
-            "require" => Ok(Self::Require),
-            "verifyca" | "verify-ca" | "verify_ca" => Ok(Self::VerifyCa),
-            "verifyfull" | "verify-full" | "verify_full" => Ok(Self::VerifyFull),
-            _ => Err(anyhow!("PgSslMode not supported: '{s}'")),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for PgSslMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        PgSslMode::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1448,40 +1339,6 @@ mod test {
                 result.is_err(),
                 "expected parsing to fail for user id without idp prefix, got {result:?}",
             );
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_pg_ssl_mode_case_insensitive() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DISABLED");
-            let config = get_config();
-            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
-            Ok(())
-        });
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "DisaBled");
-            let config = get_config();
-            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
-            Ok(())
-        });
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disabled");
-            let config = get_config();
-            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
-            Ok(())
-        });
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "disable");
-            let config = get_config();
-            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
-            Ok(())
-        });
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__PG_SSL_MODE", "Disable");
-            let config = get_config();
-            assert_eq!(config.pg_ssl_mode, Some(PgSslMode::Disable));
             Ok(())
         });
     }

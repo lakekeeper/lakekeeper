@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use lakekeeper::{
-    implementations::{get_default_catalog_from_config, postgres::PostgresBackend},
+    SecretBackend,
     limes::{Authenticator, AuthenticatorEnum},
     serve::{ServeConfiguration, serve},
     service::{
@@ -13,10 +13,14 @@ use lakekeeper::{
     },
     tracing,
 };
+use lakekeeper_storage_postgres::{
+    CatalogState, PostgresBackend, PostgresStatisticsSink, SecretsState as PgSecretsState,
+    get_reader_pool, get_writer_pool,
+};
 
-use crate::authorizer::AuthorizerEnum;
 #[cfg(feature = "ui")]
 use crate::ui;
+use crate::{authorizer::AuthorizerEnum, secrets::SecretsEnum};
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
@@ -111,4 +115,59 @@ fn add_ui_routes(router: lakekeeper::axum::Router) -> lakekeeper::axum::Router {
 
     #[cfg(not(feature = "ui"))]
     router
+}
+
+/// Build the default catalog state + secrets backend + endpoint statistics
+/// sink from the binary's runtime configuration.
+async fn get_default_catalog_from_config() -> anyhow::Result<(
+    CatalogState,
+    SecretsEnum,
+    Arc<dyn EndpointStatisticsSink + 'static>,
+)> {
+    use lakekeeper_storage_postgres::config::{CONFIG as PG_CONFIG, DEFAULT_ENCRYPTION_KEY};
+
+    if lakekeeper::CONFIG.secret_backend == SecretBackend::Postgres
+        && PG_CONFIG.pg_encryption_key == DEFAULT_ENCRYPTION_KEY
+    {
+        tracing::warn!(
+            "THIS IS UNSAFE! Using default encryption key for secrets in postgres, \
+             please set a proper key using LAKEKEEPER__PG_ENCRYPTION_KEY environment variable."
+        );
+    }
+
+    let read_pool = get_reader_pool(
+        PG_CONFIG
+            .to_pool_opts()
+            .max_connections(PG_CONFIG.pg_read_pool_connections),
+    )
+    .await?;
+    let write_pool = get_writer_pool(
+        PG_CONFIG
+            .to_pool_opts()
+            .max_connections(PG_CONFIG.pg_write_pool_connections),
+    )
+    .await?;
+
+    let catalog_state = CatalogState::from_pools(read_pool.clone(), write_pool.clone());
+
+    let secrets_state: SecretsEnum = match lakekeeper::CONFIG.secret_backend {
+        SecretBackend::KV2 => lakekeeper_secrets_kv2::SecretsState::from_config(
+            lakekeeper_secrets_kv2::config::CONFIG
+                .kv2
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Need vault config to use vault as backend"))?,
+        )
+        .await?
+        .into(),
+        SecretBackend::Postgres => {
+            PgSecretsState::from_pools(read_pool.clone(), write_pool.clone()).into()
+        }
+    };
+
+    let stats_sink = Arc::new(PostgresStatisticsSink::new(
+        catalog_state.read_pool(),
+        catalog_state.write_pool(),
+    ));
+
+    Ok((catalog_state, secrets_state, stats_sink))
 }

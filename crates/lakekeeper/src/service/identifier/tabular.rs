@@ -79,6 +79,7 @@ pub enum TabularIdentBorrowed<'a> {
 }
 
 impl TabularIdentBorrowed<'_> {
+    #[must_use]
     pub fn typ_str(&self) -> &'static str {
         match self {
             TabularIdentBorrowed::Table(_) => "Table",
@@ -137,6 +138,7 @@ impl<'a> From<TabularIdentBorrowed<'a>> for TabularIdentOwned {
 }
 
 impl TabularIdentBorrowed<'_> {
+    #[must_use]
     pub fn as_table_ident(&self) -> &TableIdent {
         match self {
             TabularIdentBorrowed::Table(ident)

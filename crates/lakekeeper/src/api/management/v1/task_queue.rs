@@ -28,6 +28,22 @@ pub struct SetTaskQueueConfigRequest {
 #[serde(transparent)]
 pub struct QueueConfig(pub(crate) serde_json::Value);
 
+impl QueueConfig {
+    /// Wraps a raw JSON value as a queue-config payload. Used by storage
+    /// backends when reading the value back from the catalog.
+    #[must_use]
+    pub fn from_json(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+
+    /// The wrapped JSON value, by reference. Used by storage backends when
+    /// inserting the value into the catalog.
+    #[must_use]
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -41,9 +57,9 @@ pub struct GetTaskQueueConfigResponse {
 #[serde(rename_all = "kebab-case")]
 pub struct QueueConfigResponse {
     #[serde(flatten)]
-    pub(crate) config: serde_json::Value,
+    pub config: serde_json::Value,
     #[cfg_attr(feature = "open-api", schema(value_type=String))]
-    pub(crate) queue_name: TaskQueueName,
+    pub queue_name: TaskQueueName,
 }
 
 impl axum::response::IntoResponse for GetTaskQueueConfigResponse {

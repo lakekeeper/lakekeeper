@@ -1,10 +1,10 @@
 use anyhow::Context;
 use lakekeeper::{
     CONFIG,
-    implementations::postgres::{ReadWrite, get_reader_pool, get_writer_pool},
     service::health::{HealthExt, HealthState, HealthStatus},
     tracing,
 };
+use lakekeeper_storage_postgres::{ReadWrite, get_reader_pool, get_writer_pool};
 
 pub(crate) async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {
     tracing::info!("Checking health...");
@@ -59,10 +59,12 @@ pub(crate) fn normalize_checks(
 }
 
 pub(crate) async fn db_health_check() -> anyhow::Result<()> {
-    let reader = get_reader_pool(CONFIG.to_pool_opts().max_connections(1))
+    use lakekeeper_storage_postgres::config::CONFIG as PG_CONFIG;
+    let _ = &*CONFIG; // ensure lakekeeper config is eager-init for parity
+    let reader = get_reader_pool(PG_CONFIG.to_pool_opts().max_connections(1))
         .await
         .with_context(|| "Read pool failed.")?;
-    let writer = get_writer_pool(CONFIG.to_pool_opts().max_connections(1))
+    let writer = get_writer_pool(PG_CONFIG.to_pool_opts().max_connections(1))
         .await
         .with_context(|| "Write pool failed.")?;
 
