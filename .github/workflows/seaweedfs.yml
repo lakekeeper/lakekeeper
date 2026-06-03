@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           for i in {1..30}; do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8333)
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8333 || true)
             if [ "$CODE" == "200" ] || [ "$CODE" == "403" ]; then
               echo "SeaweedFS S3 is healthy (Code: $CODE)"
               exit 0
@@ -144,9 +144,8 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
-          cd crates/lakekeeper
           sqlx database create
-          sqlx migrate run
+          sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
