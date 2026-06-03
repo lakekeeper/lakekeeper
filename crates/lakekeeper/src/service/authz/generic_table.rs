@@ -20,7 +20,7 @@ use crate::{
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
-            delegate_authorization_failure_source,
+            context::UserProvidedGenericTable, delegate_authorization_failure_source,
         },
     },
 };
@@ -456,6 +456,107 @@ pub trait AuthZGenericTableOps: Authorizer {
             Ok(final_decisions)
         }
         .map(MustUse::from)
+    }
+
+    /// Fetches the warehouse, namespace hierarchy, and generic table, then
+    /// authorizes `action` against the resolved generic table in one call.
+    ///
+    /// Mirrors `AuthZTableOps::load_and_authorize_table_operation`:
+    /// supports addressing the generic table either by id or by identifier,
+    /// performs TOCTOU-safe warehouse/namespace version refresh, and runs the
+    /// authorization check.
+    ///
+    /// # Returns
+    /// A tuple of `(warehouse, namespace, generic_table)` if all checks pass.
+    ///
+    /// # Errors
+    /// Returns `AuthZError` if the warehouse, namespace, or generic table is not
+    /// found, identifiers are inconsistent, the user is not authorized, or a
+    /// catalog/authorization backend error occurs.
+    async fn load_and_authorize_generic_table_operation<C: CatalogStore>(
+        &self,
+        request_metadata: &RequestMetadata,
+        user_provided: &UserProvidedGenericTable,
+        table_flags: TabularListFlags,
+        action: impl Into<Self::GenericTableAction> + Send,
+        catalog_state: C::State,
+    ) -> Result<
+        (
+            Arc<ResolvedWarehouse>,
+            NamespaceHierarchy,
+            GenericTabularInfo,
+        ),
+        AuthZError,
+    > {
+        let warehouse_id = user_provided.warehouse_id;
+        let action = action.into();
+
+        // Determine the fetch strategy based on whether we have an id or an ident.
+        let (warehouse, namespace, info) = match &user_provided.generic_table {
+            GenericTableIdentOrId::Id(generic_table_id) => {
+                fetch_warehouse_namespace_generic_table_by_id::<C, _>(
+                    self,
+                    warehouse_id,
+                    *generic_table_id,
+                    table_flags,
+                    catalog_state.clone(),
+                )
+                .await?
+            }
+            GenericTableIdentOrId::Ident(ident) => {
+                // For an identifier: fetch warehouse, namespace, and table in parallel.
+                let (warehouse_result, namespace_result, info_result) = tokio::join!(
+                    C::get_active_warehouse_by_id(warehouse_id, catalog_state.clone()),
+                    C::get_namespace(warehouse_id, ident.namespace.clone(), catalog_state.clone()),
+                    C::get_generic_table_info(
+                        warehouse_id,
+                        ident.clone(),
+                        table_flags,
+                        catalog_state.clone()
+                    )
+                );
+
+                let warehouse = self.require_warehouse_presence(warehouse_id, warehouse_result)?;
+                let namespace = self.require_namespace_presence(
+                    warehouse_id,
+                    ident.namespace.clone(),
+                    namespace_result,
+                )?;
+                let info =
+                    self.require_generic_table_presence(warehouse_id, ident.clone(), info_result)?;
+
+                (warehouse, namespace, info)
+            }
+        };
+
+        // Validate warehouse and namespace id/version consistency (with TOCTOU protection).
+        let (warehouse, namespace) =
+            super::table::refresh_warehouse_and_namespace_if_needed::<C, _, _>(
+                &warehouse,
+                namespace,
+                &info,
+                AuthZCannotSeeGenericTable::new_not_found(
+                    warehouse_id,
+                    user_provided.generic_table.clone(),
+                ),
+                self,
+                catalog_state,
+            )
+            .await?;
+
+        // Perform the authorization check.
+        let info = self
+            .require_generic_table_action(
+                request_metadata,
+                &warehouse,
+                &namespace,
+                user_provided.generic_table.clone(),
+                Ok::<_, RequireGenericTableActionError>(Some(info)),
+                action,
+            )
+            .await?;
+
+        Ok((warehouse, namespace, info))
     }
 }
 
