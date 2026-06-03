@@ -118,7 +118,7 @@ pub struct EndpointIdentifier {
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum FlushMode {
     Automatic,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     Manual,
 }
 

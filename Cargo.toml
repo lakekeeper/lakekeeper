@@ -5,6 +5,9 @@ members = [
     "crates/io",
     "crates/lakekeeper",
     "crates/lakekeeper-bin",
+    "crates/lakekeeper-integration-tests",
+    "crates/lakekeeper-secrets-kv2",
+    "crates/lakekeeper-storage-postgres",
 ]
 resolver = "2"
 

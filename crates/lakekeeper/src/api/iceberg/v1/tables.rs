@@ -641,7 +641,7 @@ impl DataAccessMode {
 
 impl DataAccess {
     #[must_use]
-    pub(crate) fn not_specified() -> Self {
+    pub fn not_specified() -> Self {
         Self {
             vended_credentials: false,
             remote_signing: false,

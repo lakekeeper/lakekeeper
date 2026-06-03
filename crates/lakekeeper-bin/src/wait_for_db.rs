@@ -1,7 +1,8 @@
-use lakekeeper::{
-    CONFIG,
-    implementations::postgres::{get_reader_pool, migrations::MigrationState},
-    tokio, tracing,
+use lakekeeper::{tokio, tracing};
+use lakekeeper_storage_postgres::{
+    config::CONFIG as PG_CONFIG,
+    get_reader_pool,
+    migrations::{MigrationState, check_migration_status},
 };
 
 use crate::healthcheck::db_health_check;
@@ -36,12 +37,8 @@ pub(crate) async fn wait_for_db(
     if check_migrations {
         let mut counter = 0;
         loop {
-            let read_pool = get_reader_pool(CONFIG.to_pool_opts()).await?;
-            let migrations =
-                lakekeeper::implementations::postgres::migrations::check_migration_status(
-                    &read_pool,
-                )
-                .await;
+            let read_pool = get_reader_pool(PG_CONFIG.to_pool_opts()).await?;
+            let migrations = check_migration_status(&read_pool).await;
             match migrations {
                 Ok(MigrationState::Complete) => {
                     tracing::info!("Database is up to date with binary.");

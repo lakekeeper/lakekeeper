@@ -1348,13 +1348,35 @@ impl TryFrom<S3Credential> for S3Auth {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use std::str::FromStr as _;
+    use std::{future::Future, str::FromStr as _, sync::LazyLock};
+
+    use tokio::runtime::Runtime;
 
     use super::*;
     use crate::service::storage::{
         StorageProfile,
         storage_layout::{NamespaceNameContext, NamespacePath, TabularNameContext},
     };
+
+    static COMMON_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to start Tokio runtime")
+    });
+
+    #[track_caller]
+    pub(crate) fn test_block_on<F: Future>(f: F, common_runtime: bool) -> F::Output {
+        if common_runtime {
+            COMMON_RUNTIME.block_on(f)
+        } else {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to start Tokio runtime")
+                .block_on(f)
+        }
+    }
 
     #[test]
     fn test_deserialize_flavor() {
@@ -1637,6 +1659,7 @@ pub(crate) mod test {
     pub(crate) mod minio_integration_tests {
         use std::sync::LazyLock;
 
+        use super::test_block_on;
         use crate::{
             api::RequestMetadata,
             service::storage::{
@@ -1685,7 +1708,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let key_prefix = format!("test_prefix-{}", uuid::Uuid::now_v7());
                     let (profile, cred) = storage_profile(&key_prefix);
@@ -1707,7 +1730,7 @@ pub(crate) mod test {
     }
 
     pub(crate) mod aws_integration_tests {
-        use super::super::*;
+        use super::{super::*, test_block_on};
         use crate::service::storage::{StorageCredential, StorageProfile};
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
@@ -1741,7 +1764,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1759,7 +1782,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1777,7 +1800,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1798,7 +1821,7 @@ pub(crate) mod test {
         #[test]
         #[allow(clippy::too_many_lines)]
         fn test_multipart_upload_with_vended_credentials() {
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let mut profile = profile;
@@ -1923,7 +1946,7 @@ pub(crate) mod test {
     }
 
     pub(crate) mod aws_kms_integration_tests {
-        use super::super::*;
+        use super::{super::*, test_block_on};
         use crate::service::storage::{StorageCredential, StorageProfile};
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
@@ -1957,7 +1980,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();
@@ -1978,7 +2001,7 @@ pub(crate) mod test {
     }
 
     pub(crate) mod r2_integration_tests {
-        use super::super::*;
+        use super::{super::*, test_block_on};
         use crate::service::storage::{StorageCredential, StorageProfile};
 
         pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
@@ -2016,7 +2039,7 @@ pub(crate) mod test {
             // and tokio::test creates a new runtime for each test. For now, we only encounter the
             // issue here, eventually, we may want to move this to a proc macro like tokio::test or
             // sqlx::test
-            crate::tests::test_block_on(
+            test_block_on(
                 async {
                     let (profile, cred) = get_storage_profile();
                     let cred: StorageCredential = cred.into();

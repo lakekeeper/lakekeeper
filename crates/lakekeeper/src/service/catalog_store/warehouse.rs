@@ -39,10 +39,10 @@ use crate::{
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
-#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(
-    feature = "sqlx",
+    feature = "sqlx-postgres",
     sqlx(type_name = "warehouse_status", rename_all = "kebab-case")
 )]
 pub enum WarehouseStatus {

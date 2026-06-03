@@ -119,11 +119,13 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
-          cd crates/lakekeeper
           sqlx database create
-          sqlx migrate run
+          sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
       - name: Cargo sqlx-check
-        run: cargo sqlx prepare --check --workspace -- --all-features
+        # Exclude lakekeeper-bin so --all-features doesn't enable `ui` (pulls
+        # the `lakekeeper-console` git dep); it has no sqlx::query! macros.
+        # Must match `just sqlx-prepare` invocation.
+        run: cargo sqlx prepare --check --workspace -- --workspace --exclude lakekeeper-bin --all-features
 
   check-format:
     runs-on: ubuntu-24.04
@@ -309,9 +311,8 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive 
           sudo apt-get update && sudo apt-get install -yqq libpq-dev --no-install-recommends
           cargo install -q --version=0.8.2 sqlx-cli --no-default-features --features postgres
-          cd crates/lakekeeper
           sqlx database create
-          sqlx migrate run
+          sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 

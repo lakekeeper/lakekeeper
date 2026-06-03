@@ -29,9 +29,8 @@ pub mod tabular_expiration_queue;
 pub mod tabular_purge_queue;
 pub mod task_log_cleanup_queue;
 
-#[cfg(test)]
-pub(crate) const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration =
-    chrono::Duration::seconds(300);
+#[cfg(any(test, feature = "test-utils"))]
+pub const DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT: chrono::Duration = chrono::Duration::seconds(300);
 const DEFAULT_MAX_RETRIES: i32 = 5;
 
 #[cfg(feature = "open-api")]
@@ -544,8 +543,8 @@ pub struct Task {
     pub id: TaskAttemptId,
     pub status: TaskIntermediateStatus,
     pub picked_up_at: Option<chrono::DateTime<Utc>>,
-    pub(crate) config: Option<serde_json::Value>,
-    pub(crate) data: serde_json::Value,
+    pub config: Option<serde_json::Value>,
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]

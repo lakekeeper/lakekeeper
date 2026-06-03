@@ -14,16 +14,14 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use lakekeeper::{
-    CONFIG,
-    implementations::{CatalogState, postgres::PostgresBackend},
-    tokio, tracing,
-};
+use lakekeeper::{CONFIG, tokio, tracing};
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 mod authorizer;
 mod config;
 mod healthcheck;
+mod secrets;
 mod serve;
 #[cfg(feature = "ui")]
 mod ui;
@@ -298,8 +296,10 @@ async fn reopen_bootstrap(yes: bool) -> anyhow::Result<()> {
         );
     }
 
-    let write_pool =
-        lakekeeper::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
+    let write_pool = lakekeeper_storage_postgres::get_writer_pool(
+        lakekeeper_storage_postgres::config::CONFIG.to_pool_opts(),
+    )
+    .await?;
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
 
     let server_id =
@@ -329,16 +329,17 @@ async fn openfga_reconcile(
         );
     }
 
-    let read_pool = lakekeeper::implementations::postgres::get_reader_pool(
-        CONFIG
+    let pg_config = &*lakekeeper_storage_postgres::config::CONFIG;
+    let read_pool = lakekeeper_storage_postgres::get_reader_pool(
+        pg_config
             .to_pool_opts()
-            .max_connections(CONFIG.pg_read_pool_connections),
+            .max_connections(pg_config.pg_read_pool_connections),
     )
     .await?;
-    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-        CONFIG
+    let write_pool = lakekeeper_storage_postgres::get_writer_pool(
+        pg_config
             .to_pool_opts()
-            .max_connections(CONFIG.pg_write_pool_connections),
+            .max_connections(pg_config.pg_write_pool_connections),
     )
     .await?;
     let catalog_state = CatalogState::from_pools(read_pool, write_pool);
@@ -352,7 +353,7 @@ async fn openfga_reconcile(
     let authorizer =
         lakekeeper_authz_openfga::new_authorizer_from_default_config(server_id).await?;
 
-    let lock = lakekeeper::implementations::postgres::PostgresAdvisoryLock::try_acquire(
+    let lock = lakekeeper_storage_postgres::PostgresAdvisoryLock::try_acquire(
         &catalog_state,
         lakekeeper_authz_openfga::RECONCILE_LOCK_KEY,
     )
@@ -409,13 +410,14 @@ async fn openfga_reconcile(
 
 async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Migrating database...");
-    let write_pool =
-        lakekeeper::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
+    let write_pool = lakekeeper_storage_postgres::get_writer_pool(
+        lakekeeper_storage_postgres::config::CONFIG.to_pool_opts(),
+    )
+    .await?;
 
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup
-    let server_id =
-        lakekeeper::implementations::postgres::migrations::migrate_core_only(&write_pool).await?;
+    let server_id = lakekeeper_storage_postgres::migrations::migrate_core_only(&write_pool).await?;
     tracing::info!("Database migration complete.");
 
     tracing::info!("Migrating authorizer...");

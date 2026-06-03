@@ -236,12 +236,12 @@ pub(crate) fn add_namespace_to_tabulars_for_authorize_load_tabular(
 /// with the request actor.
 /// Result entry from [`resolve_users_for_authorize_load_tabular`].
 #[derive(Debug)]
-pub(crate) struct ResolvedTabular {
-    pub(crate) tabular: ViewOrTableInfo,
-    pub(crate) user: Option<UserOrRole>,
+pub struct ResolvedTabular {
+    pub tabular: ViewOrTableInfo,
+    pub user: Option<UserOrRole>,
     /// True if this tabular is accessed via delegated execution (downstream of a DEFINER view).
-    pub(crate) is_delegated_execution: bool,
-    pub(crate) namespace: NamespaceHierarchy,
+    pub is_delegated_execution: bool,
+    pub namespace: NamespaceHierarchy,
 }
 
 /// Resolve users for each tabular in the authorization chain.
@@ -350,7 +350,8 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
 ///   check (used by any consumer that enforces denial on intermediate views
 ///   — it's what gates DEFINER chain traversal past the control-plane
 ///   bypass).
-pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+#[must_use]
+pub fn build_actions_from_sorted_tabulars_for_authorize_load_tabular(
     tabulars: &[ResolvedTabular],
 ) -> Vec<TabularAuthzAction<'_>> {
     tabulars
