@@ -172,7 +172,6 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
         )
         .try_init()
         .ok();
-    configure_trigger(&pool).await;
     let prof = lakekeeper_integration_tests::memory_io_profile();
     let (ctx, warehouse) = lakekeeper_integration_tests::setup(
         pool.clone(),
@@ -185,6 +184,13 @@ async fn setup_stats_test(pool: PgPool, n_tabs: usize, n_views: usize) -> StatsS
         None,
     )
     .await;
+    // Must run AFTER `setup` — the latter applies migrations which
+    // `CREATE OR REPLACE` the function back to `'hour'`. The original
+    // (inline-crate) test was protected by sqlx::test auto-migrating
+    // from `crates/lakekeeper/migrations/` before the test body ran;
+    // the integration-tests crate has no `./migrations` dir so we have
+    // to flip the order.
+    configure_trigger(&pool).await;
 
     let ns_name = "ns1";
 
