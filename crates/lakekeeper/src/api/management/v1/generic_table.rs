@@ -7,11 +7,8 @@ use crate::{
     service::{
         CatalogStore, CatalogTabularOps, GenericTableId, SecretStore, State, TabularId,
         TabularListFlags, Transaction,
-        authz::{
-            AuthZGenericTableOps, Authorizer, CatalogGenericTableAction,
-            RequireGenericTableActionError, fetch_warehouse_namespace_generic_table_by_id,
-        },
-        events::APIEventContext,
+        authz::{AuthZGenericTableOps, Authorizer, CatalogGenericTableAction},
+        events::{APIEventContext, context::UserProvidedGenericTable},
     },
 };
 
@@ -118,24 +115,15 @@ where
     C: CatalogStore,
     A: Authorizer + Clone,
 {
-    let (warehouse, namespace, info) = fetch_warehouse_namespace_generic_table_by_id::<C, A>(
-        authorizer,
-        warehouse_id,
-        generic_table_id,
-        TabularListFlags::all(),
-        catalog_state,
-    )
-    .await?;
-
-    authorizer
-        .require_generic_table_action(
+    let (_warehouse, _namespace, info) = authorizer
+        .load_and_authorize_generic_table_operation::<C>(
             request_metadata,
-            &warehouse,
-            &namespace,
-            generic_table_id,
-            Ok::<_, RequireGenericTableActionError>(Some(info)),
+            &UserProvidedGenericTable::new(warehouse_id, generic_table_id),
+            TabularListFlags::all(),
             action,
+            catalog_state,
         )
-        .await
-        .map_err(Into::into)
+        .await?;
+
+    Ok(info)
 }

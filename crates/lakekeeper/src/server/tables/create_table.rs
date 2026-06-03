@@ -406,7 +406,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     Ok(load_table_result)
 }
 
-pub(crate) fn create_table_request_into_table_metadata(
+pub fn create_table_request_into_table_metadata(
     table_id: TableId,
     request: CreateTableRequest,
     allowed_format_versions: &AllowedFormatVersions,

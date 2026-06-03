@@ -22,59 +22,58 @@ use crate::{
 };
 
 // Main cache: stores warehouses by ID only
-pub(crate) static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> =
-    LazyLock::new(|| {
-        Cache::builder()
-            .max_capacity(CONFIG.cache.warehouse.capacity)
-            .initial_capacity(50)
-            .time_to_live(Duration::from_secs(
-                CONFIG.cache.warehouse.time_to_live_secs,
-            ))
-            .async_eviction_listener(|key, value: CachedWarehouse, cause| {
-                Box::pin(async move {
-                    // On Replaced: invalidate the old secondary index mapping immediately,
-                    // then spawn a task to re-insert the new mapping (avoids re-entrant
-                    // WAREHOUSE_CACHE.get() calls which can deadlock).
-                    // On all other causes (expired, explicit): always invalidate.
-                    match cause {
-                        RemovalCause::Replaced => {
-                            let key = *key;
-                            // Immediately invalidate the old (project_id, name) → warehouse_id mapping
-                            NAME_TO_ID_CACHE
-                                .invalidate(&(
-                                    value.warehouse.project_id.clone(),
-                                    UniCase::new(value.warehouse.name.clone()),
-                                ))
-                                .await;
+pub static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(CONFIG.cache.warehouse.capacity)
+        .initial_capacity(50)
+        .time_to_live(Duration::from_secs(
+            CONFIG.cache.warehouse.time_to_live_secs,
+        ))
+        .async_eviction_listener(|key, value: CachedWarehouse, cause| {
+            Box::pin(async move {
+                // On Replaced: invalidate the old secondary index mapping immediately,
+                // then spawn a task to re-insert the new mapping (avoids re-entrant
+                // WAREHOUSE_CACHE.get() calls which can deadlock).
+                // On all other causes (expired, explicit): always invalidate.
+                match cause {
+                    RemovalCause::Replaced => {
+                        let key = *key;
+                        // Immediately invalidate the old (project_id, name) → warehouse_id mapping
+                        NAME_TO_ID_CACHE
+                            .invalidate(&(
+                                value.warehouse.project_id.clone(),
+                                UniCase::new(value.warehouse.name.clone()),
+                            ))
+                            .await;
 
-                            // Spawn task to add the new mapping (avoids re-entrant WAREHOUSE_CACHE.get)
-                            tokio::spawn(async move {
-                                if let Some(curr) = WAREHOUSE_CACHE.get(&key).await {
-                                    NAME_TO_ID_CACHE
-                                        .insert(
-                                            (
-                                                curr.warehouse.project_id.clone(),
-                                                UniCase::new(curr.warehouse.name.clone()),
-                                            ),
-                                            key,
-                                        )
-                                        .await;
-                                }
-                            });
-                        }
-                        _ => {
-                            NAME_TO_ID_CACHE
-                                .invalidate(&(
-                                    value.warehouse.project_id.clone(),
-                                    UniCase::new(value.warehouse.name.clone()),
-                                ))
-                                .await;
-                        }
+                        // Spawn task to add the new mapping (avoids re-entrant WAREHOUSE_CACHE.get)
+                        tokio::spawn(async move {
+                            if let Some(curr) = WAREHOUSE_CACHE.get(&key).await {
+                                NAME_TO_ID_CACHE
+                                    .insert(
+                                        (
+                                            curr.warehouse.project_id.clone(),
+                                            UniCase::new(curr.warehouse.name.clone()),
+                                        ),
+                                        key,
+                                    )
+                                    .await;
+                            }
+                        });
                     }
-                })
+                    _ => {
+                        NAME_TO_ID_CACHE
+                            .invalidate(&(
+                                value.warehouse.project_id.clone(),
+                                UniCase::new(value.warehouse.name.clone()),
+                            ))
+                            .await;
+                    }
+                }
             })
-            .build()
-    });
+        })
+        .build()
+});
 
 // Secondary index: (project_id, name) → warehouse_id
 // Uses UniCase for case-insensitive warehouse name lookups
@@ -90,8 +89,8 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), Warehou
     });
 
 #[derive(Debug, Clone)]
-pub(crate) struct CachedWarehouse {
-    pub(super) warehouse: Arc<ResolvedWarehouse>,
+pub struct CachedWarehouse {
+    pub warehouse: Arc<ResolvedWarehouse>,
 }
 
 #[allow(dead_code)] // Not required for all features
@@ -191,7 +190,7 @@ pub(super) async fn warehouse_cache_get_by_name(
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct WarehouseCacheEventListener;
+pub struct WarehouseCacheEventListener;
 
 #[cfg(feature = "router")]
 impl std::fmt::Display for WarehouseCacheEventListener {

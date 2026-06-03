@@ -884,12 +884,11 @@ mod tests {
                     role::{CreateRoleRequest, Service as RoleService},
                 },
             },
-            implementations::postgres::{PostgresBackend, SecretsState},
             server::{CatalogServer, NAMESPACE_ID_PROPERTY},
             service::{CreateNamespaceResponse, NamespaceId, NamespaceIdent, authn::UserId},
-            sqlx,
-            tests::{SetupTestCatalog, TestWarehouseResponse},
         };
+        use lakekeeper_integration_tests::{SetupTestCatalog, TestWarehouseResponse};
+        use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
         use openfga_client::client::TupleKey;
         use strum::IntoEnumIterator;
         use uuid::Uuid;

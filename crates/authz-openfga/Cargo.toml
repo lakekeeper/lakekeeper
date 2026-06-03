@@ -20,9 +20,7 @@ anyhow = { workspace = true }
 figment = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
-lakekeeper = { path = "../lakekeeper", default-features = false, features = [
-    "sqlx-postgres",
-] }
+lakekeeper = { path = "../lakekeeper", default-features = false }
 openfga-client = { version = "0.6", features = [
     "auth-middle",
     "tls-rustls",
@@ -31,7 +29,6 @@ openfga-client = { version = "0.6", features = [
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sqlx = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
@@ -47,5 +44,7 @@ fastrand = { workspace = true }
 figment = { workspace = true, features = ["test"] }
 itertools = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["test-utils"] }
-sqlx = { workspace = true }
+lakekeeper-integration-tests = { path = "../lakekeeper-integration-tests" }
+lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid"] }
 tracing-test = { workspace = true }

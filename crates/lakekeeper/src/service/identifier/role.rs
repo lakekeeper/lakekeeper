@@ -42,31 +42,34 @@ pub static SYSTEM_ROLE_PROVIDER_ID: LazyLock<RoleProviderId> = LazyLock::new(|| 
 /// upsert or delete catalog-managed system roles. Only upstream code
 /// can construct it (the `pub(crate) const fn new` constructor). The
 /// two trusted construction sites are
-/// [`crate::implementations::postgres::warehouse::create_project`]
+/// [`lakekeeper_storage_postgres::warehouse::create_project`]
 /// (atomic with project creation) and
 /// [`crate::service::post_migration_hooks::upsert_system_roles_in_all_projects`]
 /// (post-migration backfill).
 ///
-/// Downstream binaries cannot construct one and therefore cannot
-/// invoke [`crate::service::CatalogRoleOps::upsert_system_roles`] or
-/// [`crate::service::CatalogRoleOps::delete_system_roles`] directly.
-/// To add or remove system roles, declare them via the
-/// `Vec<SystemRoleSpec>` passed into `serve()` and
-/// `run_post_migration_hooks()` — the trusted entry points construct
-/// the token internally.
-///
-/// ```compile_fail
-/// use lakekeeper::service::SystemRoleSeederCap;
-/// // pub(crate) constructor is inaccessible to external crates.
-/// let _cap = SystemRoleSeederCap::new();
-/// ```
-#[derive(Debug, Clone, Copy)]
+/// Downstream binaries should not construct one directly; declare system
+/// roles via the `Vec<SystemRoleSpec>` passed into `serve()` and
+/// `run_post_migration_hooks()` — the trusted entry points construct the
+/// token internally. The constructor is `pub` (rather than `pub(crate)`) so
+/// that the storage-backend crates can mint the token from inside their own
+/// trusted seeding code; this is a documentation-level contract, not a hard
+/// compile-time guarantee.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SystemRoleSeederCap(());
 
 impl SystemRoleSeederCap {
-    /// Constructs the capability token. `pub(crate)` so only upstream
-    /// code can mint one.
-    pub(crate) const fn new() -> Self {
+    /// Constructs the capability token. Only the storage-backend impl
+    /// crates (`lakekeeper-storage-postgres`, etc.) and the
+    /// post-migration hook in `lakekeeper` itself should mint one —
+    /// minting from API-facing code violates the bootstrap contract
+    /// the token is documenting.
+    ///
+    /// The intentionally-verbose name is the documentation contract:
+    /// a `grep` for this string surfaces every site that bypasses the
+    /// API-side guard. Do not rename without auditing all callers.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn for_storage_backend_seeding() -> Self {
         Self(())
     }
 }

@@ -3684,7 +3684,6 @@ version = "0.12.3"
 dependencies = [
  "anyhow",
  "assert-json-diff",
- "async-channel 2.5.0",
  "async-nats",
  "async-trait",
  "aws-config",
@@ -3699,11 +3698,9 @@ dependencies = [
  "azure_core",
  "azure_storage",
  "azure_storage_blobs",
- "base64 0.22.1",
  "bytes",
  "chrono",
  "cloudevents-sdk",
- "crc",
  "derive_more",
  "fastrand 2.3.0",
  "figment",
@@ -3752,7 +3749,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
- "tryhard",
  "typed-builder 0.23.2",
  "unicase",
  "url",
@@ -3761,8 +3757,6 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "valuable",
- "vaultrs",
- "vaultrs-login",
  "veil",
  "xxhash-rust",
 ]
@@ -3778,6 +3772,8 @@ dependencies = [
  "http 1.4.0",
  "itertools 0.14.0",
  "lakekeeper",
+ "lakekeeper-integration-tests",
+ "lakekeeper-storage-postgres",
  "openfga-client",
  "serde",
  "serde_json",
@@ -3799,12 +3795,15 @@ name = "lakekeeper-bin"
 version = "0.12.3"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "figment",
  "http 1.4.0",
  "lakekeeper",
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
+ "lakekeeper-secrets-kv2",
+ "lakekeeper-storage-postgres",
  "limes",
  "reqwest 0.12.28",
  "serde",
@@ -3822,6 +3821,44 @@ dependencies = [
  "mime_guess",
  "moka",
  "rust-embed",
+]
+
+[[package]]
+name = "lakekeeper-integration-tests"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "assert-json-diff",
+ "async-channel 2.5.0",
+ "aws-sdk-s3",
+ "bytes",
+ "chrono",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "iceberg",
+ "iceberg-ext",
+ "itertools 0.14.0",
+ "lakekeeper",
+ "lakekeeper-io",
+ "lakekeeper-storage-postgres",
+ "maplit",
+ "mockall",
+ "pastey",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "similar",
+ "sqlx",
+ "strum",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-test",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -3876,6 +3913,61 @@ dependencies = [
  "uuid",
  "veil",
  "webpki-root-certs",
+]
+
+[[package]]
+name = "lakekeeper-secrets-kv2"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "figment",
+ "iceberg-ext",
+ "lakekeeper",
+ "serde",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "vaultrs",
+ "vaultrs-login",
+ "veil",
+]
+
+[[package]]
+name = "lakekeeper-storage-postgres"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "crc",
+ "derive_more",
+ "fastrand 2.3.0",
+ "figment",
+ "futures",
+ "http 1.4.0",
+ "iceberg",
+ "iceberg-ext",
+ "iso8601",
+ "itertools 0.14.0",
+ "lakekeeper",
+ "lakekeeper-io",
+ "lakekeeper-storage-postgres",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "similar",
+ "sqlx",
+ "strum",
+ "tokio",
+ "tracing",
+ "tracing-test",
+ "tryhard",
+ "typed-builder 0.23.2",
+ "url",
+ "uuid",
 ]
 
 [[package]]

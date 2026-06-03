@@ -358,7 +358,7 @@ impl From<ListNamespacesQuery> for PaginationQuery {
 }
 
 impl PaginationQuery {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn empty() -> Self {
         PaginationQuery {

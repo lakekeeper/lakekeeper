@@ -215,7 +215,7 @@ impl From<InternalParseLocationError> for IcebergErrorResponse {
 }
 
 #[cfg(feature = "sqlx-postgres")]
-pub(crate) fn build_tabular_ident_from_vec(
+pub fn build_tabular_ident_from_vec(
     name_parts: &[String],
 ) -> Result<TableIdent, InvalidTabularIdentifier> {
     TableIdent::from_strs(name_parts.to_owned()).map_err(|e| {

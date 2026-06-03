@@ -45,10 +45,10 @@ macro_rules! generate_endpoints {
 
         pastey::paste! {
             #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, strum::Display)]
-            #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+            #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
             #[strum(serialize_all = "kebab-case")]
             // Only apply the sqlx attribute if the feature is enabled
-            #[cfg_attr(feature = "sqlx", sqlx(type_name = "api_endpoints", rename_all = "kebab-case"))]
+            #[cfg_attr(feature = "sqlx-postgres", sqlx(type_name = "api_endpoints", rename_all = "kebab-case"))]
             pub enum EndpointFlat {
                 $(
                     $(
@@ -123,6 +123,7 @@ macro_rules! generate_endpoints {
 }
 
 impl CatalogV1Endpoint {
+    #[must_use]
     pub fn unimplemented(self) -> bool {
         matches!(
             self,
@@ -271,6 +272,7 @@ generate_endpoints! {
 }
 
 impl ManagementV1Endpoint {
+    #[must_use]
     pub fn path_in_management_v1(self) -> &'static str {
         &self.path()["/management/v1".len()..]
     }

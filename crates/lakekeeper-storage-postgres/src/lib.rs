@@ -1,0 +1,323 @@
+//! PostgreSQL catalog backend for Lakekeeper.
+//!
+//! Provides [`PostgresBackend`] (an implementation of
+//! [`lakekeeper::service::CatalogStore`]), the [`SecretsState`] secrets
+//! backend, [`PostgresAdvisoryLock`] for cross-replica maintenance
+//! coordination, and the migrations runner used at startup.
+
+mod advisory_lock;
+mod bootstrap;
+mod catalog;
+pub mod config;
+pub(crate) mod dbutils;
+pub mod endpoint_statistics;
+pub(crate) mod idempotency;
+pub mod migrations;
+pub mod namespace;
+mod pagination;
+pub mod role;
+pub(crate) mod role_assignment;
+pub(crate) mod secrets;
+pub mod tabular;
+pub mod tasks;
+pub(crate) mod user;
+pub mod warehouse;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
+use std::{str::FromStr, sync::Arc};
+
+pub use advisory_lock::PostgresAdvisoryLock;
+use anyhow::anyhow;
+use async_trait::async_trait;
+pub use endpoint_statistics::sink::PostgresStatisticsSink;
+use lakekeeper::{
+    api::Result,
+    service::{
+        StateOrTransaction, StateOrTransactionEnum, Transaction,
+        health::{Health, HealthExt, HealthStatus},
+    },
+};
+pub use secrets::SecretsState;
+use sqlx::{
+    ConnectOptions, Executor, PgPool,
+    postgres::{PgConnectOptions, PgPoolOptions},
+};
+pub use tabular::DeletionKind;
+#[cfg(test)]
+pub(crate) use test_utils as tests;
+use tokio::sync::RwLock;
+
+use self::{
+    config::{CONFIG, DynAppConfig, PgSslMode},
+    dbutils::DBErrorHandler,
+};
+
+/// # Errors
+/// Returns an error if the pool creation fails.
+pub async fn get_reader_pool(pool_opts: PgPoolOptions) -> anyhow::Result<PgPool> {
+    let pool = pool_opts
+        .connect_with(build_connect_ops(ConnectionType::Read)?)
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Error creating read pool."))?;
+    Ok(pool)
+}
+
+/// # Errors
+/// Returns an error if the pool cannot be created.
+pub async fn get_writer_pool(pool_opts: PgPoolOptions) -> anyhow::Result<PgPool> {
+    let pool = pool_opts
+        .connect_with(build_connect_ops(ConnectionType::Write)?)
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("Error creating write pool."))?;
+    Ok(pool)
+}
+
+#[derive(Debug, Clone)]
+pub struct PostgresBackend {}
+
+#[derive(Debug)]
+pub struct PostgresTransaction {
+    transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+}
+
+type PostgresTransactionType<'a> = &'a mut sqlx::Transaction<'static, sqlx::Postgres>;
+
+#[async_trait::async_trait]
+impl Transaction<CatalogState> for PostgresTransaction {
+    type Transaction<'a> = PostgresTransactionType<'a>;
+
+    async fn begin_write(db_state: CatalogState) -> Result<Self> {
+        let transaction = db_state
+            .write_pool()
+            .begin()
+            .await
+            .map_err(|e| e.into_error_model("Error starting transaction".to_string()))?;
+
+        Ok(Self { transaction })
+    }
+
+    async fn begin_read(db_state: CatalogState) -> Result<Self> {
+        let mut transaction = db_state
+            .read_pool()
+            .begin()
+            .await
+            .map_err(|e| e.into_error_model("Error starting transaction".to_string()))?;
+
+        transaction
+            .execute("SET TRANSACTION READ ONLY")
+            .await
+            .map_err(|e| {
+                e.into_error_model("Error setting transaction to read-only".to_string())
+            })?;
+        Ok(Self { transaction })
+    }
+
+    async fn commit(self) -> Result<()> {
+        self.transaction
+            .commit()
+            .await
+            .map_err(|e| e.into_error_model("Error committing transaction".to_string()))?;
+        Ok(())
+    }
+
+    async fn rollback(self) -> Result<()> {
+        self.transaction
+            .rollback()
+            .await
+            .map_err(|e| e.into_error_model("Error rolling back transaction".to_string()))?;
+        Ok(())
+    }
+
+    fn transaction(&mut self) -> Self::Transaction<'_> {
+        &mut self.transaction
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReadWrite {
+    pub(crate) read_pool: PgPool,
+    pub(crate) write_pool: PgPool,
+    pub(crate) health: Arc<RwLock<Vec<Health>>>,
+}
+
+#[async_trait]
+impl HealthExt for ReadWrite {
+    async fn health(&self) -> Vec<Health> {
+        self.health.read().await.clone()
+    }
+
+    async fn update_health(&self) {
+        let read = self.read_health().await;
+        let write = self.write_health().await;
+        let mut lock = self.health.write().await;
+        lock.clear();
+        lock.extend([
+            Health::now("read_pool", read),
+            Health::now("write_pool", write),
+        ]);
+    }
+}
+
+impl ReadWrite {
+    #[must_use]
+    pub fn from_pools(read_pool: PgPool, write_pool: PgPool) -> Self {
+        Self {
+            read_pool,
+            write_pool,
+            health: Arc::new(RwLock::new(vec![
+                Health::now("read_pool", HealthStatus::Unknown),
+                Health::now("write_pool", HealthStatus::Unknown),
+            ])),
+        }
+    }
+
+    async fn health(pool: PgPool) -> HealthStatus {
+        match sqlx::query("SELECT 1").fetch_one(&pool).await {
+            Ok(_) => HealthStatus::Healthy,
+            Err(e) => {
+                tracing::warn!(?e, ?pool, "Pool is unhealthy");
+                HealthStatus::Unhealthy
+            }
+        }
+    }
+
+    async fn write_health(&self) -> HealthStatus {
+        Self::health(self.write_pool.clone()).await
+    }
+
+    async fn read_health(&self) -> HealthStatus {
+        Self::health(self.read_pool.clone()).await
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogState {
+    pub read_write: ReadWrite,
+}
+
+#[async_trait]
+impl HealthExt for CatalogState {
+    async fn health(&self) -> Vec<Health> {
+        self.read_write.health().await
+    }
+
+    async fn update_health(&self) {
+        self.read_write.update_health().await;
+    }
+}
+
+impl CatalogState {
+    #[must_use]
+    pub fn from_pools(read_pool: PgPool, write_pool: PgPool) -> Self {
+        Self {
+            read_write: ReadWrite::from_pools(read_pool, write_pool),
+        }
+    }
+
+    #[must_use]
+    pub fn read_pool(&self) -> PgPool {
+        self.read_write.read_pool.clone()
+    }
+
+    #[must_use]
+    pub fn write_pool(&self) -> PgPool {
+        self.read_write.write_pool.clone()
+    }
+}
+
+impl<'txn> StateOrTransaction<CatalogState, PostgresTransactionType<'txn>> for CatalogState {
+    fn as_enum_mut<'b>(
+        &'b mut self,
+    ) -> StateOrTransactionEnum<'b, CatalogState, PostgresTransactionType<'txn>> {
+        StateOrTransactionEnum::State(self.clone())
+    }
+}
+
+impl<'txn> StateOrTransaction<CatalogState, PostgresTransactionType<'txn>>
+    for PostgresTransactionType<'txn>
+{
+    fn as_enum_mut<'b>(
+        &'b mut self,
+    ) -> StateOrTransactionEnum<'b, CatalogState, PostgresTransactionType<'txn>> {
+        StateOrTransactionEnum::Transaction(self)
+    }
+}
+
+impl DynAppConfig {
+    pub fn to_pool_opts(&self) -> PgPoolOptions {
+        sqlx::pool::PoolOptions::default()
+            .test_before_acquire(self.pg_test_before_acquire)
+            .acquire_timeout(core::time::Duration::from_secs(self.pg_acquire_timeout))
+            .max_lifetime(
+                self.pg_connection_max_lifetime
+                    .map(core::time::Duration::from_secs),
+            )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConnectionType {
+    Read,
+    Write,
+}
+
+fn build_connect_ops(typ: ConnectionType) -> anyhow::Result<PgConnectOptions> {
+    let url = match typ {
+        ConnectionType::Read => CONFIG
+            .pg_database_url_read
+            .as_deref()
+            .or(CONFIG.pg_database_url_write.as_deref()),
+        ConnectionType::Write => CONFIG.pg_database_url_write.as_deref(),
+    };
+
+    let host = match typ {
+        ConnectionType::Read => CONFIG.pg_host_r.as_deref().or(CONFIG.pg_host_w.as_deref()),
+        ConnectionType::Write => CONFIG.pg_host_w.as_deref(),
+    };
+    let opts = if let Some(cfg) = url {
+        PgConnectOptions::from_str(cfg)?
+    } else {
+        PgConnectOptions::new()
+            .host(host.ok_or(anyhow!(
+                "A connection string or postgres host must be provided."
+            ))?)
+            .port(CONFIG.pg_port.ok_or(anyhow!(
+                "A connection string or postgres port must be provided."
+            ))?)
+            .username(CONFIG.pg_user.as_deref().ok_or(anyhow!(
+                "A connection string or postgres user must be provided."
+            ))?)
+            .password(CONFIG.pg_password.as_deref().ok_or(anyhow!(
+                "A connection string or postgres password must be provided."
+            ))?)
+            .database(CONFIG.pg_database.as_deref().ok_or(anyhow!(
+                "A connection string or postgres database must be provided."
+            ))?)
+            .ssl_mode(CONFIG.pg_ssl_mode.unwrap_or(PgSslMode::Prefer).into())
+    };
+    let opts = if let Some(cert) = CONFIG.pg_ssl_root_cert.as_deref() {
+        opts.ssl_root_cert(cert)
+    } else {
+        opts
+    };
+    let opts = if CONFIG.pg_enable_statement_logging {
+        opts
+    } else {
+        opts.disable_statement_logging()
+    };
+
+    let conn_type = match typ {
+        ConnectionType::Read => "read",
+        ConnectionType::Write => "write",
+    };
+    tracing::info!(
+        host = opts.get_host(),
+        port = opts.get_port(),
+        database = opts.get_database(),
+        username = opts.get_username(),
+        "Building PostgreSQL {conn_type} connection"
+    );
+
+    Ok(opts)
+}
