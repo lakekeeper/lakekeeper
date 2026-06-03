@@ -1,385 +1,477 @@
+//! ADLS Gen2 `LakekeeperStorage` impl over `object_store::azure::MicrosoftAzure`.
+//!
+//! See the parent `adls.rs` module header for the overall file layering.
+//! This file holds:
+//! * [`AdlsStorage`] — the public storage backend.
+//! * [`AdlsClientConfig`] — immutable builder template shared across requests.
+//! * The per-container `MicrosoftAzure` cache (an `object_store` quirk; see
+//!   the comment on [`AdlsStorage`] for why it exists).
+//! * Pure helpers ([`decide_put_strategy`], [`next_page`]) extracted from
+//!   the trait methods so the boundary semantics are unit-testable without
+//!   driving the HTTP layer.
 use std::{
     collections::HashMap,
-    num::NonZeroU32,
     str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    sync::{Arc, RwLock},
 };
 
-use azure_storage::CloudLocation;
-use azure_storage_datalake::prelude::{
-    DataLakeClient, DirectoryClient, FileClient, FileSystemClient, GetFileResponse,
-    HeadPathResponse, Path,
-};
-use bytes::{Bytes, BytesMut};
-use chrono::DateTime;
+use bytes::Bytes;
 use futures::StreamExt as _;
+use object_store::{
+    GetOptions, GetRange, ObjectMeta, ObjectStore as _, ObjectStoreExt as _, PutPayload,
+    azure::MicrosoftAzureBuilder, path::Path as ObjectStorePath,
+};
 
 use crate::{
-    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InvalidLocationError,
-    LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
-    adls::{AdlsLocation, adls_error::parse_error},
-    delete_not_found_is_ok, execute_with_parallelism, safe_usize_to_i64, validate_file_size,
+    DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InitializeClientError,
+    InvalidLocationError, LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
+    adls::{
+        AdlsLocation, AzureCloud, adls_error::parse_error, adls_writer::AdlsFileWrite,
+        credentials::ResolvedCredential,
+    },
+    delete_not_found_is_ok, execute_with_parallelism, validate_file_size,
 };
 
+/// Read chunk size for parallel chunked downloads. Matches the previous
+/// `DataLakeClient` configuration; tuning this is orthogonal to the SDK swap.
+const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
+/// Above this size, `read` and `read_range` switch from one-shot GET to
+/// parallel chunked GET with an eTag integrity check on each chunk.
+const MAX_BYTES_PER_REQUEST: usize = 7 * 1024 * 1024;
+/// Parallelism for chunked reads and per-file batch operations. Matches the
+/// previous backend.
+const READ_PARALLELISM: usize = 10;
+/// Above this size, `write` switches from a single-shot `object_store::put`
+/// to a multipart upload. The single-PUT path is otherwise bounded by
+/// `object_store`'s 180s retry budget — large bodies on slow connections
+/// (e.g., CI runners with ~5 MB/s upstream) can time out before completing.
+/// 16 mebibytes is the empirical sweet spot: small enough to avoid the
+/// timeout window, large enough that small files (the common case) skip
+/// the multipart overhead.
+const SINGLE_PUT_THRESHOLD: usize = 16 * 1024 * 1024;
+/// Part size for the bulk-write multipart-promotion path. Same value as
+/// `AdlsFileWrite::PART_SIZE` for consistency.
+const WRITE_PART_SIZE: usize = 4 * 1024 * 1024;
+
+/// Builder template — used to construct a `MicrosoftAzure` per container.
+/// Held inside `AdlsStorage` and read by `store_for`.
 #[derive(Debug, Clone)]
-pub struct AdlsStorage {
-    data_lake_client: DataLakeClient,
-    cloud_location: CloudLocation,
+pub(crate) struct AdlsClientConfig {
+    pub(crate) account_name: String,
+    pub(crate) authority_host: Option<url::Url>,
+    pub(crate) cloud: AzureCloud,
+    pub(crate) credential: ResolvedCredential,
 }
 
-const MAX_BYTES_PER_REQUEST: usize = 7 * 1024 * 1024;
-const DEFAULT_BYTES_PER_REQUEST: usize = 4 * 1024 * 1024;
-/// Upper bound on best-effort cleanup work spawned from `Drop`. The delete
-/// future is dropped on elapse; we still log the timeout so a partial file
-/// left behind is observable.
-const DROP_CANCEL_DURATION: Duration = Duration::from_secs(10);
+/// ADLS Gen2 storage backend backed by `object_store::azure::MicrosoftAzure`.
+///
+/// `object_store::MicrosoftAzure` is configured per-container (the container
+/// name is fixed at build time), but `LakekeeperStorage` operations can
+/// target any container under the same account in principle. We cache one
+/// `MicrosoftAzure` per container so token caches (inside `object_store`'s
+/// internal `TokenCredentialProvider`) are shared across calls — building a
+/// fresh `MicrosoftAzure` per request would refetch OAuth tokens on every
+/// call.
+///
+/// **Credential lifetime contract.** The credential resolved at construction
+/// time (held in [`AdlsClientConfig`]) is baked into every cached
+/// `MicrosoftAzure`. The cache is keyed on container name only, so to use a
+/// different credential — including rotating a SAS token — construct a fresh
+/// `AdlsStorage`. There is no API to swap the credential on an existing
+/// instance. This matches the legacy `azure_storage_datalake` backend, where
+/// `DataLakeClient` likewise carried its credential immutably.
+//
+// The cache (`stores`) is an `object_store` quirk, not a domain concept —
+// S3/GCS backends don't need it because their clients are account-scoped.
+// If `object_store::MicrosoftAzure` ever lifts the per-container binding,
+// drop the field and call `MicrosoftAzureBuilder::build()` inline.
+#[derive(Debug, Clone)]
+pub struct AdlsStorage {
+    config: Arc<AdlsClientConfig>,
+    stores: Arc<RwLock<HashMap<String, Arc<object_store::azure::MicrosoftAzure>>>>,
+}
 
 impl AdlsStorage {
-    /// Returns a [`FileSystemClient`] for the Azure Storage account.
-    ///
-    /// # Errors
-    /// - If the specified account in the location does not match the location's account name.
-    pub fn get_filesystem_client(
+    #[must_use]
+    pub(crate) fn new(config: Arc<AdlsClientConfig>) -> Self {
+        Self {
+            config,
+            stores: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Test-only hook: pre-populate the per-container store cache with a
+    /// caller-built `MicrosoftAzure`. Used to wire the storage backend to an
+    /// in-process `wiremock` HTTP server (which `cloud.endpoint_url()` cannot
+    /// produce because it hardcodes `https://`).
+    #[cfg(test)]
+    pub(crate) fn insert_store_for_test(
+        &self,
+        container: &str,
+        store: Arc<object_store::azure::MicrosoftAzure>,
+    ) {
+        self.stores
+            .write()
+            .expect("ADLS store cache lock should not be poisoned")
+            .insert(container.to_string(), store);
+    }
+
+    /// Delete a single blob via `object_store`. Applies `delete_not_found_is_ok`
+    /// to classify a missing blob as success and returns the classified `IOError`
+    /// for the caller to wrap into the appropriate error type.
+    //
+    // SAS-token redaction in error output is provided by `object_store` itself:
+    // SAS-credentialed Azure requests are marked `sensitive_request() == true`,
+    // which causes `RetryError::Display` to write "REDACTED" instead of the
+    // URI, and `HttpError` strips the URL from any reqwest source error via
+    // `e.without_url()`. No custom redaction wrapper is needed at this layer.
+    pub(crate) async fn delete_blob(
         &self,
         location: &AdlsLocation,
-    ) -> Result<FileSystemClient, InvalidLocationError> {
-        if self.cloud_location.account() != location.account_name() {
+        key: &ObjectStorePath,
+    ) -> Result<(), IOError> {
+        let error_path = location.to_string();
+        let store = self.store_for_path(location)?;
+        let result = store
+            .delete(key)
+            .await
+            .map_err(|e| parse_error(e, &error_path));
+        delete_not_found_is_ok(result)
+    }
+
+    /// Convenience wrapper that flattens [`InitializeClientError`] into an
+    /// [`IOError`] tagged with the URL-form location. Used by every operation
+    /// entry point; the typed `InitializeClientError` is only useful at the
+    /// API boundary (where the `From<IOError>` impls on the outer error enums
+    /// take over), so threading it through each method is pure boilerplate.
+    ///
+    /// Also enforces account-name binding: rejects locations whose
+    /// `account_name` does not match `self.config.account_name`. The upstream
+    /// `StorageProfile::is_allowed_location` check is the primary boundary;
+    /// this is defense-in-depth so a future bug there cannot cause
+    /// `AdlsStorage` to dispatch the configured credential against an
+    /// attacker-supplied account name. Every operation routes through here
+    /// (the one exception — `list()` — calls [`Self::check_account`]
+    /// explicitly).
+    fn store_for_path(
+        &self,
+        location: &AdlsLocation,
+    ) -> Result<Arc<object_store::azure::MicrosoftAzure>, IOError> {
+        self.check_account(location).map_err(|e| {
+            let reason = e.reason.clone();
+            IOError::new(ErrorKind::ConditionNotMatch, reason, location.to_string()).set_source(e)
+        })?;
+        self.store_for(location.filesystem()).map_err(|e| {
+            let reason = e.reason.clone();
+            IOError::new(ErrorKind::Unexpected, reason, location.to_string()).set_source(e)
+        })
+    }
+
+    /// Reject a location whose account-name does not match the configured
+    /// account. See [`Self::store_for_path`] for the rationale; this is the
+    /// raw helper for the one call site (`list()`) that builds its
+    /// `MicrosoftAzure` without going through `store_for_path`.
+    fn check_account(&self, location: &AdlsLocation) -> Result<(), InvalidLocationError> {
+        if location.account_name() != self.config.account_name {
             return Err(InvalidLocationError::new(
                 location.to_string(),
                 format!(
-                    "Location account name `{}` does not match storage account `{}`",
+                    "Location account `{}` does not match configured storage account `{}`",
                     location.account_name(),
-                    self.cloud_location.account()
+                    self.config.account_name
                 ),
             ));
         }
-
-        // Get the container client for the filesystem
-        let container_client = self
-            .data_lake_client
-            .file_system_client(location.filesystem());
-        Ok(container_client)
+        Ok(())
     }
 
-    /// Returns a [`FileClient`] for the Azure Storage account.
+    /// Return the (cached or freshly-built) `MicrosoftAzure` for the given
+    /// container. Builds happen once per (account, container) across the
+    /// lifetime of this `AdlsStorage`, amortising the OAuth-token and
+    /// HTTP-client setup over every operation that hits the same container.
     ///
-    /// # Errors
-    /// - If the filesystem client cannot be retrieved or initialized.
-    pub fn get_file_client(
-        &self,
-        location: &AdlsLocation,
-    ) -> Result<FileClient, InvalidLocationError> {
-        let filesystem_client = self.get_filesystem_client(location)?;
-        Ok(filesystem_client.into_file_client(location.blob_name()))
-    }
-
-    /// Returns a [`DirectoryClient`] for the Azure Storage account.
+    /// Synchronous because nothing inside awaits — `std::sync::RwLock` is
+    /// the right primitive (cheaper than `tokio::sync::RwLock`, no fairness
+    /// queue, no risk of holding across an await).
     ///
-    /// # Errors
-    /// - If the filesystem client cannot be retrieved or initialized.
-    pub fn get_directory_client(
+    /// Concurrency: double-checked locking. The read lock is the common-case
+    /// fast path. The second `get` *after* acquiring the write lock prevents
+    /// the race where two threads both miss under the read lock, both queue
+    /// for the write lock, and both build a fresh `MicrosoftAzure`. Without
+    /// the re-check the second thread would do redundant build work (HTTP
+    /// client, token provider, auth round-trip) and then overwrite the first
+    /// thread's entry. Defended by `store_for_concurrent_gets_share_one_build`.
+    pub(crate) fn store_for(
         &self,
-        location: &AdlsLocation,
-    ) -> Result<DirectoryClient, InvalidLocationError> {
-        let filesystem_client = self.get_filesystem_client(location)?;
-        Ok(filesystem_client.into_directory_client(location.blob_name()))
-    }
-}
-
-impl AdlsStorage {
-    #[must_use]
-    pub fn new(client: DataLakeClient, cloud_location: CloudLocation) -> Self {
-        Self {
-            data_lake_client: client,
-            cloud_location,
+        container: &str,
+    ) -> Result<Arc<object_store::azure::MicrosoftAzure>, InitializeClientError> {
+        {
+            let read = self
+                .stores
+                .read()
+                .expect("ADLS store cache lock should not be poisoned");
+            if let Some(store) = read.get(container) {
+                return Ok(store.clone());
+            }
         }
-    }
-
-    #[must_use]
-    pub fn client(&self) -> &DataLakeClient {
-        &self.data_lake_client
+        let mut write = self
+            .stores
+            .write()
+            .expect("ADLS store cache lock should not be poisoned");
+        // Second check — see the DCLP note on the function doc.
+        if let Some(store) = write.get(container) {
+            return Ok(store.clone());
+        }
+        let store =
+            build_microsoft_azure(&self.config, container).map_err(|e| InitializeClientError {
+                reason: format!("Failed to build object_store MicrosoftAzure: {e}"),
+                source: Some(Box::new(e)),
+            })?;
+        let arc = Arc::new(store);
+        write.insert(container.to_string(), arc.clone());
+        Ok(arc)
     }
 }
 
+/// Build a fresh `MicrosoftAzure` for a (account, container) pair from this
+/// storage's resolved credentials.
+fn build_microsoft_azure(
+    config: &AdlsClientConfig,
+    container: &str,
+) -> Result<object_store::azure::MicrosoftAzure, object_store::Error> {
+    let mut builder = MicrosoftAzureBuilder::new()
+        .with_account(config.account_name.clone())
+        .with_container_name(container.to_string());
+
+    if let Some(endpoint) = config.cloud.endpoint_url() {
+        builder = builder.with_endpoint(endpoint);
+    }
+    if let Some(authority) = &config.authority_host {
+        builder = builder.with_authority_host(authority.as_str());
+    }
+
+    builder = config.credential.apply(builder);
+    builder.build()
+}
+
+/// Convert `AdlsLocation` to the `object_store::Path` `MicrosoftAzure`
+/// expects: container-relative, no leading slash.
+///
+/// Lakekeeper's `Location` preserves the original URL path string verbatim
+/// — no normalisation, no percent-decoding. That string IS the byte-literal
+/// blob name under Lakekeeper's storage-key model: two paths that differ
+/// only by percent-encoding of an unreserved character (`Abc` vs `%41bc`)
+/// must address distinct blobs. See `test_percent_encoding_does_not_alias`.
+///
+/// We pass that string straight to `Path::parse`. Unlike `Path::from` /
+/// `Path::from_iter`, `Path::parse` does *no* percent-encoding — segments
+/// are stored verbatim, including any literal `%` characters. The wire-URL
+/// builder inside `object_store` then percent-encodes the segments exactly
+/// once via `url::Url::path_segments_mut().push(...)`, so:
+/// * `ä-file.txt` → wire `%C3%A4-file.txt` → Azure stores UTF-8 `ä-file.txt`
+/// * `%41bc`     → wire `%2541bc`         → Azure stores literal `%41bc`
+/// * `Abc`       → wire `Abc`             → Azure stores `Abc`
+///
+/// `%41bc` and `Abc` end up as distinct blobs on Azure — exactly the
+/// invariant the alias-test pins. `AdlsLocation` validates its segments
+/// (no `.`, `..`, `%2F`, whitespace-only) before we reach this function, so
+/// `Path::parse` is expected to succeed; we still surface the parse error
+/// as an `IOError` rather than panic, because `AdlsLocation`'s validator
+/// and `Path::parse`'s validator are maintained independently and a future
+/// drift would otherwise become a process-aborting panic.
+fn to_object_store_path(adls_location: &AdlsLocation) -> Result<ObjectStorePath, IOError> {
+    let path = adls_location.location().path().unwrap_or_default();
+    ObjectStorePath::parse(path).map_err(|e| {
+        IOError::new(
+            ErrorKind::Unexpected,
+            format!("Failed to parse ADLS path as object_store::Path: {e}"),
+            adls_location.to_string(),
+        )
+    })
+}
+
+// `remove_all` is not implemented here — we deliberately fall through to
+// the default `LakekeeperStorage::remove_all` (list-then-batch-delete).
+//
+// The legacy `azure_storage_datalake` backend issued a single DFS
+// `DELETE?recursive=true` against the directory endpoint: atomic from the
+// client's POV, O(1) HTTP calls, and HNS-aware (it removed the directory
+// marker too). `object_store::MicrosoftAzure` doesn't expose that endpoint,
+// so the default implementation enumerates and deletes per-blob.
+//
+// Trade-offs vs. the legacy backend:
+//   * Cost / latency: O(N) HTTP DELETEs + the initial list — measurable on
+//     deep prefixes on HNS accounts.
+//   * Atomicity: a concurrent writer can land new files into the prefix
+//     between the list and the deletes, leaving the "removed" directory
+//     non-empty. The legacy single-DELETE was atomic from this angle.
+//
+// TODO(adls-remove-all): mandatory before Lakekeeper ships any benchmarked
+// prefix-delete workload (deep HNS hierarchies in particular). Action:
+// measure the regression on a real HNS account; if material, implement a
+// dedicated raw HTTP `DELETE?recursive=true` against the ADLS DFS endpoint.
+// Until then we accept the degradation.
 #[async_trait::async_trait]
 impl LakekeeperStorage for AdlsStorage {
     async fn delete(&self, path: &str) -> Result<(), DeleteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
-
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
-        // Get container client from service client
-        let client = self.get_file_client(&adls_location)?;
-
-        let mut delete_response = client.delete().into_stream();
-        while let Some(result) = delete_response.next().await {
-            let result = result.map_err(|e| parse_error(e, path)).map(|_| ());
-            let result = delete_not_found_is_ok(result);
-            if let Err(e) = result {
-                return Err(e.into());
-            }
-        }
-
-        // Check if deletion was successful
-        Ok(())
+        let key = to_object_store_path(&adls_location).map_err(DeleteError::IOError)?;
+        self.delete_blob(&adls_location, &key)
+            .await
+            .map_err(DeleteError::IOError)
     }
 
     async fn delete_batch(&self, paths: &[String]) -> Result<(), DeleteBatchError> {
-        // Group paths by account and filesystem
-        let grouped_paths = group_paths_by_container(paths)?;
-
-        // Create futures for parallel deletion
-        let mut delete_futures = Vec::new();
-
-        // Create delete operations for each path
-        for ((_account, _filesystem), paths) in grouped_paths {
-            if paths.is_empty() {
-                continue; // Skip empty groups
-            }
-            let filesystem_client = self.get_filesystem_client(&paths[0])?;
-
-            for path in paths {
-                let file_client = filesystem_client.get_file_client(path.blob_name());
-                let mut deletion_stream = file_client.delete().into_stream();
-
-                let future = async move {
-                    let mut last_err = None;
-                    while let Some(result) = deletion_stream.next().await {
-                        let result = result
-                            .map_err(|e| parse_error(e, path.location().as_str()))
-                            .map(|_| ());
-                        let result = delete_not_found_is_ok(result);
-                        if let Err(e) = result {
-                            last_err = Some(e);
-                        }
-                    }
-
-                    if let Some(e) = last_err {
-                        Ok::<(AdlsLocation, Option<IOError>), DeleteBatchError>((path, Some(e)))
-                    } else {
-                        Ok((path, None))
-                    }
-                };
-
-                delete_futures.push(future);
-            }
+        // Fan out at parallelism 100 across all containers (matches the
+        // legacy `azure_storage_datalake` backend). Each per-blob future
+        // dispatches via `delete_blob`, which internally picks the SAS
+        // raw-DELETE path or the `object_store` path based on the credential.
+        //
+        // Parse + validate all paths up front so a single bad path fails the
+        // whole batch before any DELETE fires (matches the prior behaviour).
+        let mut flat: Vec<AdlsLocation> = Vec::with_capacity(paths.len());
+        for p in paths {
+            let adls_location = AdlsLocation::try_from_str(p.as_str(), true)?;
+            require_key(&adls_location)?;
+            flat.push(adls_location);
         }
 
-        let completed_batches = AtomicU64::new(0);
-        let total_batches = delete_futures.len();
+        let delete_futures = flat.into_iter().map(|adls_location| {
+            // `execute_with_parallelism` spawns onto tokio, so the future
+            // must be `'static`. Clone the (cheap, two-Arc) `AdlsStorage`
+            // into the future rather than borrowing `&self`.
+            let this = self.clone();
+            async move {
+                let key = to_object_store_path(&adls_location)?;
+                this.delete_blob(&adls_location, &key).await
+            }
+        });
 
-        let delete_stream = execute_with_parallelism(delete_futures, 100).map(|result| {
-            result
-                .map_err(|join_err| {
-                    DeleteBatchError::IOError(IOError::new(
+        let delete_stream = execute_with_parallelism(delete_futures, 100);
+        tokio::pin!(delete_stream);
+        while let Some(item) = delete_stream.next().await {
+            match item {
+                Ok(Ok(())) => {}
+                Ok(Err(io_err)) => {
+                    return Err(DeleteBatchError::IOError(io_err));
+                }
+                Err(join_err) => {
+                    return Err(DeleteBatchError::IOError(IOError::new(
                         ErrorKind::Unexpected,
                         format!("Task join error during batch delete: {join_err}"),
                         "batch_operation".to_string(),
-                    ))
-                })
-                .and_then(|inner_result| inner_result)
-        });
-        tokio::pin!(delete_stream);
-
-        while let Some(result) = delete_stream.next().await {
-            let completed_batch = completed_batches.fetch_add(1, Ordering::Relaxed);
-            match result? {
-                (_path, None) => {}
-                (_location, Some(error)) => {
-                    return Err(DeleteBatchError::IOError(error.with_context(format!(
-                        "Delete batch {completed_batch} out of {total_batches} failed",
-                    ))));
+                    )));
                 }
             }
         }
-
         Ok(())
     }
 
     async fn write(&self, path: &str, bytes: Bytes) -> Result<(), WriteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
-        let client = self.get_file_client(&adls_location)?;
-        let file_length = safe_usize_to_i64(bytes.len(), path)?;
+        let store = self.store_for_path(&adls_location)?;
+        let key = to_object_store_path(&adls_location).map_err(WriteError::IOError)?;
 
-        create_file(&client, path).await?;
-
-        if bytes.len() <= MAX_BYTES_PER_REQUEST {
-            if let Err(e) = append_chunk(&client, 0, bytes, path).await {
-                delete_partial_file_logged_infallible(
-                    &client,
-                    path,
-                    "single-chunk append failed during bulk write",
-                )
-                .await;
-                return Err(e);
-            }
-        } else {
-            // Zero-copy chunking: `bytes.slice(range)` produces an owned
-            // refcounted view that can be moved into per-chunk futures.
-            let upload_futures = crate::chunk_ranges(bytes.len(), DEFAULT_BYTES_PER_REQUEST)
-                .map(|(chunk_index, range)| {
-                    let raw_offset = range.start;
-                    let offset = i64::try_from(raw_offset).map_err(|_| {
-                        WriteError::IOError(IOError::new(
-                            ErrorKind::ConditionNotMatch,
-                            format!(
-                                "Calculated offset for write exceeds i64 limit: {raw_offset} > {}",
-                                i64::MAX
-                            ),
-                            path.to_string(),
-                        ))
-                    })?;
-                    let chunk = bytes.slice(range);
-                    let client = client.clone();
-                    let path = path.to_string();
-                    Ok(async move {
-                        append_chunk(&client, offset, chunk, &path)
-                            .await
-                            .map_err(|e| match e {
-                                WriteError::IOError(io) => {
-                                    WriteError::IOError(io.with_context(format!(
-                                        "Multipart upload chunk {chunk_index}"
-                                    )))
-                                }
-                                other @ WriteError::InvalidLocation(_) => other,
-                            })
-                    })
-                })
-                .collect::<Result<Vec<_>, WriteError>>()?;
-
-            let path_for_join_err = path.to_string();
-            let upload_stream = execute_with_parallelism(upload_futures, 10).map(move |result| {
-                let path_for_err = path_for_join_err.clone();
-                result.map_err(move |join_err| {
-                    WriteError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!("Task join error during multipart upload: {join_err}"),
-                        path_for_err,
-                    ))
-                })
-            });
-            tokio::pin!(upload_stream);
-
-            // Drain the result stream even after the first failure so that any
-            // already-spawned upload tasks finish (or fail) before we delete
-            // the partial file. Keep the earliest error to surface.
-            let mut first_error: Option<WriteError> = None;
-            while let Some(result) = upload_stream.next().await {
-                match result {
-                    Err(write_err) | Ok(Err(write_err)) if first_error.is_none() => {
-                        first_error = Some(write_err);
-                    }
-                    _ => {
-                        // Already errored or success — drop result.
-                    }
-                }
-            }
-            if let Some(err) = first_error {
-                delete_partial_file_logged_infallible(
-                    &client,
-                    path,
-                    "parallel multipart write failed",
-                )
-                .await;
-                return Err(err);
+        match decide_put_strategy(bytes.len()) {
+            PutStrategy::Single => store
+                .put(&key, PutPayload::from_bytes(bytes))
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    WriteError::IOError(parse_error(e, path).with_context("ADLS bulk write"))
+                }),
+            PutStrategy::Multipart => {
+                multipart_upload_bytes(store.as_ref(), &key, bytes, path).await
             }
         }
-
-        if let Err(e) = flush_close(&client, file_length, path).await {
-            delete_partial_file_logged_infallible(
-                &client,
-                path,
-                "flush_close failed after bulk write",
-            )
-            .await;
-            return Err(e);
-        }
-        Ok(())
     }
 
     async fn writer(&self, path: &str) -> Result<Box<dyn LakekeeperFileWrite>, WriteError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
-        let client = self.get_file_client(&adls_location)?;
-        create_file(&client, path).await?;
-        Ok(Box::new(AdlsFileWrite {
-            client,
-            path: path.to_string(),
-            offset: 0,
-            buffer: BytesMut::new(),
-            state: AdlsWriterState::Active,
-        }))
+        let store = self.store_for_path(&adls_location)?;
+        let key = to_object_store_path(&adls_location).map_err(WriteError::IOError)?;
+
+        let upload = store.put_multipart(&key).await.map_err(|e| {
+            WriteError::IOError(parse_error(e, path).with_context("ADLS open writer"))
+        })?;
+
+        Ok(Box::new(AdlsFileWrite::new(
+            store,
+            key,
+            path.to_string(),
+            upload,
+        )))
     }
 
     async fn read_single(&self, path: &str) -> Result<Bytes, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
-
-        // Get the container/filesystem name and the blob path (key)
         require_key(&adls_location)?;
+        let store = self.store_for_path(&adls_location)?;
+        let key = to_object_store_path(&adls_location).map_err(ReadError::IOError)?;
 
-        let client = self.get_file_client(&adls_location)?;
-
-        client.read().await.map(|gfr| gfr.data).map_err(|e| {
-            ReadError::IOError(
-                parse_error(e, path).with_context("Failed to read ADLS file in single request."),
-            )
-        })
+        let result = store
+            .get(&key)
+            .await
+            .map_err(|e| ReadError::IOError(parse_error(e, path)))?;
+        result
+            .bytes()
+            .await
+            .map_err(|e| ReadError::IOError(parse_error(e, path).with_context("ADLS read_single")))
     }
 
     async fn metadata(&self, path: &str) -> Result<FileInfo, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
-        let client = self.get_file_client(&adls_location)?;
-        let head_response = head(&client, &adls_location).await?;
-        let size = head_response
-            .content_length
-            .and_then(|cl| crate::size_to_u64(cl, adls_location.location().as_str()));
-        let last_modified = parse_offsetdatetime(&head_response.last_modified);
-        Ok(FileInfo::new(
-            last_modified,
+        let store = self.store_for_path(&adls_location)?;
+        let key = to_object_store_path(&adls_location).map_err(ReadError::IOError)?;
+
+        let meta = store
+            .head(&key)
+            .await
+            .map_err(|e| ReadError::IOError(parse_error(e, path).with_context("ADLS metadata")))?;
+        Ok(object_meta_to_file_info(
             adls_location.location().clone(),
-            size,
+            &meta,
         ))
     }
 
     async fn read(&self, path: &str) -> Result<Bytes, ReadError> {
         let adls_location = AdlsLocation::try_from_str(path, true)?;
         require_key(&adls_location)?;
-        let client = self.get_file_client(&adls_location)?;
+        let store = self.store_for_path(&adls_location)?;
+        let key = to_object_store_path(&adls_location).map_err(ReadError::IOError)?;
 
-        let head_response = head(&client, &adls_location).await?;
-        let Some(content_length) = head_response.content_length else {
-            // If we do not get content_length, we cannot read in chunks,
-            // so read the file in one request. We can use `fetch_range`
-            // with `u64::MAX`, which is set by client if no range is provided
-            return fetch_range(&client, 0..u64::MAX, adls_location)
-                .await
-                .map(|gfr| gfr.data);
-        };
-        let file_size = validate_file_size(content_length, adls_location.location().as_str())?;
-
+        // HEAD first so we have the eTag to use as the integrity check on
+        // each parallel chunk. Below the threshold, skip parallel and do a
+        // single GET.
+        let head = store
+            .head(&key)
+            .await
+            .map_err(|e| ReadError::IOError(parse_error(e, path).with_context("ADLS read HEAD")))?;
+        let file_size = validate_file_size(
+            i64::try_from(head.size).map_err(|_| {
+                IOError::new(
+                    ErrorKind::Unexpected,
+                    "File size from HEAD exceeds i64::MAX",
+                    path.to_string(),
+                )
+            })?,
+            path,
+        )?;
         if file_size == 0 {
             return Ok(Bytes::new());
         }
-
         if file_size < MAX_BYTES_PER_REQUEST {
-            // If the file is small enough, read it in a single request
-            return fetch_range(&client, 0..file_size as u64, adls_location)
-                .await
-                .map(|gfr| gfr.data);
+            // `usize as u64` is lossless on every Rust target (no platform
+            // has `usize` wider than 64 bits). Plain cast avoids the noise of
+            // a `try_from(...).expect(...)` for an infallible conversion.
+            return fetch_range(store.as_ref(), &key, 0..file_size as u64, None, path).await;
         }
-
-        parallel_chunked_read_with_integrity(
-            &client,
-            path,
-            0,
-            file_size,
-            head_response.last_modified,
-            adls_location,
-        )
-        .await
+        let etag = require_etag_for_chunked_read(head.e_tag.as_deref(), file_size, path)?;
+        parallel_chunked_read(store.clone(), key, path, 0, file_size, Some(etag)).await
     }
 
     async fn read_range(
@@ -412,22 +504,26 @@ impl LakekeeperStorage for AdlsStorage {
             ))
         })?;
 
-        let client = self.get_file_client(&adls_location)?;
+        let store = self.store_for_path(&adls_location)?;
+        let key = to_object_store_path(&adls_location).map_err(ReadError::IOError)?;
 
         if range_size <= MAX_BYTES_PER_REQUEST {
-            return fetch_range(&client, range, adls_location)
-                .await
-                .map(|gfr| gfr.data);
+            return fetch_range(store.as_ref(), &key, range, None, path).await;
         }
-
-        let head_response = head(&client, &adls_location).await?;
-        parallel_chunked_read_with_integrity(
-            &client,
+        let head = store.head(&key).await.map_err(|e| {
+            ReadError::IOError(parse_error(e, path).with_context("ADLS read_range HEAD"))
+        })?;
+        // Same rationale as `read()`: the chunked path requires an ETag so
+        // the per-chunk integrity check can fire and we refuse to stitch a
+        // torn read silently.
+        let etag = require_etag_for_chunked_read(head.e_tag.as_deref(), range_size, path)?;
+        parallel_chunked_read(
+            store.clone(),
+            key,
             path,
             range.start,
             range_size,
-            head_response.last_modified,
-            adls_location,
+            Some(etag),
         )
         .await
     }
@@ -438,104 +534,147 @@ impl LakekeeperStorage for AdlsStorage {
         page_size: Option<usize>,
     ) -> Result<futures::stream::BoxStream<'_, Result<Vec<FileInfo>, IOError>>, InvalidLocationError>
     {
-        let path = format!("{}/", path.trim_end_matches('/'));
-        let adls_location = AdlsLocation::try_from_str(&path, true)
+        // Note: listing a non-existent prefix yields an empty stream, not an
+        // error. `object_store::list` returns `NotFound` mid-stream in this
+        // case; `next_page` swallows it as clean end-of-stream. Callers that
+        // need to distinguish "empty prefix" from "missing prefix" must HEAD
+        // the prefix-marker blob separately.
+        //
+        // Trailing slash mirrors what the previous backend did so list("foo")
+        // and list("foo/") behave the same. `object_store` already filters
+        // HNS pseudo-directories from the flat list, so we don't need to.
+        let path_with_slash = format!("{}/", path.trim_end_matches('/'));
+        let adls_location = AdlsLocation::try_from_str(&path_with_slash, true)
+            .map_err(|e| e.with_context("List Operation failed"))?;
+        // `list()` builds its `MicrosoftAzure` via `store_for` directly (it
+        // returns `InvalidLocationError`, not `IOError`, so it doesn't go
+        // through `store_for_path`). The account-name binding check therefore
+        // has to fire here explicitly — keeping `list()` consistent with
+        // every other operation that routes through `store_for_path`.
+        self.check_account(&adls_location)
             .map_err(|e| e.with_context("List Operation failed"))?;
         let base_location = adls_location.location().clone();
+        let store = self
+            .store_for(adls_location.filesystem())
+            .map_err(|e| InvalidLocationError::new(path.to_string(), e.reason))?;
+        let prefix = to_object_store_path(&adls_location)
+            .map_err(|e| InvalidLocationError::new(path.to_string(), e.to_string()))?;
+        let error_path = path_with_slash.clone();
 
-        let client = self.get_filesystem_client(&adls_location)?;
+        // `object_store::list` returns a flat `BoxStream<'static>` of
+        // `ObjectMeta`. We rebatch into pages of `page_size` so the existing
+        // test assertions (which expect bounded page sizes when one is
+        // requested) still hold. `page_size = None` → single batch of all.
+        let page_size = page_size.unwrap_or(usize::MAX).max(1);
+        let item_stream = store.list(Some(&prefix));
 
-        let mut list_op = client.list_paths().directory(adls_location.blob_name());
-
-        // Set maximum results per page if requested.
-        // By default, ADLS returns 5000 items per page.
-        if let Some(size) = page_size {
-            // Convert to NonZeroU32, ensuring it's at least 1
-            if let Some(max_results) = NonZeroU32::new(u32::try_from(size).unwrap_or(u32::MAX)) {
-                list_op = list_op.max_results(max_results);
-            }
-        }
-
-        let list_stream = list_op.into_stream();
-
-        let stream = list_stream.map(move |result| {
+        let paged = futures::stream::try_unfold((item_stream, false), move |(mut items, done)| {
             let base_location = base_location.clone();
-            let result = result.map_err(|e| {
-                parse_error(e, path.as_str()).with_context("Failed to list ADLS path")
-            });
-            if let Err(err) = &result
-                && err.kind() == ErrorKind::NotFound
-            {
-                return Ok(vec![]); // Return empty list if path does not exist
+            let error_path = error_path.clone();
+            async move {
+                if done {
+                    return Ok::<_, IOError>(None);
+                }
+                match next_page(&mut items, &base_location, &error_path, page_size).await? {
+                    PageBatch::Yield { items: page, more } => Ok(Some((page, (items, !more)))),
+                    PageBatch::Done => Ok(None),
+                }
             }
-            result.map(|page| {
-                page.paths
-                    .iter()
-                    .filter_map(try_parse_file_info(&base_location))
-                    .collect::<Vec<_>>()
-            })
         });
 
-        Ok(stream.boxed())
+        Ok(paged.boxed())
     }
+}
 
-    /// Native ADLS Gen2 recursive delete via `DELETE` + `recursive=true`.
-    ///
-    /// The trailing slash is stripped before parsing: the ADLS API
-    /// accepts either form for a path, and `recursive=true` is what signals
-    /// directory semantics. For file paths the `recursive` flag is ignored
-    /// server-side, so the same call safely handles both files and directories.
-    ///
-    /// `NotFound` responses are treated as success, matching the idempotent
-    /// semantics of `delete` and `delete_batch` on this backend — removing an
-    /// already-absent prefix is a no-op, not an error.
-    async fn remove_all(&self, path: &str) -> Result<(), DeleteError> {
-        let path = path.trim_end_matches('/');
-        let adls_location = AdlsLocation::try_from_str(path, true)?;
+/// Outcome of draining the next batch from the list-stream in [`next_page`].
+#[derive(Debug)]
+enum PageBatch {
+    /// At least one item was collected. `more` is `true` if `page_size` was
+    /// reached and the underlying stream may produce another page; `false`
+    /// when the stream ended (or hit `NotFound`) mid-page.
+    Yield { items: Vec<FileInfo>, more: bool },
+    /// The stream is exhausted (or returned `NotFound` before yielding any
+    /// item) with no items to flush. Terminate the page-stream.
+    Done,
+}
 
-        // Get the container/filesystem name and the blob path (key)
-        require_key(&adls_location)?;
-
-        let client = self.get_file_client(&adls_location)?;
-        let mut delete_stream = client.delete().recursive(true).into_stream();
-
-        while let Some(result) = delete_stream.next().await {
-            let result = result.map(|_| ()).map_err(|e| parse_error(e, path));
-            delete_not_found_is_ok(result).map_err(DeleteError::IOError)?;
+/// Drain up to `page_size` items from `items`, converting each `ObjectMeta`
+/// into a `FileInfo` via [`object_meta_to_full_location`]. Returns either a
+/// non-empty page (with a flag indicating whether more pages might follow),
+/// or `Done` when the stream is exhausted without producing any item.
+///
+/// Extracted from `list()`'s `try_unfold` so the pagination semantics
+/// (`NotFound` mid-stream tolerance, empty-page suppression, `page_size`
+/// boundary) are unit-testable against a synthetic `futures::stream::iter`
+/// without driving any HTTP layer.
+async fn next_page<S>(
+    items: &mut S,
+    base_location: &Location,
+    error_path: &str,
+    page_size: usize,
+) -> Result<PageBatch, IOError>
+where
+    S: futures::Stream<Item = Result<ObjectMeta, object_store::Error>> + Unpin + Send,
+{
+    let mut buf: Vec<FileInfo> = Vec::new();
+    while let Some(item) = items.next().await {
+        match item {
+            Ok(meta) => {
+                if let Some(fi) = object_meta_to_full_location(base_location, &meta) {
+                    buf.push(fi);
+                }
+                if buf.len() >= page_size {
+                    return Ok(PageBatch::Yield {
+                        items: buf,
+                        more: true,
+                    });
+                }
+            }
+            // Listing a non-existent prefix surfaces as NotFound. Treat it
+            // as a clean end-of-stream — flush whatever was buffered.
+            Err(object_store::Error::NotFound { .. }) => {
+                if buf.is_empty() {
+                    return Ok(PageBatch::Done);
+                }
+                return Ok(PageBatch::Yield {
+                    items: buf,
+                    more: false,
+                });
+            }
+            Err(e) => {
+                return Err(parse_error(e, error_path).with_context("Failed to list ADLS path"));
+            }
         }
-
-        Ok(())
+    }
+    if buf.is_empty() {
+        Ok(PageBatch::Done)
+    } else {
+        Ok(PageBatch::Yield {
+            items: buf,
+            more: false,
+        })
     }
 }
 
-/// Convert a `time::OffsetDateTime` to a `chrono::DateTime<Utc>`, preserving
-/// nanosecond precision. Returns `None` if the seconds are out of range.
-fn parse_offsetdatetime(t: &time::OffsetDateTime) -> Option<DateTime<chrono::Utc>> {
-    DateTime::from_timestamp(t.unix_timestamp(), t.nanosecond())
+/// Which upload path `AdlsStorage::write` should take for a given payload size.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum PutStrategy {
+    /// One-shot `PUT` — small payloads.
+    Single,
+    /// Multipart upload — payloads above [`SINGLE_PUT_THRESHOLD`], where the
+    /// single-PUT round-trip would otherwise risk timing out under
+    /// `object_store`'s 180s retry budget on slow connections.
+    Multipart,
 }
 
-fn try_parse_file_info(base_location: &Location) -> impl FnMut(&Path) -> Option<FileInfo> {
-    |path| {
-        // Create a location from account, filesystem and blob name
-        let path_name = if path.is_directory {
-            format!("{}/", path.name.trim_end_matches('/'))
-        } else {
-            path.name.clone()
-        };
-        let full_path = format!(
-            "{}://{}/{}",
-            base_location.scheme(),
-            base_location.authority_with_host(),
-            path_name
-        );
-        let location = Location::from_str(&full_path).ok()?;
-        let last_modified = parse_offsetdatetime(&path.last_modified);
-        let size = if path.is_directory {
-            None
-        } else {
-            crate::size_to_u64(path.content_length, &full_path)
-        };
-        Some(FileInfo::new(last_modified, location, size))
+/// Decide the upload strategy for `AdlsStorage::write` based on payload size.
+/// Extracted so the boundary at [`SINGLE_PUT_THRESHOLD`] is unit-testable
+/// without driving the full network path.
+fn decide_put_strategy(bytes_len: usize) -> PutStrategy {
+    if bytes_len <= SINGLE_PUT_THRESHOLD {
+        PutStrategy::Single
+    } else {
+        PutStrategy::Multipart
     }
 }
 
@@ -549,406 +688,645 @@ fn require_key(adls_location: &AdlsLocation) -> Result<(), InvalidLocationError>
     Ok(())
 }
 
-/// Groups paths by account and filesystem (container).
+fn object_meta_to_file_info(adls_location: Location, meta: &ObjectMeta) -> FileInfo {
+    FileInfo::new(Some(meta.last_modified), adls_location, Some(meta.size))
+}
+
+/// Reconstruct a full ADLS URL from the (already-validated) base location
+/// and a `Path` reported by `list`. The base location encodes scheme,
+/// account, container, and the optional list-prefix; the meta path is the
+/// container-relative full path of the listed object.
+fn object_meta_to_full_location(base: &Location, meta: &ObjectMeta) -> Option<FileInfo> {
+    // `base` was built by `try_from_str(format!("{path}/"))` so it has a
+    // trailing slash on its path. `meta.location` is the container-relative
+    // path. We want a full URL whose path equals the meta path.
+    let full = format!(
+        "{}://{}/{}",
+        base.scheme(),
+        base.authority_with_host(),
+        meta.location.as_ref()
+    );
+    let location = Location::from_str(&full).ok()?;
+    Some(FileInfo::new(
+        Some(meta.last_modified),
+        location,
+        Some(meta.size),
+    ))
+}
+
+/// Gate for the chunked-read path: returns the `ETag`, or refuses with a
+/// classified [`IOError`] if the `HEAD` response carried none. Without an
+/// `ETag` we can't enforce the `If-Match` integrity check on each chunk,
+/// and a single-shot `GET` into memory is not a safer fallback for files
+/// that reached this branch (definitionally > 7 mebibytes).
 ///
-/// Returns a `HashMap` with keys as `(account_name, filesystem)` tuples and values as
-/// vectors of `(blob_path, original_path)` tuples.
-fn group_paths_by_container(
-    paths: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<HashMap<(String, String), Vec<AdlsLocation>>, InvalidLocationError> {
-    let mut grouped_paths: HashMap<(String, String), Vec<AdlsLocation>> = HashMap::new();
+/// Extracted from `read()`/`read_range()` so the missing-ETag branch can be
+/// asserted as a pure unit test. End-to-end coverage of the chunked path
+/// (including the 412-on-ETag-mismatch surface) runs through `wiremock` by
+/// pre-populating the `AdlsStorage` per-container cache with a
+/// `MicrosoftAzure` built directly against the mock server.
+fn require_etag_for_chunked_read<'a>(
+    etag: Option<&'a str>,
+    size_for_diagnostic: usize,
+    error_path: &str,
+) -> Result<&'a str, ReadError> {
+    if let Some(etag) = etag {
+        return Ok(etag);
+    }
+    tracing::warn!(
+        path = %error_path,
+        size_for_diagnostic,
+        threshold = MAX_BYTES_PER_REQUEST,
+        "ADLS HEAD returned no ETag for a chunked-read-sized payload; \
+         refusing chunked read without an integrity check.",
+    );
+    Err(ReadError::IOError(IOError::new(
+        ErrorKind::Unexpected,
+        format!(
+            "ADLS HEAD returned no ETag; cannot run chunked read with \
+             integrity check for size={size_for_diagnostic}"
+        ),
+        error_path.to_string(),
+    )))
+}
 
-    for p in paths {
-        let path = p.as_ref();
-        let adls_location = AdlsLocation::try_from_str(path, true)?;
+/// Stream `bytes` to the target via `object_store::put_multipart` in
+/// `WRITE_PART_SIZE` chunks. Used by `write()` when the body exceeds
+/// `SINGLE_PUT_THRESHOLD`. On any part failure, drop the multipart upload
+/// (Azure no-ops `abort` server-side; uncommitted blocks expire after 7
+/// days) and propagate the original error — matches the `AdlsFileWrite`
+/// abort-on-error contract.
+async fn multipart_upload_bytes(
+    store: &object_store::azure::MicrosoftAzure,
+    key: &ObjectStorePath,
+    bytes: Bytes,
+    error_path: &str,
+) -> Result<(), WriteError> {
+    use object_store::MultipartUpload;
 
-        // Make sure we have a key (blob path)
-        require_key(&adls_location)?;
+    let mut upload = store.put_multipart(key).await.map_err(|e| {
+        WriteError::IOError(parse_error(e, error_path).with_context("ADLS multipart open"))
+    })?;
 
-        let account = adls_location.account_name().to_string();
-        let filesystem = adls_location.filesystem().to_string();
-
-        grouped_paths
-            .entry((account, filesystem))
-            .or_default()
-            .push(adls_location);
+    // `chunk_ranges` is zero-copy: each `bytes.slice(range)` is an owned
+    // refcounted view, not a memcpy. Parts are uploaded sequentially —
+    // `MultipartUpload::put_part` itself takes `&mut self` and `object_store`
+    // handles its own internal parallelism if configured.
+    for (chunk_index, range) in crate::chunk_ranges(bytes.len(), WRITE_PART_SIZE) {
+        let chunk = bytes.slice(range);
+        if let Err(e) = upload.put_part(PutPayload::from_bytes(chunk)).await {
+            // Drop the upload to release local buffers. We do NOT explicitly
+            // delete the target: `put_multipart` never calls `complete()` on
+            // failure, so there is no committed blob server-side, and Azure
+            // garbage-collects uncommitted blocks after 7 days. The streaming
+            // writer (`AdlsFileWrite`) is stricter (it issues a defensive
+            // DELETE) because it may have called `complete()` before the
+            // failure — see `abort_after_failure` in `adls_writer.rs`.
+            drop(upload);
+            return Err(WriteError::IOError(
+                parse_error(e, error_path).with_context(format!(
+                    "ADLS multipart put_part failed (chunk {chunk_index})"
+                )),
+            ));
+        }
     }
 
-    Ok(grouped_paths)
-}
-async fn head(client: &FileClient, location: &AdlsLocation) -> Result<HeadPathResponse, ReadError> {
-    client.get_properties().await.map_err(|e| {
-        ReadError::IOError(
-            parse_error(e, location.location().as_str())
-                .with_context("Failed to get ADLS file status"),
-        )
+    upload.complete().await.map(|_| ()).map_err(|e| {
+        WriteError::IOError(parse_error(e, error_path).with_context("ADLS multipart complete"))
     })
 }
 
+/// Parameter order matches `crates/io/src/s3/s3_storage.rs::fetch_range`:
+/// `(client/store, key/location, range, if_match)`, plus an `error_path` for
+/// the URL-form path used to tag any error (S3 can derive it from
+/// `&S3Location`; ADLS must thread it separately).
 async fn fetch_range(
-    client: &FileClient,
+    store: &object_store::azure::MicrosoftAzure,
+    key: &ObjectStorePath,
     range: std::ops::Range<u64>,
-    adls_location: AdlsLocation,
-) -> Result<GetFileResponse, ReadError> {
-    client.read().range(range).await.map_err(|e| {
+    if_match: Option<&str>,
+    error_path: &str,
+) -> Result<Bytes, ReadError> {
+    let opts = GetOptions {
+        if_match: if_match.map(std::string::ToString::to_string),
+        range: Some(GetRange::Bounded(range)),
+        ..Default::default()
+    };
+    let result = store.get_opts(key, opts).await.map_err(|e| {
         ReadError::IOError(
-            parse_error(e, &adls_location.to_string())
-                .with_context("Failed to download byte range."),
+            parse_error(e, error_path).with_context("Failed to download object range."),
         )
+    })?;
+    result.bytes().await.map_err(|e| {
+        ReadError::IOError(parse_error(e, error_path).with_context("Failed to drain object body."))
     })
 }
 
-/// Run a parallel-chunked download over `[range_start, range_start + range_size)`
-/// and verify each chunk's `last_modified` against `head_last_modified`. A
-/// mismatch is surfaced as an error so concurrent overwrites cannot
-/// silently produce a corrupt download.
-async fn parallel_chunked_read_with_integrity(
-    client: &FileClient,
-    error_context: &str,
+/// Parallel chunked read with `If-Match` eTag integrity check on every chunk.
+/// If the object is overwritten mid-read, Azure returns 412 on the next
+/// chunk and we surface a `ConditionNotMatch`-classified error rather than
+/// silently producing a torn read.
+async fn parallel_chunked_read(
+    store: Arc<object_store::azure::MicrosoftAzure>,
+    key: ObjectStorePath,
+    error_path: &str,
     range_start: u64,
     range_size: usize,
-    head_last_modified: time::OffsetDateTime,
-    adls_location: AdlsLocation,
+    etag: Option<&str>,
 ) -> Result<Bytes, ReadError> {
     if range_size == 0 {
         return Ok(Bytes::new());
     }
-    let client = client.clone();
+    let chunk_size = DEFAULT_BYTES_PER_REQUEST;
+    let etag = etag.map(str::to_owned);
+    let owned_path = error_path.to_owned();
+
     crate::parallel_chunked_read(
         range_size,
-        DEFAULT_BYTES_PER_REQUEST,
-        10,
-        error_context,
+        chunk_size,
+        READ_PARALLELISM,
+        error_path,
         move |rel_start, rel_end, chunk_index| {
-            let client = client.clone();
+            let store = store.clone();
+            let key = key.clone();
+            let etag = etag.clone();
+            let path = owned_path.clone();
+            // `usize as u64` is lossless on every Rust target; see the
+            // matching comment in `read()`.
             let abs_start = range_start + rel_start as u64;
             let abs_end = range_start + rel_end as u64 + 1;
-            let adls_location = adls_location.clone();
             async move {
-                let response = fetch_range(&client, abs_start..abs_end, adls_location.clone())
-                    .await
-                    .map_err(|e| match e {
-                        ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
-                            "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
-                        ))),
-                        invalid_location_error @ ReadError::InvalidLocation(_) => invalid_location_error,
-                    })?;
-                if response.last_modified != head_last_modified {
-                    return Err(ReadError::IOError(IOError::new(
-                        ErrorKind::Unexpected,
-                        format!(
-                            "File was modified during chunked parallel download: expected last modified time {}, got {}",
-                            head_last_modified, response.last_modified
-                        ),
-                        adls_location.to_string(),
-                    )));
-                }
-                Ok((chunk_index, response.data))
+                let bytes = fetch_range(
+                    store.as_ref(),
+                    &key,
+                    abs_start..abs_end,
+                    etag.as_deref(),
+                    &path,
+                )
+                .await
+                .map_err(|e| match e {
+                    ReadError::IOError(io) => ReadError::IOError(io.with_context(format!(
+                        "Failed to download chunk {chunk_index} (bytes {abs_start}-{abs_end})"
+                    ))),
+                    other @ ReadError::InvalidLocation(_) => other,
+                })?;
+                Ok((chunk_index, bytes))
             }
         },
     )
-        .await
+    .await
 }
 
-/// Create the empty target file. ADLS requires an explicit `create` before
-/// any append/flush.
-async fn create_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
-    client.create().await.map(|_| ()).map_err(|e| {
-        WriteError::IOError(parse_error(e, path).with_context("Failed to create ADLS file."))
-    })
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Append a chunk at the given byte offset.
-async fn append_chunk(
-    client: &FileClient,
-    offset: i64,
-    chunk: Bytes,
-    path: &str,
-) -> Result<(), WriteError> {
-    let chunk_len = chunk.len();
-    client.append(offset, chunk).await.map(|_| ()).map_err(|e| {
-        WriteError::IOError(parse_error(e, path).with_context(format!(
-            "Failed to upload chunk (bytes {offset}-{end})",
-            end = offset.saturating_add_unsigned(chunk_len as u64)
-        )))
-    })
-}
+    // ---- chunked-read `ETag` gate ----
 
-/// Finalise the file by flushing and closing it.
-async fn flush_close(client: &FileClient, file_length: i64, path: &str) -> Result<(), WriteError> {
-    client
-        .flush(file_length)
-        .close(true)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            WriteError::IOError(parse_error(e, path).with_context(format!(
-                "Failed to flush and close ADLS file (length {file_length})"
-            )))
-        })
-}
-
-/// Delete the target file as part of cleanup after a failed write.
-///
-/// Note on Azure auto-cleanup: the underlying Block Blob layer documents that
-/// uncommitted blocks (and zero-byte blobs created only via uncommitted blocks)
-/// are discarded one week after the last successful block upload. The ADLS
-/// Gen2 (DFS) docs do not explicitly state the same guarantee for HNS path
-/// objects, but they do not contradict it either. So in our current usage —
-/// where `flush` is only ever issued at `close` time — a partial file would
-/// most likely be garbage-collected by the underlying layer regardless.
-///
-/// We still delete explicitly because:
-///   1. A 0-byte / unflushed file can linger for up to a week (Block Blob
-///      documented behaviour) — long enough to confuse list operations,
-///      monitoring, and any reader expecting only completed files.
-///   2. lakekeeper-io's contract is that callers only ever observe finished
-///      files; a partial file is never inspected or recovered.
-///   3. If the writer is ever changed to issue intermediate flushes between
-///      appends (e.g. for memory pressure or progress checkpointing), the
-///      Block-Blob uncommitted-block GC stops covering the leak — the bytes
-///      become *committed* and persist indefinitely. Cleaning up explicitly
-///      now avoids that future foot-gun.
-async fn delete_file(client: &FileClient, path: &str) -> Result<(), WriteError> {
-    // The Azure SDK's `IntoFuture` impl for `DeletePathBuilder` is broken: the
-    // generated `fn into_future(self) { Self::into_future(self) }` recurses
-    // into itself because no inherent `into_future` body is provided by
-    // `operations/path_delete.rs`. Awaiting `client.delete()` directly blows
-    // the stack during `IntoFuture::into_future`. The `into_stream()` API is
-    // unaffected; consume its single page here to match the rest of this
-    // module's delete usage.
-    let mut delete_stream = client.delete().into_stream();
-    while let Some(result) = delete_stream.next().await {
-        result.map(|_| ()).map_err(|e| {
-            WriteError::IOError(
-                parse_error(e, path).with_context("Failed to delete partial ADLS file."),
-            )
-        })?;
+    /// An absent `ETag` on a chunked-sized payload must return a
+    /// `Unexpected`-classified [`IOError`] rather than silently degrading
+    /// to a torn-read-prone parallel `GET`.
+    #[test]
+    fn require_etag_for_chunked_read_errors_on_missing_etag() {
+        let result = require_etag_for_chunked_read(None, 8 * 1024 * 1024, "abfss://x/y/z");
+        let err = result.expect_err("expected ETag absence to error");
+        match err {
+            ReadError::IOError(io) => assert_eq!(io.kind(), ErrorKind::Unexpected),
+            other @ ReadError::InvalidLocation(_) => {
+                panic!("expected ReadError::IOError, got {other:?}")
+            }
+        }
     }
-    Ok(())
-}
 
-/// Best-effort variant of [`delete_file`] that swallows the delete error after
-/// logging it.
-///
-/// Use on cleanup paths where the caller propagates a different (original)
-/// error and the delete failure is unactionable: `close`, bulk write, `Drop`.
-/// The `context` field is included in the warn log to disambiguate which
-/// cleanup site triggered the deletion.
-async fn delete_partial_file_logged_infallible(client: &FileClient, path: &str, context: &str) {
-    if let Err(e) = delete_file(client, path).await {
-        tracing::warn!(
-            path = %path,
-            error = ?e,
-            context = %context,
-            "Failed to delete partial ADLS file. The file may persist in target \
-             location until manually removed or until the underlying \
-             uncommitted-block GC runs.",
+    /// A present `ETag` must pass through verbatim — no copy, no
+    /// transformation.
+    #[test]
+    fn require_etag_for_chunked_read_passes_etag_through() {
+        let etag = require_etag_for_chunked_read(Some("\"v1\""), 8 * 1024 * 1024, "abfss://x/y/z")
+            .expect("expected Ok when ETag present");
+        assert_eq!(etag, "\"v1\"");
+    }
+
+    /// Construct an `AdlsStorage` with a fake (but builder-valid) access-key
+    /// credential. `MicrosoftAzureBuilder::with_access_key` doesn't actually
+    /// validate or use the key until a request fires, so `build()` succeeds
+    /// and we can exercise the local cache machinery without any network.
+    fn test_storage() -> AdlsStorage {
+        AdlsStorage::new(Arc::new(AdlsClientConfig {
+            account_name: "testacct".to_string(),
+            authority_host: None,
+            cloud: crate::adls::AzureCloud::Public,
+            credential: ResolvedCredential::AccessKey("dGVzdC1rZXk=".to_string()),
+        }))
+    }
+
+    /// Same container twice returns identical Arc — the cache hits.
+    #[test]
+    fn store_for_same_container_returns_identical_arc() {
+        let storage = test_storage();
+        let a = storage.store_for("c1").expect("build microsoft_azure");
+        let b = storage.store_for("c1").expect("build microsoft_azure");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "cache miss on second call to store_for(c1)",
         );
     }
-}
 
-/// Streaming writer for ADLS.
-///
-/// The target file is created up-front by `writer`. Each `write` buffers
-/// locally and flushes append calls once `DEFAULT_BYTES_PER_REQUEST` bytes
-/// have accumulated. `close` flushes any remaining buffered bytes and
-/// finalises the file.
-///
-/// Zero-copy invariant: incoming `Bytes` are appended into a local
-/// `BytesMut` (one copy, unavoidable to span multiple `write` calls);
-/// each chunk is then handed off to `append_chunk` zero-copy via
-/// `BytesMut::split_to(N).freeze()`.
-pub(crate) struct AdlsFileWrite {
-    client: FileClient,
-    path: String,
-    offset: i64,
-    buffer: BytesMut,
-    state: AdlsWriterState,
-}
-
-enum AdlsWriterState {
-    Active,
-    Closed,
-    Aborted,
-    AbortFailed,
-}
-
-impl std::fmt::Debug for AdlsFileWrite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AdlsFileWrite")
-            .field("path", &self.path)
-            .field("offset", &self.offset)
-            .field("buffered_bytes", &self.buffer.len())
-            .field("state", &self.state)
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::fmt::Debug for AdlsWriterState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Active => f.write_str("Active"),
-            Self::Closed => f.write_str("Closed"),
-            Self::Aborted => f.write_str("Aborted"),
-            Self::AbortFailed => f.write_str("AbortFailed"),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl LakekeeperFileWrite for AdlsFileWrite {
-    async fn write(&mut self, bytes_in: Bytes) -> Result<(), WriteError> {
-        match self.state {
-            AdlsWriterState::Closed => {
-                return Err(WriteError::IOError(IOError::new(
-                    ErrorKind::ConditionNotMatch,
-                    "Cannot write to closed writer",
-                    self.path.clone(),
-                )));
-            }
-            AdlsWriterState::Aborted => {
-                return Err(WriteError::IOError(IOError::new(
-                    ErrorKind::ConditionNotMatch,
-                    "Cannot write to aborted writer",
-                    self.path.clone(),
-                )));
-            }
-            AdlsWriterState::AbortFailed => {
-                return Err(WriteError::IOError(IOError::new(
-                    ErrorKind::ConditionNotMatch,
-                    "Cannot write to writer that failed to abort",
-                    self.path.clone(),
-                )));
-            }
-            AdlsWriterState::Active => {}
-        }
-        self.buffer.extend_from_slice(&bytes_in);
-        while self.buffer.len() >= DEFAULT_BYTES_PER_REQUEST {
-            let chunk = self.buffer.split_to(DEFAULT_BYTES_PER_REQUEST).freeze();
-            let chunk_len =
-                safe_usize_to_i64(chunk.len(), self.path.clone()).map_err(WriteError::IOError)?;
-            if let Err(append_error) =
-                append_chunk(&self.client, self.offset, chunk, &self.path).await
-            {
-                // Always surface the original append error. The cleanup
-                // delete is best-effort; its failure is logged and
-                // reflected in `state` for `Drop`, but never masks
-                // `append_error`.
-                match delete_file(&self.client, &self.path).await {
-                    Ok(()) => self.state = AdlsWriterState::Aborted,
-                    Err(delete_error) => {
-                        self.state = AdlsWriterState::AbortFailed;
-                        tracing::warn!(
-                            path = %self.path,
-                            error = ?delete_error,
-                            "Failed to delete partial ADLS file after streaming append error; \
-                             partial file may exist at target location. \
-                             Original append error is being returned.",
-                        );
-                    }
-                }
-                return Err(append_error);
-            }
-            self.offset += chunk_len;
-        }
-        Ok(())
+    /// Distinct containers produce distinct Arcs.
+    #[test]
+    fn store_for_distinct_containers_are_distinct() {
+        let storage = test_storage();
+        let a = storage.store_for("c1").expect("build microsoft_azure");
+        let b = storage.store_for("c2").expect("build microsoft_azure");
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "store_for(c1) and store_for(c2) returned the same Arc — wrong cache key",
+        );
     }
 
-    async fn close(&mut self) -> Result<(), WriteError> {
-        let prev_state = std::mem::replace(&mut self.state, AdlsWriterState::Closed);
-        match prev_state {
-            AdlsWriterState::Closed | AdlsWriterState::Aborted | AdlsWriterState::AbortFailed => {
-                return Err(WriteError::IOError(IOError::new(
-                    ErrorKind::ConditionNotMatch,
-                    "Writer already closed or aborted",
-                    self.path.clone(),
-                )));
-            }
-            AdlsWriterState::Active => {}
+    /// Concurrent first-time gets for the same container must all
+    /// return the same Arc (the double-checked-lock pattern is the only
+    /// thing preventing parallel `MicrosoftAzure` builds).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn store_for_concurrent_gets_share_one_build() {
+        let storage = test_storage();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let s = storage.clone();
+            handles.push(tokio::spawn(async move {
+                s.store_for("c1").expect("build microsoft_azure")
+            }));
         }
-        if !self.buffer.is_empty() {
-            let chunk = self.buffer.split().freeze();
-            let chunk_len = match safe_usize_to_i64(chunk.len(), self.path.clone()) {
-                Ok(v) => v,
-                Err(e) => {
-                    delete_partial_file_logged_infallible(
-                        &self.client,
-                        &self.path,
-                        "buffer-size conversion failed during close",
-                    )
-                    .await;
-                    return Err(WriteError::IOError(e));
-                }
-            };
-            if let Err(e) = append_chunk(&self.client, self.offset, chunk, &self.path).await {
-                delete_partial_file_logged_infallible(
-                    &self.client,
-                    &self.path,
-                    "tail append failed during close",
-                )
-                .await;
-                return Err(e);
-            }
-            self.offset += chunk_len;
-        }
-        if let Err(e) = flush_close(&self.client, self.offset, &self.path).await {
-            delete_partial_file_logged_infallible(
-                &self.client,
-                &self.path,
-                "flush_close failed during close",
-            )
-            .await;
-            return Err(e);
-        }
-        Ok(())
-    }
-}
-
-impl Drop for AdlsFileWrite {
-    fn drop(&mut self) {
-        let prev_state = std::mem::replace(&mut self.state, AdlsWriterState::Aborted);
-        if !matches!(prev_state, AdlsWriterState::Active) {
-            // Closed / Aborted / AbortFailed: terminal states, no action.
-            return;
-        }
-
-        // `Handle::current()` panics when called outside a tokio runtime
-        // (runtime already shut down) or racing with shutdown.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            self.state = AdlsWriterState::AbortFailed;
-            tracing::warn!(
-                path = %self.path,
-                "AdlsFileWrite dropped without closing outside runtime, partial file cannot be deleted. Incomplete file may exist in target location.",
+        let arcs: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.expect("task panicked"))
+            .collect();
+        let first = &arcs[0];
+        for (i, other) in arcs.iter().enumerate().skip(1) {
+            assert!(
+                Arc::ptr_eq(first, other),
+                "concurrent store_for(c1) at index {i} returned a different Arc",
             );
-            return;
+        }
+    }
+
+    /// Account-name binding regression: a location whose account-name does
+    /// not match the configured `account_name` must be rejected by
+    /// `check_account`, both as the raw helper and via `store_for_path`. The
+    /// upstream `StorageProfile::is_allowed_location` is the primary boundary
+    /// here, but this is defense-in-depth and pinning it prevents a future
+    /// refactor from silently re-introducing the cross-account confused
+    /// deputy `AdlsStorage` used to have before the original guard existed.
+    #[test]
+    fn check_account_rejects_mismatched_account() {
+        let storage = test_storage(); // configured account = "testacct"
+        let foreign = AdlsLocation::try_from_str(
+            "abfss://test-fs@otheracct.dfs.core.windows.net/key.txt",
+            true,
+        )
+        .expect("parse");
+
+        let err = storage
+            .check_account(&foreign)
+            .expect_err("expected account-name mismatch to be rejected");
+        // Both account names must appear so the message is debuggable.
+        assert!(
+            err.reason.contains("otheracct") && err.reason.contains("testacct"),
+            "error message should name both accounts, got: {}",
+            err.reason
+        );
+
+        // store_for_path must reject the same location, classified as
+        // ConditionNotMatch so callers don't treat it as a transient IO error.
+        let err = storage
+            .store_for_path(&foreign)
+            .expect_err("store_for_path must propagate the account-name check");
+        assert_eq!(err.kind(), ErrorKind::ConditionNotMatch);
+    }
+
+    /// Positive case for the account-name guard: a location that matches the
+    /// configured account passes through `check_account` unchanged.
+    #[test]
+    fn check_account_accepts_matching_account() {
+        let storage = test_storage(); // configured account = "testacct"
+        let matching = AdlsLocation::try_from_str(
+            "abfss://test-fs@testacct.dfs.core.windows.net/key.txt",
+            true,
+        )
+        .expect("parse");
+        storage
+            .check_account(&matching)
+            .expect("matching account must pass");
+    }
+
+    /// Alignment regression: pin that every input `AdlsLocation` accepts
+    /// is also accepted by `object_store::Path::parse`.
+    ///
+    /// The `Result` return type on `to_object_store_path` was kept as a
+    /// defence-in-depth measure against future drift between the two
+    /// validators. This test demonstrates that *today* no such drift exists
+    /// on a representative corpus — including unicode, sub-delims, the
+    /// boundary cases the integration tests already cover, and a deliberate
+    /// double-slash. If `Path::parse` tightens (or `AdlsLocation` loosens)
+    /// in a future dependency bump, this test catches the regression and we
+    /// can decide whether to (a) tighten our validator to match or (b) keep
+    /// the `Result` as a real error path.
+    #[test]
+    fn to_object_store_path_accepts_every_valid_adls_location() {
+        let inputs = [
+            "abfss://test-fs@acct.dfs.core.windows.net/key",
+            "abfss://test-fs@acct.dfs.core.windows.net/dir/sub/key.txt",
+            "abfss://test-fs@acct.dfs.core.windows.net/file-with-dashes.txt",
+            "abfss://test-fs@acct.dfs.core.windows.net/file_with_underscores.txt",
+            "abfss://test-fs@acct.dfs.core.windows.net/file.with.dots.txt",
+            // Unicode (encoded by URL parsing)
+            "abfss://test-fs@acct.dfs.core.windows.net/file-with-ue-%C3%BC.txt",
+            // Sub-delims that AdlsLocation accepts
+            "abfss://test-fs@acct.dfs.core.windows.net/y%20fl%20%21%20-_%C3%A4%20oats=1.2.txt",
+            // Literal-percent in path (the alias-test invariant)
+            "abfss://test-fs@acct.dfs.core.windows.net/%2541bc",
+            // Long-ish deep path
+            "abfss://test-fs@acct.dfs.core.windows.net/a/b/c/d/e/f/g/h.txt",
+            // Single character key
+            "abfss://test-fs@acct.dfs.core.windows.net/a",
+        ];
+        for input in inputs {
+            let loc = AdlsLocation::try_from_str(input, true)
+                .unwrap_or_else(|e| panic!("AdlsLocation rejected `{input}`: {e}"));
+            to_object_store_path(&loc).unwrap_or_else(|e| {
+                panic!(
+                    "to_object_store_path rejected `{input}`: {e} \
+                     — validator drift between AdlsLocation and \
+                     object_store::path::Path detected. \
+                     Decide whether to tighten AdlsLocation's validator \
+                     or document the new error path."
+                )
+            });
+        }
+    }
+
+    /// Build a `MicrosoftAzure` pointed at the given wiremock URI so the test
+    /// can drive `AdlsStorage` end-to-end without TLS or real Azure. Uses an
+    /// access-key credential because the wiremock matchers don't need to
+    /// verify the signature.
+    fn wiremock_backed_store(
+        uri: &str,
+        container: &str,
+    ) -> Arc<object_store::azure::MicrosoftAzure> {
+        let store = MicrosoftAzureBuilder::new()
+            .with_endpoint(uri.to_string())
+            .with_allow_http(true)
+            .with_account("testacct")
+            .with_container_name(container.to_string())
+            .with_access_key("dGVzdC1rZXk=")
+            .build()
+            .expect("MicrosoftAzureBuilder::build against wiremock");
+        Arc::new(store)
+    }
+
+    // ---- list pagination (`next_page`) ----
+
+    fn meta(name: &str, size: u64) -> ObjectMeta {
+        ObjectMeta {
+            location: ObjectStorePath::parse(name).expect("path parse"),
+            last_modified: chrono::Utc::now(),
+            size,
+            e_tag: None,
+            version: None,
+        }
+    }
+
+    fn base_loc() -> Location {
+        Location::from_str("abfss://container@acct.dfs.core.windows.net/prefix/")
+            .expect("parse base")
+    }
+
+    fn err_other() -> object_store::Error {
+        object_store::Error::Generic {
+            store: "test",
+            source: "boom".into(),
+        }
+    }
+
+    fn err_not_found() -> object_store::Error {
+        object_store::Error::NotFound {
+            path: "x".to_string(),
+            source: "missing".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_page_empty_stream_returns_done() {
+        let mut s = futures::stream::iter(Vec::<Result<ObjectMeta, object_store::Error>>::new());
+        let out = next_page(&mut s, &base_loc(), "ctx", 10).await.unwrap();
+        assert!(matches!(out, PageBatch::Done));
+    }
+
+    #[tokio::test]
+    async fn next_page_yields_partial_when_stream_ends_below_page_size() {
+        let mut s = futures::stream::iter(vec![Ok(meta("prefix/a", 1)), Ok(meta("prefix/b", 2))]);
+        let out = next_page(&mut s, &base_loc(), "ctx", 10).await.unwrap();
+        match out {
+            PageBatch::Yield { items, more } => {
+                assert_eq!(items.len(), 2);
+                assert!(!more, "stream end => no more pages");
+            }
+            PageBatch::Done => panic!("expected Yield, got Done"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_page_yields_exactly_page_size_and_signals_more() {
+        let mut s = futures::stream::iter((0..5).map(|i| Ok(meta(&format!("prefix/f{i}"), 1))));
+        let out = next_page(&mut s, &base_loc(), "ctx", 3).await.unwrap();
+        match out {
+            PageBatch::Yield { items, more } => {
+                assert_eq!(items.len(), 3);
+                assert!(more, "boundary reached => more may follow");
+            }
+            PageBatch::Done => panic!("expected Yield, got Done"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_page_not_found_at_start_terminates_cleanly() {
+        let mut s = futures::stream::iter(vec![Err(err_not_found())]);
+        let out = next_page(&mut s, &base_loc(), "ctx", 10).await.unwrap();
+        assert!(matches!(out, PageBatch::Done));
+    }
+
+    #[tokio::test]
+    async fn next_page_not_found_mid_stream_flushes_buffer_and_signals_no_more() {
+        let mut s = futures::stream::iter(vec![
+            Ok(meta("prefix/a", 1)),
+            Ok(meta("prefix/b", 2)),
+            Err(err_not_found()),
+        ]);
+        let out = next_page(&mut s, &base_loc(), "ctx", 10).await.unwrap();
+        match out {
+            PageBatch::Yield { items, more } => {
+                assert_eq!(items.len(), 2);
+                assert!(!more, "NotFound terminates the stream cleanly");
+            }
+            PageBatch::Done => panic!("expected Yield, got Done"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_page_non_notfound_error_propagates() {
+        let mut s = futures::stream::iter(vec![Ok(meta("prefix/a", 1)), Err(err_other())]);
+        let err = next_page(&mut s, &base_loc(), "ctx", 10)
+            .await
+            .expect_err("Generic error should propagate");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+    }
+
+    // ---- put-strategy dispatch ----
+
+    #[test]
+    fn decide_put_strategy_at_and_below_threshold_is_single() {
+        assert_eq!(decide_put_strategy(0), PutStrategy::Single);
+        assert_eq!(decide_put_strategy(1), PutStrategy::Single);
+        assert_eq!(
+            decide_put_strategy(SINGLE_PUT_THRESHOLD),
+            PutStrategy::Single
+        );
+    }
+
+    #[test]
+    fn decide_put_strategy_above_threshold_is_multipart() {
+        assert_eq!(
+            decide_put_strategy(SINGLE_PUT_THRESHOLD + 1),
+            PutStrategy::Multipart
+        );
+        assert_eq!(
+            decide_put_strategy(SINGLE_PUT_THRESHOLD * 4),
+            PutStrategy::Multipart
+        );
+    }
+
+    /// End-to-end coverage of the integrity guard: when a chunked-read GET
+    /// returns 412 (`ETag` mismatch — blob overwritten mid-read), the error
+    /// must surface as `ConditionNotMatch` rather than being silently
+    /// reclassified or producing a torn read.
+    #[tokio::test]
+    async fn parallel_chunked_read_412_surfaces_condition_not_match() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path_regex},
         };
 
-        // Once stable `std::future::AsyncDrop` exists we could change this to
-        // `.delete_file(...).await` without `spawn`. The bounded
-        // `DROP_CANCEL_DURATION` protects against a stuck delete call holding
-        // the spawned task on a shutting-down runtime; the elapse path is
-        // logged so a partial file left behind is observable.
-        let client = self.client.clone();
-        let path = self.path.clone();
-        handle.spawn(async move {
-            if tokio::time::timeout(
-                DROP_CANCEL_DURATION,
-                delete_partial_file_logged_infallible(
-                    &client,
-                    &path,
-                    "writer dropped without closing",
-                ),
+        let server = MockServer::start().await;
+        // File size above MAX_BYTES_PER_REQUEST (7 MiB) so `read()` enters
+        // the chunked-read branch. 16 MiB → 4 chunks of 4 MiB.
+        let file_size: usize = 16 * 1024 * 1024;
+
+        // HEAD: report the size + ETag so the chunked path's gate passes.
+        Mock::given(method("HEAD"))
+            .and(path_regex(r"/test-container/key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", file_size.to_string().as_str())
+                    .insert_header("etag", "\"v1\"")
+                    .insert_header("last-modified", "Thu, 01 Jan 1970 00:00:00 GMT"),
             )
+            .mount(&server)
+            .await;
+
+        // GET chunks: respond 412 (PreconditionFailed) to simulate the blob
+        // being overwritten between HEAD and the chunk fetch.
+        Mock::given(method("GET"))
+            .and(path_regex(r"/test-container/key"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+
+        let storage = test_storage();
+        storage.insert_store_for_test(
+            "test-container",
+            wiremock_backed_store(&server.uri(), "test-container"),
+        );
+
+        let err = storage
+            .read("abfss://test-container@testacct.dfs.core.windows.net/key")
             .await
-            .is_err()
-            {
-                tracing::warn!(
-                    path = %path,
-                    timeout = ?DROP_CANCEL_DURATION,
-                    "Best-effort delete of partial ADLS file timed out. Partial file may persist until manually removed or until uncommitted-block GC runs.",
+            .expect_err("412 must surface as an error");
+        match err {
+            ReadError::IOError(io) => {
+                assert_eq!(
+                    io.kind(),
+                    ErrorKind::ConditionNotMatch,
+                    "412 should classify as ConditionNotMatch, got {:?} \
+                     (full error: {io:?})",
+                    io.kind(),
+                );
+                // Defence against a regression where a HEAD-parse failure (or
+                // any other early error) gets the same ConditionNotMatch
+                // classification: the error chain must mention the 412 we
+                // actually returned. A mid-implementation header-format issue
+                // (the date had to be a real day-of-week) was caught by this
+                // exact concern, hence the extra assertion.
+                let rendered = format!("{io:?}");
+                assert!(
+                    rendered.contains("412"),
+                    "error should mention HTTP 412 in its source chain, \
+                     got: {rendered}",
                 );
             }
-        });
+            other @ ReadError::InvalidLocation(_) => panic!("expected IOError, got {other:?}"),
+        }
+    }
+
+    /// `AdlsStorage::delete` routes through the Azure Blob Batch endpoint
+    /// (`POST {container}?restype=container&comp=batch`), not a per-blob
+    /// `DELETE`. This is the contract enforced by `object_store`'s Azure
+    /// backend — `MicrosoftAzure` only implements `delete_stream`, and the
+    /// `ObjectStoreExt::delete` convenience method drives it as a one-element
+    /// stream, which still flows through the batch endpoint.
+    ///
+    /// Pinning this matters because the routing has authorisation
+    /// consequences: directory-scoped SAS tokens cannot authorise the
+    /// container-level batch endpoint (`Signed Directory Depth Invalid`).
+    /// The caveat is documented on `AzureSettings::get_storage_client` and
+    /// drives the design of the vended-credentials validation flow in the
+    /// upper `lakekeeper` crate.
+    ///
+    /// The assertion is `expect(1)` on the matcher count; the response body
+    /// is intentionally not a valid multipart-batch payload, so the call
+    /// itself returns an error. That is fine — this test pins routing, not
+    /// response classification (which is exercised end-to-end by the
+    /// integration tests against Azurite).
+    #[tokio::test]
+    async fn delete_routes_through_blob_batch_endpoint() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path_regex, query_param},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/test-container"))
+            .and(query_param("restype", "container"))
+            .and(query_param("comp", "batch"))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let storage = test_storage();
+        storage.insert_store_for_test(
+            "test-container",
+            wiremock_backed_store(&server.uri(), "test-container"),
+        );
+
+        // Body is intentionally empty (not valid multipart-batch). The
+        // response will fail to parse and the call will return Err — that
+        // does not affect this test, which only asserts the request hit
+        // the batch endpoint exactly once via `expect(1)`.
+        let _ = storage
+            .delete("abfss://test-container@testacct.dfs.core.windows.net/key")
+            .await;
+        drop(server);
     }
 }

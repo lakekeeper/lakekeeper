@@ -53,7 +53,7 @@ pub(crate) fn safe_usize_to_i32(value: usize, context: impl Into<String>) -> Res
     })
 }
 
-#[cfg(any(feature = "storage-adls", feature = "storage-gcs"))]
+#[cfg(feature = "storage-gcs")]
 /// Fallible usize→i64 conversion with contextual diagnostics.
 pub(crate) fn safe_usize_to_i64(value: usize, context: impl Into<String>) -> Result<i64, IOError> {
     i64::try_from(value).map_err(|_| {
@@ -103,8 +103,9 @@ pub(crate) fn validate_file_size(size: i64, location: impl Into<String>) -> Resu
 /// `total == 0`.
 ///
 /// Pair with `Bytes::slice(range)` for zero-copy chunking of a one-shot
-/// write input. Used by all backends to converge on one chunk-iteration
-/// shape across S3 multipart, GCS resumable, and ADLS append.
+/// write input. Used by S3 multipart, GCS resumable, and the ADLS bulk-write
+/// → multipart promotion path (`AdlsStorage::write` above the
+/// `SINGLE_PUT_THRESHOLD`).
 pub(crate) fn chunk_ranges(
     total: usize,
     chunk_size: usize,
@@ -117,11 +118,7 @@ pub(crate) fn chunk_ranges(
     })
 }
 
-#[cfg(any(
-    feature = "storage-adls",
-    feature = "storage-gcs",
-    feature = "storage-s3"
-))]
+#[cfg(any(feature = "storage-gcs", feature = "storage-s3"))]
 /// Converts a backend-reported file size from `i64` to `u64` for use in
 /// [`FileInfo::size`]. Negative sizes are unexpected — they indicate a
 /// protocol or parser bug in the backend SDK — so we emit a warning and

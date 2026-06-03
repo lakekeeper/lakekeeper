@@ -5,7 +5,7 @@ use url::Host;
 
 use crate::{
     InvalidLocationError, Location,
-    adls::{ADLS_CUSTOM_SCHEMES, DEFAULT_HOST},
+    adls::{ADLS_CUSTOM_SCHEMES, DEFAULT_DFS_HOST},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -110,7 +110,7 @@ impl AdlsLocation {
 
         let endpoint_suffix = normalize_host(host)
             .map_err(|e| InvalidLocationError::new(location_dbg.clone(), e.to_string()))?
-            .unwrap_or(DEFAULT_HOST.to_string());
+            .unwrap_or(DEFAULT_DFS_HOST.to_string());
 
         let location = format!("{scheme}://{filesystem}@{account_name}.{endpoint_suffix}");
         let mut location = Location::from_str(&location).map_err(|e| {

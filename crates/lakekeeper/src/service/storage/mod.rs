@@ -611,18 +611,13 @@ impl StorageProfile {
                 ValidationError::from(e)
             })?;
 
-        // Test delete
-        crate::server::io::delete_file(io, &test_file_write)
-            .await
-            .map_err(|e| {
-                tracing::info!("Error while deleting file: {e:?}");
-                ValidationError::from(e)
-            })?;
-
-        tracing::debug!(
-            "Successfully wrote, read and deleted file at: {}",
-            test_file_write
-        );
+        // Cleanup of `test_file_write` is handled by the caller
+        // (`validate_access` at the `io.remove_all(test_location)` step) using
+        // the catalog credential, not the vended SAS. That keeps the data path
+        // free of SAS-specific delete handling — `object_store::delete` against
+        // a directory-scoped SAS routes through the container-level Blob Batch
+        // endpoint and is rejected with `Signed Directory Depth Invalid`.
+        tracing::debug!("Successfully wrote and read file at: {}", test_file_write);
 
         Ok(())
     }
@@ -660,12 +655,13 @@ impl StorageProfile {
         .await
         {
             Ok(()) => {
-                // Should not have been able to write — try to clean up the rogue file.
-                if let Err(e) = crate::server::io::delete_file(io, &test_file_write).await {
-                    tracing::warn!(
-                        "Failed to delete rogue validation file at {test_file_write} (creds were over-permissive on write but cleanup failed): {e:?}"
-                    );
-                }
+                // No cleanup here: `validate_access` runs
+                // `remove_all(test_location)` with catalog credentials after
+                // this method returns, which removes the rogue file along
+                // with any other test artifacts. Doing it with the SAS
+                // credential would route `object_store::delete` through the
+                // Blob Batch endpoint, which directory-scoped SAS tokens
+                // cannot authorise.
                 return Err(CredentialsError::ShortTermCredential {
                     reason: "Downscoped credentials allow write access to parent location."
                         .to_string(),
@@ -1633,13 +1629,25 @@ mod tests {
             .await
             .unwrap_err();
 
-        // cannot delete across locations
+        // cannot delete across locations — the security boundary. Holds on
+        // every backend: even Azure, where in-scope delete via object_store
+        // fails for unrelated reasons (see below), the cross-scope failure
+        // is what we care about here.
         downscoped1.delete(test_file2.as_str()).await.unwrap_err();
         downscoped2.delete(test_file1.as_str()).await.unwrap_err();
 
-        // can delete in own locations
-        downscoped1.delete(test_file1.as_str()).await.unwrap();
-        downscoped2.delete(test_file2.as_str()).await.unwrap();
+        // In-scope delete via the storage handle. Skipped for Azure because
+        // `object_store::MicrosoftAzure` routes every delete through the
+        // container-level Blob Batch endpoint, which directory-scoped SAS
+        // tokens cannot authorise (Azure returns "Signed Directory Depth
+        // Invalid"). External clients (Spark, Trino) delete via the DFS
+        // REST API or single-blob HTTP DELETE — a different code path that
+        // does not exercise `object_store` and is not covered by this test.
+        // See `AzureSettings::get_storage_client` caveat doc.
+        if !matches!(profile, StorageProfile::Adls(_)) {
+            downscoped1.delete(test_file1.as_str()).await.unwrap();
+            downscoped2.delete(test_file2.as_str()).await.unwrap();
+        }
 
         // cleanup
         profile

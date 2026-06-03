@@ -1,26 +1,30 @@
-#[cfg(test)]
-use std::sync::LazyLock;
 use std::{
     collections::HashMap,
     str::FromStr,
+    sync::LazyLock,
     time::{Duration, Instant},
 };
 
+use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_identity::{
+    DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
+};
 use azure_storage::{
-    CloudLocation,
+    CloudLocation, StorageCredentials,
     prelude::{BlobSasPermissions, BlobSignedResource},
     shared_access_signature::{
         SasToken,
         service_sas::{BlobSharedAccessSignature, SasKey},
     },
 };
-use azure_storage_blobs::prelude::BlobServiceClient;
+use azure_storage_blobs::prelude::{BlobServiceClient, ClientBuilder};
 use iceberg_ext::configs::table::{TableProperties, adls, creds, custom};
 use lakekeeper_io::{
     InvalidLocationError, Location,
     adls::{
-        AdlsLocation, AdlsStorage, AzureAuth, AzureClientCredentialsAuth, AzureSettings,
-        AzureSharedAccessKeyAuth, normalize_host, validate_account_name, validate_filesystem_name,
+        AdlsLocation, AdlsStorage, AzureAuth, AzureClientCredentialsAuth, AzureCloud,
+        AzureSettings, AzureSharedAccessKeyAuth, DEFAULT_DFS_HOST, normalize_host,
+        validate_account_name, validate_filesystem_name,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -87,10 +91,22 @@ fn default_true() -> bool {
     true
 }
 
-const DEFAULT_HOST: &str = "dfs.core.windows.net";
-#[cfg(test)]
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
+});
+
+/// Shared `reqwest` client for legacy Azure SDK requests. The legacy SDK
+/// wants an `Arc<dyn HttpClient>`; we wrap a single `reqwest::Client` so the
+/// vending path doesn't open a fresh TCP pool per request.
+static HTTP_CLIENT_ARC: LazyLock<std::sync::Arc<reqwest::Client>> =
+    LazyLock::new(|| std::sync::Arc::new(reqwest::Client::new()));
+
+static DEFAULT_LEGACY_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
+    azure_core::ClientOptions::default().retry(RetryOptions::fixed(
+        FixedRetryOptions::default()
+            .max_retries(3u32)
+            .max_total_elapsed(std::time::Duration::from_secs(5)),
+    ))
 });
 
 const MAX_SAS_TOKEN_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -189,7 +205,7 @@ impl AdlsProfile {
                 "abfss://{}@{}.{}/{}/",
                 self.filesystem,
                 self.account_name,
-                self.host.as_deref().unwrap_or(DEFAULT_HOST),
+                self.host.as_deref().unwrap_or(DEFAULT_DFS_HOST),
                 key_prefix.trim_matches('/')
             )
         } else {
@@ -199,7 +215,7 @@ impl AdlsProfile {
                 self.account_name,
                 self.host
                     .as_deref()
-                    .unwrap_or(DEFAULT_HOST)
+                    .unwrap_or(DEFAULT_DFS_HOST)
                     .trim_end_matches('/'),
             )
         };
@@ -213,6 +229,9 @@ impl AdlsProfile {
         Ok(location)
     }
 
+    /// Build the legacy `CloudLocation` from this profile. Used only for
+    /// SAS minting via the deprecated `azure_storage_blobs` SDK (vending
+    /// path). The data-plane `AdlsStorage` now uses [`AzureHost`].
     fn cloud_location(&self) -> CloudLocation {
         if let Some(host) = &self.host {
             CloudLocation::Custom {
@@ -226,23 +245,50 @@ impl AdlsProfile {
         }
     }
 
+    /// Build the new `AzureSettings` (object_store-based) used to construct
+    /// [`AdlsStorage`].
+    ///
+    /// `AdlsProfile.host` is a host *suffix* — every `abfss://` URL is built
+    /// as `{account_name}.{host}` (see `base_location`). `AzureCloud::Custom`
+    /// expects the *full* blob host (its `endpoint_url` prepends `https://`
+    /// and rewrites `.dfs.` → `.blob.` on whatever string it carries), so we
+    /// compose the full host here. Skipping the prefix routes PUTs at
+    /// `https://{host}` with the account name missing — for a private-link
+    /// profile (`host = privatelink.dfs.core.windows.net`) that lands at
+    /// `https://privatelink.blob.core.windows.net/...` which does not resolve.
     fn azure_settings(&self) -> AzureSettings {
+        let cloud = match &self.host {
+            Some(h) => AzureCloud::Custom(format!("{}.{}", self.account_name, h)),
+            None => AzureCloud::Public,
+        };
         AzureSettings {
             authority_host: self.authority_host.clone(),
-            cloud_location: self.cloud_location(),
+            account_name: self.account_name.clone(),
+            cloud,
         }
     }
 
+    // Kept `async` for symmetry with sibling backends' `lakekeeper_io`
+    // chain; the body itself is currently synchronous because the legacy
+    // SDK builds are sync.
+    #[allow(clippy::unused_async)]
     async fn blob_service_client(
         &self,
         credential: &AzCredential,
     ) -> Result<BlobServiceClient, CredentialsError> {
         let azure_auth = AzureAuth::try_from(credential.clone())?;
+        let storage_credentials = legacy_storage_credentials(
+            &azure_auth,
+            &self.account_name,
+            self.authority_host.clone(),
+        )?;
 
-        self.azure_settings()
-            .get_blob_service_client(&azure_auth)
-            .await
-            .map_err(Into::into)
+        Ok(
+            ClientBuilder::with_location(self.cloud_location(), storage_credentials)
+                .transport(TransportOptions::new(HTTP_CLIENT_ARC.clone()))
+                .client_options(DEFAULT_LEGACY_CLIENT_OPTIONS.clone())
+                .blob_service_client(),
+        )
     }
 
     /// Get the Lakekeeper IO for this storage profile.
@@ -250,15 +296,16 @@ impl AdlsProfile {
     /// # Errors
     /// - If system identity is requested but not enabled in the configuration.
     /// - If the client could not be initialized.
+    // Kept `async` for symmetry with sibling backends' `lakekeeper_io`
+    // — `S3Profile::lakekeeper_io` and `GcsProfile::lakekeeper_io` both
+    // await internally. ADLS construction is now synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn lakekeeper_io(
         &self,
         credential: &AzCredential,
     ) -> Result<AdlsStorage, CredentialsError> {
         let azure_auth = AzureAuth::try_from(credential.clone())?;
-        self.azure_settings()
-            .get_storage_client(&azure_auth)
-            .await
-            .map_err(Into::into)
+        Ok(self.azure_settings().get_storage_client(&azure_auth))
     }
 
     /// Generate the table configuration for Azure Datalake Storage Gen2.
@@ -530,14 +577,14 @@ impl AdlsProfile {
     fn iceberg_sas_property_key(&self) -> String {
         iceberg_sas_property_key(
             &self.account_name,
-            self.host.as_deref().unwrap_or(DEFAULT_HOST),
+            self.host.as_deref().unwrap_or(DEFAULT_DFS_HOST),
         )
     }
 
     fn iceberg_sas_expires_at_property_key(&self) -> String {
         iceberg_expiration_property_key(
             &self.account_name,
-            self.host.as_deref().unwrap_or(DEFAULT_HOST),
+            self.host.as_deref().unwrap_or(DEFAULT_DFS_HOST),
         )
     }
 
@@ -681,6 +728,11 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
 /// cannot be derived from `TableProperties` alone. Do not "normalize" this
 /// signature with the S3/GCS counterparts — removing `profile` will break the
 /// key lookup.
+// Kept `async` for symmetry with the sibling backends' counterparts
+// (`s3::lakekeeper_io_from_vended_table_config`,
+// `gcs::lakekeeper_io_from_vended_table_config`), which the dispatch in
+// `service/storage/mod.rs` calls in a uniform `.await` pattern.
+#[allow(clippy::unused_async)]
 pub(super) async fn lakekeeper_io_from_vended_table_config(
     profile: &AdlsProfile,
     config: &TableProperties,
@@ -696,11 +748,61 @@ pub(super) async fn lakekeeper_io_from_vended_table_config(
                 source: None,
             })?;
     let auth = AzureAuth::Sas(lakekeeper_io::adls::AzureSasAuth { sas_token });
-    profile
-        .azure_settings()
-        .get_storage_client(&auth)
-        .await
-        .map_err(Into::into)
+    Ok(profile.azure_settings().get_storage_client(&auth))
+}
+
+/// Build `azure_storage::StorageCredentials` for the legacy
+/// `BlobServiceClient` from a Lakekeeper `AzureAuth`. The data-plane
+/// `AdlsStorage` does not use this — it uses `object_store`'s own credential
+/// providers — but the SAS-minting vending path still needs to call
+/// `get_user_delegation_key` through the deprecated SDK until vending is
+/// migrated in a follow-up task.
+fn legacy_storage_credentials(
+    auth: &AzureAuth,
+    account_name: &str,
+    authority_host: Option<Url>,
+) -> Result<StorageCredentials, CredentialsError> {
+    Ok(match auth {
+        AzureAuth::ClientCredentials(AzureClientCredentialsAuth {
+            tenant_id,
+            client_id,
+            client_secret,
+        }) => {
+            let client_credential = azure_identity::ClientSecretCredential::new(
+                HTTP_CLIENT_ARC.clone(),
+                authority_host.unwrap_or_else(|| DEFAULT_AUTHORITY_HOST.clone()),
+                tenant_id.clone(),
+                client_id.clone(),
+                client_secret.clone(),
+            );
+            StorageCredentials::token_credential(std::sync::Arc::new(client_credential))
+        }
+        AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth { key }) => {
+            StorageCredentials::access_key(account_name, key.clone())
+        }
+        AzureAuth::AzureSystemIdentity => {
+            let authority_host_str = authority_host
+                .as_ref()
+                .map_or(DEFAULT_AUTHORITY_HOST.to_string(), ToString::to_string);
+            let mut options = TokenCredentialOptions::default();
+            options.set_authority_host(authority_host_str);
+            let credential: std::sync::Arc<DefaultAzureCredential> = std::sync::Arc::new(
+                DefaultAzureCredentialBuilder::new()
+                    .with_options(options)
+                    .build()
+                    .map_err(|e| CredentialsError::ShortTermCredential {
+                        reason: format!("Failed to build DefaultAzureCredential: {e}"),
+                        source: Some(Box::new(e)),
+                    })?,
+            );
+            StorageCredentials::token_credential(credential)
+        }
+        AzureAuth::Sas(lakekeeper_io::adls::AzureSasAuth { sas_token }) => {
+            StorageCredentials::sas_token(sas_token).map_err(|e| {
+                CredentialsError::Misconfiguration(format!("Invalid SAS token: {e}"))
+            })?
+        }
+    })
 }
 
 impl TryFrom<AzCredential> for AzureAuth {
@@ -899,6 +1001,40 @@ pub(crate) mod test {
             location.to_string(),
             format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")
         );
+    }
+
+    /// Regression: `AdlsProfile.host` is a host *suffix* (account name is
+    /// concatenated separately when constructing `abfss://` URLs). The
+    /// `AzureCloud::Custom` payload, on the other hand, must be the *full*
+    /// blob host (its `endpoint_url` translates `.dfs.` → `.blob.` and
+    /// prepends `https://`). Before the fix, `azure_settings()` passed the
+    /// suffix straight through, dropping the account name on the wire:
+    /// a private-link profile (`host = privatelink.dfs.core.windows.net`,
+    /// `account_name = sbrvakpe`) sent PUTs to
+    /// `https://privatelink.blob.core.windows.net/...` instead of
+    /// `https://sbrvakpe.privatelink.blob.core.windows.net/...`, and the
+    /// host did not resolve. Pin the composition so it cannot regress.
+    #[test]
+    fn azure_settings_composes_full_host_for_private_endpoint() {
+        let profile = AdlsProfile {
+            filesystem: "test".to_string(),
+            key_prefix: None,
+            account_name: "sbrvakpe".to_string(),
+            authority_host: None,
+            host: Some("privatelink.dfs.core.windows.net".to_string()),
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        };
+        assert_eq!(
+            profile.azure_settings().cloud,
+            AzureCloud::Custom("sbrvakpe.privatelink.dfs.core.windows.net".to_string()),
+        );
+
+        let mut public_profile = profile.clone();
+        public_profile.host = None;
+        assert_eq!(public_profile.azure_settings().cloud, AzureCloud::Public);
     }
 
     #[test]

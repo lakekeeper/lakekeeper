@@ -93,9 +93,8 @@ async fn create_adls_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
 
     let settings = lakekeeper_io::adls::AzureSettings {
         authority_host: None,
-        cloud_location: lakekeeper_io::adls::CloudLocation::Public {
-            account: account.clone(),
-        },
+        account_name: account.clone(),
+        cloud: lakekeeper_io::adls::AzureCloud::Public,
     };
     let auth = lakekeeper_io::adls::AzureAuth::ClientCredentials(
         lakekeeper_io::adls::AzureClientCredentialsAuth {
@@ -105,12 +104,7 @@ async fn create_adls_storage() -> anyhow::Result<(StorageBackend, TestConfig)> {
         },
     );
 
-    let storage = StorageBackend::Adls(
-        settings
-            .get_storage_client(&auth)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?,
-    );
+    let storage = StorageBackend::Adls(settings.get_storage_client(&auth));
     let base_path = format!(
         "abfss://{filesystem}@{account}.dfs.core.windows.net/lakekeeper-io-integration-tests/{}",
         uuid::Uuid::new_v4()
@@ -998,13 +992,6 @@ async fn test_empty_files_impl(
     storage: &StorageBackend,
     config: &TestConfig,
 ) -> anyhow::Result<()> {
-    // ToDo: Revisit with new Azure storage. Azure blob client currently
-    // can't delete empty files, which fails with: <Error><Code>InvalidRange</Code><Message>The range specified is invalid for the current size of the resource
-    if matches!(storage, StorageBackend::Adls(_)) {
-        println!("Skipping empty files test for ADLS due to known issue with empty file deletion");
-        return Ok(());
-    }
-
     let test_path = config.test_path("empty-file.txt");
     let empty_data = Bytes::new();
 

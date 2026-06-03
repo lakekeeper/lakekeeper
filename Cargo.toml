@@ -56,6 +56,12 @@ axum = { version = "0.8.1" }
 axum-extra = { version = "0.12.0", features = ["middleware"] }
 axum-macros = { version = "0.5.0" }
 axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
+# --- Legacy Azure SDK (vending-only) ---
+# These are kept solely for the vending-side helpers in
+# `crates/lakekeeper/src/service/storage/az.rs`: SAS minting AND access
+# validation against a `BlobServiceClient`. The data-plane I/O layer
+# (`crates/io/src/adls`) now uses `object_store` (see below). Remove these
+# four deps once both helpers migrate to `object_store` or `azure_storage_blob 0.30+`.
 azure_core = { version = "0.21.0", default-features = false, features = [
     "hmac_rust",
     "enable_reqwest_rustls",
@@ -67,9 +73,6 @@ azure_storage = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
 azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
-    "enable_reqwest_rustls",
-] }
-azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
 ] }
 base64 = "0.22.1"
@@ -113,6 +116,9 @@ md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }
 mockall = "0.14.0"
 moka = { version = "^0.12", features = ["future"] }
+object_store = { version = "0.13.2", default-features = false, features = [
+    "azure",
+] }
 pastey = "0.2.1"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
@@ -206,6 +212,7 @@ uuid = { version = "^1.6", features = ["serde", "v4", "v5", "v7"] }
 valuable = "0.1.1"
 veil = "0.2.0"
 webpki-root-certs = "1.0"
+wiremock = "0.6"
 xxhash-rust = { version = "0.8.12", features = ["xxh3"] }
 
 [profile.dev.build-override]

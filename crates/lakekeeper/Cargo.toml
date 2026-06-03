@@ -49,9 +49,16 @@ aws-smithy-runtime-api = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true, features = ["typed-header"] }
 axum-prometheus = { workspace = true }
+# --- Legacy Azure SDK (vending-only) ---
+# All four below are used solely for the vending-side helpers in
+# `service/storage/az.rs`: SAS minting and access validation via
+# `BlobServiceClient`. Remove together once both migrate to `object_store`.
+# See workspace `Cargo.toml` for the matching block.
 azure_core = { workspace = true }
+azure_identity = { workspace = true }
 azure_storage = { workspace = true }
 azure_storage_blobs = { workspace = true }
+# --- end legacy Azure SDK ---
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 cloudevents-sdk = { workspace = true }

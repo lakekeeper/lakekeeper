@@ -17,6 +17,8 @@ ignored = [
     "strum",
     # needed to activate jwt-aws-lc-rs feature for gcloud-auth transitive dep
     "google-cloud-auth",
+    # used by gcs backend only (now that adls no longer needs it)
+    "time",
 ]
 
 [features]
@@ -30,16 +32,7 @@ storage-s3 = [
     "dep:iceberg",
     "dep:webpki-root-certs",
 ]
-storage-adls = [
-    "dep:azure_storage_blobs",
-    "dep:azure_core",
-    "dep:azure_identity",
-    "dep:azure_storage",
-    "dep:azure_storage_datalake",
-    "dep:iceberg",
-    "dep:moka",
-    "dep:time",
-]
+storage-adls = ["dep:object_store", "dep:iceberg"]
 storage-gcs = [
     "dep:google-cloud-storage",
     "dep:iceberg",
@@ -65,11 +58,6 @@ aws-smithy-async = { workspace = true, optional = true }
 aws-smithy-http-client = { workspace = true, optional = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-azure_core = { workspace = true, optional = true }
-azure_identity = { workspace = true, optional = true }
-azure_storage = { workspace = true, optional = true }
-azure_storage_blobs = { workspace = true, optional = true }
-azure_storage_datalake = { workspace = true, optional = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 derive_more = { workspace = true }
@@ -79,7 +67,7 @@ google-cloud-storage = { workspace = true, features = [], optional = true }
 google-cloud-token = { workspace = true, optional = true }
 iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
-moka = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true, optional = true }
@@ -109,3 +97,4 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+wiremock = { workspace = true }
