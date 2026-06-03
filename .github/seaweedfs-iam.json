@@ -1,0 +1,52 @@
+{
+  "identities": [
+    {
+      "name": "lakekeeper",
+      "credentials": [
+        {
+          "accessKey": "some_access_key1",
+          "secretKey": "some_secret_key1"
+        }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ],
+  "sts": {
+    "tokenDuration": "1h",
+    "maxSessionLength": "12h",
+    "issuer": "seaweedfs-sts",
+    "signingKey": "dGVzdC1zaWduaW5nLWtleS0zMi1jaGFyYWN0ZXJzLWxvbmc="
+  },
+  "roles": [
+    {
+      "roleName": "LakekeeperVendedRole",
+      "roleArn": "arn:aws:iam::000000000000:role/LakekeeperVendedRole",
+      "trustPolicy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "attachedPolicies": ["FullAccess"]
+    }
+  ],
+  "policies": [
+    {
+      "name": "FullAccess",
+      "document": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+          }
+        ]
+      }
+    }
+  ]
+}

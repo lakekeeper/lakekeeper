@@ -67,10 +67,17 @@ jobs:
 
       - name: Start SeaweedFS Docker Container
         run: |
+          # Mount an advanced IAM config so the S3 gateway also serves the STS
+          # AssumeRole API. Lakekeeper's vended-credentials tests (S3Compat
+          # flavor) call sts:AssumeRole; without an STS signing key SeaweedFS
+          # returns 503. See .github/seaweedfs-iam.json (the signing key there is
+          # an ephemeral, CI-only value).
           docker run -d --name seaweedfs -p 8333:8333 \
             -e "AWS_ACCESS_KEY_ID=some_access_key1" \
             -e "AWS_SECRET_ACCESS_KEY=some_secret_key1" \
-            chrislusf/seaweedfs:4.31 server -s3 -ip.bind=0.0.0.0
+            -v "${GITHUB_WORKSPACE}/.github/seaweedfs-iam.json:/etc/seaweedfs/iam.json:ro" \
+            chrislusf/seaweedfs:4.31 server -s3 -ip.bind=0.0.0.0 \
+            -s3.config=/etc/seaweedfs/iam.json -s3.iam.config=/etc/seaweedfs/iam.json
 
       - name: Wait for SeaweedFS S3 to be healthy
         shell: bash
