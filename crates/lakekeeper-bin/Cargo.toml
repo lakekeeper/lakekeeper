@@ -19,7 +19,11 @@ path = "src/main.rs"
 default = []
 all = ["ui"]
 ui = ["dep:lakekeeper-console"]
-open-api = ["lakekeeper-authz-openfga/open-api", "lakekeeper/open-api"]
+open-api = [
+    "lakekeeper-authz-openfga/open-api",
+    "lakekeeper/open-api",
+    "lakekeeper-storage-postgres/open-api",
+]
 
 [dependencies]
 anyhow = { workspace = true }

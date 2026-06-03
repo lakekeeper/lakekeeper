@@ -63,8 +63,13 @@ impl SystemRoleSeederCap {
     /// post-migration hook in `lakekeeper` itself should mint one —
     /// minting from API-facing code violates the bootstrap contract
     /// the token is documenting.
+    ///
+    /// The intentionally-verbose name is the documentation contract:
+    /// a `grep` for this string surfaces every site that bypasses the
+    /// API-side guard. Do not rename without auditing all callers.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn for_storage_backend_seeding() -> Self {
         Self(())
     }
 }

@@ -233,7 +233,7 @@ pub async fn create_project(
     // `create_project` and the post-migration backfill share one code path.
     let specs = registered_system_roles();
     if !specs.is_empty() {
-        let cap = SystemRoleSeederCap::new();
+        let cap = SystemRoleSeederCap::for_storage_backend_seeding();
         PostgresBackend::upsert_system_roles(project_id, specs, cap, transaction)
             .await
             .map_err(|e| {

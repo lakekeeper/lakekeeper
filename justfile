@@ -32,7 +32,10 @@ fix:
     cargo sort -w
 
 sqlx-prepare:
-    cargo sqlx prepare --workspace -- --tests --features "sqlx-postgres"
+    # Exclude lakekeeper-bin so --all-features doesn't enable `ui` (pulls
+    # the `lakekeeper-console` git dep). lakekeeper-bin has no sqlx::query!
+    # macros, so nothing in its tree contributes to the .sqlx cache.
+    cargo sqlx prepare --workspace -- --tests --workspace --exclude lakekeeper-bin --all-features
 
 doc-test:
 	cargo test --no-fail-fast --doc --all-features --workspace

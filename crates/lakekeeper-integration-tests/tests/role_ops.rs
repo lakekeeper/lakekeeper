@@ -1166,7 +1166,7 @@ async fn test_upsert_system_roles_via_trait(pool: PgPool) {
         system_role_spec("svc_admin", "Service Admin"),
         system_role_spec("svc_user", "Service User"),
     ];
-    let cap = SystemRoleSeederCap::new();
+    let cap = SystemRoleSeederCap::for_storage_backend_seeding();
 
     let mut tx =
         <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
@@ -1225,7 +1225,7 @@ async fn test_delete_system_roles_via_trait(pool: PgPool) {
         .setup()
         .await;
     let project_id = &warehouse_resp.project_id;
-    let cap = SystemRoleSeederCap::new();
+    let cap = SystemRoleSeederCap::for_storage_backend_seeding();
 
     // Seed one row.
     let specs = vec![system_role_spec("retired_role", "Retired")];
@@ -1279,7 +1279,7 @@ async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
         .setup()
         .await;
     let project_id = &warehouse_resp.project_id;
-    let cap = SystemRoleSeederCap::new();
+    let cap = SystemRoleSeederCap::for_storage_backend_seeding();
 
     let specs = vec![
         system_role_spec("dup", "First"),

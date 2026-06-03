@@ -80,8 +80,13 @@ fn create_test_schema() -> Schema {
         .unwrap()
 }
 
-/// Creates a `CreateTableRequest` with the given name and format version
-fn create_table_request(name: &str, format_version: Option<FormatVersion>) -> CreateTableRequest {
+/// Creates a `CreateTableRequest` with the given name and format version.
+/// Named to disambiguate from `create_request` (the imported helper, which
+/// can't set a format version).
+fn create_table_request_with_format(
+    name: &str,
+    format_version: Option<FormatVersion>,
+) -> CreateTableRequest {
     let mut properties = None;
     if let Some(version) = format_version {
         properties = Some(HashMap::from([(
@@ -753,7 +758,7 @@ async fn test_expire_metadata_log(pool: PgPool) {
 #[sqlx::test]
 async fn test_default_format_version_is_v2(pg_pool: PgPool) {
     let (ctx, _ns, ns_params, _) = table_test_setup(pg_pool).await;
-    let create_request = create_table_request("my_table", None);
+    let create_request = create_table_request_with_format("my_table", None);
     let table = CatalogServer::create_table(
         ns_params.clone(),
         create_request,
@@ -774,7 +779,7 @@ async fn test_default_format_version_is_v2(pg_pool: PgPool) {
 #[allow(clippy::too_many_lines)]
 async fn test_table_v3(pg_pool: PgPool) {
     let (ctx, ns, ns_params, _) = table_test_setup(pg_pool).await;
-    let create_request = create_table_request("my_table", Some(FormatVersion::V3));
+    let create_request = create_table_request_with_format("my_table", Some(FormatVersion::V3));
     let table = CatalogServer::create_table(
         ns_params.clone(),
         create_request,

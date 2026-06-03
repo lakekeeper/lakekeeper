@@ -188,7 +188,7 @@ transaction** as core migrations — either every migration commits or the
 entire upgrade rolls back. Partial state is impossible.
 
 ```rust
-use lakekeeper::implementations::postgres::migrations::{ExtensionMigrations, migrate};
+use lakekeeper_storage_postgres::migrations::{ExtensionMigrations, migrate};
 
 // `name` must be 1–40 chars: first [a-z_], remaining [a-z0-9_]; rejected at
 // the start of `migrate()` otherwise. Derives `ext_my_extension_sqlx_migrations`.

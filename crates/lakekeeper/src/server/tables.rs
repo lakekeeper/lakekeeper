@@ -1407,10 +1407,12 @@ pub enum CommitTablesResult {
 
 impl CommitTablesResult {
     /// Unwrap the committed result, panicking if this is a replay.
-    /// Only intended for use in tests.
+    /// Only intended for use in tests; gated behind `test-utils` so production
+    /// callers can't accidentally panic on the replay branch.
     ///
     /// # Panics
     /// Panics if the result is `Replay`.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn unwrap_committed(self) -> Arc<Vec<CommitContext>> {
         match self {

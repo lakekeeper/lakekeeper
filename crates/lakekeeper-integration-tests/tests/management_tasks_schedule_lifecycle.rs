@@ -562,4 +562,8 @@ async fn schedule_missing_table_returns_404(pool: PgPool) {
     .await
     .expect_err("missing table must not return 2xx");
     assert_eq!(err.error.code, 404, "expected 404, got {err:?}");
+    assert_eq!(
+        err.error.r#type, "NoSuchTableException",
+        "missing-table 404 must carry the iceberg-standard error type, got {err:?}"
+    );
 }

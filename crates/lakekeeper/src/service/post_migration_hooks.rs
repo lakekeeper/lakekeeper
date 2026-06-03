@@ -138,7 +138,7 @@ pub async fn upsert_system_roles_in_all_projects<C: CatalogStore>(
         .await
         .map_err(|e| anyhow::anyhow!(e).context("Failed to list projects"))?;
 
-    let cap = SystemRoleSeederCap::new();
+    let cap = SystemRoleSeederCap::for_storage_backend_seeding();
     let mut total_upserted = 0usize;
 
     for project in &projects {
