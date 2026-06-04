@@ -21,10 +21,10 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
-# Migrate db (make sure you have sqlx installed `cargo install sqlx-cli`)
-cd crates/lakekeeper
-sqlx database create && sqlx migrate run
-cd ../..
+# Migrate db (make sure you have sqlx installed `cargo install sqlx-cli`).
+# sqlx-cli auto-loads `.env` from the workspace root, so DATABASE_URL is picked up.
+sqlx database create
+sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
 
 # Run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
 cargo nextest run --all-features
@@ -38,6 +38,26 @@ just fix-format
 Keep in mind that some tests are excluded by the `default-filter` in `.config/nextest.toml`. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for modules whose name contains `_integration_tests` within files ending with `.rs`.
 There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
 If you made any changes to SQL queries, please follow [Working with SQLx](#working-with-sqlx) before submitting your PR.
+
+### Required tools for OpenAPI regeneration
+
+The `just update-management-openapi` and `just update-generic-table-openapi` recipes — plus several `add-*-to-rest-openapi` recipes — require **Go yq** ([mikefarah/yq](https://github.com/mikefarah/yq)).
+
+The Python `yq` (kislyuk) shipped via `pip install yq` is **not compatible**: it uses different flags (`-y -i` instead of `-i`) and its YAML emitter formats lists differently, which produces large whitespace-only diffs.
+
+Install Go yq:
+
+```bash
+# macOS
+brew install yq
+
+# Linux (download the static binary)
+curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
+  -o ~/.local/bin/yq && chmod +x ~/.local/bin/yq
+
+# Verify (must say "mikefarah" in the version output)
+yq --version
+```
 
 ## Code structure
 
@@ -82,11 +102,10 @@ If your database credentials used differ, please modify the `.env` accordingly a
 Run:
 ```sh
 # Migrate db. Make sure you have sqlx-cli install with `cargo install sqlx-cli`
-# Run this locally if you change the db schema via `crates/lakekeeper/migrations`,
+# Run this locally if you change the db schema via `crates/lakekeeper-storage-postgres/migrations`,
 # e.g. after adding a table or dropping a column.
-cd crates/lakekeeper
-sqlx database create && sqlx migrate run
-cd ../..
+sqlx database create
+sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
 
 # If you changed any of the SQL statements embedded in Rust code, run this before pushing to GitHub.
 just sqlx-prepare
@@ -146,6 +165,109 @@ pg_dump --schema-only "postgresql://postgres:postgres@localhost:5432/postgres" >
 # Copy it out of the container and then inspect it or pass it as context to LLMs
 docker cp postgres-16:/home/lakekeeper_schema.sql .
 ```
+
+### Extension tables (`ext_*` prefix)
+
+Lakekeeper reserves the `ext_*` table-name prefix for downstream extensions
+that need to store their own state in the catalog database. The convention is
+an operational contract between upstream and any extension:
+
+| Rule | What it means |
+|---|---|
+| Reserved prefix | Upstream core migrations **never** create tables matching `ext_*`. Extensions own that namespace. The integration test `test_core_does_not_create_ext_objects` enforces this. |
+| FK direction | Extension tables FK *into* upstream tables. Upstream never FKs into `ext_*`. |
+| CASCADE required | Every FK from an `ext_*` table to an upstream table should be `ON DELETE CASCADE` or `ON DELETE SET NULL`. Enforce in the extension crate's own CI — upstream cannot inspect downstream migration sets. |
+| Scope of allowed objects | `ext_*` may name tables and objects owned by those tables (indexes, sequences). Triggers, functions, indexes, or views attached to upstream-owned objects are not permitted under the prefix — they would survive extension removal and could brick OSS. |
+| Tracker tables | Each registered extension migration source uses its own SQLx tracker, named `ext_<name>_sqlx_migrations`. Core's `_sqlx_migrations` is untouched. |
+
+#### Registering extension migrations
+
+Extensions call upstream's `migrate(pool, extensions)` with their own
+migration source. Every registered source runs **inside the same outer
+transaction** as core migrations — either every migration commits or the
+entire upgrade rolls back. Partial state is impossible.
+
+```rust
+use lakekeeper_storage_postgres::migrations::{ExtensionMigrations, migrate};
+
+// `name` must be 1–40 chars: first [a-z_], remaining [a-z0-9_]; rejected at
+// the start of `migrate()` otherwise. Derives `ext_my_extension_sqlx_migrations`.
+let extensions = vec![ExtensionMigrations::builder()
+    .name("my_extension")
+    .migrator(sqlx::migrate!("./migrations")) // embedded at compile time
+    .build()];
+let server_id = migrate(&pool, extensions).await?;
+```
+
+Optional fields not shown: `.data_hooks(map)` for Rust-side hooks tied to
+specific migration versions, and `.sha_patches(set)` for in-place edits to
+already-shipped migrations.
+
+The `data_hooks` field on `ExtensionMigrations` is a
+`HashMap<i64, Box<dyn MigrationHook>>` keyed by the migration's version id.
+Each entry's `MigrationHook` runs immediately after the matching extension
+migration is applied, inside the same transaction — use it for Rust-side
+data backfills tied to a specific SQL migration. Pass `HashMap::new()`
+when no hooks are needed (the common case in the snippet above).
+
+Callers that don't register extensions use the back-compat shim
+`migrate_core_only(pool)`. Core upstream tooling and tests already do.
+
+#### Recovery: removing an extension's state
+
+Dropping the extension binary and removing its tables restores the database
+to a working OSS-only state. The SQL below scans every relation kind that
+the `ext_*` prefix may name and drops it:
+
+```sql
+-- Run inside the catalog database. Drops every ext_* table and tracker
+-- (CASCADE handles dependent indexes, sequences, and constraints).
+DO $$
+DECLARE r record;
+BEGIN
+    -- Tables (covers extension state + per-source `_sqlx_migrations` trackers).
+    FOR r IN SELECT c.relname
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = current_schema()
+               AND c.relkind IN ('r', 'p')
+               AND c.relname LIKE 'ext\_%' ESCAPE '\'
+    LOOP
+        EXECUTE format('DROP TABLE %I CASCADE', r.relname);
+    END LOOP;
+
+    -- Defensive sweeps for object kinds the convention forbids extensions
+    -- from creating on upstream-owned tables, but that may exist if a
+    -- non-conforming extension was deployed.
+    FOR r IN SELECT t.tgname, c.relname AS tbl
+             FROM pg_trigger t
+             JOIN pg_class c ON c.oid = t.tgrelid
+             WHERE NOT t.tgisinternal
+               AND t.tgname LIKE 'ext\_%' ESCAPE '\'
+    LOOP
+        EXECUTE format('DROP TRIGGER %I ON %I', r.tgname, r.tbl);
+    END LOOP;
+
+    FOR r IN SELECT typname FROM pg_type t
+             JOIN pg_namespace n ON n.oid = t.typnamespace
+             WHERE n.nspname = current_schema()
+               AND typname LIKE 'ext\_%' ESCAPE '\'
+    LOOP
+        EXECUTE format('DROP TYPE %I CASCADE', r.typname);
+    END LOOP;
+
+    FOR r IN SELECT p.proname FROM pg_proc p
+             JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = current_schema()
+               AND p.proname LIKE 'ext\_%' ESCAPE '\'
+    LOOP
+        EXECUTE format('DROP FUNCTION %I CASCADE', r.proname);
+    END LOOP;
+END $$;
+```
+
+After running this, the OSS binary boots cleanly against the remaining
+catalog state.
 
 ## KV2 / Vault
 

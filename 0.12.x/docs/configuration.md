@@ -190,6 +190,7 @@ To prohibit unwanted access to data, we recommend to enable Authentication.
 Authentication is enabled if:
 
 * `LAKEKEEPER__OPENID_PROVIDER_URI` is set OR
+* `LAKEKEEPER__OPENID_PROVIDERS` has at least one configured provider OR
 * `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true
 
 In Lakekeeper multiple Authentication mechanisms can be enabled together, for example OpenID + Kubernetes. Lakekeeper builds an internal Authenticator chain of up to three identity providers. Incoming tokens need to be JWT tokens - Opaque tokens are not yet supported. Incoming tokens are introspected, and each Authentication provider checks if the given token can be handled by this provider. If it can be handled, the token is authenticated against this provider, otherwise the next Authenticator in the chain is checked.
@@ -226,15 +227,53 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | Variable                                                                  | Example                                      | Description |
 |---------------------------------------------------------------------------|----------------------------------------------|-----|
 | <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>                            | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. Lakekeeper expects to find `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration` and load JWKS tokens from there. Do not include the `/.well-known/openid-configuration` in the provided URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. |
+| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | Strongly recommended. If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid,sub`                           | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
-| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Currently only has an effect when using the Cedar Authorizer. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
+| `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 
+#### Multiple OIDC Providers
+
+For advanced scenarios requiring multiple OIDC providers (e.g., Okta for users + EKS OIDC for Kubernetes workloads), configure providers under `LAKEKEEPER__OPENID_PROVIDERS__<IDP_ID>__`. These providers are added in addition to `LAKEKEEPER__OPENID_PROVIDER_URI` (the primary provider, `idp_id = "oidc"`).
+
+The `<IDP_ID>` key is the identity-provider ID used in user IDs like `<idp_id>~<subject>`. Each `<IDP_ID>` must match `[a-z0-9-]+` — lowercase letters, digits, and hyphens. Figment lowercases env var segments and uses `__` as a nesting separator, so `LAKEKEEPER__OPENID_PROVIDERS__MY-PROVIDER__URI=...` yields `idp_id = "my-provider"`; use a single `-` to separate words (a `__` in the IDP segment would create a nested key, not part of the name). `oidc` and `kubernetes` are reserved.
+
+**Chain order.** Tokens are tried against authenticators in this order: the primary provider from `LAKEKEEPER__OPENID_PROVIDER_URI` (if set), then providers from `LAKEKEEPER__OPENID_PROVIDERS` in **alphabetical order of `idp_id`**, then Kubernetes (if enabled).
+
+A token is routed to the **first** authenticator whose `iss` set contains the token's `iss` claim **and** whose `aud` set intersects the token's `aud` claim (an unset issuer or audience matches everything). Once routed, that authenticator performs full signature + issuer + audience validation; if validation fails the request is rejected — the chain does **not** fall through to the next link. As a consequence, if two providers' (issuer, audience) criteria overlap, the first chain link owns the overlap. Make `iss` × `aud` pairs disjoint across providers to avoid surprises.
+
+**Provider Fields:**
+
+| Variable suffix | Required | Example | Description |
+|-----------------|----------|---------|-------------|
+| `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
+| `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. Comma-separated for multiple. If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
+| `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
+| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
+| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
+| `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
+| `__REQUIRE_CONNECTED_ON_STARTUP` | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
+
+**Example: Okta + EKS OIDC**
+
+```bash
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__ROLES_CLAIM=resource_access.lakekeeper.roles
+
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__URI=https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__AUDIENCE=sts.amazonaws.com
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__SUBJECT_CLAIMS=sub
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__REQUIRE_CONNECTED_ON_STARTUP=false
+```
+
+!!! note
+    Providers fail startup by default if their OIDC endpoint cannot be loaded. Set `REQUIRE_CONNECTED_ON_STARTUP=false` for providers that should be skipped while Lakekeeper continues starting.
 
 ### Authorization
 Authorization is only effective if [Authentication](#authentication) is enabled.
@@ -305,6 +344,7 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 | `LAKEKEEPER__UI__OPENID_TOKEN_TYPE`                | `access_token`                               | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
+| `LAKEKEEPER__UI__ENABLE_SURVEYS`              | `true`                                       | The UI occasionally shows in-app user surveys to gather feedback on Lakekeeper. All responses are collected anonymously. Set to `false` to opt out; the UI then never initializes the survey SDK and makes no third-party requests. Defaults to `true`. |
 
 ### Caching
 Lakekeeper uses in-memory caches to speed up certain operations.
@@ -445,6 +485,19 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
+### Maintenance Mode
+
+Captured at startup; not dynamic. While `read-only`:
+
+- Mutating requests (anything other than `GET`/`HEAD`/`OPTIONS`) on `/catalog/v1` and `/management/v1` return `503` with `Retry-After: 60` and `error.type = "MaintenanceModeError"`. `/health` is unaffected.
+- Built-in task queue workers are not started.
+- `GET /v1/config` skips user auto-registration.
+- `GET /health` exposes the current mode as `maintenance_mode` for operator fan-out checks.
+
+| Variable                                       | Example     | Description |
+|------------------------------------------------|-------------|-------------|
+| <nobr>`LAKEKEEPER__MAINTENANCE_MODE`</nobr>    | `read-only` | `off` (default) or `read-only`. Captured at startup; not dynamic. |
+
 ### Idempotency
 
 Lakekeeper supports the [Iceberg REST Catalog Idempotency](https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml) specification. When enabled, clients can send an `Idempotency-Key` header on mutation requests to guarantee at-most-once execution. The server advertises support via the `idempotency-key-lifetime` field in the `GET /v1/config` response.
@@ -554,11 +607,88 @@ Each LDAP provider is configured under a unique `<ID>` of your choosing. All var
 
 **Group / role mapping:**
 
+The LDAP role provider supports three resolution modes, selected via `__GROUP_RESOLUTION_MODE`:
+
+| Mode | When to use |
+|------|-------------|
+| `attribute` *(default)* | Read group DNs directly from a `memberOf`-style attribute on the user entry. Correct for Active Directory / ADFS, OpenLDAP with the `memberof` overlay, and most setups where every user-of-interest has a populated `memberOf`. |
+| `search` | Run a paged subtree LDAP search to find groups whose member attribute references the user. Useful for directories without `memberOf`, for filtering to a specific group name prefix (e.g. `ACME-*`) at the directory level instead of post-filtering, and for AD transitive resolution via `LDAP_MATCHING_RULE_IN_CHAIN`. |
+| `branching` *(since 0.12.2)* | Per-user-DN branching: a regex tested against the user's DN selects between a Search-style filter (with named captures available as `${name}` placeholders) and an explicit `else` branch. |
+
+The selector and shared fields:
+
+| Variable                              | Default     | Description                                                                                            |
+|---------------------------------------|-------------|--------------------------------------------------------------------------------------------------------|
+| <nobr>`…__GROUP_RESOLUTION_MODE`</nobr> | `attribute` | One of `attribute`, `search`, or `branching`. The remaining fields depend on the mode you choose.    |
+| <nobr>`…__GROUP_BASE_DN`</nobr>         |             | Base DN for the group search. Required by `search` and `branching`; ignored by `attribute`.            |
+| <nobr>`…__GROUP_CASE`</nobr>            | `keep`      | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
+
+**Attribute mode (`group_resolution_mode = "attribute"`):**
+
 | Variable                                   | Default    | Description        |
 |--------------------------------------------|------------|--------------------|
-| <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. The default (`memberOf`) is correct for Active Directory and OpenLDAP with the `memberof` overlay. |
+| <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. |
 | <nobr>`…__GROUP_NAME_SOURCE`</nobr>        | `dn_cn`    | How to derive the role name from a group entry. `dn_cn` extracts the `CN=` component from the group's distinguished name (recommended for AD/ADFS). |
-| <nobr>`…__GROUP_CASE`</nobr>               | `keep`     | Case transformation applied to the resolved group name before it is stored as a role. One of `keep`, `upper`, or `lower`. |
+
+**Search mode (`group_resolution_mode = "search"`)** — *available since 0.12.2 with `${USER}` / `${DOMAIN}` placeholder support and the composed default filter*:
+
+| Variable                                | Default                       | Description                                                                                            |
+|-----------------------------------------|-------------------------------|--------------------------------------------------------------------------------------------------------|
+| <nobr>`…__GROUP_SEARCH_FILTER`</nobr>     | `({GROUP_MEMBER_ATTRIBUTE}=${USER_DN})` | LDAP filter for the group search. May reference `${USER_DN}`, `${USER}`, and `${DOMAIN}` placeholders. When omitted, composed from `…__GROUP_MEMBER_ATTRIBUTE` — works on AD (`objectClass=group`), OpenLDAP (`groupOfNames` with `member`, or `groupOfUniqueNames` with `uniqueMember`), and 389-DS. For AD transitive resolution, set to `(member:1.2.840.113556.1.4.1941:=${USER_DN})`. |
+| <nobr>`…__GROUP_MEMBER_ATTRIBUTE`</nobr>  | `member`                      | Attribute on the group entry that references members; drives the default filter when `…__GROUP_SEARCH_FILTER` is unset. Use `uniqueMember` for `groupOfUniqueNames` directories. |
+| <nobr>`…__GROUP_NAME_ATTRIBUTE`</nobr>    | `cn`                          | Attribute on each returned group entry used as the role name. Use `sAMAccountName` for AD if you want the short name instead of the CN. |
+
+**Branching mode (`group_resolution_mode = "branching"`)** — *available since 0.12.2* — per-user-DN dispatch between a Search-style `then` branch and an explicit `else` branch:
+
+| Variable                                                 | Description |
+|----------------------------------------------------------|-------------|
+| <nobr>`…__BRANCH_IF_USER_DN_MATCHES`</nobr>                | Regex tested against the user's DN (case-insensitive by default; prepend `(?-i)` for strict casing). Named captures `(?<name>…)` become `${name}` placeholders in the `then` filter. Reserved names `USER`, `DOMAIN`, `USER_DN` are rejected. |
+| <nobr>`…__BRANCH_THEN__GROUP_SEARCH_FILTER`</nobr>         | LDAP filter for the `then` branch. May reference `${USER_DN}`, `${USER}`, `${DOMAIN}`, and any named capture from `…__BRANCH_IF_USER_DN_MATCHES`. Every placeholder must resolve at startup (unknown placeholders are rejected). |
+| <nobr>`…__BRANCH_THEN__GROUP_MEMBER_ATTRIBUTE`</nobr>      | Same role as in Search mode — drives the default filter when `…__BRANCH_THEN__GROUP_SEARCH_FILTER` is unset. Defaults to `member`. |
+| <nobr>`…__BRANCH_THEN__GROUP_NAME_ATTRIBUTE`</nobr>        | Attribute used as the role name for groups returned by the `then` branch. Defaults to `cn`. |
+| <nobr>`…__BRANCH_ELSE__MODE`</nobr>                        | **Required.** One of `attribute` (run Attribute-mode resolution against the user entry) or `none` (return empty roles, emit `outcome = "dn_no_match"` to audit). No implicit default — pick explicitly so audit logs distinguish "no roles" from "no match". |
+| <nobr>`…__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE`</nobr>    | When `…__BRANCH_ELSE__MODE=attribute`: the `memberOf`-style attribute to read. Defaults to `memberOf`. |
+| <nobr>`…__BRANCH_ELSE__GROUP_NAME_SOURCE`</nobr>           | When `…__BRANCH_ELSE__MODE=attribute`: how to derive the role name. Defaults to `dn_cn`. |
+
+!!! note "Capture-driven filters and cross-scope memberships"
+    A capture-driven filter (e.g. `sAMAccountName=${tenant}*ABC-*`) constrains resolution to the captured value; memberships outside that scope are not returned. For cross-scope memberships, add another role provider in the chain with a broader filter.
+
+!!! note "AD primary group is never returned"
+    Active Directory's primary group (typically `Domain Users`, identified by `primaryGroupID` rather than a `member` link) is not returned by any mode — `memberOf` omits it and `LDAP_MATCHING_RULE_IN_CHAIN` does not walk it. To expose it as a Lakekeeper role, add explicit `member` entries in the directory.
+
+!!! note "Regex is case-insensitive; `${USER_DN}` preserves directory casing"
+    `…__BRANCH_IF_USER_DN_MATCHES` is compiled case-insensitive by default (prepend `(?-i)` to make it strict). The DN substituted into `${USER_DN}` is escaped per RFC 4515 and inserted with the casing the directory returned. DN-typed attribute predicates (`member=`, `memberOf=`, …) match server-side regardless of case.
+
+!!! note "`group_base_dn` is always required in branching mode"
+    Set `…__GROUP_BASE_DN` even if you expect every user to take the `else.mode = attribute` branch — the validator can't know which branch a given user will hit. Use the same value you would use in Search mode.
+
+!!! warning "Role cache persists across restarts; changing modes does not invalidate it"
+    Role assignments are cached in the catalog database, not just in process memory. Restarting Lakekeeper with a new `group_resolution_mode` does **not** invalidate the DB cache — users keep their previously-resolved roles for up to `…__SYNC_INTERVAL_SECS`. During a config rollout, either lower `…__SYNC_INTERVAL_SECS` temporarily or flush the role-assignments table for the affected provider.
+
+**Example — Search mode with AD transitive resolution:**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_RESOLUTION_MODE=search
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_BASE_DN=dc=corp,dc=example,dc=com
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_SEARCH_FILTER='(&(sAMAccountName=ACME-*)(member:1.2.840.113556.1.4.1941:=${USER_DN}))'
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_NAME_ATTRIBUTE=sAMAccountName
+```
+
+**Example — Branching mode (tenant users → tenant-scoped search; service accounts → `memberOf`):**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_RESOLUTION_MODE=branching
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__GROUP_BASE_DN=dc=corp,dc=example,dc=com
+
+# Extract the tenant code from the user's DN (the OU directly below OU=Tenants)
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_IF_USER_DN_MATCHES='OU=(?<tenant>[^,]+),OU=Tenants,'
+
+# THEN branch — tenant users get tenant-scoped, transitively-resolved roles
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_THEN__GROUP_SEARCH_FILTER='(&(sAMAccountName=${tenant}-ACME-*)(member:1.2.840.113556.1.4.1941:=${USER_DN}))'
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_THEN__GROUP_NAME_ATTRIBUTE=sAMAccountName
+
+# ELSE branch — service accounts under OU=Service fall back to memberOf
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__MODE=attribute
+LAKEKEEPER__ROLE_PROVIDER__CORP_AD__BRANCH_ELSE__USER_MEMBER_OF_ATTRIBUTE=memberOf
+```
 
 **Connection and TLS:**
 

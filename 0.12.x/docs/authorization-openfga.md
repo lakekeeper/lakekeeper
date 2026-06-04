@@ -119,7 +119,7 @@ Reconcile only operates on the **structural** parts of the OpenFGA store: the pa
 ### Operational notes
 
 - Run during a low-traffic window. Reconcile does **not** stop API writes; concurrent renames/creates/deletes can produce transient inconsistencies that self-heal on the next run.
-- A Postgres advisory lock prevents two reconciles from running at once. A held lock causes the second invocation to fail fast.
+- A Postgres advisory lock prevents two reconciles from running at once. The second invocation fails fast with the lock key in the error message; you can confirm a held lock with `SELECT * FROM pg_locks WHERE locktype = 'advisory'`.
 - Use `--dry-run` first when you intend to delete drift.
 
 ## Switching to OpenFGA or replacing the store
