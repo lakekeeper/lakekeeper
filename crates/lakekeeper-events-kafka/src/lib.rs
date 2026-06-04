@@ -84,10 +84,10 @@ pub fn build_kafka_publisher_from_config() -> anyhow::Result<Option<KafkaBackend
         }
     };
 
-    let kafka_backend = KafkaBackend {
-        producer,
-        topic: topic.clone(),
-    };
+    let kafka_backend = KafkaBackend::builder()
+        .producer(producer)
+        .topic(topic.clone())
+        .build();
 
     let kafka_brokers = config
         .conf
@@ -101,6 +101,7 @@ pub fn build_kafka_publisher_from_config() -> anyhow::Result<Option<KafkaBackend
     Ok(Some(kafka_backend))
 }
 
+#[derive(typed_builder::TypedBuilder)]
 pub struct KafkaBackend {
     pub producer: FutureProducer,
     pub topic: String,

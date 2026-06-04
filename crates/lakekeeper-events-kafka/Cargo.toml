@@ -29,4 +29,5 @@ lakekeeper = { path = "../lakekeeper", default-features = false }
 rdkafka = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+typed-builder = { workspace = true }
 veil = { workspace = true }

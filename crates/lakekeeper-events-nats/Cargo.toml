@@ -25,5 +25,6 @@ lakekeeper = { path = "../lakekeeper", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+typed-builder = { workspace = true }
 url = { workspace = true }
 veil = { workspace = true }

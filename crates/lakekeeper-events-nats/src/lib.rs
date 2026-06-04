@@ -57,18 +57,19 @@ pub async fn build_nats_publisher_from_config() -> anyhow::Result<Option<NatsBac
         builder
     };
 
-    let nats_publisher = NatsBackend {
-        client: builder.connect(nats_addr.to_string()).await.map_err(|e| {
-            anyhow::anyhow!(e).context(format!("Failed to connect to NATS at {nats_addr}"))
-        })?,
-        topic: nats_topic.clone(),
-    };
+    let client = builder.connect(nats_addr.to_string()).await.map_err(|e| {
+        anyhow::anyhow!(e).context(format!("Failed to connect to NATS at {nats_addr}"))
+    })?;
+    let nats_publisher = NatsBackend::builder()
+        .client(client)
+        .topic(nats_topic.clone())
+        .build();
 
     tracing::info!("Publishing events to NATS topic {nats_topic}, NATS address is: {nats_addr}");
     Ok(Some(nats_publisher))
 }
 
-#[derive(Debug)]
+#[derive(Debug, typed_builder::TypedBuilder)]
 pub struct NatsBackend {
     pub client: async_nats::Client,
     pub topic: String,

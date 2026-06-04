@@ -3836,6 +3836,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tracing",
+ "typed-builder 0.23.2",
  "veil",
 ]
 
@@ -3852,6 +3853,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "typed-builder 0.23.2",
  "url",
  "veil",
 ]
