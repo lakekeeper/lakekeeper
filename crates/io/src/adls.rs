@@ -30,15 +30,38 @@ const DEFAULT_HOST: &str = "dfs.core.windows.net";
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://login.microsoftonline.com").expect("Default authority host is a valid URL")
 });
+/// Bounds how long a single connect attempt may hang before it is treated as a
+/// failure. Without this, reqwest falls back to the OS default, where a stalled
+/// TCP connect runs for tens of seconds before surfacing `ETIMEDOUT`
+/// (`os error 110`). That blows the entire retry budget on a single attempt, so
+/// transient connect failures (e.g. SNAT/ephemeral-port exhaustion against
+/// Azure) never get retried. Keep this comfortably below `RETRY_MAX_TOTAL_ELAPSED`
+/// so several attempts fit inside the budget.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Total wall-clock budget for retries. Must exceed `CONNECT_TIMEOUT` by enough
+/// to allow a few retries, otherwise a single slow connect expires the policy
+/// before any retry happens. The retry clock starts after the first attempt completes, so this
+/// budget covers the retries, not the initial request.
+const RETRY_MAX_TOTAL_ELAPSED: Duration = Duration::from_secs(30);
+
 static DEFAULT_CLIENT_OPTIONS: LazyLock<azure_core::ClientOptions> = LazyLock::new(|| {
     azure_core::ClientOptions::default().retry(RetryOptions::fixed(
         FixedRetryOptions::default()
             .max_retries(3u32)
-            .max_total_elapsed(std::time::Duration::from_secs(5)),
+            .max_total_elapsed(RETRY_MAX_TOTAL_ELAPSED),
     ))
 });
 
-static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        // Only fails if the TLS backend or system DNS config can't be
+        // initialized — i.e. the environment is fundamentally broken. The
+        // default `reqwest::Client::new()` would panic on the same condition.
+        .expect("Failed to build ADLS HTTP client")
+});
 // Reqwest client is already cheap to clone. We keep this `HTTP_CLIENT_ARC` because the Azure SDK requires an `Arc<dyn HttpClient>`.
 static HTTP_CLIENT_ARC: LazyLock<Arc<reqwest::Client>> =
     LazyLock::new(|| Arc::new(HTTP_CLIENT.clone()));
