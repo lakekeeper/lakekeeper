@@ -9,7 +9,7 @@ use lakekeeper::{
         authn::{BuiltInAuthenticators, get_default_authenticator_from_config},
         authz::Authorizer,
         endpoint_statistics::EndpointStatisticsSink,
-        events::{EventDispatcher, get_default_cloud_event_backends_from_config},
+        events::EventDispatcher,
     },
     tracing,
 };
@@ -20,7 +20,10 @@ use lakekeeper_storage_postgres::{
 
 #[cfg(feature = "ui")]
 use crate::ui;
-use crate::{authorizer::AuthorizerEnum, secrets::SecretsEnum};
+use crate::{
+    authorizer::AuthorizerEnum, events::get_default_cloud_event_backends_from_config,
+    secrets::SecretsEnum,
+};
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;

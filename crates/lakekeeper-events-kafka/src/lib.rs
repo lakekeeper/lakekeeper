@@ -1,26 +1,30 @@
+//! Kafka cloud-events publisher for Lakekeeper.
+//!
+//! Implements [`lakekeeper::service::events::CloudEventBackend`] for an
+//! rdkafka `FutureProducer`. Configured via env vars under the same
+//! `LAKEKEEPER__` / `ICEBERG_REST__` prefix as core; the
+//! [`config::CONFIG`] static aggregates the Kafka-specific fields.
+
+pub mod config;
 pub(crate) mod vendor;
 
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cloudevents::Event;
+use lakekeeper::service::events::CloudEventBackend;
 use rdkafka::producer::{FutureProducer, FutureRecord, future_producer::Delivery};
-use serde::{Deserialize, Serialize};
-use veil::Redact;
 
 use crate::{
-    CONFIG,
-    service::events::{
-        CloudEventBackend,
-        backends::kafka::vendor::cloudevents::binding::rdkafka::{FutureRecordExt, MessageRecord},
-    },
+    config::CONFIG,
+    vendor::cloudevents::binding::rdkafka::{FutureRecordExt, MessageRecord},
 };
 
-/// Creates a Kafka publisher from the crates configuration.
+/// Creates a Kafka publisher from the crate's configuration.
 /// Returns `None` if the Kafka config or topic is not set.
 ///
 /// # Errors
-/// - If the Kafka producer cannot be created from the crates configuration.
+/// - If the Kafka producer cannot be created from the crate's configuration.
 pub fn build_kafka_publisher_from_config() -> anyhow::Result<Option<KafkaBackend>> {
     let (Some(config), Some(topic)) = (&CONFIG.kafka_config, &CONFIG.kafka_topic) else {
         tracing::info!("Kafka config or topic not set. Events are not published to Kafka.");
@@ -95,24 +99,6 @@ pub fn build_kafka_publisher_from_config() -> anyhow::Result<Option<KafkaBackend
         "Publishing events to Kafka topic {topic}, initial brokers are: {kafka_brokers}",
     );
     Ok(Some(kafka_backend))
-}
-
-#[derive(Clone, Serialize, Deserialize, PartialEq, Redact)]
-pub struct KafkaConfig {
-    #[serde(rename = "sasl.password")]
-    #[redact]
-    pub sasl_password: Option<String>,
-    #[serde(rename = "sasl.oauthbearer.client.secret")]
-    #[redact]
-    pub sasl_oauthbearer_client_secret: Option<String>,
-    #[serde(rename = "ssl.key.password")]
-    #[redact]
-    pub ssl_key_password: Option<String>,
-    #[serde(rename = "ssl.keystore.password")]
-    #[redact]
-    pub ssl_keystore_password: Option<String>,
-    #[serde(flatten)]
-    pub conf: HashMap<String, String>,
 }
 
 pub struct KafkaBackend {

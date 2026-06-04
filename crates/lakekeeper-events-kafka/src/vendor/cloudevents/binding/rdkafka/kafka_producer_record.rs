@@ -20,7 +20,7 @@ use rdkafka::{
     producer::FutureRecord,
 };
 
-use crate::service::events::backends::kafka::vendor::cloudevents::binding::{
+use crate::vendor::cloudevents::binding::{
     CLOUDEVENTS_JSON_HEADER, CONTENT_TYPE,
     kafka::{SPEC_VERSION_HEADER, header_prefix},
 };

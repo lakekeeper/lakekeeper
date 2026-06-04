@@ -94,40 +94,19 @@ mod principal_serde {
     }
 }
 
-/// Builds the default cloud event backends from the configuration.
-///
-/// # Errors
-/// If the publisher cannot be built from the configuration.
-#[allow(clippy::unused_async)]
-pub async fn get_default_cloud_event_backends_from_config()
--> anyhow::Result<Vec<Arc<dyn CloudEventBackend + Sync + Send>>> {
-    let mut cloud_event_sinks = vec![];
-
-    #[cfg(feature = "nats")]
-    if let Some(nats_publisher) = super::backends::nats::build_nats_publisher_from_config().await? {
-        cloud_event_sinks
-            .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    }
-    #[cfg(feature = "kafka")]
-    if let Some(kafka_publisher) = super::backends::kafka::build_kafka_publisher_from_config()? {
-        cloud_event_sinks
-            .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    }
-
-    if let Some(true) = &CONFIG.log_cloudevents {
-        let tracing_publisher = TracingPublisher;
-        cloud_event_sinks
-            .push(Arc::new(tracing_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+/// Returns a [`TracingPublisher`] backend if `CONFIG.log_cloudevents` is on,
+/// else `None`. Concrete remote backends (NATS, Kafka, …) live in their own
+/// crates and are wired in by the binary.
+#[must_use]
+pub fn maybe_tracing_cloud_event_backend()
+-> Option<Arc<dyn CloudEventBackend + Sync + Send + 'static>> {
+    if CONFIG.log_cloudevents == Some(true) {
         tracing::info!("Logging Cloudevents to Console.");
+        Some(Arc::new(TracingPublisher) as Arc<dyn CloudEventBackend + Sync + Send + 'static>)
     } else {
         tracing::info!("Running without logging Cloudevents.");
+        None
     }
-
-    if cloud_event_sinks.is_empty() {
-        tracing::info!("Running without publisher.");
-    }
-
-    Ok(cloud_event_sinks)
 }
 
 #[async_trait::async_trait]

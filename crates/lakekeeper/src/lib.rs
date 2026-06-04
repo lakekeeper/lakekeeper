@@ -32,9 +32,6 @@ pub use async_trait;
 pub use axum;
 pub use iceberg;
 pub use limes;
-#[cfg(feature = "kafka")]
-#[cfg_attr(docsrs, doc(cfg(feature = "kafka")))]
-pub use rdkafka;
 pub use request_metadata::{
     TokenRoles, X_FORWARDED_HOST_HEADER, X_FORWARDED_PORT_HEADER, X_FORWARDED_PREFIX_HEADER,
     X_FORWARDED_PROTO_HEADER, X_PROJECT_ID_HEADER_NAME, X_REQUEST_ID_HEADER_NAME,

@@ -210,10 +210,8 @@
 //    See the License for the specific language governing permissions and
 //    limitations under the License.
 
-#[cfg(feature = "kafka")]
 pub(crate) mod rdkafka;
 
-#[cfg(feature = "kafka")]
 pub(crate) mod kafka {
     pub(crate) static SPEC_VERSION_HEADER: &str = "ce_specversion";
     pub(crate) fn header_prefix(name: &str) -> String {

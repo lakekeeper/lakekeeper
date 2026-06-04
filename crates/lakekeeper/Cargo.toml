@@ -16,20 +16,10 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 ignored = ["cloudevents-sdk"]
 
 [features]
-all = [
-    "s3-signer",
-    "router",
-    "nats",
-    "vendored-protoc",
-    "kafka",
-    "open-api",
-]
+all = ["s3-signer", "router", "open-api"]
 s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http", "dep:tower"]
-nats = ["dep:async-nats"]
-default = ["s3-signer", "router", "vendored-protoc"]
-kafka = ["dep:rdkafka"]
-vendored-protoc = []
+default = ["s3-signer", "router"]
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 # Enable `derive(sqlx::Type)` on lakekeeper's domain enums/newtypes so that
@@ -41,7 +31,6 @@ sqlx-postgres = ["dep:sqlx"]
 
 [dependencies]
 anyhow = { workspace = true }
-async-nats = { workspace = true, optional = true }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
@@ -59,7 +48,6 @@ cloudevents-sdk = { workspace = true }
 derive_more = { workspace = true }
 fastrand = { workspace = true }
 figment = { workspace = true }
-figment_file_provider_adapter = { workspace = true }
 flate2 = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true }
@@ -82,7 +70,6 @@ moka = { workspace = true }
 pastey = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
-rdkafka = { workspace = true, optional = true }
 reqwest = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }

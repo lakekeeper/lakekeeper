@@ -5,6 +5,8 @@ members = [
     "crates/io",
     "crates/lakekeeper",
     "crates/lakekeeper-bin",
+    "crates/lakekeeper-events-kafka",
+    "crates/lakekeeper-events-nats",
     "crates/lakekeeper-integration-tests",
     "crates/lakekeeper-secrets-kv2",
     "crates/lakekeeper-storage-postgres",

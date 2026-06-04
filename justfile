@@ -13,7 +13,7 @@ check-clippy:
     cargo clippy -p lakekeeper --no-default-features --features "test-utils" -- -D warnings
     cargo clippy -p lakekeeper-io --no-default-features --features "storage-in-memory" -- -D warnings
     cargo clippy -p lakekeeper-io --all-features -- -D warnings
-    cargo clippy -p lakekeeper --no-default-features --features "sqlx-postgres,s3-signer,router,nats,vendored-protoc,kafka" -- -D warnings
+    cargo clippy -p lakekeeper --no-default-features --features "sqlx-postgres,s3-signer,router" -- -D warnings
     cargo clippy -p lakekeeper-bin --all-features -- -D warnings
     cargo clippy -p lakekeeper-bin --no-default-features -- -D warnings
 
