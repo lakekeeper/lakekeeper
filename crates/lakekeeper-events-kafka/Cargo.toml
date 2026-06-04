@@ -9,6 +9,10 @@ license = { workspace = true }
 description = "Kafka cloud-events publisher for Lakekeeper"
 keywords = ["iceberg", "rest", "lakekeeper", "kafka", "cloudevents"]
 
+[package.metadata.cargo-machete]
+# Imported as `cloudevents`
+ignored = ["cloudevents-sdk"]
+
 [lib]
 
 [dev-dependencies]

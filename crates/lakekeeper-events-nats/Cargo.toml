@@ -9,6 +9,10 @@ license = { workspace = true }
 description = "NATS cloud-events publisher for Lakekeeper"
 keywords = ["iceberg", "rest", "lakekeeper", "nats", "cloudevents"]
 
+[package.metadata.cargo-machete]
+# Imported as `cloudevents`
+ignored = ["cloudevents-sdk"]
+
 [lib]
 
 [dependencies]
