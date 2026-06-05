@@ -41,7 +41,7 @@ LAKEKEEPER__AUDIT__TRACING__ENABLED=false
 
 Lakekeeper produces three types of logs, distinguished by the `event_source` field:
 
-### 1. Audit Logs
+### 1. Audit Logs {#audit-logs}
 
 Authorization events tracking access to catalog resources. **Contains PII** (user identities).
 
