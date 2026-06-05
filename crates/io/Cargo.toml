@@ -32,7 +32,7 @@ storage-s3 = [
     "dep:iceberg",
     "dep:webpki-root-certs",
 ]
-storage-adls = ["dep:object_store", "dep:iceberg"]
+storage-adls = ["dep:object_store", "dep:iceberg", "dep:moka"]
 storage-gcs = [
     "dep:google-cloud-storage",
     "dep:iceberg",
@@ -67,6 +67,7 @@ google-cloud-storage = { workspace = true, features = [], optional = true }
 google-cloud-token = { workspace = true, optional = true }
 iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
+moka = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 reqwest = { workspace = true }

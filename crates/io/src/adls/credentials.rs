@@ -9,14 +9,193 @@
 //! resolve the chain ourselves *once* at construction time and remember the
 //! choice for the lifetime of the [`AdlsStorage`].
 //!
-//! Probing once mirrors the previous behaviour (which cached the
-//! `DefaultAzureCredential` for 30 minutes per `(authority, account)`). The
-//! per-token TTL refresh stays inside `object_store`'s internal
-//! `TokenCredentialProvider`, where it has always lived.
-use object_store::azure::MicrosoftAzureBuilder;
+//! ## Process-wide store cache for system-identity credentials
+//!
+//! `object_store::MicrosoftAzureBuilder::build()` instantiates a fresh
+//! `TokenCredentialProvider` — and therefore a cold inner `TokenCache` —
+//! every call. Lakekeeper builds a new `AdlsStorage` per catalog request, so
+//! the per-instance `stores` cache inside `AdlsStorage` doesn't amortise
+//! token fetches across requests. To preserve the cross-request amortisation
+//! the legacy `azure_identity::DefaultAzureCredential` cache used to provide,
+//! we keep a process-wide cache of `Arc<MicrosoftAzure>`
+//! ([`ADLS_STORE_CACHE`]) keyed on the full identity discriminator —
+//! `(account, container, authority_host, cloud-discriminator,
+//! system-identity-mode + identifying fields)`. The key includes every field
+//! that selects a distinct `TokenCredentialProvider` (notably `client_id`,
+//! fixing a legacy `(authority, account)`-only key bug where two warehouses
+//! with the same account but different client IDs could share a provider).
+//!
+//! Only the secret-free `SystemIdentity` variants — `ManagedIdentity`,
+//! `FederatedTokenFile`, `AzureCli` — populate this cache. Two variants are
+//! deliberately excluded:
+//!
+//! * **`AccessKey` / `Sas` / `ClientCredentials`** (the operator-supplied,
+//!   non-system-identity variants): these don't pay an AAD round-trip on
+//!   first use, so the cross-request warming would amortize nothing.
+//! * **`SystemIdentity::ClientSecret`**: this variant exists because the
+//!   process picked up `AZURE_CLIENT_ID` + `AZURE_TENANT_ID` +
+//!   `AZURE_CLIENT_SECRET` from the environment. The legacy cache could
+//!   tolerate env-var rotation because it cached `DefaultAzureCredential`,
+//!   which re-reads env at token-fetch time. The new design snapshots the
+//!   secret at `from_auth` time, so a cached entry would pin a stale
+//!   secret across a runtime rotation. Skipping the process-wide cache for
+//!   this variant lets the per-instance cache in `AdlsStorage` continue to
+//!   work within a request, while letting env rotation take effect on the
+//!   next `AdlsStorage` build. The token-warming benefit is lost for the
+//!   env-driven SP pattern; if a deployment needs it, revisit.
+use std::{sync::Arc, time::Duration};
+
+use object_store::azure::{MicrosoftAzure, MicrosoftAzureBuilder};
 use veil::Redact;
 
-use crate::adls::{AzureAuth, AzureClientCredentialsAuth, AzureSasAuth, AzureSharedAccessKeyAuth};
+use crate::{
+    InitializeClientError,
+    adls::{
+        AzureAuth, AzureClientCredentialsAuth, AzureCloud, AzureSasAuth, AzureSharedAccessKeyAuth,
+    },
+};
+
+/// Process-wide cache TTL. Matches the legacy `SYSTEM_IDENTITY_CACHE` window.
+/// The inner `TokenCredentialProvider` continues to refresh its own AAD token
+/// autonomously within this window; the TTL just bounds how long we keep an
+/// idle `MicrosoftAzure` alive after its last use.
+const CACHE_TTL: Duration = Duration::from_mins(30);
+/// Process-wide cache capacity. Bounds memory under pathological churn
+/// (many short-lived warehouses with distinct identities). Matches the
+/// legacy `SYSTEM_IDENTITY_CACHE` capacity.
+const CACHE_CAPACITY: u64 = 1000;
+
+/// Process-wide cache of fully-built per-(account, container, identity)
+/// `MicrosoftAzure` instances. Only `SystemIdentity` credentials populate it
+/// — see the module doc.
+static ADLS_STORE_CACHE: std::sync::LazyLock<
+    moka::sync::Cache<StoreCacheKey, Arc<MicrosoftAzure>>,
+> = std::sync::LazyLock::new(|| {
+    moka::sync::Cache::builder()
+        .max_capacity(CACHE_CAPACITY)
+        .time_to_live(CACHE_TTL)
+        .build()
+});
+
+/// Identity discriminator for [`ADLS_STORE_CACHE`].
+///
+/// Every field that selects a distinct `TokenCredentialProvider` is here.
+/// `cloud` is included because endpoint URL differences (private link,
+/// sovereign cloud, custom domain) produce distinct `MicrosoftAzure`
+/// configurations even with otherwise-identical credentials.
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct StoreCacheKey {
+    account_name: String,
+    container: String,
+    authority_host: Option<String>,
+    cloud: AzureCloudKey,
+    mode: SystemIdentityModeKey,
+}
+
+/// Hashable discriminator for [`AzureCloud`]. Mirrors the variant set; the
+/// `String` payload is the operator-supplied host suffix passed through
+/// unchanged.
+#[derive(Clone, Hash, Eq, PartialEq)]
+enum AzureCloudKey {
+    Public,
+    Custom(String),
+}
+
+impl From<&AzureCloud> for AzureCloudKey {
+    fn from(cloud: &AzureCloud) -> Self {
+        match cloud {
+            AzureCloud::Public => Self::Public,
+            AzureCloud::Custom(host) => Self::Custom(host.clone()),
+        }
+    }
+}
+
+/// Hashable discriminator for the cacheable [`SystemIdentityMode`]
+/// variants. `ClientSecret` is deliberately absent — see the module doc
+/// for why that mode is excluded from the cache.
+#[derive(Clone, Hash, Eq, PartialEq)]
+enum SystemIdentityModeKey {
+    FederatedTokenFile {
+        client_id: String,
+        tenant_id: String,
+        token_file: String,
+    },
+    ManagedIdentity {
+        msi_endpoint: Option<String>,
+        client_id: Option<String>,
+    },
+    AzureCli,
+}
+
+/// Look up or build a cached `Arc<MicrosoftAzure>` for a cacheable
+/// system-identity credential.
+///
+/// Returns `Ok(None)` for any credential the process-wide cache does not
+/// hold (static credentials and `SystemIdentity::ClientSecret`) so the
+/// caller falls back to its own per-instance cache. For the cacheable
+/// variants, this returns the process-wide cached instance — or builds,
+/// inserts, and returns a fresh one via `build_fn` on miss.
+///
+/// `try_get_with` dedups concurrent inits for the same key: two requests
+/// racing to populate the cache result in one shared build, not two cold
+/// `TokenCredentialProvider`s.
+pub(super) fn try_cached_store<F>(
+    credential: &ResolvedCredential,
+    account_name: &str,
+    container: &str,
+    authority_host: Option<&url::Url>,
+    cloud: &AzureCloud,
+    build_fn: F,
+) -> Result<Option<Arc<MicrosoftAzure>>, InitializeClientError>
+where
+    F: FnOnce() -> Result<MicrosoftAzure, InitializeClientError>,
+{
+    let mode_key = match credential {
+        ResolvedCredential::SystemIdentity(SystemIdentityMode::FederatedTokenFile {
+            client_id,
+            tenant_id,
+            token_file,
+        }) => SystemIdentityModeKey::FederatedTokenFile {
+            client_id: client_id.clone(),
+            tenant_id: tenant_id.clone(),
+            token_file: token_file.clone(),
+        },
+        ResolvedCredential::SystemIdentity(SystemIdentityMode::ManagedIdentity {
+            msi_endpoint,
+            client_id,
+        }) => SystemIdentityModeKey::ManagedIdentity {
+            msi_endpoint: msi_endpoint.clone(),
+            client_id: client_id.clone(),
+        },
+        ResolvedCredential::SystemIdentity(SystemIdentityMode::AzureCli) => {
+            SystemIdentityModeKey::AzureCli
+        }
+        // `SystemIdentity::ClientSecret`, `AccessKey`, `ClientSecret`, `Sas`
+        // all skip the process-wide cache. See the module doc.
+        _ => return Ok(None),
+    };
+    let key = StoreCacheKey {
+        account_name: account_name.to_string(),
+        container: container.to_string(),
+        authority_host: authority_host.map(|u| u.as_str().to_string()),
+        cloud: cloud.into(),
+        mode: mode_key,
+    };
+    let store = ADLS_STORE_CACHE
+        .try_get_with(key, || build_fn().map(Arc::new))
+        // `try_get_with` wraps the closure error in `Arc<E>` for sharing
+        // across racing waiters. `InitializeClientError` is not `Clone`, so
+        // we surface the inner error message in a fresh wrapper — sources
+        // are lost across this boundary, but cache-miss errors are rare and
+        // the wrapped message preserves the original `reason`.
+        .map_err(
+            |arc_err: Arc<InitializeClientError>| InitializeClientError {
+                reason: format!("Failed to build cached ADLS client: {arc_err}"),
+                source: None,
+            },
+        )?;
+    Ok(Some(store))
+}
 
 /// The system-identity mechanism resolved once at construction time, so
 /// every per-container `MicrosoftAzureBuilder` we build uses the same one.
@@ -543,6 +722,215 @@ mod system_identity_tests {
             other => {
                 panic!("expected ClientSecret to take precedence over USE_AZURE_CLI, got {other:?}")
             }
+        }
+    }
+}
+
+/// Process-wide [`ADLS_STORE_CACHE`] semantics. Tests use unique
+/// `account_name` / `container` values so they cannot collide on the shared
+/// static even when run in parallel; the value of the cache test isn't
+/// "absence of cross-test interference" (which is the parallel-test
+/// contract) but "the key correctly discriminates identities that ought to
+/// be distinct."
+#[cfg(test)]
+mod store_cache_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Monotonic counter that gives each test a fresh `account_name`. Avoids
+    /// every form of cross-test contention on the static cache without
+    /// requiring serial-test machinery.
+    static UNIQ: AtomicUsize = AtomicUsize::new(0);
+
+    fn uniq_account() -> String {
+        format!("acct{}", UNIQ.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Build a real `MicrosoftAzure` with default managed-identity
+    /// credentials. No network traffic happens until first use, so this is
+    /// safe to call in offline unit tests.
+    fn build_test_store() -> Result<MicrosoftAzure, InitializeClientError> {
+        MicrosoftAzureBuilder::new()
+            .with_account("ignored-via-builder-input")
+            .with_container_name("ignored-via-builder-input")
+            .with_use_azure_cli(true) // any system-identity flag will do
+            .build()
+            .map_err(|e| InitializeClientError {
+                reason: format!("test build failed: {e}"),
+                source: None,
+            })
+    }
+
+    fn managed_identity_cred(client_id: Option<&str>) -> ResolvedCredential {
+        ResolvedCredential::SystemIdentity(SystemIdentityMode::ManagedIdentity {
+            msi_endpoint: None,
+            client_id: client_id.map(str::to_string),
+        })
+    }
+
+    /// Two lookups with the same key return the same `Arc`. This is the
+    /// core guarantee — without it, the cache amortises nothing.
+    #[test]
+    fn cached_store_hit_returns_same_arc() {
+        let account = uniq_account();
+        let cred = managed_identity_cred(Some("cid"));
+        let a = try_cached_store(
+            &cred,
+            &account,
+            "c",
+            None,
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .expect("first build")
+        .expect("system-identity should populate the cache");
+        let b = try_cached_store(&cred, &account, "c", None, &AzureCloud::Public, || {
+            panic!("second call must not rebuild — should hit cache")
+        })
+        .expect("second build")
+        .expect("system-identity should populate the cache");
+        assert!(Arc::ptr_eq(&a, &b), "same key should return same Arc");
+    }
+
+    /// Different `client_id` under the same account must produce distinct
+    /// providers. This is the regression test for the legacy
+    /// `SYSTEM_IDENTITY_CACHE` bug — keyed only by `(authority, account)`,
+    /// it would cross-pollinate two warehouses with the same account but
+    /// distinct identities.
+    #[test]
+    fn cached_store_different_client_id_returns_distinct_arc() {
+        let account = uniq_account();
+        let cred_a = managed_identity_cred(Some("cid-a"));
+        let cred_b = managed_identity_cred(Some("cid-b"));
+        let a = try_cached_store(
+            &cred_a,
+            &account,
+            "c",
+            None,
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .unwrap()
+        .unwrap();
+        let b = try_cached_store(
+            &cred_b,
+            &account,
+            "c",
+            None,
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "different client_id must not share a cached provider",
+        );
+    }
+
+    /// Different containers under the same identity must produce distinct
+    /// providers — `MicrosoftAzure` is per-container, the cache key must
+    /// reflect that.
+    #[test]
+    fn cached_store_different_container_returns_distinct_arc() {
+        let account = uniq_account();
+        let cred = managed_identity_cred(Some("cid"));
+        let a = try_cached_store(
+            &cred,
+            &account,
+            "c1",
+            None,
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .unwrap()
+        .unwrap();
+        let b = try_cached_store(
+            &cred,
+            &account,
+            "c2",
+            None,
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "different containers must not share a cached MicrosoftAzure",
+        );
+    }
+
+    /// Different `authority_host` (e.g., a future sovereign-cloud
+    /// reintroduction) must produce distinct providers. Pins this dimension
+    /// of the key so a future refactor doesn't silently collapse it.
+    #[test]
+    fn cached_store_different_authority_returns_distinct_arc() {
+        let account = uniq_account();
+        let cred = managed_identity_cred(Some("cid"));
+        let auth_a = url::Url::parse("https://login.microsoftonline.com").unwrap();
+        let auth_b = url::Url::parse("https://login.microsoftonline.us").unwrap();
+        let a = try_cached_store(
+            &cred,
+            &account,
+            "c",
+            Some(&auth_a),
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .unwrap()
+        .unwrap();
+        let b = try_cached_store(
+            &cred,
+            &account,
+            "c",
+            Some(&auth_b),
+            &AzureCloud::Public,
+            build_test_store,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &b),
+            "different authority_host must not share a cached provider",
+        );
+    }
+
+    /// Credentials that carry secret material — static credentials and the
+    /// env-driven `SystemIdentity::ClientSecret` variant — bypass the
+    /// process-wide cache (return `Ok(None)`) so the caller falls back to
+    /// the per-instance DCL store cache. Pins the "no secrets in cache
+    /// keys" invariant.
+    #[test]
+    fn cached_store_skips_secret_bearing_credentials() {
+        let account = uniq_account();
+        let cases = [
+            ResolvedCredential::AccessKey("k".to_string()),
+            ResolvedCredential::ClientSecret {
+                client_id: "c".to_string(),
+                tenant_id: "t".to_string(),
+                client_secret: "s".to_string(),
+            },
+            ResolvedCredential::Sas("sv=...".to_string()),
+            // SystemIdentity::ClientSecret is env-driven; we exclude it
+            // from the cache so an env-rotated secret takes effect on the
+            // next `AdlsStorage` build instead of being pinned for 30
+            // minutes inside a cached `MicrosoftAzure`.
+            ResolvedCredential::SystemIdentity(SystemIdentityMode::ClientSecret {
+                client_id: "cid".to_string(),
+                tenant_id: "tid".to_string(),
+                client_secret: "sec".to_string(),
+            }),
+        ];
+        for cred in cases {
+            let result = try_cached_store(&cred, &account, "c", None, &AzureCloud::Public, || {
+                panic!("secret-bearing credential must short-circuit before building")
+            });
+            assert!(
+                matches!(result, Ok(None)),
+                "secret-bearing credential should bypass cache; got {result:?}",
+            );
         }
     }
 }

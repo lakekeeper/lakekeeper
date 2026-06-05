@@ -66,9 +66,15 @@ pub struct AdlsProfile {
     pub key_prefix: Option<String>,
     /// Name of the azure storage account.
     pub account_name: String,
-    /// The authority host to use for authentication. Default: `https://login.microsoftonline.com`.
+    /// **Deprecated.** No longer accepted on profile create / update.
+    /// Existing profiles continue to work with a deprecation warning. A
+    /// future release will reject the field on load and discard the value.
+    #[cfg_attr(feature = "open-api", schema(deprecated = true))]
     pub authority_host: Option<Url>,
-    /// The host to use for the storage account. Default: `dfs.core.windows.net`.
+    /// **Deprecated.** No longer accepted on profile create / update.
+    /// Existing profiles continue to work with a deprecation warning. A
+    /// future release will reject the field on load and discard the value.
+    #[cfg_attr(feature = "open-api", schema(deprecated = true))]
     pub host: Option<String>,
     /// The validity of the sas token in seconds. Default: 3600.
     pub sas_token_validity_seconds: Option<u64>,
@@ -131,6 +137,7 @@ impl AdlsProfile {
     /// - Fails if the filesystem name is invalid.
     /// - Fails if the key prefix is too long or invalid.
     /// - Fails if the account name is invalid.
+    /// - Fails if `host` or `authority_host` is set (both deprecated).
     /// - Fails if the endpoint suffix is invalid.
     pub(super) fn normalize(&mut self) -> Result<(), ValidationError> {
         if let Some(sas_validity) = self.sas_token_validity_seconds {
@@ -143,6 +150,33 @@ impl AdlsProfile {
                 }
                 .into());
             }
+        }
+        // Reject new profiles that set the deprecated `host` /
+        // `authority_host` fields. Existing rows already in the database
+        // still deserialize — this guard only fires when an operator
+        // creates or updates a profile via the management API. See
+        // `azure_settings` for the back-compat warn-on-load path. A future
+        // release will graduate this behavior to "reject on load and
+        // discard the value".
+        if self.host.is_some() {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "The `host` field is deprecated and no longer accepted for \
+                         new profiles."
+                    .to_string(),
+                entity: "host".to_string(),
+            }
+            .into());
+        }
+        if self.authority_host.is_some() {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "The `authority_host` field is deprecated and no longer \
+                         accepted for new profiles."
+                    .to_string(),
+                entity: "authority_host".to_string(),
+            }
+            .into());
         }
         validate_filesystem_name(&self.filesystem)?;
         self.host = self.host.take().map(normalize_host).transpose()?.flatten();
@@ -158,6 +192,13 @@ impl AdlsProfile {
     /// of a warehouse, after which all tables would not be accessible anymore.
     /// Changing an endpoint might still result in an invalid profile, but we allow it.
     ///
+    /// `host` and `authority_host` are not immutability-checked here — they
+    /// are deprecated and `normalize` rejects any non-None value on update,
+    /// so the only way past that gate is a `None`-ward update (the
+    /// migration path off the deprecated fields). Without this relaxation
+    /// an operator with a legacy profile would be unable to set the fields
+    /// to `None`.
+    ///
     /// # Errors
     /// Fails if the `bucket`, `region` or `key_prefix` is different.
     pub fn update_with(self, mut other: Self) -> Result<Self, UpdateError> {
@@ -167,14 +208,6 @@ impl AdlsProfile {
 
         if self.key_prefix != other.key_prefix {
             return Err(UpdateError::ImmutableField("key_prefix".to_string()));
-        }
-
-        if self.authority_host != other.authority_host {
-            return Err(UpdateError::ImmutableField("authority_host".to_string()));
-        }
-
-        if self.host != other.host {
-            return Err(UpdateError::ImmutableField("host".to_string()));
         }
 
         if other.storage_layout.is_none() {
@@ -257,6 +290,15 @@ impl AdlsProfile {
     /// profile (`host = privatelink.dfs.core.windows.net`) that lands at
     /// `https://privatelink.blob.core.windows.net/...` which does not resolve.
     fn azure_settings(&self) -> AzureSettings {
+        // Back-compat path: existing rows persisted before the `host` /
+        // `authority_host` deprecation continue to drive endpoint and
+        // authority selection. New profiles cannot reach this branch
+        // because `normalize` rejects them on create / update. A future
+        // release will discard these values entirely; the deprecation is
+        // surfaced via the OpenAPI schema, the field doc comments, and the
+        // release notes rather than via runtime logging (this method is
+        // called per request, and a runtime warn would either spam or
+        // require per-account state to deduplicate).
         let cloud = match &self.host {
             Some(h) => AzureCloud::Custom(format!("{}.{}", self.account_name, h)),
             None => AzureCloud::Public,
@@ -1003,25 +1045,25 @@ pub(crate) mod test {
         );
     }
 
-    /// Regression: `AdlsProfile.host` is a host *suffix* (account name is
-    /// concatenated separately when constructing `abfss://` URLs). The
-    /// `AzureCloud::Custom` payload, on the other hand, must be the *full*
-    /// blob host (its `endpoint_url` translates `.dfs.` → `.blob.` and
-    /// prepends `https://`). Before the fix, `azure_settings()` passed the
-    /// suffix straight through, dropping the account name on the wire:
-    /// a private-link profile (`host = privatelink.dfs.core.windows.net`,
-    /// `account_name = sbrvakpe`) sent PUTs to
-    /// `https://privatelink.blob.core.windows.net/...` instead of
-    /// `https://sbrvakpe.privatelink.blob.core.windows.net/...`, and the
-    /// host did not resolve. Pin the composition so it cannot regress.
+    /// Back-compat regression: when an existing row carries a non-None
+    /// `host` suffix, `azure_settings` must compose the full host as
+    /// `{account_name}.{host}` (the `account_name` is concatenated
+    /// separately for `abfss://` URLs but `AzureCloud::Custom` needs the
+    /// full blob host, since its `endpoint_url` translates `.dfs.` →
+    /// `.blob.` and prepends `https://`). An earlier bug passed the suffix
+    /// through verbatim, dropping the account name on the wire. Pin the
+    /// composition so the back-compat path cannot silently regress while
+    /// `host` is still being honored. This test bypasses `normalize` (which
+    /// now rejects non-None `host`); it models the on-disk shape of a row
+    /// persisted before the deprecation.
     #[test]
-    fn azure_settings_composes_full_host_for_private_endpoint() {
+    fn azure_settings_composes_full_host_back_compat() {
         let profile = AdlsProfile {
             filesystem: "test".to_string(),
             key_prefix: None,
             account_name: "sbrvakpe".to_string(),
             authority_host: None,
-            host: Some("privatelink.dfs.core.windows.net".to_string()),
+            host: Some("custom.example.net".to_string()),
             sas_token_validity_seconds: None,
             allow_alternative_protocols: false,
             sas_enabled: true,
@@ -1029,12 +1071,66 @@ pub(crate) mod test {
         };
         assert_eq!(
             profile.azure_settings().cloud,
-            AzureCloud::Custom("sbrvakpe.privatelink.dfs.core.windows.net".to_string()),
+            AzureCloud::Custom("sbrvakpe.custom.example.net".to_string()),
         );
 
         let mut public_profile = profile.clone();
         public_profile.host = None;
         assert_eq!(public_profile.azure_settings().cloud, AzureCloud::Public);
+    }
+
+    /// `normalize` rejects non-None `host` on profile create / update.
+    /// Existing rows that already have a value bypass `normalize` (they
+    /// deserialize directly) and go through the back-compat warn path in
+    /// `azure_settings` — see [`azure_settings_composes_full_host_back_compat`].
+    #[test]
+    fn normalize_rejects_deprecated_host() {
+        let mut profile = AdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: None,
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: Some("custom.example.net".to_string()),
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        };
+        let err = profile
+            .normalize()
+            .expect_err("non-None host must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`host`"),
+            "error must call out the `host` field: got {msg}",
+        );
+    }
+
+    /// Symmetric to [`normalize_rejects_deprecated_host`] for
+    /// `authority_host`.
+    #[test]
+    fn normalize_rejects_deprecated_authority_host() {
+        let mut profile = AdlsProfile {
+            filesystem: "filesystem".to_string(),
+            key_prefix: None,
+            account_name: "account".to_string(),
+            authority_host: Some(
+                Url::parse("https://login.microsoftonline.us").expect("valid url"),
+            ),
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        };
+        let err = profile
+            .normalize()
+            .expect_err("non-None authority_host must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`authority_host`"),
+            "error must call out the `authority_host` field: got {msg}",
+        );
     }
 
     #[test]

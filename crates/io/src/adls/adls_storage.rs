@@ -26,8 +26,10 @@ use crate::{
     DeleteBatchError, DeleteError, ErrorKind, FileInfo, IOError, InitializeClientError,
     InvalidLocationError, LakekeeperFileWrite, LakekeeperStorage, Location, ReadError, WriteError,
     adls::{
-        AdlsLocation, AzureCloud, adls_error::parse_error, adls_writer::AdlsFileWrite,
-        credentials::ResolvedCredential,
+        AdlsLocation, AzureCloud,
+        adls_error::parse_error,
+        adls_writer::AdlsFileWrite,
+        credentials::{ResolvedCredential, try_cached_store},
     },
     delete_not_found_is_ok, execute_with_parallelism, validate_file_size,
 };
@@ -186,25 +188,54 @@ impl AdlsStorage {
     }
 
     /// Return the (cached or freshly-built) `MicrosoftAzure` for the given
-    /// container. Builds happen once per (account, container) across the
-    /// lifetime of this `AdlsStorage`, amortising the OAuth-token and
-    /// HTTP-client setup over every operation that hits the same container.
+    /// container.
+    ///
+    /// Two caches sit in front of `MicrosoftAzureBuilder::build()`:
+    ///
+    /// 1. For system-identity credentials (managed identity, workload
+    ///    identity, AAD client-secret SP, Azure CLI), the **process-wide**
+    ///    [`crate::adls::credentials::try_cached_store`] cache is consulted
+    ///    first. It survives across `AdlsStorage` instances so the inner
+    ///    `TokenCredentialProvider`'s warm AAD/IMDS token is shared across
+    ///    every catalog request hitting the same (account, container,
+    ///    identity).
+    /// 2. For static credentials (`SharedAccessKey`, `Sas`, raw
+    ///    `ClientCredentials` with secret), the legacy **per-instance** DCL
+    ///    cache below applies. Static credentials make no token round-trip
+    ///    at build time, so the cross-instance benefit is small and we
+    ///    intentionally do not put secret-bearing keys in a process-wide
+    ///    `HashMap`.
     ///
     /// Synchronous because nothing inside awaits — `std::sync::RwLock` is
     /// the right primitive (cheaper than `tokio::sync::RwLock`, no fairness
     /// queue, no risk of holding across an await).
     ///
-    /// Concurrency: double-checked locking. The read lock is the common-case
-    /// fast path. The second `get` *after* acquiring the write lock prevents
-    /// the race where two threads both miss under the read lock, both queue
-    /// for the write lock, and both build a fresh `MicrosoftAzure`. Without
-    /// the re-check the second thread would do redundant build work (HTTP
-    /// client, token provider, auth round-trip) and then overwrite the first
-    /// thread's entry. Defended by `store_for_concurrent_gets_share_one_build`.
+    /// Per-instance concurrency: double-checked locking. The read lock is
+    /// the common-case fast path. The second `get` *after* acquiring the
+    /// write lock prevents the race where two threads both miss under the
+    /// read lock, both queue for the write lock, and both build a fresh
+    /// `MicrosoftAzure`. Defended by
+    /// `store_for_concurrent_gets_share_one_build`. The process-wide cache
+    /// has its own concurrency dedup via `moka::sync::Cache::try_get_with`.
     pub(crate) fn store_for(
         &self,
         container: &str,
     ) -> Result<Arc<object_store::azure::MicrosoftAzure>, InitializeClientError> {
+        if let Some(store) = try_cached_store(
+            &self.config.credential,
+            &self.config.account_name,
+            container,
+            self.config.authority_host.as_ref(),
+            &self.config.cloud,
+            || {
+                build_microsoft_azure(&self.config, container).map_err(|e| InitializeClientError {
+                    reason: format!("Failed to build object_store MicrosoftAzure: {e}"),
+                    source: Some(Box::new(e)),
+                })
+            },
+        )? {
+            return Ok(store);
+        }
         {
             let read = self
                 .stores

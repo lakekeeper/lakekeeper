@@ -3925,6 +3925,7 @@ dependencies = [
  "gcloud-storage",
  "iceberg",
  "md5",
+ "moka",
  "object_store",
  "pastey",
  "percent-encoding",

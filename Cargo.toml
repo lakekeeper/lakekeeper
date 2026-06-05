@@ -121,7 +121,7 @@ maplit = "1.0.2"
 md5 = "0.8.0"
 middle = { version = "0.4", features = ["tonic"] }
 mockall = "0.14.0"
-moka = { version = "^0.12", features = ["future"] }
+moka = { version = "^0.12", features = ["future", "sync"] }
 object_store = { version = "0.13.2", default-features = false, features = [
     "azure",
 ] }
