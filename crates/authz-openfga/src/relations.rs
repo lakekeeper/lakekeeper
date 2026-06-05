@@ -56,7 +56,7 @@ impl ParseOpenFgaEntity for UserOrRole {
                 r#type, id,
             )?)),
             _ => Err(ParseOpenFgaEntityError::UnexpectedEntity {
-                r#type: vec![FgaType::User],
+                r#type: vec![FgaType::User, FgaType::Role],
                 value: id.to_string(),
                 reason: format!("Expected user or role type, but got {type}"),
             }),
