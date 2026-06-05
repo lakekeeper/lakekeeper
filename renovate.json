@@ -37,6 +37,12 @@
       "matchCurrentVersion": "<1.0.0",
       "groupName": "rust crates (pre-1.0)",
       "groupSlug": "cargo-pre1-minor-patch"
+    },
+    {
+      "description": "Docs toolchain is pinned to MkDocs 1.x — 2.0 removes the plugin/theme system and breaks the monorepo-plugin fork. Bump manually and re-validate the docs build.",
+      "matchManagers": ["pip_requirements"],
+      "matchPackageNames": ["mkdocs", "mkdocs-material", "mkdocs-material-extensions", "mkdocs-autorefs", "mkdocs-exclude-search", "mkdocs-monorepo-plugin", "markdown-grid-tables"],
+      "enabled": false
     }
   ]
 }

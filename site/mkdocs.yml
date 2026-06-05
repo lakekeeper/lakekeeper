@@ -50,9 +50,11 @@ nav:
       - Release 0.7.x: "!include docs/docs/0.7.x/mkdocs.yml"
       - Release 0.6.x: "!include docs/docs/0.6.x/mkdocs.yml"
       - Release 0.5.x: "!include docs/docs/0.5.x/mkdocs.yml"
+  - Release Notes:
+      - Lakekeeper (OSS): about/release-notes.md
+      - Enterprise: about/enterprise-release-notes.md
   - Community: support.md
   - About:
-      - Release Notes: about/release-notes.md
       - License: about/license.md
       - Code of Conduct: about/code-of-conduct.md
       - Logos: about/logos.md

@@ -869,6 +869,9 @@ Lakekeeper provides the following entities internally to Cedar: Server, Project,
                 "project_roles": [
                     {"provider_id": "oidc", "source_id": "analysts"}
                 ],
+                // source_id of each provider-resolved role; only populated when
+                // LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED=true, otherwise [].
+                "global_role_ids": [],
                 "provider_id": "oidc",
                 "source_id": "2f268e8b-8cc1-4edd-a9df-87d69f7e9deb"
             },
@@ -901,6 +904,9 @@ When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, La
             "project_roles": [
                 { "provider_id": "oidc", "source_id": "warehouse-1-admins" }
             ],
+            // source_id of each provider-resolved role as plain strings.
+            // Required by the schema; use [] when GLOBAL_ROLE_IDS_ENABLED is off.
+            "global_role_ids": [],
             // Authentication provider and subject ID of this user.
             "provider_id": "oidc",
             "source_id": "90471f73-e338-4032-9a6b-1e021cc3cb1e"
@@ -949,7 +955,7 @@ When `LAKEKEEPER__CEDAR__EXTERNALLY_MANAGED_USER_AND_ROLES` is set to `true`, La
 ```
 
 !!! tip "Required User attributes"
-    Every `Lakekeeper::User` entity in an external file **must** include `roles`, `project_roles`, `provider_id`, and `source_id`. Omitting any of these will cause a schema validation error on startup. Set `project_roles` to `[]` in multi-project setups.
+    Every `Lakekeeper::User` entity in an external file **must** include `roles`, `project_roles`, `provider_id`, `source_id`, and `global_role_ids`. Omitting any of these will cause a schema validation error on startup. Use `[]` for `global_role_ids` when it is not used or `LAKEKEEPER__CEDAR__GLOBAL_ROLE_IDS_ENABLED` is disabled. Set `project_roles` to `[]` in multi-project setups.
 
 ## Policy and Entity Management
 
