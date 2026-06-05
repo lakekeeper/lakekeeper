@@ -19,7 +19,7 @@ All Apache Iceberg REST clients are compatible with Lakekeeper, as Lakekeeper fu
 
 When using Lakekeeper with authentication enabled, remember that you can follow the approaches described at the beginning of this page: either use credentials specific to individual users or leverage OAuth2 token exchange for shared query engines. The authentication parameters typically include credential pairs, OAuth2 server URIs, and scopes as shown in the examples above.
 
-## <img src="/assets/duckdb.svg" width="30"> DuckDB WASM
+## <img src="/assets/duckdb.svg" width="30"> DuckDB WASM {#duckdb-wasm}
 
 DuckDB WASM allows you to query Lakekeeper directly from your browser. If you are using the Lakekeeper UI, DuckDB WASM is pre-configured. To use DuckDB WASM from the Lakekeeper UI, there are two important requirements due to browser security restrictions:
 
