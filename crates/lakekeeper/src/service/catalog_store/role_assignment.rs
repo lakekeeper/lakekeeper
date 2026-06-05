@@ -466,6 +466,52 @@ impl From<RoleMembershipCycle> for ErrorModel {
     }
 }
 
+/// Adding the requested role->role edge would make some role-nesting chain
+/// longer than the configured maximum (`LAKEKEEPER__ROLE__MAX_NESTING_DEPTH`).
+/// The depth is
+/// the number of `role_membership` (role→role) edges in a chain; adding edge
+/// `parent -> member` the longest chain through it is
+/// `longest_chain_above(parent) + 1 + longest_chain_below(member)`.
+#[derive(Debug, PartialEq)]
+pub struct RoleMembershipDepthExceeded {
+    pub parent_role_id: RoleId,
+    pub member_role_id: RoleId,
+    pub max_depth: usize,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleMembershipDepthExceeded);
+impl RoleMembershipDepthExceeded {
+    #[must_use]
+    pub fn new(parent_role_id: RoleId, member_role_id: RoleId, max_depth: usize) -> Self {
+        Self {
+            parent_role_id,
+            member_role_id,
+            max_depth,
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for RoleMembershipDepthExceeded {}
+impl std::fmt::Display for RoleMembershipDepthExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Adding role '{}' as a member of role '{}' would exceed the maximum role nesting depth of {} edges",
+            self.member_role_id, self.parent_role_id, self.max_depth
+        )
+    }
+}
+impl From<RoleMembershipDepthExceeded> for ErrorModel {
+    fn from(err: RoleMembershipDepthExceeded) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleMembershipDepthExceeded")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 /// A role endpoint of a requested membership edge is not catalog-managed.
 ///
 /// Only roles owned by the catalog itself (the `lakekeeper` and `system`
@@ -614,6 +660,7 @@ define_transparent_error! {
         RoleIdNotFoundInProject,
         RoleNotManuallyAssignable,
         RoleMembershipCycle,
+        RoleMembershipDepthExceeded,
         RoleMembershipLockTimeout
     ]
 }

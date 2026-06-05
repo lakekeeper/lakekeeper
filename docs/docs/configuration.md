@@ -485,6 +485,18 @@ Lakekeeper allows you to configure limits on incoming requests to protect agains
 | <nobr>`LAKEKEEPER__MAX_REQUEST_BODY_SIZE`</nobr> | `2097152` | Maximum request body size in bytes. Default: `2097152` (2 MB) |
 | <nobr>`LAKEKEEPER__MAX_REQUEST_TIME`</nobr>      | `30s`     | Maximum time allowed for a request to complete. Accepts format `{number}{ms\|s}`. Default: `30s` |
 
+### Roles
+
+Limits applied to the role model.
+
+`LAKEKEEPER__ROLE__MAX_NESTING_DEPTH` bounds how deeply roles may be nested in one another (role→role membership). The depth is the number of role→role edges in a chain; direct user assignments do not count. Adding a membership edge that would make any chain longer than this limit is rejected with `RoleMembershipDepthExceeded` (HTTP 409).
+
+This bound is enforced on the catalog (Postgres) write path. When using the OpenFGA authorization backend, nesting depth is governed by OpenFGA's own resolution limits rather than this setting — the same asymmetry as role-membership cycle prevention.
+
+| Variable                                            | Example | Description |
+|-----------------------------------------------------|---------|-------------|
+| <nobr>`LAKEKEEPER__ROLE__MAX_NESTING_DEPTH`</nobr>  | `10`    | Maximum number of role→role edges in any nesting chain. Default: `10` |
+
 ### Maintenance Mode
 
 Captured at startup; not dynamic. While `read-only`:

@@ -10,11 +10,11 @@ use lakekeeper::{
         AssignedUser, CatalogBackendError, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
         DatabaseIntegrityError, ListRoleMembersResult, ListUserRoleAssignmentsResult,
         RemoveRoleMembersError, RemoveRoleMembersResult, RoleId, RoleIdNotFoundInProject,
-        RoleIdent, RoleMembershipCycle, RoleMembershipDirection, RoleMembershipEntry,
-        RoleMembershipLockTimeout, RoleNameAlreadyExists, RoleNotManuallyAssignable,
-        RoleProviderId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles, UserProviderSyncInfo,
-        authn::UserId,
+        RoleIdent, RoleMembershipCycle, RoleMembershipDepthExceeded, RoleMembershipDirection,
+        RoleMembershipEntry, RoleMembershipLockTimeout, RoleNameAlreadyExists,
+        RoleNotManuallyAssignable, RoleProviderId, SyncRoleMembersError, SyncRoleMembersResult,
+        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles,
+        UserProviderSyncInfo, authn::UserId,
     },
 };
 use uuid::Uuid;
@@ -643,6 +643,7 @@ pub(crate) async fn add_role_members(
     project_id: &ArcProjectId,
     parent_role_id: RoleId,
     member_role_ids: &[RoleId],
+    max_depth: usize,
     transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> Result<AddRoleMembersResult, AddRoleMembersError> {
     // Serialize membership writes per project via a transaction-scoped advisory
@@ -777,6 +778,59 @@ pub(crate) async fn add_role_members(
     .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
     {
         return Err(RoleMembershipCycle::new(parent_role_id, RoleId::new(cycle_member)).into());
+    }
+
+    // Depth check before any insert: an edge that would make some role-nesting
+    // chain longer than `max_depth` (number of role→role edges) is rejected. The
+    // longest chain through a new edge `parent -> member` is
+    // `longest_chain_above(parent) + 1 + longest_chain_below(member)`. We compute
+    // the parent's upward depth once and each candidate member's downward depth,
+    // and reject the first member for which the sum exceeds the bound. Cycles were
+    // already ruled out above, so both walks terminate; the `d < $3` guards bound
+    // the recursion defensively. Saturating the bound to i32 avoids overflow/panic
+    // for pathologically large configured limits (the depth columns are `int4`).
+    //
+    // Catalog-path invariant only: the OpenFGA path tolerates depth and relies on
+    // its own resolution limits, the same asymmetry as cycle prevention.
+    let max_depth_bound = i32::try_from(max_depth).unwrap_or(i32::MAX);
+    if let Some(member) = sqlx::query_scalar!(
+        r#"
+        WITH RECURSIVE
+        up(role_id, d) AS (
+            SELECT $1::uuid, 0
+          UNION ALL
+            SELECT rm.parent_role_id, up.d + 1
+            FROM role_membership rm JOIN up ON rm.member_role_id = up.role_id
+            WHERE up.d < $3
+        ),
+        down(seed, role_id, d) AS (
+            SELECT m, m, 0 FROM unnest($2::uuid[]) AS m
+          UNION ALL
+            SELECT down.seed, rm.member_role_id, down.d + 1
+            FROM role_membership rm JOIN down ON rm.parent_role_id = down.role_id
+            WHERE down.d < $3
+        )
+        SELECT down.seed AS "member_role_id!"
+        FROM down
+        CROSS JOIN (SELECT max(d) AS up_max FROM up) u
+        GROUP BY down.seed, u.up_max
+        HAVING u.up_max + 1 + max(down.d) > $3
+        LIMIT 1
+        "#,
+        *parent_role_id,
+        &member_uuids,
+        max_depth_bound,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+    {
+        return Err(RoleMembershipDepthExceeded::new(
+            parent_role_id,
+            RoleId::new(member),
+            max_depth,
+        )
+        .into());
     }
 
     // `ON CONFLICT DO NOTHING` skips already-present edges, so `RETURNING` yields
@@ -1231,6 +1285,263 @@ mod tests {
         };
         assert_eq!(cycle.parent_role_id, c);
         assert_eq!(cycle.member_role_id, a);
+    }
+
+    /// A chain whose longest path through the new edge is *exactly* `max_depth`
+    /// edges is allowed. With `max_depth = 3`: r0→r1→r2 already exists (2 edges),
+    /// adding r2→r3 makes the longest chain r0→r1→r2→r3 = 3 edges = the limit.
+    #[sqlx::test]
+    async fn role_membership_depth_at_limit_allowed(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let r0 = create_managed_role(&state, &project_id, "r0").await;
+        let r1 = create_managed_role(&state, &project_id, "r1").await;
+        let r2 = create_managed_role(&state, &project_id, "r2").await;
+        let r3 = create_managed_role(&state, &project_id, "r3").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // Build r0 -> r1 -> r2 (2 edges) without tripping the limit during setup.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&project_id, r0, &[r1], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, r1, &[r2], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // r2 -> r3: longest chain becomes exactly 3 edges → allowed at max_depth=3.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = add_role_members(&project_id, r2, &[r3], 3, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(result.added, vec![r3]);
+    }
+
+    /// One edge deeper than the limit is rejected. With `max_depth = 3`:
+    /// r0→r1→r2→r3 already exists (3 edges); adding r3→r4 would make a 4-edge chain.
+    #[sqlx::test]
+    async fn role_membership_depth_exceeded(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let r0 = create_managed_role(&state, &project_id, "r0").await;
+        let r1 = create_managed_role(&state, &project_id, "r1").await;
+        let r2 = create_managed_role(&state, &project_id, "r2").await;
+        let r3 = create_managed_role(&state, &project_id, "r3").await;
+        let r4 = create_managed_role(&state, &project_id, "r4").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // Build r0 -> r1 -> r2 -> r3 (3 edges) without tripping the limit.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&project_id, r0, &[r1], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, r1, &[r2], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, r2, &[r3], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // r3 -> r4 would be a 4-edge chain → rejected at max_depth=3.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_role_members(&project_id, r3, &[r4], 3, t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, r3);
+        assert_eq!(e.member_role_id, r4);
+        assert_eq!(e.max_depth, 3);
+    }
+
+    /// Depth counts edges on *both* sides of the new edge. With `max_depth = 3`,
+    /// neither side alone exceeds it: the parent has 1 edge above it (g→p) and the
+    /// member has 2 edges below it (m→m1→m2). Adding p→m makes the longest chain
+    /// g→p→m→m1→m2 = 4 edges, so it must be rejected even though each side is small.
+    #[sqlx::test]
+    async fn role_membership_depth_counts_both_directions(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let g = create_managed_role(&state, &project_id, "g").await;
+        let p = create_managed_role(&state, &project_id, "p").await;
+        let m = create_managed_role(&state, &project_id, "m").await;
+        let m1 = create_managed_role(&state, &project_id, "m1").await;
+        let m2 = create_managed_role(&state, &project_id, "m2").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // Upward of the parent: g -> p (1 edge above p).
+        // Downward of the member: m -> m1 -> m2 (2 edges below m).
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&project_id, g, &[p], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, m, &[m1], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, m1, &[m2], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // p -> m: 1 (above p) + 1 (new edge) + 2 (below m) = 4 edges → rejected.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_role_members(&project_id, p, &[m], 3, t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, p);
+        assert_eq!(e.member_role_id, m);
+        assert_eq!(e.max_depth, 3);
+    }
+
+    /// A multi-member add is all-or-nothing: if any one member would exceed the
+    /// limit, the whole batch is rejected (naming that member) and no edge —
+    /// not even the in-limit ones — is written. With `max_depth = 2`, adding
+    /// `[shallow, deep]` to a parent rejects because `deep` has a 2-edge subtree
+    /// (`deep→d1→d2`), so `p→deep→d1→d2` = 3 edges; `p→shallow` (1 edge) is fine
+    /// but must not be persisted either.
+    #[sqlx::test]
+    async fn role_membership_depth_batch_is_all_or_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let p = create_managed_role(&state, &project_id, "p").await;
+        let shallow = create_managed_role(&state, &project_id, "shallow").await;
+        let deep = create_managed_role(&state, &project_id, "deep").await;
+        let d1 = create_managed_role(&state, &project_id, "d1").await;
+        let d2 = create_managed_role(&state, &project_id, "d2").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // deep -> d1 -> d2 (2 edges below `deep`), built without tripping the limit.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&project_id, deep, &[d1], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, d1, &[d2], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Batch p -> [shallow, deep] at max_depth=2: only `deep` exceeds, but the
+        // whole call is rejected and it names `deep`.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_role_members(&project_id, p, &[shallow, deep], 2, t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, p);
+        assert_eq!(e.member_role_id, deep);
+        assert_eq!(e.max_depth, 2);
+        drop(t); // roll back the rejected transaction
+
+        // All-or-nothing: the in-limit `p -> shallow` edge was NOT written either.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let members =
+            list_role_memberships(p, RoleMembershipDirection::Members, &mut **t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(members, Vec::new());
+    }
+
+    /// The default limit (10) is enforced through the public trait path
+    /// (`PostgresBackend::add_role_members`), which reads
+    /// `CONFIG.role.max_nesting_depth` — proving the config is wired end-to-end,
+    /// not just the free fn. A 10-edge chain is allowed; the 11th edge is rejected.
+    #[sqlx::test]
+    async fn role_membership_default_depth_enforced_via_trait_path(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let mut roles = Vec::new();
+        for i in 0..=11 {
+            roles.push(create_managed_role(&state, &project_id, &format!("r{i}")).await);
+        }
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // r0 -> r1 -> ... -> r10 == 10 edges, exactly the default limit → all allowed.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        for i in 0..10 {
+            PostgresBackend::add_role_members(
+                &project_id,
+                roles[i],
+                &[roles[i + 1]],
+                t.transaction(),
+            )
+            .await
+            .unwrap();
+        }
+        t.commit().await.unwrap();
+
+        // r10 -> r11 would be the 11th edge → rejected by the default max of 10.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(
+            &project_id,
+            roles[10],
+            &[roles[11]],
+            t.transaction(),
+        )
+        .await
+        .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, roles[10]);
+        assert_eq!(e.member_role_id, roles[11]);
+        assert_eq!(e.max_depth, 10);
+    }
+
+    /// `max_depth = 0` disables role nesting entirely: any role→role edge is a
+    /// 1-edge chain (`0 + 1 + 0 > 0`), so it is rejected. This is the documented
+    /// flat-roles-only policy — `0` is a valid configured value, not clamped away.
+    #[sqlx::test]
+    async fn role_membership_depth_zero_disables_nesting(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let p = create_managed_role(&state, &project_id, "p").await;
+        let m = create_managed_role(&state, &project_id, "m").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_role_members(&project_id, p, &[m], 0, t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, p);
+        assert_eq!(e.member_role_id, m);
+        assert_eq!(e.max_depth, 0);
     }
 
     #[sqlx::test]

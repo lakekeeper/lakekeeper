@@ -12,7 +12,7 @@ use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
-    configs::table::{TableProperties, client, creds, custom, s3},
+    configs::table::{TableProperties, client, creds, custom, s3, signer},
 };
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -560,10 +560,15 @@ impl S3Profile {
             let tabular_id = stc_request.tabular_id;
             push_fsspec_fileio_with_s3v4restsigner(&mut config);
             config.insert(&s3::RemoteSigningEnabled(true));
-            config.insert(&s3::SignerUri(request_metadata.s3_signer_uri(warehouse_id)));
-            config.insert(&s3::SignerEndpoint(
-                request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id),
-            ));
+            let signer_uri = request_metadata.s3_signer_uri(warehouse_id);
+            let signer_endpoint =
+                request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id);
+            // Iceberg 1.11.0 renamed `s3.signer.*` to `signer.*`. Emit both so clients >=1.11 read
+            // the new keys (no deprecation warning) and older clients keep using the old ones.
+            config.insert(&signer::Uri(signer_uri.clone()));
+            config.insert(&signer::Endpoint(signer_endpoint.clone()));
+            config.insert(&s3::SignerUri(signer_uri));
+            config.insert(&s3::SignerEndpoint(signer_endpoint));
         }
 
         Ok(TableConfig { creds, config })
