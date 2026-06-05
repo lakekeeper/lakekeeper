@@ -645,26 +645,13 @@ pub(crate) async fn add_role_members(
     member_role_ids: &[RoleId],
     transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
 ) -> Result<AddRoleMembersResult, AddRoleMembersError> {
-    if member_role_ids.is_empty() {
-        // No-op, but still read back the current direct members so `members`
-        // always reflects the parent's post-operation state.
-        let members = list_role_memberships(
-            parent_role_id,
-            RoleMembershipDirection::Members,
-            &mut **transaction,
-        )
-        .await?;
-        return Ok(AddRoleMembersResult {
-            added: Vec::new(),
-            members,
-        });
-    }
-
     // Serialize membership writes per project via a transaction-scoped advisory
     // lock. It is auto-released on commit/rollback/error or when a dead backend
     // is reaped — no manual unlock, no leak. `lock_timeout` bounds the wait so a
     // stuck lock fails fast with a typed, retriable error instead of hanging;
     // legitimate concurrent writers just queue for a few ms and both succeed.
+    // Reset to DEFAULT after the lock+FOR SHARE window so the bound doesn't leak
+    // onto a caller's later statements when this composes into their transaction.
     sqlx::query("SET LOCAL lock_timeout = '3s'")
         .execute(&mut **transaction)
         .await
@@ -714,6 +701,15 @@ pub(crate) async fn add_role_members(
     .await
     .map_err(map_lock_timeout(project_id))?;
 
+    // End of the lock-contended window: restore the default lock_timeout for the
+    // rest of the transaction. The advisory lock serializes writers and we now hold
+    // `FOR SHARE` on the roles, so the cycle check and INSERT below don't wait on
+    // locks; bounding them is unnecessary and would otherwise leak to the caller.
+    sqlx::query("SET LOCAL lock_timeout = DEFAULT")
+        .execute(&mut **transaction)
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
     let mut provider_by_id: HashMap<Uuid, String> = HashMap::with_capacity(rows.len());
     for row in rows {
         provider_by_id.insert(row.id, row.provider_id);
@@ -731,6 +727,23 @@ pub(crate) async fn add_role_members(
         Ok(())
     };
     validate(parent_role_id)?;
+
+    // Empty input is a no-op — but only once the parent has been validated above
+    // (so a bad parent is still rejected). Read back the current direct members so
+    // `members` reflects the parent's state.
+    if member_role_ids.is_empty() {
+        let members = list_role_memberships(
+            parent_role_id,
+            RoleMembershipDirection::Members,
+            &mut **transaction,
+        )
+        .await?;
+        return Ok(AddRoleMembersResult {
+            added: Vec::new(),
+            members,
+        });
+    }
+
     for member in member_role_ids {
         validate(*member)?;
     }
@@ -1571,6 +1584,28 @@ mod tests {
             panic!("expected RoleIdNotFoundInProject, got {err:?}");
         };
         // The MISSING PARENT is the role reported as not-found.
+        assert_eq!(e.role_id, missing_parent);
+    }
+
+    #[sqlx::test]
+    async fn role_membership_add_empty_members_still_validates_parent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let missing_parent = RoleId::new_random();
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // An empty member list is a no-op, but the parent must still be validated:
+        // an unknown parent is rejected, not silently accepted.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err =
+            PostgresBackend::add_role_members(&project_id, missing_parent, &[], t.transaction())
+                .await
+                .unwrap_err();
+        let AddRoleMembersError::RoleIdNotFoundInProject(e) = err else {
+            panic!("expected RoleIdNotFoundInProject, got {err:?}");
+        };
         assert_eq!(e.role_id, missing_parent);
     }
 

@@ -11,8 +11,9 @@ use lakekeeper::{
     axum::Router,
     service::{
         Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
-        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
+        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, InternalErrorMessage, NamespaceId,
+        NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State,
+        TableId, UserId, ViewId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, Authorizer, AuthzBackendErrorOrBadRequest,
@@ -1007,12 +1008,19 @@ impl ManagesRoleAssignments for OpenFGAAuthorizer {
         let assignments = response
             .tuples
             .into_iter()
-            .filter_map(|t| {
-                let key = t.key?;
-                Some((key, t.timestamp))
-            })
             .map(
-                |(key, timestamp)| -> std::result::Result<RoleAssignmentRow, MalformedRoleAssignment> {
+                |t| -> std::result::Result<RoleAssignmentRow, MalformedRoleAssignment> {
+                    // A Read response tuple always carries a key; a missing one is a
+                    // malformed response — surface it rather than silently dropping it
+                    // (which would yield an incomplete page).
+                    let key = t.key.ok_or_else(|| {
+                        MalformedRoleAssignment::new(
+                            "authorization backend returned a tuple without a key",
+                            InternalErrorMessage(
+                                "OpenFGA Read response contained a tuple with no key".to_string(),
+                            ),
+                        )
+                    })?;
                     let (subject, role_id) = match &filter {
                         RoleAssignmentFilter::ByRole(role_id) => {
                             (parse_role_subject(&key.user)?, *role_id)
@@ -1024,7 +1032,7 @@ impl ManagesRoleAssignments for OpenFGAAuthorizer {
                     // OpenFGA tuples carry a protobuf well-known timestamp recording when
                     // the tuple was written. Valid timestamps have `nanos` in [0, 1e9), so a
                     // negative value is malformed; clamp it to 0 rather than panic.
-                    let created_at = timestamp.and_then(|ts| {
+                    let created_at = t.timestamp.and_then(|ts| {
                         chrono::DateTime::from_timestamp(
                             ts.seconds,
                             u32::try_from(ts.nanos).unwrap_or(0),
