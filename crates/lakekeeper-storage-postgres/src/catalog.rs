@@ -21,25 +21,27 @@ use lakekeeper::{
         },
     },
     service::{
-        ArcProjectId, CatalogBackendError, CatalogCreateNamespaceError, CatalogCreateRoleRequest,
-        CatalogCreateWarehouseError, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
-        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
-        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
-        CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
-        DropTabularError, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListGenericTablesError, ListNamespacesQuery,
-        ListRoleMembersResult, ListRolesError, ListRolesResponse, ListTabularsError,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
-        NamespaceWithParent, ProjectId, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        AddRoleMembersError, AddRoleMembersResult, ArcProjectId, CatalogBackendError,
+        CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError,
+        CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError,
+        CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListNamespacesResponse,
+        CatalogListRolesByIdFilter, CatalogListWarehousesError, CatalogNamespaceDropError,
+        CatalogRenameWarehouseError, CatalogRoleForAssignment, CatalogSearchTabularResponse,
+        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
+        CatalogUserRoleAssignmentUser, CatalogView, ClearTabularDeletedAtError,
+        CommitTableTransactionError, CommitViewError, CreateGenericTableError,
+        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
+        CreateViewError, DropGenericTableError, DropTabularError, GenericTableCreation,
+        GenericTableId, GenericTableInfo, GenericTableListEntry, GetProjectResponse,
+        GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError,
+        ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
+        ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult, LoadGenericTableError,
+        LoadTableError, LoadTableResponse, LoadViewError, MarkTabularAsDeletedError,
+        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RemoveRoleMembersError,
+        RemoveRoleMembersResult, RenameTabularError, ResolveTasksError, ResolvedTask,
+        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMembershipDirection,
+        RoleMembershipEntry, RoleProviderId, SearchRoleResponse, SearchRolesError,
+        SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
         SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
         SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
         SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
@@ -453,6 +455,54 @@ impl CatalogStore for super::PostgresBackend {
             project_id,
             role_ident,
             &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn add_role_members_impl<'a>(
+        project_id: &ArcProjectId,
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddRoleMembersResult, AddRoleMembersError> {
+        super::role_assignment::add_role_members(
+            project_id,
+            parent_role_id,
+            member_role_ids,
+            transaction,
+        )
+        .await
+    }
+
+    async fn remove_role_members_impl<'a>(
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError> {
+        super::role_assignment::remove_role_members(parent_role_id, member_role_ids, transaction)
+            .await
+    }
+
+    async fn list_role_memberships_impl(
+        role_id: RoleId,
+        direction: RoleMembershipDirection,
+        catalog_state: Self::State,
+    ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError> {
+        super::role_assignment::list_role_memberships(
+            role_id,
+            direction,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn affected_users_for_membership_edge_impl<'a>(
+        member_role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<UserId>, CatalogBackendError> {
+        super::role_assignment::affected_users_for_membership_edge(
+            member_role_id,
+            &mut **transaction,
         )
         .await
     }

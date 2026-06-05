@@ -13,7 +13,10 @@ use super::{
     State, TableId, ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
-    api::{iceberg::v1::Result, management::v1::check::UserOrRole as AuthzUserOrRole},
+    api::{
+        iceberg::v1::{PaginationQuery, Result},
+        management::v1::check::UserOrRole as AuthzUserOrRole,
+    },
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, ArcRole, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
@@ -135,7 +138,7 @@ pub enum UserOrRole {
 /// safe to embed in audit events without forcing a Role lookup. Both the
 /// service-level [`UserOrRole`] and API-level `UserOrRole` types convert into
 /// it via `From` impls.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum UserOrRoleId {
     User(UserId),
     Role(RoleId),
@@ -148,6 +151,80 @@ impl From<&UserOrRole> for UserOrRoleId {
             UserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role().id()),
         }
     }
+}
+
+/// Filter for listing role assignments by subject or by target role.
+#[derive(Debug, Clone)]
+pub enum RoleAssignmentFilter {
+    /// All assignments of the given subject (a user or a member role).
+    ByAssignee(UserOrRoleId),
+    /// All assignees (users and member roles) of the given role.
+    ByRole(RoleId),
+}
+
+/// One row of a role-assignment listing. `subject` is a user or a member role.
+#[derive(Debug, Clone)]
+pub struct RoleAssignmentRow {
+    pub subject: UserOrRoleId,
+    pub role_id: RoleId,
+    /// When the assignment was created, if the source can supply it.
+    /// `None` means the backend did not return a usable creation timestamp —
+    /// NOT that the backend has no notion of time. (OpenFGA, for instance, does
+    /// populate this from the tuple's write timestamp; `None` there indicates a
+    /// missing/unparseable timestamp.)
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// One page of a role-assignment listing, with an opaque continuation token.
+#[derive(Debug, Clone)]
+pub struct ListRoleAssignmentsResultPage {
+    pub assignments: Vec<RoleAssignmentRow>,
+    pub next_page_token: Option<String>,
+}
+
+/// Authorizers that are the source of truth for role assignments (e.g. OpenFGA)
+/// implement this and expose it via [`Authorizer::role_assignments`]. When an
+/// authorizer does not manage assignments, Lakekeeper persists them to the
+/// catalog tables instead and this facet is absent.
+///
+/// Cycle prevention is a catalog-layer concern (see `add_role_members`), not the
+/// authorizer's: OpenFGA tolerates cyclic `role#assignee` tuples and resolves
+/// them safely, so this facet only persists tuples.
+#[async_trait::async_trait]
+pub trait ManagesRoleAssignments: Send + Sync {
+    /// Persist `(subject, role)` assignments. Idempotent. Subject may be a user or a member role.
+    ///
+    /// OpenFGA only fails here with a backend-unavailable error. Authorizers that
+    /// enforce assignment integrity may also reject an assignment that would create
+    /// a role-membership cycle — see [`AddRoleAssignmentsError`].
+    async fn add_role_assignments(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        assignments: &[(UserOrRole, RoleId)],
+    ) -> std::result::Result<(), AddRoleAssignmentsError>;
+
+    /// Remove `(subject, role)` assignments. Idempotent. Subject may be a user or a member role.
+    ///
+    /// Removing an edge can never create a cycle, so this is backend-only; the only
+    /// failure mode is the backend being unavailable.
+    async fn remove_role_assignments(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        assignments: &[(UserOrRole, RoleId)],
+    ) -> std::result::Result<(), AuthorizationBackendUnavailable>;
+
+    /// List role assignments held in the authorizer's store. Fails if the backend
+    /// is unavailable (503) or returns a tuple that cannot be parsed (500) — the two
+    /// are distinct; see [`ListRoleAssignmentsError`].
+    async fn list_role_assignments(
+        &self,
+        metadata: &RequestMetadata,
+        project_id: ArcProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+    ) -> std::result::Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError>;
 }
 
 pub trait CatalogAction
@@ -1169,6 +1246,12 @@ where
     /// Hook that is called when a role is deleted.
     /// This is used to clean up permissions for the role.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
+
+    /// Returns the role-assignment management facet if this authorizer is the
+    /// source of truth for assignments; `None` means assignments live in the catalog.
+    fn role_assignments(&self) -> Option<&dyn ManagesRoleAssignments> {
+        None
+    }
 
     /// Hook that is called when a new project is created.
     /// This is used to set up the initial permissions for the project.

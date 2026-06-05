@@ -7,8 +7,8 @@ use crate::{
     ProjectId,
     api::management::v1::user::{UserLastUpdatedWith, UserType},
     service::{
-        ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId, RoleIdent,
-        RoleNameAlreadyExists, RoleProviderId, Transaction,
+        ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId,
+        RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleProviderId, Transaction,
         authn::{UserId, UserIdRef},
         define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
@@ -425,6 +425,207 @@ define_transparent_error! {
     ]
 }
 
+/// Adding the requested role->role edge would create a cycle in the
+/// `role_membership` graph: `member_role_id` is already a transitive ancestor
+/// of `parent_role_id` (or the two ids are equal).
+#[derive(Debug, PartialEq)]
+pub struct RoleMembershipCycle {
+    pub parent_role_id: RoleId,
+    pub member_role_id: RoleId,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleMembershipCycle);
+impl RoleMembershipCycle {
+    #[must_use]
+    pub fn new(parent_role_id: RoleId, member_role_id: RoleId) -> Self {
+        Self {
+            parent_role_id,
+            member_role_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for RoleMembershipCycle {}
+impl std::fmt::Display for RoleMembershipCycle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Adding role '{}' as a member of role '{}' would create a cycle in the role membership graph",
+            self.member_role_id, self.parent_role_id
+        )
+    }
+}
+impl From<RoleMembershipCycle> for ErrorModel {
+    fn from(err: RoleMembershipCycle) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleMembershipCycle")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A role endpoint of a requested membership edge is not catalog-managed.
+///
+/// Only roles owned by the catalog itself (the `lakekeeper` and `system`
+/// providers) may participate in `role_membership` edges. Roles owned by an
+/// external provider (LDAP, SCIM, …) have their membership driven by that
+/// provider and cannot be wired together via this API.
+#[derive(Debug, PartialEq)]
+pub struct RoleNotManuallyAssignable {
+    pub role_id: RoleId,
+    pub provider_id: RoleProviderId,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleNotManuallyAssignable);
+impl RoleNotManuallyAssignable {
+    #[must_use]
+    pub fn new(role_id: RoleId, provider_id: RoleProviderId) -> Self {
+        Self {
+            role_id,
+            provider_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for RoleNotManuallyAssignable {}
+impl std::fmt::Display for RoleNotManuallyAssignable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Role '{role_id}' is managed by provider '{provider_id}' and is not catalog-managed; only lakekeeper/system roles can participate in role membership edges",
+            role_id = self.role_id,
+            provider_id = self.provider_id
+        )
+    }
+}
+impl From<RoleNotManuallyAssignable> for ErrorModel {
+    fn from(err: RoleNotManuallyAssignable) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleNotManuallyAssignable")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// Returned when the per-project role-membership lock could not be acquired
+/// within the timeout, i.e. a concurrent membership change for the same project
+/// is in progress. The caller should retry.
+///
+/// Membership writes serialize per project via a transaction-scoped advisory
+/// lock so concurrent edge additions cannot race a cycle into the graph.
+#[derive(Debug, PartialEq)]
+pub struct RoleMembershipLockTimeout {
+    pub project_id: ArcProjectId,
+    pub stack: Vec<String>,
+}
+impl_error_stack_methods!(RoleMembershipLockTimeout);
+impl RoleMembershipLockTimeout {
+    #[must_use]
+    pub fn new(project_id: ArcProjectId) -> Self {
+        Self {
+            project_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl std::error::Error for RoleMembershipLockTimeout {}
+impl std::fmt::Display for RoleMembershipLockTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Could not acquire the role-membership lock for project '{project_id}'; a concurrent membership change is in progress — retry",
+            project_id = self.project_id
+        )
+    }
+}
+impl From<RoleMembershipLockTimeout> for ErrorModel {
+    fn from(err: RoleMembershipLockTimeout) -> Self {
+        ErrorModel::builder()
+            .r#type("RoleMembershipLockTimeout")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A role reachable through a `role_membership` edge, with enough identity to
+/// determine whether it is manually assignable via the management API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleMembershipEntry {
+    pub role_id: RoleId,
+    pub role_ident: Arc<RoleIdent>,
+    /// When the membership edge to this role was created. Non-optional: the
+    /// `role_membership.created_at` column is `NOT NULL`.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+impl RoleMembershipEntry {
+    /// True if this role is catalog-managed (lakekeeper/system) and thus
+    /// manually assignable via the management API.
+    #[must_use]
+    pub fn manually_assignable(&self) -> bool {
+        self.role_ident.is_lakekeeper() || self.role_ident.is_system()
+    }
+}
+
+/// Which direction of the `role_membership` graph to walk from a given role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleMembershipDirection {
+    /// Direct (depth-1) member roles of the given role (it is the parent).
+    Members,
+    /// Direct (depth-1) parent roles of the given role (it is the member).
+    Parents,
+}
+
+/// Outcome of adding role->role edges.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddRoleMembersResult {
+    /// Member roles actually newly added. Adds are idempotent, so members that
+    /// were already present are excluded — empty when every requested edge
+    /// already existed. Drives cache invalidation and events.
+    pub added: Vec<RoleId>,
+    /// The parent's direct members after the operation, read back in the same
+    /// transaction (read-your-writes; a follow-up query could hit a lagging read
+    /// replica). For rendering the updated state.
+    pub members: Vec<RoleMembershipEntry>,
+}
+
+/// Outcome of removing role->role edges.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemoveRoleMembersResult {
+    /// Member roles actually removed. Removes are idempotent, so members that
+    /// were not present are excluded — empty when no requested edge existed.
+    /// Drives cache invalidation and events.
+    pub removed: Vec<RoleId>,
+    /// The parent's direct members after the operation, read back in the same
+    /// transaction (see [`AddRoleMembersResult::members`]).
+    pub members: Vec<RoleMembershipEntry>,
+}
+
+define_transparent_error! {
+    pub enum AddRoleMembersError,
+    stack_message: "Error adding role members",
+    variants: [
+        CatalogBackendError,
+        RoleIdNotFoundInProject,
+        RoleNotManuallyAssignable,
+        RoleMembershipCycle,
+        RoleMembershipLockTimeout
+    ]
+}
+
+define_transparent_error! {
+    pub enum RemoveRoleMembersError,
+    stack_message: "Error removing role members",
+    variants: [
+        CatalogBackendError
+    ]
+}
+
 // ============================================================================
 // Trait
 // ============================================================================
@@ -665,6 +866,120 @@ where
     }
 
     // -----------------------------------------------------------------------
+    // WRITE: role->role membership graph
+    // -----------------------------------------------------------------------
+    //
+    // Same split as the sync APIs above: `add_role_members`/`remove_role_members`
+    // compose into a caller's transaction; `*_and_invalidate` own their transaction
+    // and reconcile caches. The composing wrappers are thin because membership
+    // validation is DB-bound and lives in `_impl`.
+
+    /// Add role->role edges: `parent_role_id` gains every role in
+    /// `member_role_ids` as a direct member. Duplicate entries in
+    /// `member_role_ids` are deduplicated. Idempotent — edges that already
+    /// exist are left untouched.
+    ///
+    /// Both endpoints of every edge must be **catalog-managed** (provider
+    /// `lakekeeper` or `system`) and belong to `project_id`. A member (or the
+    /// parent) that is missing or lives in a different project yields
+    /// [`RoleIdNotFoundInProject`]; an endpoint owned by an external provider
+    /// yields [`RoleNotManuallyAssignable`].
+    ///
+    /// Cycles are rejected: if `member` is already a transitive ancestor of
+    /// `parent` (or `member == parent`), the call returns
+    /// [`RoleMembershipCycle`] and no edges are written.
+    async fn add_role_members<'a>(
+        project_id: &ArcProjectId,
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddRoleMembersResult, AddRoleMembersError> {
+        Self::add_role_members_impl(project_id, parent_role_id, member_role_ids, transaction).await
+    }
+
+    /// Remove role->role edges: drop every `(parent_role_id, member)` edge for
+    /// `member` in `member_role_ids`. Idempotent — absent edges are a no-op.
+    async fn remove_role_members<'a>(
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError> {
+        Self::remove_role_members_impl(parent_role_id, member_role_ids, transaction).await
+    }
+
+    /// Standalone counterpart to [`add_role_members`] that owns its transaction and
+    /// invalidates the `USER_ASSIGNMENTS_CACHE` for affected users.
+    ///
+    /// An edge change only alters *transitive* effective roles, never direct
+    /// assignments, so only `USER_ASSIGNMENTS_CACHE` is invalidated (for users
+    /// assigned to `member` or its descendants) — `ROLE_MEMBERS_CACHE` is not.
+    async fn add_role_members_and_invalidate(
+        project_id: &ArcProjectId,
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> crate::api::Result<AddRoleMembersResult> {
+        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+        let result = Self::add_role_members_impl(
+            project_id,
+            parent_role_id,
+            member_role_ids,
+            t.transaction(),
+        )
+        .await?;
+
+        // Compute affected users on the same transaction, before commit: a read
+        // failure then rolls the edge change back rather than leaving it committed
+        // with stale caches that an (idempotent, empty-delta) retry won't refresh.
+        let affected = membership_edge_affected_users::<Self>(&result.added, &mut t)
+            .await
+            .map_err(ErrorModel::from)?;
+        t.commit().await?;
+
+        // Post-commit eviction is infallible (in-memory). A crash in the
+        // commit→evict window leaves affected entries stale until the
+        // `USER_ASSIGNMENTS_CACHE` TTL — stale-permissive for removes, but bounded
+        // and acceptable for this cache.
+        role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
+        Ok(result)
+    }
+
+    /// Standalone counterpart to [`remove_role_members`] that owns its transaction
+    /// and invalidates the `USER_ASSIGNMENTS_CACHE`. See
+    /// [`add_role_members_and_invalidate`] for the cache rationale.
+    async fn remove_role_members_and_invalidate(
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> crate::api::Result<RemoveRoleMembersResult> {
+        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+        let result =
+            Self::remove_role_members_impl(parent_role_id, member_role_ids, t.transaction())
+                .await?;
+
+        // Computed before commit; see `add_role_members_and_invalidate`.
+        let affected = membership_edge_affected_users::<Self>(&result.removed, &mut t)
+            .await
+            .map_err(ErrorModel::from)?;
+        t.commit().await?;
+
+        // Infallible post-commit eviction; see `add_role_members_and_invalidate`.
+        role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
+        Ok(result)
+    }
+
+    /// Direct (depth-1) adjacent roles of `role_id` in the membership graph:
+    /// its member roles ([`RoleMembershipDirection::Members`]) or its parent
+    /// roles ([`RoleMembershipDirection::Parents`]).
+    async fn list_role_memberships(
+        role_id: RoleId,
+        direction: RoleMembershipDirection,
+        catalog_state: Self::State,
+    ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError> {
+        Self::list_role_memberships_impl(role_id, direction, catalog_state).await
+    }
+
+    // -----------------------------------------------------------------------
     // READ: three lookup paths
     // -----------------------------------------------------------------------
 
@@ -772,3 +1087,22 @@ where
 }
 
 impl<T> CatalogRoleAssignmentOps for T where T: CatalogStore {}
+
+/// Users whose effective roles a `role_membership` edge change on `member_role_ids`
+/// makes stale: those assigned to a member or any role in its descendant closure.
+///
+/// Runs on the caller's write transaction. The result is identical before and after
+/// the edge mutation (the changed edge is never on the descendant walk — `member`
+/// only appears as `member_role_id`), so computing it pre-commit is sound and keeps
+/// invalidation atomic with the edge change.
+async fn membership_edge_affected_users<S: CatalogStore>(
+    member_role_ids: &[RoleId],
+    t: &mut S::Transaction,
+) -> Result<Vec<UserId>, CatalogBackendError> {
+    let mut affected: HashSet<UserId> = HashSet::new();
+    for member in member_role_ids {
+        let users = S::affected_users_for_membership_edge_impl(*member, t.transaction()).await?;
+        affected.extend(users);
+    }
+    Ok(affected.into_iter().collect())
+}

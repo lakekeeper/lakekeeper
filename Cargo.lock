@@ -3763,6 +3763,7 @@ name = "lakekeeper-authz-openfga"
 version = "0.12.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "fastrand 2.3.0",
  "figment",
  "futures",

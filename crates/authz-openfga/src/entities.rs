@@ -5,30 +5,30 @@ use lakekeeper::{
     service::{
         GenericTableId, NamespaceId, ProjectId, RoleId, ServerId, TableId, ViewId, WarehouseId,
         authn::{Actor, UserId},
-        authz::{RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole},
+        authz::{
+            RoleAssignee as AuthzRoleAssignee, UserOrRole as AuthzUserOrRole,
+            UserOrRoleId as AuthzUserOrRoleId,
+        },
     },
 };
 
-use crate::{
-    FgaType,
-    error::{OpenFGAError, OpenFGAResult},
-};
+use crate::{FgaType, error::ParseOpenFgaEntityError};
 
 pub(crate) trait ParseOpenFgaEntity: Sized {
-    fn parse_from_openfga(s: &str) -> OpenFGAResult<Self> {
+    fn parse_from_openfga(s: &str) -> Result<Self, ParseOpenFgaEntityError> {
         let parts = s.split(':').collect::<Vec<&str>>();
 
         if parts.len() != 2 {
-            return Err(OpenFGAError::InvalidEntity(s.to_string()));
+            return Err(ParseOpenFgaEntityError::InvalidEntity(s.to_string()));
         }
 
-        let r#type =
-            FgaType::from_str(parts[0]).map_err(|e| OpenFGAError::UnknownType(e.to_string()))?;
+        let r#type = FgaType::from_str(parts[0])
+            .map_err(|e| ParseOpenFgaEntityError::UnknownType(e.to_string()))?;
 
         Self::try_from_openfga_id(r#type, parts[1])
     }
 
-    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self>;
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> Result<Self, ParseOpenFgaEntityError>;
 }
 
 pub(crate) trait OpenFgaEntity: Sized {
@@ -84,9 +84,9 @@ impl OpenFgaEntity for AuthzUserOrRole {
 }
 
 impl ParseOpenFgaEntity for RoleId {
-    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> Result<Self, ParseOpenFgaEntityError> {
         if r#type != FgaType::Role {
-            return Err(OpenFGAError::unexpected_entity(
+            return Err(ParseOpenFgaEntityError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
                 format!("Expected role type, but got {type}"),
@@ -94,15 +94,19 @@ impl ParseOpenFgaEntity for RoleId {
         }
 
         RoleId::from_str_or_bad_request(id).map_err(|e| {
-            OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string(), e.message)
+            ParseOpenFgaEntityError::unexpected_entity(
+                vec![FgaType::Role],
+                id.to_string(),
+                e.message,
+            )
         })
     }
 }
 
 impl ParseOpenFgaEntity for RoleAssignee {
-    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> Result<Self, ParseOpenFgaEntityError> {
         if r#type != FgaType::Role {
-            return Err(OpenFGAError::unexpected_entity(
+            return Err(ParseOpenFgaEntityError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
                 format!("Expected role type, but got {type}"),
@@ -110,7 +114,7 @@ impl ParseOpenFgaEntity for RoleAssignee {
         }
 
         if !id.ends_with("#assignee") {
-            return Err(OpenFGAError::unexpected_entity(
+            return Err(ParseOpenFgaEntityError::unexpected_entity(
                 vec![FgaType::Role],
                 id.to_string(),
                 "Expected role assignee type, but got a role".to_string(),
@@ -121,9 +125,31 @@ impl ParseOpenFgaEntity for RoleAssignee {
 
         Ok(RoleAssignee::from_role(
             RoleId::from_str_or_bad_request(id).map_err(|e| {
-                OpenFGAError::unexpected_entity(vec![FgaType::Role], id.to_string(), e.message)
+                ParseOpenFgaEntityError::unexpected_entity(
+                    vec![FgaType::Role],
+                    id.to_string(),
+                    e.message,
+                )
             })?,
         ))
+    }
+}
+
+impl OpenFgaEntity for AuthzUserOrRoleId {
+    fn to_openfga(&self) -> String {
+        match self {
+            AuthzUserOrRoleId::User(user) => user.to_openfga(),
+            // A role acting as an assignee is referenced via its `#assignee` userset,
+            // matching how `RoleAssignee`/`AuthzUserOrRole` serialize role subjects.
+            AuthzUserOrRoleId::Role(role_id) => format!("{}#assignee", role_id.to_openfga()),
+        }
+    }
+
+    fn openfga_type(&self) -> FgaType {
+        match self {
+            AuthzUserOrRoleId::User(_) => FgaType::User,
+            AuthzUserOrRoleId::Role(_) => FgaType::Role,
+        }
     }
 }
 
@@ -138,10 +164,10 @@ impl OpenFgaEntity for UserId {
 }
 
 impl ParseOpenFgaEntity for UserId {
-    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> Result<Self, ParseOpenFgaEntityError> {
         let id = urlencoding::decode(id)
             .map_err(|e| {
-                OpenFGAError::unexpected_entity(
+                ParseOpenFgaEntityError::unexpected_entity(
                     vec![FgaType::User],
                     id.to_string(),
                     format!("Failed to decode user ID: {e}"),
@@ -149,15 +175,16 @@ impl ParseOpenFgaEntity for UserId {
             })?
             .to_string();
         if r#type != FgaType::User {
-            return Err(OpenFGAError::unexpected_entity(
+            return Err(ParseOpenFgaEntityError::unexpected_entity(
                 vec![FgaType::User],
                 id.clone(),
                 format!("Expected user type, but got {type}"),
             ));
         }
 
-        UserId::try_from(id.as_str())
-            .map_err(|e| OpenFGAError::unexpected_entity(vec![FgaType::User], id, e.message))
+        UserId::try_from(id.as_str()).map_err(|e| {
+            ParseOpenFgaEntityError::unexpected_entity(vec![FgaType::User], id, e.message)
+        })
     }
 }
 
@@ -213,9 +240,9 @@ impl OpenFgaEntity for &ProjectId {
 }
 
 impl ParseOpenFgaEntity for ProjectId {
-    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> Result<Self, ParseOpenFgaEntityError> {
         if r#type != FgaType::Project {
-            return Err(OpenFGAError::unexpected_entity(
+            return Err(ParseOpenFgaEntityError::unexpected_entity(
                 vec![FgaType::Project],
                 id.to_string(),
                 format!("Expected project type, but got {type}"),
@@ -223,7 +250,11 @@ impl ParseOpenFgaEntity for ProjectId {
         }
 
         ProjectId::from_str(id).map_err(|e| {
-            OpenFGAError::unexpected_entity(vec![FgaType::Project], id.to_string(), e.message)
+            ParseOpenFgaEntityError::unexpected_entity(
+                vec![FgaType::Project],
+                id.to_string(),
+                e.message,
+            )
         })
     }
 }

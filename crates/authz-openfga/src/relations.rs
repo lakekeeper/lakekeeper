@@ -15,13 +15,16 @@ use strum::{IntoEnumIterator, IntoStaticStr};
 use strum_macros::EnumIter;
 
 use crate::{
-    FgaType, OpenFGAError, OpenFGAResult,
+    FgaType, ParseOpenFgaEntityError,
     entities::{OpenFgaEntity, ParseOpenFgaEntity},
 };
 
 pub(super) trait Assignment: Sized {
     type Relation: ReducedRelation + GrantableRelation + IntoEnumIterator;
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self>;
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError>;
 
     fn openfga_user(&self) -> String;
 
@@ -46,13 +49,13 @@ pub(super) trait GrantableRelation: ReducedRelation {
 }
 
 impl ParseOpenFgaEntity for UserOrRole {
-    fn try_from_openfga_id(r#type: FgaType, id: &str) -> OpenFGAResult<Self> {
+    fn try_from_openfga_id(r#type: FgaType, id: &str) -> Result<Self, ParseOpenFgaEntityError> {
         match r#type {
             FgaType::User => Ok(UserOrRole::User(UserId::try_from_openfga_id(r#type, id)?)),
             FgaType::Role => Ok(UserOrRole::Role(RoleAssignee::try_from_openfga_id(
                 r#type, id,
             )?)),
-            _ => Err(OpenFGAError::UnexpectedEntity {
+            _ => Err(ParseOpenFgaEntityError::UnexpectedEntity {
                 r#type: vec![FgaType::User],
                 value: id.to_string(),
                 reason: format!("Expected user or role type, but got {type}"),
@@ -142,7 +145,10 @@ impl GrantableRelation for APIRoleRelation {
 impl Assignment for RoleAssignment {
     type Relation = APIRoleRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APIRoleRelation::Assignee => {
                 UserOrRole::parse_from_openfga(user).map(RoleAssignment::Assignee)
@@ -309,7 +315,10 @@ impl GrantableRelation for APIServerRelation {
 impl Assignment for ServerAssignment {
     type Relation = APIServerRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APIServerRelation::Admin => {
                 UserOrRole::parse_from_openfga(user).map(ServerAssignment::Admin)
@@ -524,7 +533,10 @@ impl GrantableRelation for APIProjectRelation {
 impl Assignment for ProjectAssignment {
     type Relation = APIProjectRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APIProjectRelation::ProjectAdmin => {
                 UserOrRole::parse_from_openfga(user).map(ProjectAssignment::ProjectAdmin)
@@ -825,7 +837,10 @@ impl GrantableRelation for APIWarehouseRelation {
 impl Assignment for WarehouseAssignment {
     type Relation = APIWarehouseRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APIWarehouseRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(WarehouseAssignment::Ownership)
@@ -1153,7 +1168,10 @@ impl GrantableRelation for APINamespaceRelation {
 impl Assignment for NamespaceAssignment {
     type Relation = APINamespaceRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APINamespaceRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(NamespaceAssignment::Ownership)
@@ -1426,7 +1444,10 @@ impl GrantableRelation for APITableRelation {
 impl Assignment for TableAssignment {
     type Relation = APITableRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APITableRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(TableAssignment::Ownership)
@@ -1687,7 +1708,10 @@ impl GrantableRelation for APIViewRelation {
 impl Assignment for ViewAssignment {
     type Relation = APIViewRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APIViewRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(ViewAssignment::Ownership)
@@ -1978,7 +2002,10 @@ impl GrantableRelation for APIGenericTableRelation {
 impl Assignment for GenericTableAssignment {
     type Relation = APIGenericTableRelation;
 
-    fn try_from_user(user: &str, relation: &Self::Relation) -> OpenFGAResult<Self> {
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
         match relation {
             APIGenericTableRelation::Ownership => {
                 UserOrRole::parse_from_openfga(user).map(GenericTableAssignment::Ownership)

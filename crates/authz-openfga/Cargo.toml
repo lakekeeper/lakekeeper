@@ -17,6 +17,7 @@ open-api = ["dep:utoipa", "lakekeeper/open-api"]
 
 [dependencies]
 anyhow = { workspace = true }
+chrono = { workspace = true }
 figment = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }

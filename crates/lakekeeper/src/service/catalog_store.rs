@@ -675,6 +675,35 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
+    async fn add_role_members_impl<'a>(
+        project_id: &ArcProjectId,
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddRoleMembersResult, AddRoleMembersError>;
+
+    async fn remove_role_members_impl<'a>(
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError>;
+
+    async fn list_role_memberships_impl(
+        role_id: RoleId,
+        direction: RoleMembershipDirection,
+        catalog_state: Self::State,
+    ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError>;
+
+    /// Users whose EFFECTIVE roles change when a `role_membership` edge with member
+    /// endpoint `member_role_id` is added or removed: every user assigned to
+    /// `member_role_id` or to any role in its descendant closure. Runs on the
+    /// caller's transaction (see `membership_edge_affected_users` for why pre-commit
+    /// is sound).
+    async fn affected_users_for_membership_edge_impl<'a>(
+        member_role_id: RoleId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<UserId>, CatalogBackendError>;
+
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
         user_id: &UserId,

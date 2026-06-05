@@ -1,12 +1,18 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use lakekeeper::{
     ProjectId,
     service::{
-        ArcRoleIdent, AssignedRole, AssignedUser, CatalogBackendError, CatalogRoleForAssignment,
-        CatalogUserRoleAssignmentUser, DatabaseIntegrityError, ListRoleMembersResult,
-        ListUserRoleAssignmentsResult, RoleId, RoleIdent, RoleNameAlreadyExists, RoleProviderId,
-        SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
+        AddRoleMembersError, AddRoleMembersResult, ArcProjectId, ArcRoleIdent, AssignedRole,
+        AssignedUser, CatalogBackendError, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
+        DatabaseIntegrityError, ListRoleMembersResult, ListUserRoleAssignmentsResult,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RoleId, RoleIdNotFoundInProject,
+        RoleIdent, RoleMembershipCycle, RoleMembershipDirection, RoleMembershipEntry,
+        RoleMembershipLockTimeout, RoleNameAlreadyExists, RoleNotManuallyAssignable,
+        RoleProviderId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
         SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles, UserProviderSyncInfo,
         authn::UserId,
     },
@@ -434,7 +440,14 @@ pub(crate) async fn list_role_assignments_for_user<
 ) -> Result<ListUserRoleAssignmentsResult, CatalogBackendError> {
     let rows = sqlx::query!(
         r#"
-        WITH assigned AS (
+        WITH RECURSIVE effective_roles(role_id) AS (
+                SELECT ur.role_id FROM role_assignment ur WHERE ur.user_id = $1
+            UNION
+                SELECT rm.parent_role_id
+                FROM role_membership rm
+                JOIN effective_roles er ON rm.member_role_id = er.role_id
+        ) CYCLE role_id SET is_cycle USING path,
+        assigned AS (
             SELECT
                 r.id          AS role_id,
                 r.source_id,
@@ -443,13 +456,12 @@ pub(crate) async fn list_role_assignments_for_user<
                 s.project_id  AS sync_project_id,
                 s.provider_id AS sync_provider_id,
                 s.synced_at
-            FROM role_assignment ur
-            JOIN "role" r ON r.id = ur.role_id
+            FROM effective_roles er
+            JOIN "role" r ON r.id = er.role_id
             LEFT JOIN role_assignment_sync s
-                ON  s.user_id     = ur.user_id
+                ON  s.user_id     = $1
                 AND s.provider_id = r.provider_id
                 AND s.project_id  = r.project_id
-            WHERE ur.user_id = $1
         )
         SELECT
             role_id          AS "role_id?: Uuid",
@@ -598,6 +610,345 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
     rows_to_list_role_members_result(rows).map_err(CatalogBackendError::new_unexpected)
 }
 
+/// Seed for the per-project role-membership advisory-lock key. The lock key is
+/// `hashtextextended(project_id, SEED)` — a 64-bit, seeded hash. The seed keeps
+/// this key from colliding with the migrator's advisory lock (a different int8
+/// key) or any other future advisory-lock purpose, and using the 64-bit
+/// `hashtextextended` (rather than 32-bit `hashtext`) makes cross-project
+/// false-sharing negligible. (`rolembrs` in ASCII.)
+const ROLE_MEMBERSHIP_LOCK_SEED: i64 = 0x726F_6C65_6D62_7273;
+
+/// Map a Postgres error to [`AddRoleMembersError`]: a `lock_timeout` expiry
+/// (SQLSTATE `55P03`) becomes the retriable [`RoleMembershipLockTimeout`], anything
+/// else a backend error. Used for the lock-bounded statements (advisory lock, `FOR SHARE`).
+fn map_lock_timeout(project_id: &ArcProjectId) -> impl FnOnce(sqlx::Error) -> AddRoleMembersError {
+    let project_id = project_id.clone();
+    move |e| match e.as_database_error().and_then(|db| db.code()) {
+        // 55P03 = lock_not_available: the `lock_timeout` elapsed waiting on a lock.
+        Some(code) if code.as_ref() == "55P03" => RoleMembershipLockTimeout::new(project_id).into(),
+        _ => super::dbutils::DBErrorHandler::into_catalog_backend_error(e).into(),
+    }
+}
+
+// ─── add_role_members ─────────────────────────────────────────────────────────
+//
+// 0. Take a per-project advisory lock so concurrent adds serialize (otherwise two
+//    adds with different parents — e.g. (A,B) and (B,A) — could each pass their
+//    cycle check against pre-insert state and together close a cycle).
+// 1. Validate parent + every member: exists, in `project_id`, catalog-managed.
+// 2. Reject cycles per member (member already a transitive ancestor of parent,
+//    or member == parent).
+// 3. Idempotently insert the edges.
+pub(crate) async fn add_role_members(
+    project_id: &ArcProjectId,
+    parent_role_id: RoleId,
+    member_role_ids: &[RoleId],
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<AddRoleMembersResult, AddRoleMembersError> {
+    if member_role_ids.is_empty() {
+        // No-op, but still read back the current direct members so `members`
+        // always reflects the parent's post-operation state.
+        let members = list_role_memberships(
+            parent_role_id,
+            RoleMembershipDirection::Members,
+            &mut **transaction,
+        )
+        .await?;
+        return Ok(AddRoleMembersResult {
+            added: Vec::new(),
+            members,
+        });
+    }
+
+    // Serialize membership writes per project via a transaction-scoped advisory
+    // lock. It is auto-released on commit/rollback/error or when a dead backend
+    // is reaped — no manual unlock, no leak. `lock_timeout` bounds the wait so a
+    // stuck lock fails fast with a typed, retriable error instead of hanging;
+    // legitimate concurrent writers just queue for a few ms and both succeed.
+    sqlx::query("SET LOCAL lock_timeout = '3s'")
+        .execute(&mut **transaction)
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+        .bind(project_id.as_str())
+        .bind(ROLE_MEMBERSHIP_LOCK_SEED)
+        .execute(&mut **transaction)
+        .await
+        .map_err(map_lock_timeout(project_id))?;
+
+    // Deduplicate members up front: duplicates would only trigger redundant
+    // per-member recursive cycle queries and the insert is idempotent anyway.
+    // Order is irrelevant for the validation/cycle/insert work below.
+    let member_role_ids: Vec<RoleId> = {
+        let mut seen: HashSet<Uuid> = HashSet::with_capacity(member_role_ids.len());
+        member_role_ids
+            .iter()
+            .filter(|r| seen.insert(***r))
+            .copied()
+            .collect()
+    };
+    let member_role_ids: &[RoleId] = &member_role_ids;
+
+    // Fetch provider_id for the parent and every distinct member that exists in
+    // `project_id`. Rows missing from the result are either non-existent or
+    // belong to a different project — both map to RoleIdNotFoundInProject.
+    let mut wanted: HashSet<Uuid> = member_role_ids.iter().map(|r| **r).collect();
+    wanted.insert(*parent_role_id);
+    let wanted_ids: Vec<Uuid> = wanted.into_iter().collect();
+
+    // `FOR SHARE` locks the role rows so a concurrent delete can't land between this
+    // read and the INSERT below (FK references `role` ON DELETE CASCADE). A competing
+    // delete waits for our commit, bounded by `lock_timeout` → `RoleMembershipLockTimeout`.
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, provider_id
+        FROM "role"
+        WHERE project_id = $1
+          AND id = ANY($2::uuid[])
+        FOR SHARE
+        "#,
+        project_id.as_str(),
+        &wanted_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(map_lock_timeout(project_id))?;
+
+    let mut provider_by_id: HashMap<Uuid, String> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        provider_by_id.insert(row.id, row.provider_id);
+    }
+
+    // Validate parent then every member: present in project + catalog-managed.
+    let validate = |role_id: RoleId| -> Result<(), AddRoleMembersError> {
+        let Some(provider) = provider_by_id.get(&*role_id) else {
+            return Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into());
+        };
+        let provider = RoleProviderId::new_unchecked(provider.clone());
+        if !(provider.is_lakekeeper() || provider.is_system()) {
+            return Err(RoleNotManuallyAssignable::new(role_id, provider).into());
+        }
+        Ok(())
+    };
+    validate(parent_role_id)?;
+    for member in member_role_ids {
+        validate(*member)?;
+    }
+
+    // Cycle check before any insert: a member equal to, or already a transitive
+    // ancestor of, the parent would close a cycle. A direct self-edge is a cheap
+    // in-memory check; the transitive case computes the parent's ancestor closure
+    // once and intersects it with all members in a single query.
+    //
+    // No `project_id` predicate: validation above rejects cross-project endpoints,
+    // so the graph never spans projects. Add a project scope if that's relaxed.
+    let member_uuids: Vec<Uuid> = member_role_ids.iter().map(|r| **r).collect();
+    if let Some(member) = member_role_ids.iter().find(|m| ***m == *parent_role_id) {
+        return Err(RoleMembershipCycle::new(parent_role_id, *member).into());
+    }
+    if let Some(cycle_member) = sqlx::query_scalar!(
+        r#"
+        WITH RECURSIVE ancestors(role_id) AS (
+            SELECT parent_role_id FROM role_membership WHERE member_role_id = $1
+            UNION
+            SELECT rm.parent_role_id FROM role_membership rm
+            JOIN ancestors a ON rm.member_role_id = a.role_id
+        )
+        SELECT role_id AS "role_id!" FROM ancestors WHERE role_id = ANY($2::uuid[]) LIMIT 1
+        "#,
+        *parent_role_id,
+        &member_uuids,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+    {
+        return Err(RoleMembershipCycle::new(parent_role_id, RoleId::new(cycle_member)).into());
+    }
+
+    // `ON CONFLICT DO NOTHING` skips already-present edges, so `RETURNING` yields
+    // exactly the members that were newly added. `role.version` (ETag) is
+    // intentionally NOT bumped: edges live in `role_membership`, and effective-role
+    // freshness is handled by `USER_ASSIGNMENTS_CACHE` invalidation, not the role row.
+    let added = sqlx::query_scalar!(
+        r#"
+        INSERT INTO role_membership (parent_role_id, member_role_id)
+        SELECT $1, m FROM unnest($2::uuid[]) AS m
+        ON CONFLICT (parent_role_id, member_role_id) DO NOTHING
+        RETURNING member_role_id
+        "#,
+        *parent_role_id,
+        &member_uuids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+    .into_iter()
+    .map(RoleId::new)
+    .collect();
+
+    // Read the parent's updated direct members back on the SAME transaction, so the
+    // returned state reflects this write (a follow-up query — possibly on a lagging
+    // read replica — would not be guaranteed to).
+    let members = list_role_memberships(
+        parent_role_id,
+        RoleMembershipDirection::Members,
+        &mut **transaction,
+    )
+    .await?;
+    Ok(AddRoleMembersResult { added, members })
+}
+
+// ─── remove_role_members ──────────────────────────────────────────────────────
+
+pub(crate) async fn remove_role_members(
+    parent_role_id: RoleId,
+    member_role_ids: &[RoleId],
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError> {
+    // No advisory lock (unlike `add_role_members`): a delete can't create a cycle.
+    // A remove racing a concurrent add may make that add's cycle check spuriously
+    // reject (harmless, retriable) — don't "fix" it with a lock.
+    let removed = if member_role_ids.is_empty() {
+        Vec::new()
+    } else {
+        let member_uuids: Vec<Uuid> = member_role_ids.iter().map(|r| **r).collect();
+        // `RETURNING` yields exactly the edges that existed and were deleted.
+        sqlx::query_scalar!(
+            r#"
+            DELETE FROM role_membership
+            WHERE parent_role_id = $1
+              AND member_role_id = ANY($2::uuid[])
+            RETURNING member_role_id
+            "#,
+            *parent_role_id,
+            &member_uuids,
+        )
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+        .into_iter()
+        .map(RoleId::new)
+        .collect()
+    };
+
+    // Read the parent's updated direct members back on the SAME transaction (see
+    // `add_role_members`) — read-your-writes, immune to read-replica lag.
+    let members = list_role_memberships(
+        parent_role_id,
+        RoleMembershipDirection::Members,
+        &mut **transaction,
+    )
+    .await?;
+    Ok(RemoveRoleMembersResult { removed, members })
+}
+
+// ─── affected_users_for_membership_edge ───────────────────────────────────────
+//
+// After a `role_membership` edge `(parent, member)` is added or removed, the set
+// of users whose EFFECTIVE roles changed is exactly the users directly assigned
+// (in `role_assignment`) to `member` OR to any role in the DESCENDANT closure of
+// `member` — i.e. roles that reach `member` by climbing member→parent edges.
+//
+// `parent` is intentionally not consulted: descendants of `member` already
+// capture every affected user regardless of which parent the edge attached to.
+pub(crate) async fn affected_users_for_membership_edge<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    member_role_id: RoleId,
+    connection: E,
+) -> Result<Vec<UserId>, CatalogBackendError> {
+    let rows = sqlx::query_scalar!(
+        r#"
+        WITH RECURSIVE descendants(role_id) AS (
+                SELECT $1::uuid
+            UNION
+                SELECT rm.member_role_id
+                FROM role_membership rm
+                JOIN descendants d ON rm.parent_role_id = d.role_id
+        )
+        SELECT DISTINCT ra.user_id
+        FROM role_assignment ra
+        WHERE ra.role_id IN (SELECT role_id FROM descendants)
+        "#,
+        *member_role_id,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
+    rows.iter()
+        .map(|id| user_id_from_db(id))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CatalogBackendError::new_unexpected)
+}
+
+// ─── list_role_memberships ────────────────────────────────────────────────────
+
+pub(crate) async fn list_role_memberships<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    role_id: RoleId,
+    direction: RoleMembershipDirection,
+    connection: E,
+) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError> {
+    // Two static queries rather than a single CASE-based one: each keeps its
+    // WHERE column sargable so the (parent,member) / (member,parent) indexes are
+    // usable. `Members` walks parent→member; `Parents` walks member→parent.
+    fn entry(
+        id: Uuid,
+        source_id: String,
+        provider_id: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> RoleMembershipEntry {
+        RoleMembershipEntry {
+            role_id: RoleId::new(id),
+            role_ident: Arc::new(RoleIdent::from_db_unchecked(provider_id, source_id)),
+            created_at,
+        }
+    }
+
+    let entries = match direction {
+        RoleMembershipDirection::Members => sqlx::query!(
+            r#"
+            SELECT r.id, r.source_id, r.provider_id, rm.created_at
+            FROM role_membership rm
+            JOIN "role" r ON r.id = rm.member_role_id
+            WHERE rm.parent_role_id = $1
+            ORDER BY rm.member_role_id
+            "#,
+            *role_id,
+        )
+        .fetch_all(connection)
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+        .into_iter()
+        .map(|row| entry(row.id, row.source_id, row.provider_id, row.created_at))
+        .collect(),
+        RoleMembershipDirection::Parents => sqlx::query!(
+            r#"
+            SELECT r.id, r.source_id, r.provider_id, rm.created_at
+            FROM role_membership rm
+            JOIN "role" r ON r.id = rm.parent_role_id
+            WHERE rm.member_role_id = $1
+            ORDER BY rm.parent_role_id
+            "#,
+            *role_id,
+        )
+        .fetch_all(connection)
+        .await
+        .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
+        .into_iter()
+        .map(|row| entry(row.id, row.source_id, row.provider_id, row.created_at))
+        .collect(),
+    };
+    Ok(entries)
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -606,8 +957,10 @@ mod tests {
         ProjectId,
         api::management::v1::user::{UserLastUpdatedWith, UserType},
         service::{
-            CatalogRoleForAssignment, CatalogStore, CatalogUserRoleAssignmentUser, RoleIdent,
-            RoleProviderId, Transaction, UniqueMembers, UniqueRoles,
+            AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
+            CatalogRoleForAssignment, CatalogRoleOps, CatalogStore, CatalogUserRoleAssignmentUser,
+            RoleId, RoleIdent, RoleProviderId, RoleSourceId, Transaction, UniqueMembers,
+            UniqueRoles,
             authn::{UserId, UserIdRef},
         },
     };
@@ -657,6 +1010,783 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
         project_id
+    }
+
+    /// Create a catalog-managed (`lakekeeper` provider) role in `project_id`
+    /// and return its freshly minted [`RoleId`].
+    async fn create_managed_role(
+        state: &CatalogState,
+        project_id: &ProjectId,
+        name: &str,
+    ) -> RoleId {
+        let provider_id = RoleProviderId::lakekeeper();
+        let source_id = RoleSourceId::try_new(name).unwrap();
+        let role_id = RoleId::new_random();
+        let request = CatalogCreateRoleRequest::builder()
+            .role_id(role_id)
+            .role_name(name)
+            .source_id(&source_id)
+            .provider_id(&provider_id)
+            .build();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let role = PostgresBackend::create_role(project_id, request, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        role.id()
+    }
+
+    /// Create a role with an EXTERNAL (non-catalog-managed) provider, e.g. an
+    /// LDAP-synced group. Such roles are NOT manually assignable via the API and
+    /// must be rejected from `role_membership` edges.
+    async fn create_external_role(
+        state: &CatalogState,
+        project_id: &ProjectId,
+        provider: &str,
+        source: &str,
+    ) -> RoleId {
+        let provider_id = RoleProviderId::new_unchecked(provider);
+        let source_id = RoleSourceId::try_new(source).unwrap();
+        let role_id = RoleId::new_random();
+        let request = CatalogCreateRoleRequest::builder()
+            .role_id(role_id)
+            .role_name(source)
+            .source_id(&source_id)
+            .provider_id(&provider_id)
+            .build();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let role = PostgresBackend::create_role(project_id, request, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        role.id()
+    }
+
+    // ── role_membership graph ──────────────────────────────────────────────
+
+    #[sqlx::test]
+    async fn role_membership_add_is_idempotent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let child = create_managed_role(&state, &project_id, "child").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // First add — the child is the actually-added member.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let first =
+            PostgresBackend::add_role_members(&project_id, parent, &[child], t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(first.added, vec![child]);
+        // The result carries the parent's post-op direct members, read back in-txn.
+        assert_eq!(
+            first.members.iter().map(|m| m.role_id).collect::<Vec<_>>(),
+            vec![child]
+        );
+
+        // Second add — a no-op: nothing was newly added, so the delta is empty,
+        // but `members` still reflects the (unchanged) current state.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let second =
+            PostgresBackend::add_role_members(&project_id, parent, &[child], t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(second.added, Vec::<RoleId>::new());
+        assert_eq!(
+            second.members.iter().map(|m| m.role_id).collect::<Vec<_>>(),
+            vec![child]
+        );
+
+        let members = PostgresBackend::list_role_memberships(
+            parent,
+            RoleMembershipDirection::Members,
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            members.iter().map(|m| m.role_id).collect::<Vec<_>>(),
+            vec![child]
+        );
+        // The child is a lakekeeper-managed role, so it is manually assignable.
+        assert_eq!(members.len(), 1);
+        assert!(members[0].manually_assignable());
+        // The edge's creation timestamp is populated from `role_membership.created_at`.
+        // Use a wide window (not `<= now()`) to tolerate DB-vs-host clock skew.
+        assert!(
+            (chrono::Utc::now() - members[0].created_at)
+                .num_seconds()
+                .abs()
+                < 3600,
+            "created_at should be a recent timestamp, got {}",
+            members[0].created_at
+        );
+    }
+
+    #[sqlx::test]
+    async fn role_membership_direct_cycle_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let a = create_managed_role(&state, &project_id, "a").await;
+        let b = create_managed_role(&state, &project_id, "b").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // a -> b
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, a, &[b], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // b -> a must be rejected as a cycle.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(&project_id, b, &[a], t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipCycle(cycle) = err else {
+            panic!("expected RoleMembershipCycle, got {err:?}");
+        };
+        assert_eq!(cycle.parent_role_id, b);
+        assert_eq!(cycle.member_role_id, a);
+    }
+
+    #[sqlx::test]
+    async fn role_membership_self_cycle_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let a = create_managed_role(&state, &project_id, "a").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(&project_id, a, &[a], t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipCycle(cycle) = err else {
+            panic!("expected RoleMembershipCycle, got {err:?}");
+        };
+        assert_eq!(cycle.parent_role_id, a);
+        assert_eq!(cycle.member_role_id, a);
+    }
+
+    #[sqlx::test]
+    async fn role_membership_transitive_cycle_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let a = create_managed_role(&state, &project_id, "a").await;
+        let b = create_managed_role(&state, &project_id, "b").await;
+        let c = create_managed_role(&state, &project_id, "c").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // a -> b, b -> c
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, a, &[b], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, b, &[c], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // c -> a closes a depth-3 cycle and must be rejected.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(&project_id, c, &[a], t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipCycle(cycle) = err else {
+            panic!("expected RoleMembershipCycle, got {err:?}");
+        };
+        assert_eq!(cycle.parent_role_id, c);
+        assert_eq!(cycle.member_role_id, a);
+    }
+
+    #[sqlx::test]
+    async fn effective_roles_resolve_ancestor_closure_depth_3(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let grandparent = create_managed_role(&state, &project_id, "grandparent").await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        // Membership edges (member -> parent):
+        //   grandparent has member parent
+        //   parent      has member leaf
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Assign a user DIRECTLY to leaf only. `sync_role_members_by_ident`
+        // upserts by (provider_id, source_id, project_id); the leaf role was
+        // created via `create_managed_role` with the lakekeeper provider and
+        // source_id == name, so this matches the existing role and inserts a
+        // real role_assignment(user, leaf) row (provisioning the user too).
+        let leaf_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "leaf"));
+        let leaf_role = make_role(&leaf_ident, "leaf");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let sync = sync_role_members_by_ident(
+            &project_id,
+            &leaf_role,
+            um(&[make_user(&user_id, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        // Sanity: the upsert matched the existing leaf role, not a new one.
+        assert_eq!(sync.added.len(), 1, "exactly one member added to leaf");
+
+        let result = list_role_assignments_for_user(&user_id, &pool)
+            .await
+            .unwrap();
+
+        let actual_set: HashSet<RoleId> = result.roles.iter().map(|r| r.role_id).collect();
+        assert_eq!(actual_set, HashSet::from([leaf, parent, grandparent]));
+    }
+
+    /// Regression lock: transitively-acquired (ancestor) roles must NOT inject
+    /// phantom `provider_sync_times` entries.
+    ///
+    /// `provider_sync_times` is built solely from the user's own
+    /// `role_assignment_sync` rows (the `UNION ALL` block plus the
+    /// `LEFT JOIN role_assignment_sync` in the `assigned` CTE). Ancestor roles
+    /// are reached purely via `role_membership` edges, which Task 2 restricts to
+    /// catalog-managed (lakekeeper) roles — these are never written to
+    /// `role_assignment_sync`. So even though the user gains `parent` and
+    /// `grandparent` transitively, no sync metadata is fabricated for them.
+    ///
+    /// Here the user is provisioned + assigned to `leaf` via
+    /// `sync_role_members_by_ident`, which writes the per-role `role_members_sync`
+    /// log, NOT the per-(user, project, provider) `role_assignment_sync` log that
+    /// `provider_sync_times` reads from. Hence `provider_sync_times` is exactly
+    /// empty.
+    #[sqlx::test]
+    async fn effective_roles_transitive_roles_add_no_phantom_sync_times(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let grandparent = create_managed_role(&state, &project_id, "grandparent").await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        // Membership edges (member -> parent), all catalog-managed roles:
+        //   grandparent has member parent
+        //   parent      has member leaf
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, grandparent, &[parent], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&arc_project_id, parent, &[leaf], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Assign the user DIRECTLY to leaf only (matches the existing
+        // lakekeeper-managed leaf role created above). `sync_role_members_by_ident`
+        // writes `role_members_sync` (per-role), never `role_assignment_sync`
+        // (per-user/project/provider), so the user has NO direct provider-sync state.
+        let leaf_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "leaf"));
+        let leaf_role = make_role(&leaf_ident, "leaf");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let sync = sync_role_members_by_ident(
+            &project_id,
+            &leaf_role,
+            um(&[make_user(&user_id, "Alice")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        // Sanity: the upsert matched the existing leaf role, not a new one.
+        assert_eq!(sync.added.len(), 1, "exactly one member added to leaf");
+
+        let result = list_role_assignments_for_user(&user_id, &pool)
+            .await
+            .unwrap();
+
+        // The effective role set is EXACTLY the full ancestor closure.
+        let actual_set: HashSet<RoleId> = result.roles.iter().map(|r| r.role_id).collect();
+        assert_eq!(actual_set, HashSet::from([leaf, parent, grandparent]));
+
+        // The transitive roles add NO provider-sync entries. The user has no
+        // `role_assignment_sync` rows at all, so the result is exactly empty.
+        assert!(
+            result.provider_sync_times.is_empty(),
+            "transitive roles must not inject phantom provider_sync_times; got {:?}",
+            result.provider_sync_times
+        );
+    }
+
+    #[sqlx::test]
+    async fn role_membership_remove_is_idempotent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let child = create_managed_role(&state, &project_id, "child").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // Removing a non-existent edge is Ok (no-op): nothing was removed, so the delta is empty.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let noop = PostgresBackend::remove_role_members(parent, &[child], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(noop.removed, Vec::<RoleId>::new());
+
+        // Add the edge, then remove it.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, parent, &[child], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        assert_eq!(
+            PostgresBackend::list_role_memberships(
+                parent,
+                RoleMembershipDirection::Members,
+                state.clone()
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|m| m.role_id)
+            .collect::<Vec<_>>(),
+            vec![child]
+        );
+
+        // Removing the present edge — the child is the actually-removed member.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let removed = PostgresBackend::remove_role_members(parent, &[child], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(removed.removed, vec![child]);
+        // The post-op members read back on the same transaction are now empty.
+        assert_eq!(removed.members, Vec::new());
+
+        assert_eq!(
+            PostgresBackend::list_role_memberships(
+                parent,
+                RoleMembershipDirection::Members,
+                state.clone()
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|m| m.role_id)
+            .collect::<Vec<_>>(),
+            Vec::<RoleId>::new()
+        );
+
+        // Removing again is a no-op: the delta is empty.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let second = PostgresBackend::remove_role_members(parent, &[child], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(second.removed, Vec::<RoleId>::new());
+    }
+
+    #[sqlx::test]
+    async fn role_membership_cross_project_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_a = make_project(&state).await;
+        let project_b = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_a, "parent").await;
+        // Member lives in a different project than `parent`.
+        let foreign_member = create_managed_role(&state, &project_b, "member").await;
+        let project_a: ArcProjectId = Arc::new(project_a);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(
+            &project_a,
+            parent,
+            &[foreign_member],
+            t.transaction(),
+        )
+        .await
+        .unwrap_err();
+        let AddRoleMembersError::RoleIdNotFoundInProject(e) = err else {
+            panic!("expected RoleIdNotFoundInProject, got {err:?}");
+        };
+        // The foreign-project MEMBER is the role reported as not-found (not the parent).
+        assert_eq!(e.role_id, foreign_member);
+        assert_eq!(e.project_id.as_ref(), project_a.as_ref());
+    }
+
+    #[sqlx::test]
+    async fn role_membership_external_provider_member_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        // An externally-provided (LDAP) role is not catalog-managed, so it cannot
+        // be added as a member — only lakekeeper/system roles may nest.
+        let external = create_external_role(&state, &project_id, "ldap", "ext-group").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err =
+            PostgresBackend::add_role_members(&project_id, parent, &[external], t.transaction())
+                .await
+                .unwrap_err();
+        let AddRoleMembersError::RoleNotManuallyAssignable(e) = err else {
+            panic!("expected RoleNotManuallyAssignable, got {err:?}");
+        };
+        assert_eq!(e.role_id, external);
+        assert_eq!(e.provider_id, RoleProviderId::new_unchecked("ldap"));
+    }
+
+    #[sqlx::test]
+    async fn role_membership_add_dedups_batch(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let b = create_managed_role(&state, &project_id, "b").await;
+        let c = create_managed_role(&state, &project_id, "c").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // Batch containing a duplicate member id — deduped, each edge inserted once.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, parent, &[b, c, b], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let members: HashSet<RoleId> = PostgresBackend::list_role_memberships(
+            parent,
+            RoleMembershipDirection::Members,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.role_id)
+        .collect();
+        assert_eq!(members, HashSet::from([b, c]));
+    }
+
+    #[sqlx::test]
+    async fn role_membership_list_parents_direct(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent1 = create_managed_role(&state, &project_id, "parent1").await;
+        let parent2 = create_managed_role(&state, &project_id, "parent2").await;
+        let member = create_managed_role(&state, &project_id, "member").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, parent1, &[member], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, parent2, &[member], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let parents: HashSet<RoleId> = PostgresBackend::list_role_memberships(
+            member,
+            RoleMembershipDirection::Parents,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.role_id)
+        .collect();
+        assert_eq!(parents, HashSet::from([parent1, parent2]));
+    }
+
+    #[sqlx::test]
+    async fn role_membership_parent_not_found_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let member = create_managed_role(&state, &project_id, "member").await;
+        // A parent role id that does not exist in this project.
+        let missing_parent = RoleId::new_random();
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(
+            &project_id,
+            missing_parent,
+            &[member],
+            t.transaction(),
+        )
+        .await
+        .unwrap_err();
+        let AddRoleMembersError::RoleIdNotFoundInProject(e) = err else {
+            panic!("expected RoleIdNotFoundInProject, got {err:?}");
+        };
+        // The MISSING PARENT is the role reported as not-found.
+        assert_eq!(e.role_id, missing_parent);
+    }
+
+    #[sqlx::test]
+    async fn role_membership_empty_input_is_noop(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_role_members(&project_id, parent, &[], t.transaction())
+            .await
+            .unwrap();
+        PostgresBackend::remove_role_members(parent, &[], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        assert!(
+            PostgresBackend::list_role_memberships(
+                parent,
+                RoleMembershipDirection::Members,
+                state.clone()
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[sqlx::test]
+    async fn edge_change_invalidates_deep_descendant_user(pool: sqlx::PgPool) {
+        // top <- mid <- leaf; user assigned to leaf. Adding the top<-mid edge must
+        // invalidate the user even though they are a DEPTH-2 descendant of `mid`,
+        // exercising the recursive descendant closure (not just depth-1).
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let top = create_managed_role(&state, &project_id, "top").await;
+        let mid = create_managed_role(&state, &project_id, "mid").await;
+        let leaf = create_managed_role(&state, &project_id, "leaf").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        // mid has member leaf.
+        PostgresBackend::add_role_members_and_invalidate(
+            &arc_project_id,
+            mid,
+            &[leaf],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Assign user to leaf (matches the lakekeeper-managed `leaf` role above).
+        let leaf_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "leaf"));
+        let leaf_role = make_role(&leaf_ident, "leaf");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "deep-descendant-user"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_role_members_by_ident(
+            &project_id,
+            &leaf_role,
+            um(&[make_user(&user_id, "Deep")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // Warm: U effective = {leaf, mid}.
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            warmed
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([leaf, mid])
+        );
+
+        // Add top <- mid. descendants(mid) = {mid, leaf}; U (on leaf) must be invalidated.
+        PostgresBackend::add_role_members_and_invalidate(
+            &arc_project_id,
+            top,
+            &[mid],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        let after = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&warmed, &after),
+            "deep (depth-2) descendant user must be invalidated"
+        );
+        assert_eq!(
+            after
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([leaf, mid, top])
+        );
+    }
+
+    #[sqlx::test]
+    async fn role_membership_remove_and_invalidate_evicts(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let child = create_managed_role(&state, &project_id, "child").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        PostgresBackend::add_role_members_and_invalidate(
+            &arc_project_id,
+            parent,
+            &[child],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        let child_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "child"));
+        let child_role = make_role(&child_ident, "child");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "remove-invalidation-user"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_role_members_by_ident(
+            &project_id,
+            &child_role,
+            um(&[make_user(&user_id, "U")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // Warm: U effective = {child, parent}.
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            warmed
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([child, parent])
+        );
+
+        // Remove the edge + invalidate. U loses the transitively-acquired `parent`.
+        PostgresBackend::remove_role_members_and_invalidate(parent, &[child], state.clone())
+            .await
+            .unwrap();
+
+        let after = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&warmed, &after),
+            "cache must be invalidated on edge removal"
+        );
+        assert_eq!(
+            after
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([child])
+        );
+    }
+
+    #[sqlx::test]
+    async fn role_membership_add_lock_timeout(pool: sqlx::PgPool) {
+        // Hold the per-project advisory lock on a separate connection, then a
+        // concurrent `add_role_members` must wait `lock_timeout` (3s) and fail
+        // with the typed `RoleMembershipLockTimeout` rather than hang.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let child = create_managed_role(&state, &project_id, "child").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id);
+
+        // Holder: open a transaction on its own connection and grab the exact
+        // same project lock key the impl uses, keeping it held.
+        let mut holder = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+            .bind(arc_project_id.as_str())
+            .bind(super::ROLE_MEMBERSHIP_LOCK_SEED)
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+
+        // Concurrent add on a different connection: blocked → 3s timeout → typed error.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err =
+            PostgresBackend::add_role_members(&arc_project_id, parent, &[child], t.transaction())
+                .await
+                .unwrap_err();
+        let AddRoleMembersError::RoleMembershipLockTimeout(e) = err else {
+            panic!("expected RoleMembershipLockTimeout, got {err:?}");
+        };
+        assert_eq!(e.project_id.as_ref(), arc_project_id.as_ref());
+
+        // Release the held lock.
+        holder.rollback().await.unwrap();
     }
 
     // ── sync_role_members_by_ident ─────────────────────────────────────────
@@ -1958,6 +3088,91 @@ mod tests {
         assert!(
             sync_prov_ids.contains(&provider_b),
             "provider_b sync record present"
+        );
+    }
+
+    // ── cache invalidation on membership edge change ───────────────────────
+
+    /// Adding an edge `(parent, child)` must invalidate the cached effective
+    /// roles of every user reachable through `child`'s descendant closure —
+    /// here the user assigned directly to `child`.
+    ///
+    /// The `USER_ASSIGNMENTS_CACHE` lives in the `lakekeeper` crate behind a
+    /// `pub(crate)` module, so it cannot be poked directly from this crate.
+    /// Instead the invalidation is observed through the public cached read path
+    /// `list_role_assignments_for_user`:
+    ///   * Warming it returns an `Arc` that is then stored in the cache.
+    ///   * If the entry were NOT invalidated, the second call would be a cache
+    ///     HIT and return the very same `Arc` (pointer-equal) with the stale
+    ///     `{child}` role set.
+    ///   * Because the edge change invalidated the entry, the second call
+    ///     re-fetches from the DB, yielding a fresh, pointer-distinct `Arc`
+    ///     whose effective set has grown to `{child, parent}`.
+    #[sqlx::test]
+    async fn edge_change_invalidates_descendant_member_users(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "parent").await;
+        let child = create_managed_role(&state, &project_id, "child").await;
+        let arc_project_id: ArcProjectId = Arc::new(project_id.clone());
+
+        // Assign user U directly to `child` only (matches the existing
+        // lakekeeper-managed `child` role created above).
+        let child_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "child"));
+        let child_role = make_role(&child_ident, "child");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "edge-invalidation-user"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let sync = sync_role_members_by_ident(
+            &project_id,
+            &child_role,
+            um(&[make_user(&user_id, "Edge User")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(sync.added.len(), 1, "exactly one member added to child");
+
+        // Warm the USER_ASSIGNMENTS_CACHE via the cached read path. Before the
+        // edge exists the effective set is exactly {child}.
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        let warmed_set: HashSet<RoleId> = warmed.roles.iter().map(|r| r.role_id).collect();
+        assert_eq!(
+            warmed_set,
+            HashSet::from([child]),
+            "before the edge, U's effective roles are exactly {{child}}"
+        );
+
+        // Add edge (parent has member child) and invalidate. child is in the
+        // descendant closure of itself, U is assigned to child → U is stale.
+        PostgresBackend::add_role_members_and_invalidate(
+            &arc_project_id,
+            parent,
+            &[child],
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Second read: the entry was invalidated, so this is a cache MISS that
+        // re-fetches the DB. The Arc must be pointer-distinct from the warmed
+        // one, proving the stale entry was evicted rather than served.
+        let after = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&warmed, &after),
+            "cache entry must have been invalidated (fresh Arc), not served stale"
+        );
+        let after_set: HashSet<RoleId> = after.roles.iter().map(|r| r.role_id).collect();
+        assert_eq!(
+            after_set,
+            HashSet::from([child, parent]),
+            "after the edge, U transitively gains `parent`"
         );
     }
 }
