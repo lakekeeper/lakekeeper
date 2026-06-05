@@ -23,7 +23,7 @@ use crate::{
 };
 
 const QN_STR: &str = "task_log_cleanup";
-pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueApiConfig {
@@ -31,6 +31,7 @@ pub(crate) static API_CONFIG: LazyLock<QueueApiConfig> = LazyLock::new(|| QueueA
     utoipa_type_name: TaskLogCleanupConfig::name(),
     utoipa_schema: TaskLogCleanupConfig::schema(),
     scope: super::QueueScope::Project,
+    user_scheduling: super::UserScheduling::Disabled,
 });
 
 const DEFAULT_CLEANUP_PERIOD_DAYS: Duration = Duration::days(1);

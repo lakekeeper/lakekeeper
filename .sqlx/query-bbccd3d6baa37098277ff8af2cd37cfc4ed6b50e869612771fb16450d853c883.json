@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH RECURSIVE ancestors(role_id) AS (\n            SELECT parent_role_id FROM role_membership WHERE member_role_id = $1\n            UNION\n            SELECT rm.parent_role_id FROM role_membership rm\n            JOIN ancestors a ON rm.member_role_id = a.role_id\n        )\n        SELECT role_id AS \"role_id!\" FROM ancestors WHERE role_id = ANY($2::uuid[]) LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bbccd3d6baa37098277ff8af2cd37cfc4ed6b50e869612771fb16450d853c883"
+}

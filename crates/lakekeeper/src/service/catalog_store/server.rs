@@ -3,12 +3,12 @@ use crate::service::ServerId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerInfo {
     /// Server ID of the catalog at the time of bootstrapping
-    pub(crate) server_id: ServerId,
+    pub server_id: ServerId,
     /// Whether the terms have been accepted
-    pub(crate) terms_accepted: bool,
+    pub terms_accepted: bool,
     /// Whether the catalog is open for re-bootstrap,
     /// i.e. to recover admin access.
-    pub(crate) open_for_bootstrap: bool,
+    pub open_for_bootstrap: bool,
 }
 
 impl ServerInfo {

@@ -181,7 +181,7 @@ impl Serialize for ReferencedByQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct Prefix(pub(crate) String);
+pub struct Prefix(pub String);
 
 impl Prefix {
     #[inline]

@@ -1,0 +1,33 @@
+[package]
+name = "lakekeeper-events-kafka"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+description = "Kafka cloud-events publisher for Lakekeeper"
+keywords = ["iceberg", "rest", "lakekeeper", "kafka", "cloudevents"]
+
+[package.metadata.cargo-machete]
+# Imported as `cloudevents`
+ignored = ["cloudevents-sdk"]
+
+[lib]
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+tempfile = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+cloudevents-sdk = { workspace = true }
+figment = { workspace = true }
+figment_file_provider_adapter = { workspace = true }
+lakekeeper = { path = "../lakekeeper", default-features = false }
+rdkafka = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+typed-builder = { workspace = true }
+veil = { workspace = true }

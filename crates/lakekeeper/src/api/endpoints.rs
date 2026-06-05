@@ -45,10 +45,10 @@ macro_rules! generate_endpoints {
 
         pastey::paste! {
             #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::EnumIter, strum::Display)]
-            #[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+            #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
             #[strum(serialize_all = "kebab-case")]
             // Only apply the sqlx attribute if the feature is enabled
-            #[cfg_attr(feature = "sqlx", sqlx(type_name = "api_endpoints", rename_all = "kebab-case"))]
+            #[cfg_attr(feature = "sqlx-postgres", sqlx(type_name = "api_endpoints", rename_all = "kebab-case"))]
             pub enum EndpointFlat {
                 $(
                     $(
@@ -123,6 +123,7 @@ macro_rules! generate_endpoints {
 }
 
 impl CatalogV1Endpoint {
+    #[must_use]
     pub fn unimplemented(self) -> bool {
         matches!(
             self,
@@ -167,6 +168,15 @@ generate_endpoints! {
         FetchScanTasks(POST, "/catalog/v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks"),
     }
 
+    enum GenericTableV1 {
+        CreateGenericTable(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables"),
+        ListGenericTables(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables"),
+        LoadGenericTable(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}"),
+        DropGenericTable(DELETE, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}"),
+        RenameGenericTable(POST, "/lakekeeper/v1/{prefix}/generic-tables/rename"),
+        LoadGenericTableCredentials(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials"),
+    }
+
     enum Sign {
         S3RequestGlobal(POST, "/catalog/v1/aws/s3/sign"),
         S3RequestPrefix(POST, "/catalog/v1/{prefix}/v1/aws/s3/sign"),
@@ -207,6 +217,7 @@ generate_endpoints! {
         DeleteWarehouse(DELETE, "/management/v1/warehouse/{warehouse_id}"),
         RenameWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/rename"),
         UpdateWarehouseDeleteProfile(POST, "/management/v1/warehouse/{warehouse_id}/delete-profile"),
+        UpdateWarehouseFormatVersionPolicy(POST, "/management/v1/warehouse/{warehouse_id}/format-version-policy"),
         DeactivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/deactivate"),
         ActivateWarehouse(POST, "/management/v1/warehouse/{warehouse_id}/activate"),
         UpdateStorageProfile(POST, "/management/v1/warehouse/{warehouse_id}/storage"),
@@ -222,12 +233,16 @@ generate_endpoints! {
         GetViewProtection(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         SetViewProtection(POST, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/protection"),
         GetViewActions(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/actions"),
+        GetGenericTableActions(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions"),
+        GetGenericTableProtection(GET, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
+        SetGenericTableProtection(POST, "/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection"),
         SetNamespaceProtection(POST, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceProtection(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/protection"),
         GetNamespaceActions(GET, "/management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions"),
         SetWarehouseProtection(POST, "/management/v1/warehouse/{warehouse_id}/protection"),
         SetTaskQueueConfig(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
         GetTaskQueueConfig(GET, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config"),
+        ScheduleTask(POST, "/management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule"),
         ListTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/list"),
         GetTaskDetails(GET, "/management/v1/warehouse/{warehouse_id}/task/by-id/{task_id}"),
         ControlTasks(POST, "/management/v1/warehouse/{warehouse_id}/task/control"),
@@ -257,6 +272,7 @@ generate_endpoints! {
 }
 
 impl ManagementV1Endpoint {
+    #[must_use]
     pub fn path_in_management_v1(self) -> &'static str {
         &self.path()["/management/v1".len()..]
     }
@@ -349,6 +365,9 @@ mod test {
         let variants: Vec<Endpoint> = PermissionV1Endpoint::iter().map(Into::into).collect_vec();
         all_variants.extend(variants);
 
+        let variants: Vec<Endpoint> = GenericTableV1Endpoint::iter().map(Into::into).collect_vec();
+        all_variants.extend(variants);
+
         let endpoint_variants = Endpoint::iter().collect_vec();
 
         // Check no duplicates in all_variants
@@ -398,12 +417,16 @@ mod test {
         // Load YAML files
         let management_yaml = include_str!("../../../../docs/docs/api/management-open-api.yaml");
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
+        let generic_table_yaml =
+            include_str!("../../../../docs/docs/api/generic-table-open-api.yaml");
 
         // Parse YAML files
         let management: Value =
             serde_norway::from_str(management_yaml).expect("Failed to parse management YAML");
         let catalog: Value =
             serde_norway::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
+        let generic_table: Value =
+            serde_norway::from_str(generic_table_yaml).expect("Failed to parse generic-table YAML");
 
         // Extract endpoints from management YAML
         let mut expected_endpoints = HashSet::new();
@@ -443,10 +466,26 @@ mod test {
             }
         }
 
+        // Process generic-table YAML paths (already prefixed with /lakekeeper/v1)
+        if let Value::Mapping(paths) = &generic_table["paths"] {
+            for (path, methods) in paths {
+                let path_str = path.as_str().expect("Path is not a string");
+                if let Value::Mapping(methods_map) = methods {
+                    for (method, _) in methods_map {
+                        let method_str = method.as_str().expect("Method is not a string");
+                        if method_str != "parameters" {
+                            let normalized_path = path_str.trim_start_matches('/');
+                            expected_endpoints
+                                .insert((method_str.to_uppercase(), normalized_path.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
         // Extract endpoints from Endpoints enum
         let mut actual_endpoints = HashSet::new();
         for endpoint in Endpoint::iter() {
-            // Only catalog and management endpoints are relevant for this test
             if matches!(endpoint, Endpoint::PermissionV1(_))
                 || matches!(endpoint, Endpoint::Sign(_))
             {
@@ -512,6 +551,9 @@ mod test {
                 !path.starts_with(
                     "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/config",
                 ) && !path.starts_with("management/v1/project/task-queue/{queue_name}/config")
+                    && !path.starts_with(
+                        "management/v1/warehouse/{warehouse_id}/task-queue/{queue_name}/schedule",
+                    )
             })
             .collect_vec();
         if !extra_endpoints.is_empty() {

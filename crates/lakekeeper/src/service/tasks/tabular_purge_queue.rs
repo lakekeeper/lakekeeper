@@ -18,7 +18,7 @@ use crate::{
 };
 
 const QN_STR: &str = "tabular_purge";
-pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
     LazyLock::new(|| super::QueueApiConfig {
@@ -26,6 +26,7 @@ pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
         utoipa_type_name: PurgeQueueConfig::name(),
         utoipa_schema: PurgeQueueConfig::schema(),
         scope: super::QueueScope::Warehouse,
+        user_scheduling: super::UserScheduling::Disabled,
     });
 
 pub type TabularPurgeTask =

@@ -13,7 +13,7 @@ check-clippy:
     cargo clippy -p lakekeeper --no-default-features --features "test-utils" -- -D warnings
     cargo clippy -p lakekeeper-io --no-default-features --features "storage-in-memory" -- -D warnings
     cargo clippy -p lakekeeper-io --all-features -- -D warnings
-    cargo clippy -p lakekeeper --no-default-features --features "sqlx-postgres,s3-signer,router,nats,vendored-protoc,kafka" -- -D warnings
+    cargo clippy -p lakekeeper --no-default-features --features "sqlx-postgres,s3-signer,router" -- -D warnings
     cargo clippy -p lakekeeper-bin --all-features -- -D warnings
     cargo clippy -p lakekeeper-bin --no-default-features -- -D warnings
 
@@ -32,7 +32,10 @@ fix:
     cargo sort -w
 
 sqlx-prepare:
-    cargo sqlx prepare --workspace -- --tests --features "sqlx-postgres"
+    # Exclude lakekeeper-bin so --all-features doesn't enable `ui` (pulls
+    # the `lakekeeper-console` git dep). lakekeeper-bin has no sqlx::query!
+    # macros, so nothing in its tree contributes to the .sqlx cache.
+    cargo sqlx prepare --workspace -- --tests --workspace --exclude lakekeeper-bin --all-features
 
 doc-test:
 	cargo test --no-fail-fast --doc --all-features --workspace
@@ -73,8 +76,12 @@ check-opa:
     cd authz/opa-bridge && regal lint policies/
 
 update-management-openapi:
-    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run --features open-api management-openapi > docs/docs/api/management-open-api.yaml
+    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- management-openapi > docs/docs/api/management-open-api.yaml
     yq -i '.info.version = "0.0.0"' docs/docs/api/management-open-api.yaml
+
+update-generic-table-openapi:
+    LAKEKEEPER__AUTHZ_BACKEND=openfga RUST_LOG=error cargo run -p lakekeeper-bin --features open-api -- generic-table-openapi > docs/docs/api/generic-table-open-api.yaml
+    yq -i '.info.version = "0.0.0"' docs/docs/api/generic-table-open-api.yaml
 
 add-return-uuid-to-rest-openapi:
     yq eval '.paths."/v1/{prefix}/namespaces".get.parameters += [{"name": "returnUuids", "in": "query", "description": "If true, include the `namespace-uuids` field in the response", "required": false, "schema": {"type": "boolean", "default": false}}]' -i docs/docs/api/rest-catalog-open-api.yaml

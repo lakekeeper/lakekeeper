@@ -16,8 +16,7 @@ use crate::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
         WarehouseNameNotFound, WarehouseStatus,
         authz::{
-            AuthZProjectOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
-            CatalogWarehouseAction,
+            Authorizer, AuthzWarehouseOps, CatalogWarehouseAction, RequireWarehouseActionError,
         },
         events::APIEventContext,
     },
@@ -47,32 +46,30 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
         let request_metadata_arc = Arc::new(request_metadata);
 
         // Arg takes precedence over auth
-        let warehouse = if let Some(query_warehouse) = query.warehouse {
-            let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
-            let project_id = request_metadata_arc.require_project_id(project_from_arg)?;
-
-            let action = CatalogProjectAction::ListWarehouses;
-            let event_ctx = APIEventContext::for_project_arc(
-                request_metadata_arc.clone(),
-                api_context.v1_state.events.clone(),
-                project_id.clone(),
-                Arc::new(action.clone()),
-            );
-
-            let authz_result = authorizer
-                .require_project_action(&request_metadata_arc, &project_id, action)
-                .await;
-            event_ctx.emit_authz(authz_result)?;
-            C::get_warehouse_by_name(
-                &warehouse_from_arg,
-                &project_id,
-                WarehouseStatus::active(),
-                api_context.v1_state.catalog.clone(),
-            )
-            .await?
-            .ok_or_else(|| ErrorModel::from(WarehouseNameNotFound::new(warehouse_from_arg)))?
-        } else {
+        let Some(query_warehouse) = query.warehouse else {
             return Err(ErrorModel::bad_request("No warehouse specified. Please specify the 'warehouse' parameter in the GET /config request.".to_string(), "GetConfigNoWarehouseProvided", None).into());
+        };
+        let (project_from_arg, warehouse_from_arg) = parse_warehouse_arg(&query_warehouse);
+        let project_id = request_metadata_arc.require_project_id(project_from_arg)?;
+
+        // Authorize the single warehouse (get-config), not the project: a project-level
+        // "list warehouses" check considers every warehouse and times out on large
+        // projects (issue #1780). With no project gate, the caller-supplied project_id
+        // is unchecked, so a missing name and a warehouse the caller can't see both
+        // return the same name-keyed `NoSuchWarehouseException` — otherwise name->id
+        // resolution leaks existence/UUID. (Audit log keeps the truth; response timing
+        // still differs.)
+        let not_found = || ErrorModel::from(WarehouseNameNotFound::new(warehouse_from_arg.clone()));
+
+        let Some(warehouse) = C::get_warehouse_by_name(
+            &warehouse_from_arg,
+            &project_id,
+            WarehouseStatus::active(),
+            api_context.v1_state.catalog.clone(),
+        )
+        .await?
+        else {
+            return Err(not_found().into());
         };
 
         let action = CatalogWarehouseAction::GetConfig;
@@ -91,7 +88,24 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 action,
             )
             .await;
-        let (_event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        // Mask "can't see it" as not-found (see above); a forbidden on a warehouse the
+        // caller *can* see keeps its native 403, which leaks nothing new.
+        let warehouse_hidden = authz_result
+            .as_ref()
+            .err()
+            .is_some_and(RequireWarehouseActionError::is_warehouse_hidden);
+        let (_event_ctx, warehouse) = match event_ctx.emit_authz(authz_result) {
+            Ok(checked) => checked,
+            // emit_authz has already written the full-detail audit event.
+            Err(masked) => {
+                return Err(if warehouse_hidden {
+                    not_found()
+                } else {
+                    masked
+                }
+                .into());
+            }
+        };
 
         let mut config = warehouse.storage_profile.generate_catalog_config(
             warehouse.warehouse_id,

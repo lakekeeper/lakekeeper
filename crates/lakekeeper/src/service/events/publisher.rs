@@ -94,40 +94,19 @@ mod principal_serde {
     }
 }
 
-/// Builds the default cloud event backends from the configuration.
-///
-/// # Errors
-/// If the publisher cannot be built from the configuration.
-#[allow(clippy::unused_async)]
-pub async fn get_default_cloud_event_backends_from_config()
--> anyhow::Result<Vec<Arc<dyn CloudEventBackend + Sync + Send>>> {
-    let mut cloud_event_sinks = vec![];
-
-    #[cfg(feature = "nats")]
-    if let Some(nats_publisher) = super::backends::nats::build_nats_publisher_from_config().await? {
-        cloud_event_sinks
-            .push(Arc::new(nats_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    }
-    #[cfg(feature = "kafka")]
-    if let Some(kafka_publisher) = super::backends::kafka::build_kafka_publisher_from_config()? {
-        cloud_event_sinks
-            .push(Arc::new(kafka_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
-    }
-
-    if let Some(true) = &CONFIG.log_cloudevents {
-        let tracing_publisher = TracingPublisher;
-        cloud_event_sinks
-            .push(Arc::new(tracing_publisher) as Arc<dyn CloudEventBackend + Sync + Send>);
+/// Returns a [`TracingPublisher`] backend if `CONFIG.log_cloudevents` is on,
+/// else `None`. Concrete remote backends (NATS, Kafka, …) live in their own
+/// crates and are wired in by the binary.
+#[must_use]
+pub fn maybe_tracing_cloud_event_backend()
+-> Option<Arc<dyn CloudEventBackend + Sync + Send + 'static>> {
+    if CONFIG.log_cloudevents == Some(true) {
         tracing::info!("Logging Cloudevents to Console.");
+        Some(Arc::new(TracingPublisher) as Arc<dyn CloudEventBackend + Sync + Send + 'static>)
     } else {
         tracing::info!("Running without logging Cloudevents.");
+        None
     }
-
-    if cloud_event_sinks.is_empty() {
-        tracing::info!("Running without publisher.");
-    }
-
-    Ok(cloud_event_sinks)
 }
 
 #[async_trait::async_trait]
@@ -412,6 +391,103 @@ impl EventListener for CloudEventsPublisher {
         )
         .await
         .context("Failed to publish `renameView` event")?;
+        Ok(())
+    }
+
+    async fn generic_table_created(
+        &self,
+        event: types::CreateGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::CreateGenericTableEvent {
+            namespace,
+            generic_table,
+            request_metadata,
+            request,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "createGenericTable",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(generic_table.generic_table_id),
+                prefix: namespace.warehouse.warehouse_id.to_string(),
+                warehouse_id: namespace.warehouse.warehouse_id,
+                name: generic_table.name.clone(),
+                namespace: namespace.namespace.namespace_ident().to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `createGenericTable` event")?;
+        Ok(())
+    }
+
+    async fn generic_table_dropped(
+        &self,
+        event: types::DropGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::DropGenericTableEvent {
+            generic_table,
+            drop_params: _drop_params,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "dropGenericTable",
+            serde_json::Value::Null,
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(generic_table.generic_table.generic_table_id),
+                warehouse_id: generic_table.warehouse.warehouse_id,
+                name: generic_table.generic_table.name.clone(),
+                namespace: generic_table.generic_table.namespace_ident.to_string(),
+                prefix: generic_table.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `dropGenericTable` event")?;
+        Ok(())
+    }
+
+    async fn generic_table_renamed(
+        &self,
+        event: types::RenameGenericTableEvent,
+    ) -> anyhow::Result<()> {
+        let types::RenameGenericTableEvent {
+            source_generic_table,
+            destination_namespace: _,
+            request,
+            request_metadata,
+        } = event;
+        self.publish(
+            Uuid::now_v7(),
+            "renameGenericTable",
+            maybe_body_to_json(&request),
+            EventMetadata {
+                tabular_id: TabularId::GenericTable(
+                    source_generic_table.generic_table.generic_table_id,
+                ),
+                warehouse_id: source_generic_table.warehouse.warehouse_id,
+                name: source_generic_table.generic_table.name.clone(),
+                namespace: source_generic_table
+                    .generic_table
+                    .namespace_ident
+                    .to_url_string(),
+                prefix: source_generic_table.warehouse.warehouse_id.to_string(),
+                num_events: 1,
+                sequence_number: 0,
+                trace_id: request_metadata.request_id(),
+                actor: serialize_actor(&request_metadata)?,
+            },
+        )
+        .await
+        .context("Failed to publish `renameGenericTable` event")?;
         Ok(())
     }
 

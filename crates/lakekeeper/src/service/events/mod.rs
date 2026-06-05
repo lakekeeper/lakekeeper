@@ -7,7 +7,7 @@ pub use context::APIEventContext;
 pub use dispatch::{EventDispatcher, EventListener};
 pub use publisher::{
     CloudEventBackend, CloudEventsMessage, CloudEventsPublisher,
-    CloudEventsPublisherBackgroundTask, get_default_cloud_event_backends_from_config,
+    CloudEventsPublisherBackgroundTask, maybe_tracing_cloud_event_backend,
 };
 pub use types::*;
 pub mod backends;

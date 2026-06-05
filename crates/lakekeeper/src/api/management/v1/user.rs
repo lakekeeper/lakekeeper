@@ -281,7 +281,7 @@ pub(crate) fn parse_create_user_request(
 }
 
 #[async_trait::async_trait]
-pub(crate) trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     async fn create_user(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,

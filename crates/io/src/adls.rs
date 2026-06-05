@@ -57,7 +57,6 @@ impl AzureCloud {
     /// Build the full HTTPS blob-endpoint URL `object_store` should connect
     /// to, or `None` for the public cloud (the builder synthesises
     /// `https://{account}.blob.core.windows.net` itself in that case).
-    ///
     /// `object_store::MicrosoftAzure` always speaks blob endpoints, so any
     /// caller-supplied DFS host gets translated to its blob equivalent here.
     ///

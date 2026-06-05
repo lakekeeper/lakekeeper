@@ -14,16 +14,15 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use lakekeeper::{
-    CONFIG,
-    implementations::{CatalogState, postgres::PostgresBackend},
-    tokio, tracing,
-};
+use lakekeeper::{CONFIG, tokio, tracing};
+use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 mod authorizer;
 mod config;
+mod events;
 mod healthcheck;
+mod secrets;
 mod serve;
 #[cfg(feature = "ui")]
 mod ui;
@@ -82,7 +81,7 @@ enum Commands {
         )]
         force_start: bool,
     },
-    /// Check the health of the server
+    /// Check the health endpoint of the server
     Healthcheck {
         #[clap(
             default_value = "false",
@@ -110,6 +109,9 @@ enum Commands {
     #[cfg(feature = "open-api")]
     /// Get the `OpenAPI` specification of the Management API as yaml
     ManagementOpenapi {},
+    #[cfg(feature = "open-api")]
+    /// Get the `OpenAPI` specification of the Generic Table API as yaml
+    GenericTableOpenapi {},
     /// OpenFGA authorizer maintenance operations.
     Openfga {
         #[command(subcommand)]
@@ -216,11 +218,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Healthcheck {
             check_all,
-            mut check_db,
-            mut check_server,
+            check_db,
+            check_server,
         }) => {
-            check_db |= check_all;
-            check_server |= check_all;
+            let (check_db, check_server) =
+                healthcheck::normalize_checks(check_all, check_db, check_server);
             healthcheck::health(check_db, check_server).await?;
         }
         Some(Commands::Version {}) => {
@@ -259,6 +261,11 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("{}", doc.to_yaml()?);
         }
+        #[cfg(feature = "open-api")]
+        Some(Commands::GenericTableOpenapi {}) => {
+            let doc = lakekeeper::api::data::v1::generic_tables::api_doc();
+            println!("{}", doc.to_yaml()?);
+        }
         None => {
             if CONFIG_BIN.debug.auto_serve {
                 print_info();
@@ -290,8 +297,10 @@ async fn reopen_bootstrap(yes: bool) -> anyhow::Result<()> {
         );
     }
 
-    let write_pool =
-        lakekeeper::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
+    let write_pool = lakekeeper_storage_postgres::get_writer_pool(
+        lakekeeper_storage_postgres::config::CONFIG.to_pool_opts(),
+    )
+    .await?;
     let catalog_state = CatalogState::from_pools(write_pool.clone(), write_pool);
 
     let server_id =
@@ -321,16 +330,17 @@ async fn openfga_reconcile(
         );
     }
 
-    let read_pool = lakekeeper::implementations::postgres::get_reader_pool(
-        CONFIG
+    let pg_config = &*lakekeeper_storage_postgres::config::CONFIG;
+    let read_pool = lakekeeper_storage_postgres::get_reader_pool(
+        pg_config
             .to_pool_opts()
-            .max_connections(CONFIG.pg_read_pool_connections),
+            .max_connections(pg_config.pg_read_pool_connections),
     )
     .await?;
-    let write_pool = lakekeeper::implementations::postgres::get_writer_pool(
-        CONFIG
+    let write_pool = lakekeeper_storage_postgres::get_writer_pool(
+        pg_config
             .to_pool_opts()
-            .max_connections(CONFIG.pg_write_pool_connections),
+            .max_connections(pg_config.pg_write_pool_connections),
     )
     .await?;
     let catalog_state = CatalogState::from_pools(read_pool, write_pool);
@@ -344,15 +354,27 @@ async fn openfga_reconcile(
     let authorizer =
         lakekeeper_authz_openfga::new_authorizer_from_default_config(server_id).await?;
 
-    tracing::info!("openfga reconcile: starting (mode={mode:?}, dry_run={dry_run})");
-    let report = lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog(
-        catalog_state,
-        authorizer.client(),
-        server_id,
-        mode,
-        dry_run,
+    let lock = lakekeeper_storage_postgres::PostgresAdvisoryLock::try_acquire(
+        &catalog_state,
+        lakekeeper_authz_openfga::RECONCILE_LOCK_KEY,
     )
-    .await?;
+    .await?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "openfga reconcile: another reconcile is already running (advisory lock {:#x} held)",
+            lakekeeper_authz_openfga::RECONCILE_LOCK_KEY
+        )
+    })?;
+    let report =
+        lakekeeper_authz_openfga::reconcile_hierarchy_tuples_from_catalog::<PostgresBackend>(
+            catalog_state,
+            lock,
+            authorizer.client(),
+            server_id,
+            mode,
+            dry_run,
+        )
+        .await?;
 
     let action = if report.dry_run { "would" } else { "did" };
     println!();
@@ -389,13 +411,14 @@ async fn openfga_reconcile(
 
 async fn migrate() -> anyhow::Result<()> {
     tracing::info!("Migrating database...");
-    let write_pool =
-        lakekeeper::implementations::postgres::get_writer_pool(CONFIG.to_pool_opts()).await?;
+    let write_pool = lakekeeper_storage_postgres::get_writer_pool(
+        lakekeeper_storage_postgres::config::CONFIG.to_pool_opts(),
+    )
+    .await?;
 
     // This embeds database migrations in the application binary so we can ensure the database
     // is migrated correctly on startup
-    let server_id =
-        lakekeeper::implementations::postgres::migrations::migrate_core_only(&write_pool).await?;
+    let server_id = lakekeeper_storage_postgres::migrations::migrate_core_only(&write_pool).await?;
     tracing::info!("Database migration complete.");
 
     tracing::info!("Migrating authorizer...");

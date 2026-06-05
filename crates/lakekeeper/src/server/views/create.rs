@@ -31,8 +31,12 @@ use crate::{
 
 // TODO: split up into smaller functions
 #[allow(clippy::too_many_lines)]
-/// Create a view in the given namespace
-pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+/// Create a view in the given namespace.
+///
+/// # Panics
+/// Panics if the resolved metadata builder fails an internal invariant (e.g.
+/// uuid assignment).
+pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: NamespaceParameters,
     request: CreateViewRequest,
     state: ApiContext<State<A, C, S>>,
@@ -216,99 +220,4 @@ pub(crate) async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: Secre
     };
 
     Ok(load_view_result)
-}
-
-#[cfg(test)]
-pub(crate) mod test {
-    use iceberg::NamespaceIdent;
-    use sqlx::PgPool;
-    use uuid::Uuid;
-
-    use super::*;
-    use crate::{
-        api::iceberg::{types::Prefix, v1::DataAccess},
-        implementations::postgres::{
-            namespace::tests::initialize_namespace, secrets::SecretsState,
-        },
-        service::authz::AllowAllAuthorizer,
-        tests::create_view_request,
-    };
-
-    pub(crate) async fn create_view(
-        api_context: ApiContext<
-            State<
-                AllowAllAuthorizer,
-                crate::implementations::postgres::PostgresBackend,
-                SecretsState,
-            >,
-        >,
-        namespace: NamespaceIdent,
-        rq: CreateViewRequest,
-        prefix: Option<String>,
-    ) -> Result<LoadViewResult> {
-        Box::pin(super::create_view(
-            NamespaceParameters {
-                namespace: namespace.clone(),
-                prefix: Some(Prefix(
-                    prefix.unwrap_or("b8683712-3484-11ef-a305-1bc8771ed40c".to_string()),
-                )),
-            },
-            rq,
-            api_context,
-            DataAccess {
-                vended_credentials: true,
-                remote_signing: false,
-            },
-            RequestMetadata::new_unauthenticated(),
-        ))
-        .await
-    }
-
-    #[sqlx::test]
-    async fn test_create_view(pool: PgPool) {
-        let (api_context, namespace, whi, _) = crate::server::views::test::setup(pool, None).await;
-
-        let mut rq = create_view_request(None, None);
-
-        let _view = Box::pin(create_view(
-            api_context.clone(),
-            namespace.clone(),
-            rq.clone(),
-            Some(whi.to_string()),
-        ))
-        .await
-        .unwrap();
-        let view = Box::pin(create_view(
-            api_context.clone(),
-            namespace.clone(),
-            rq.clone(),
-            Some(whi.to_string()),
-        ))
-        .await
-        .expect_err("Recreate with same ident should fail.");
-        assert_eq!(view.error.code, 409);
-        let old_name = rq.name.clone();
-        rq.name = "some-other-name".to_string();
-
-        let _view = Box::pin(create_view(
-            api_context.clone(),
-            namespace,
-            rq.clone(),
-            Some(whi.to_string()),
-        ))
-        .await
-        .expect("Recreate with with another name it should work");
-
-        rq.name = old_name;
-        let namespace = NamespaceIdent::from_vec(vec![Uuid::now_v7().to_string()]).unwrap();
-        let new_ns =
-            initialize_namespace(api_context.v1_state.catalog.clone(), whi, &namespace, None)
-                .await
-                .namespace_ident()
-                .clone();
-
-        let _view = Box::pin(create_view(api_context, new_ns, rq, Some(whi.to_string())))
-            .await
-            .expect("Recreate with same name but different ns should work.");
-    }
 }

@@ -1,0 +1,8 @@
+pylance>=0.20.0
+pyarrow>=17.0.0
+pandas>=2.0.0
+requests>=2.31.0
+# Pin urllib3 above the transitive version pulled by requests to pick up
+# CVE fixes from urllib3 2.6.x.
+urllib3>=2.6.3
+pytest>=8.0.0

@@ -74,6 +74,22 @@ pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
     }
 }
 
+/// Invalidate the user-assignments cache entry for every user in `user_ids`.
+///
+/// Convenience over calling [`user_assignments_cache_invalidate`] in a loop —
+/// used when a single mutation (e.g. a `role_membership` edge change) makes the
+/// effective-role list of a whole set of users stale at once.
+pub(crate) async fn user_assignments_cache_invalidate_many(user_ids: &[UserId]) {
+    if !CONFIG.cache.user_assignments.enabled {
+        return;
+    }
+    for user_id in user_ids {
+        tracing::debug!("Invalidating user assignments for {user_id} from cache");
+        USER_ASSIGNMENTS_CACHE.invalidate(user_id).await;
+    }
+    update_ua_size_metric();
+}
+
 #[inline]
 #[allow(clippy::cast_precision_loss)]
 fn update_ua_size_metric() {

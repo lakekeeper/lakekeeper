@@ -15,29 +15,31 @@ use crate::{
     service::{
         ArcProjectId, ArcRole, BasicTabularInfo, CachePolicy, CatalogGetNamespaceError,
         CatalogListRolesByIdFilter, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, GetRoleAcrossProjectsError, NamespaceId,
-        NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId, RoleIdNotFound,
-        SecretStore, State, TableInfo, TabularId, TabularIdentOwned, TabularListFlags, UserId,
-        ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
+        CatalogTabularOps, CatalogWarehouseOps, GenericTabularInfo, GetRoleAcrossProjectsError,
+        NamespaceId, NamespaceVersion, NamespaceWithParent, ResolvedWarehouse, RoleId,
+        RoleIdNotFound, SecretStore, State, TableInfo, TabularId, TabularIdentOwned,
+        TabularListFlags, UserId, ViewInfo, ViewOrTableInfo, WarehouseStatus, WarehouseVersion,
         authz::{
-            ActionDescriptor, ActionOnTable, ActionOnTableOrView, ActionOnView,
-            AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps, AuthZServerOps, AuthZTableOps,
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction, MustUse, RequireNamespaceActionError, RequireTableActionError,
+            ActionDescriptor, ActionOnGenericTable, ActionOnTable, ActionOnTableOrView,
+            ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
+            AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
+            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
+            MustUse, RequireNamespaceActionError, RequireTableActionError,
             RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
             UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
             context::{
-                ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT, ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE,
-                ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE, EntityDescriptor, FIELD_NAME_NAMESPACE,
-                FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID, FIELD_NAME_TABLE,
-                FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID, FIELD_NAME_WAREHOUSE_ID,
-                IntrospectPermissions,
+                ENTITY_TYPE_GENERIC_TABLE, ENTITY_TYPE_NAMESPACE, ENTITY_TYPE_PROJECT,
+                ENTITY_TYPE_SERVER, ENTITY_TYPE_TABLE, ENTITY_TYPE_VIEW, ENTITY_TYPE_WAREHOUSE,
+                EntityDescriptor, FIELD_NAME_GENERIC_TABLE, FIELD_NAME_GENERIC_TABLE_ID,
+                FIELD_NAME_NAMESPACE, FIELD_NAME_NAMESPACE_ID, FIELD_NAME_PROJECT_ID,
+                FIELD_NAME_TABLE, FIELD_NAME_TABLE_ID, FIELD_NAME_VIEW, FIELD_NAME_VIEW_ID,
+                FIELD_NAME_WAREHOUSE_ID, IntrospectPermissions,
             },
         },
         namespace_cache::namespace_ident_to_cache_key,
@@ -141,21 +143,24 @@ impl NamespaceIdentOrUuid {
 #[derive(Hash, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case", untagged)]
-/// Identifier for a table or view, either a UUID or its name and namespace
+/// Identifier for a tabular (table, view, or generic table) — either a UUID
+/// or its name and namespace. Wire format primary names are `table-id` and
+/// `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
+/// accepted as input aliases for client ergonomics.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
     IdInWarehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
-        #[serde(alias = "view_id")]
+        #[serde(alias = "view_id", alias = "generic_table_id")]
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
-        /// Name of the table or view
-        #[serde(alias = "view")]
+        /// Name of the table, view, or generic table.
+        #[serde(alias = "view", alias = "generic_table")]
         table: String,
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
@@ -177,7 +182,7 @@ impl TabularIdentOrUuid {
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 /// Represents an action on an object
-pub(crate) enum CatalogActionCheckOperation {
+pub enum CatalogActionCheckOperation {
     Server {
         action: CatalogServerAction,
     },
@@ -208,6 +213,11 @@ pub(crate) enum CatalogActionCheckOperation {
         #[serde(flatten)]
         view: TabularIdentOrUuid,
     },
+    GenericTable {
+        action: CatalogGenericTableAction,
+        #[serde(flatten)]
+        generic_table: TabularIdentOrUuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -218,33 +228,33 @@ pub struct CatalogActionCheckItem {
     /// Optional identifier for this check (returned in response).
     /// If not specified, the index in the request array will be used.
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
+    pub id: Option<String>,
     /// The user or role to check access for.
     /// If not specified, the identity of the user making the request is used.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) identity: Option<UserOrRole>,
+    pub identity: Option<UserOrRole>,
     /// The operation to check
-    pub(crate) operation: CatalogActionCheckOperation,
+    pub operation: CatalogActionCheckOperation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-pub(super) struct CatalogActionsBatchCheckRequest {
+pub struct CatalogActionsBatchCheckRequest {
     /// List of checks to perform
-    checks: Vec<CatalogActionCheckItem>,
+    pub checks: Vec<CatalogActionCheckItem>,
     /// If true, return 404 error when resources are not found.
     /// If false, treat missing resources as denied (allowed = false).
     /// Defaults to false.
     #[serde(default)]
-    error_on_not_found: bool,
+    pub error_on_not_found: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct CatalogActionsBatchCheckResponse {
-    results: Vec<CatalogActionsBatchCheckResult>,
+    pub results: Vec<CatalogActionsBatchCheckResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -252,8 +262,8 @@ pub struct CatalogActionsBatchCheckResponse {
 #[serde(rename_all = "kebab-case")]
 pub struct CatalogActionsBatchCheckResult {
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    allowed: bool,
+    pub id: Option<String>,
+    pub allowed: bool,
 }
 
 /// Convert a request-side `UserOrRole` (which only carries identifiers) to
@@ -357,6 +367,28 @@ impl CatalogActionCheckOperation {
                 };
                 (entity, action.action_descriptor())
             }
+            CatalogActionCheckOperation::GenericTable {
+                action,
+                generic_table,
+            } => {
+                let entity = match generic_table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_GENERIC_TABLE_ID, table_id),
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table,
+                        warehouse_id,
+                    } => EntityDescriptor::new(ENTITY_TYPE_GENERIC_TABLE)
+                        .field(FIELD_NAME_WAREHOUSE_ID, warehouse_id)
+                        .field(FIELD_NAME_NAMESPACE, &namespace.to_url_string())
+                        .field(FIELD_NAME_GENERIC_TABLE, table),
+                };
+                (entity, action.action_descriptor())
+            }
         }
     }
 }
@@ -400,7 +432,11 @@ type NamespaceChecksByIdentMap = HashMap<
     (WarehouseId, Option<UserOrRole>),
     HashMap<NamespaceIdent, Vec<(usize, CatalogNamespaceAction)>>,
 >;
-type TabularActionPair = (Option<CatalogTableAction>, Option<CatalogViewAction>);
+type TabularActionPair = (
+    Option<CatalogTableAction>,
+    Option<CatalogViewAction>,
+    Option<CatalogGenericTableAction>,
+);
 type TabularChecksByIdMap =
     HashMap<(WarehouseId, Option<UserOrRole>), HashMap<TabularId, Vec<(usize, TabularActionPair)>>>;
 type TabularChecksByIdentMap = HashMap<
@@ -524,7 +560,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (Some(action), None)));
+                            .push((i, (Some(action), None, None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -539,7 +575,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (Some(action), None)));
+                            .push((i, (Some(action), None, None)));
                     }
                 }
             }
@@ -557,7 +593,7 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_id)
                             .or_default()
-                            .push((i, (None, Some(action))));
+                            .push((i, (None, Some(action), None)));
                     }
                     TabularIdentOrUuid::Name {
                         namespace,
@@ -572,7 +608,45 @@ fn group_checks(
                             .or_default()
                             .entry(tabular_ident)
                             .or_default()
-                            .push((i, (None, Some(action))));
+                            .push((i, (None, Some(action), None)));
+                    }
+                }
+            }
+            CatalogActionCheckOperation::GenericTable {
+                action,
+                generic_table,
+            } => {
+                grouped
+                    .seen_warehouse_ids
+                    .insert(generic_table.warehouse_id());
+                match generic_table {
+                    TabularIdentOrUuid::IdInWarehouse {
+                        warehouse_id,
+                        table_id,
+                    } => {
+                        let tabular_id = TabularId::GenericTable(table_id.into());
+                        grouped
+                            .tabular_checks_by_id
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_id)
+                            .or_default()
+                            .push((i, (None, None, Some(action))));
+                    }
+                    TabularIdentOrUuid::Name {
+                        namespace,
+                        table: gt_name,
+                        warehouse_id,
+                    } => {
+                        let tabular_ident =
+                            TabularIdentOwned::GenericTable(TableIdent::new(namespace, gt_name));
+                        grouped
+                            .tabular_checks_by_ident
+                            .entry((warehouse_id, for_user))
+                            .or_default()
+                            .entry(tabular_ident)
+                            .or_default()
+                            .push((i, (None, None, Some(action))));
                     }
                 }
             }
@@ -723,6 +797,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 ViewOrTableInfo::View(info) => {
                     TabularIdentOwned::View(info.tabular_ident().clone())
                 }
+                ViewOrTableInfo::GenericTable(info) => {
+                    TabularIdentOwned::GenericTable(info.tabular_ident().clone())
+                }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
         })
@@ -828,9 +905,20 @@ fn convert_tabular_action<'a, 'u>(
     tabular_info: &'a ViewOrTableInfo,
     table_action: Option<CatalogTableAction>,
     view_action: Option<CatalogViewAction>,
+    generic_table_action: Option<CatalogGenericTableAction>,
     user: Option<&'u AuthzUserOrRole>,
-) -> Option<ActionOnTableOrView<'a, 'u, TableInfo, ViewInfo, CatalogTableAction, CatalogViewAction>>
-{
+) -> Option<
+    ActionOnTableOrView<
+        'a,
+        'u,
+        TableInfo,
+        ViewInfo,
+        CatalogTableAction,
+        CatalogViewAction,
+        GenericTabularInfo,
+        CatalogGenericTableAction,
+    >,
+> {
     match tabular_info {
         ViewOrTableInfo::Table(table_info) => table_action.map(|action| {
             ActionOnTableOrView::Table(ActionOnTable {
@@ -843,6 +931,14 @@ fn convert_tabular_action<'a, 'u>(
         ViewOrTableInfo::View(view_info) => view_action.map(|action| {
             ActionOnTableOrView::View(ActionOnView {
                 info: view_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::GenericTable(gt_info) => generic_table_action.map(|action| {
+            ActionOnTableOrView::GenericTable(ActionOnGenericTable {
+                info: gt_info,
                 action,
                 user,
                 is_delegated_execution: false,
@@ -1443,6 +1539,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::View(view_id) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, *view_id).into());
                             }
+                            TabularId::GenericTable(gt_id) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1466,8 +1565,8 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
+                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1556,6 +1655,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             TabularIdentOwned::View(view_ident) => {
                                 return Err(AuthZCannotSeeView::new_not_found(warehouse_id, view_ident.clone()).into());
                             }
+                            TabularIdentOwned::GenericTable(gt_ident) => {
+                                return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1579,8 +1681,8 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     continue;
                 };
 
-                for (i, (table_action, view_action)) in actions_on_tabular {
-                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), authz_for_user.as_ref()) {
+                for (i, (table_action, view_action, gt_action)) in actions_on_tabular {
+                    if let Some(action) = convert_tabular_action(tabular_info, table_action.clone(), view_action.clone(), gt_action.clone(), authz_for_user.as_ref()) {
                         checks.push((i, namespace, action));
                     }
                 }
@@ -1637,7 +1739,7 @@ async fn collect_authz_results(
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
+pub async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
     api_context: ApiContext<State<A, C, S>>,
     metadata: RequestMetadata,
     request: CatalogActionsBatchCheckRequest,
@@ -1863,1124 +1965,4 @@ async fn spawn_check_and_collect_results<C: CatalogStore, A: Authorizer>(
     collect_authz_results(&mut authz_tasks, &mut results).await?;
 
     Ok(results)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::*;
-    use crate::{
-        api::{
-            iceberg::{
-                types::Prefix,
-                v1::{DataAccess, NamespaceParameters, tables::TablesService},
-            },
-            management::v1::warehouse::TabularDeleteProfile,
-        },
-        implementations::{CatalogState, postgres::PostgresBackend},
-        request_metadata::RequestMetadata,
-        server::CatalogServer,
-        service::{
-            UserId,
-            authz::{
-                CatalogNamespaceAction, CatalogServerAction, CatalogTableAction,
-                CatalogWarehouseAction, tests::HidingAuthorizer,
-            },
-        },
-        tests::create_table_request,
-    };
-
-    #[sqlx::test]
-    async fn test_check_internal_basic_permissions(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Create a namespace
-        let ns_name = "test_namespace";
-        let create_ns_resp = crate::server::test::create_ns(
-            api_context.clone(),
-            test_warehouse.warehouse_id.to_string(),
-            ns_name.to_string(),
-        )
-        .await;
-
-        let ns_params = NamespaceParameters {
-            prefix: Some(Prefix(test_warehouse.warehouse_id.to_string())),
-            namespace: create_ns_resp.namespace.clone(),
-        };
-
-        // Create a table
-        let table_name = "test_table";
-        let create_table_resp = CatalogServer::create_table(
-            ns_params.clone(),
-            create_table_request(Some(table_name.to_string()), None),
-            DataAccess::not_specified(),
-            api_context.clone(),
-            metadata.clone(),
-        )
-        .await
-        .unwrap();
-
-        let table_id = create_table_resp.metadata.uuid();
-
-        // Get the namespace ID from the catalog
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let namespace_hierarchy = PostgresBackend::get_namespace(
-            test_warehouse.warehouse_id,
-            create_ns_resp.namespace.clone(),
-            catalog_state.clone(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let namespace_id = namespace_hierarchy.namespace_id();
-
-        // Test 1: Check server action (should be allowed by default)
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("server-check-1".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject {
-                        name: None,
-                        project_id: None,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].id, Some("server-check-1".to_string()));
-        assert!(response.results[0].allowed);
-
-        // Test 2: Check warehouse action by ID
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("warehouse-check-1".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Warehouse {
-                    action: CatalogWarehouseAction::Use,
-                    warehouse_id: test_warehouse.warehouse_id,
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].id,
-            Some("warehouse-check-1".to_string())
-        );
-        assert!(response.results[0].allowed);
-
-        // Test 3: Check namespace action by ID
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("namespace-check-1".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable {
-                        name: None,
-                        table_id: None,
-                        properties: Arc::default(),
-                    },
-                    namespace: NamespaceIdentOrUuid::Id {
-                        namespace_id,
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].id,
-            Some("namespace-check-1".to_string())
-        );
-        assert!(response.results[0].allowed);
-
-        // Test 4: Check namespace action by name
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("namespace-check-2".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable {
-                        name: None,
-                        table_id: None,
-                        properties: Arc::default(),
-                    },
-                    namespace: NamespaceIdentOrUuid::Name {
-                        namespace: create_ns_resp.namespace.clone(),
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].id,
-            Some("namespace-check-2".to_string())
-        );
-        assert!(response.results[0].allowed);
-
-        // Test 5: Check table action by ID
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("table-check-1".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id: test_warehouse.warehouse_id,
-                        table_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].id, Some("table-check-1".to_string()));
-        assert!(response.results[0].allowed);
-
-        // Test 6: Check table action by name
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("table-check-2".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::Name {
-                        namespace: create_ns_resp.namespace.clone(),
-                        table: table_name.to_string(),
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].id, Some("table-check-2".to_string()));
-        assert!(response.results[0].allowed);
-
-        // Test 7: Batch check with multiple operations
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![
-                CatalogActionCheckItem {
-                    id: Some("batch-1".to_string()),
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject {
-                            name: None,
-                            project_id: None,
-                        },
-                    },
-                },
-                CatalogActionCheckItem {
-                    id: Some("batch-2".to_string()),
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Warehouse {
-                        action: CatalogWarehouseAction::Use,
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-                CatalogActionCheckItem {
-                    id: Some("batch-3".to_string()),
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Table {
-                        action: CatalogTableAction::ReadData,
-                        table: TabularIdentOrUuid::IdInWarehouse {
-                            warehouse_id: test_warehouse.warehouse_id,
-                            table_id,
-                        },
-                    },
-                },
-            ],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 3);
-        assert!(response.results.iter().all(|r| r.allowed));
-        assert_eq!(response.results[0].id, Some("batch-1".to_string()));
-        assert_eq!(response.results[1].id, Some("batch-2".to_string()));
-        assert_eq!(response.results[2].id, Some("batch-3".to_string()));
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_hidden_warehouse(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // First verify warehouse is accessible
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("visible-warehouse".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Warehouse {
-                    action: CatalogWarehouseAction::Use,
-                    warehouse_id: test_warehouse.warehouse_id,
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(response.results[0].allowed); // Should be allowed initially
-
-        // Now hide the warehouse
-        authz.hide(&format!("warehouse:{}", test_warehouse.warehouse_id));
-
-        // Check warehouse action again - should now be denied
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("hidden-warehouse".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Warehouse {
-                    action: CatalogWarehouseAction::Use,
-                    warehouse_id: test_warehouse.warehouse_id,
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(response.results[0].id, Some("hidden-warehouse".to_string()));
-        assert!(!response.results[0].allowed); // Should now be denied
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_hidden_namespace(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Create a namespace
-        let create_ns_resp = crate::server::test::create_ns(
-            api_context.clone(),
-            test_warehouse.warehouse_id.to_string(),
-            "test_namespace".to_string(),
-        )
-        .await;
-
-        // Get the namespace ID
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let namespace_hierarchy = PostgresBackend::get_namespace(
-            test_warehouse.warehouse_id,
-            create_ns_resp.namespace.clone(),
-            catalog_state.clone(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let namespace_id = namespace_hierarchy.namespace_id();
-
-        // First verify namespace is accessible by ID
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("visible-namespace-id".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable {
-                        name: None,
-                        table_id: None,
-                        properties: Arc::default(),
-                    },
-                    namespace: NamespaceIdentOrUuid::Id {
-                        namespace_id,
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(response.results[0].allowed); // Should be allowed initially
-
-        // Verify namespace is accessible by name
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("visible-namespace-name".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable {
-                        name: None,
-                        table_id: None,
-                        properties: Arc::default(),
-                    },
-                    namespace: NamespaceIdentOrUuid::Name {
-                        namespace: create_ns_resp.namespace.clone(),
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(response.results[0].allowed); // Should be allowed initially
-
-        // Now hide the namespace
-        authz.hide(&format!("namespace:{namespace_id}"));
-
-        // Check namespace action by ID - should now be denied
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("hidden-namespace-id".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable {
-                        name: None,
-                        table_id: None,
-                        properties: Arc::default(),
-                    },
-                    namespace: NamespaceIdentOrUuid::Id {
-                        namespace_id,
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(!response.results[0].allowed); // Should now be denied
-
-        // Check namespace action by name - should also be denied
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("hidden-namespace-name".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Namespace {
-                    action: CatalogNamespaceAction::CreateTable {
-                        name: None,
-                        table_id: None,
-                        properties: Arc::default(),
-                    },
-                    namespace: NamespaceIdentOrUuid::Name {
-                        namespace: create_ns_resp.namespace.clone(),
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(!response.results[0].allowed); // Should now be denied
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_hidden_table(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Create a namespace
-        let create_ns_resp = crate::server::test::create_ns(
-            api_context.clone(),
-            test_warehouse.warehouse_id.to_string(),
-            "test_namespace".to_string(),
-        )
-        .await;
-
-        let ns_params = NamespaceParameters {
-            prefix: Some(Prefix(test_warehouse.warehouse_id.to_string())),
-            namespace: create_ns_resp.namespace.clone(),
-        };
-
-        // Create a table
-        let table_name = "test_table";
-        let create_table_resp = CatalogServer::create_table(
-            ns_params.clone(),
-            create_table_request(Some(table_name.to_string()), None),
-            DataAccess::not_specified(),
-            api_context.clone(),
-            metadata.clone(),
-        )
-        .await
-        .unwrap();
-
-        let table_id = create_table_resp.metadata.uuid();
-
-        // First verify table is accessible by ID
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("visible-table-id".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id: test_warehouse.warehouse_id,
-                        table_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(response.results[0].allowed); // Should be allowed initially
-
-        // Verify table is accessible by name
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("visible-table-name".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::Name {
-                        namespace: create_ns_resp.namespace.clone(),
-                        table: table_name.to_string(),
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(response.results[0].allowed); // Should be allowed initially
-
-        // Now hide the table
-        authz.hide(&format!(
-            "table:{}/{}",
-            test_warehouse.warehouse_id, table_id
-        ));
-
-        // Check table action by ID - should now be denied
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("hidden-table-id".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id: test_warehouse.warehouse_id,
-                        table_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(!response.results[0].allowed); // Should now be denied
-
-        // Check table action by name - should also be denied
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("hidden-table-name".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::Name {
-                        namespace: create_ns_resp.namespace.clone(),
-                        table: table_name.to_string(),
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(!response.results[0].allowed); // Should now be denied
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_mixed_visibility(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Create two namespaces
-        let ns1_resp = crate::server::test::create_ns(
-            api_context.clone(),
-            test_warehouse.warehouse_id.to_string(),
-            "visible_ns".to_string(),
-        )
-        .await;
-
-        let ns2_resp = crate::server::test::create_ns(
-            api_context.clone(),
-            test_warehouse.warehouse_id.to_string(),
-            "hidden_ns".to_string(),
-        )
-        .await;
-
-        // Get namespace IDs
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-        let ns1_hierarchy = PostgresBackend::get_namespace(
-            test_warehouse.warehouse_id,
-            ns1_resp.namespace.clone(),
-            catalog_state.clone(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-
-        let ns2_hierarchy = PostgresBackend::get_namespace(
-            test_warehouse.warehouse_id,
-            ns2_resp.namespace.clone(),
-            catalog_state.clone(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-
-        // Hide the second namespace
-        authz.hide(&format!("namespace:{}", ns2_hierarchy.namespace_id()));
-
-        // Batch check with mixed visibility
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![
-                CatalogActionCheckItem {
-                    id: Some("visible".to_string()),
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Namespace {
-                        action: CatalogNamespaceAction::CreateTable {
-                            name: None,
-                            table_id: None,
-                            properties: Arc::default(),
-                        },
-                        namespace: NamespaceIdentOrUuid::Id {
-                            namespace_id: ns1_hierarchy.namespace_id(),
-                            warehouse_id: test_warehouse.warehouse_id,
-                        },
-                    },
-                },
-                CatalogActionCheckItem {
-                    id: Some("hidden".to_string()),
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Namespace {
-                        action: CatalogNamespaceAction::CreateTable {
-                            name: None,
-                            table_id: None,
-                            properties: Arc::default(),
-                        },
-                        namespace: NamespaceIdentOrUuid::Id {
-                            namespace_id: ns2_hierarchy.namespace_id(),
-                            warehouse_id: test_warehouse.warehouse_id,
-                        },
-                    },
-                },
-            ],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 2);
-        assert_eq!(response.results[0].id, Some("visible".to_string()));
-        assert!(response.results[0].allowed); // Visible namespace should be allowed
-        assert_eq!(response.results[1].id, Some("hidden".to_string()));
-        assert!(!response.results[1].allowed); // Hidden namespace should be denied
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_error_on_not_found(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Check a non-existent table with error_on_not_found = false
-        let non_existent_table_id = uuid::Uuid::now_v7();
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("not-found-no-error".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id: test_warehouse.warehouse_id,
-                        table_id: non_existent_table_id,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert!(!response.results[0].allowed); // Should be denied but not error
-
-        // Check a non-existent table with error_on_not_found = true
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("not-found-with-error".to_string()),
-                identity: None,
-                operation: CatalogActionCheckOperation::Table {
-                    action: CatalogTableAction::ReadData,
-                    table: TabularIdentOrUuid::IdInWarehouse {
-                        warehouse_id: test_warehouse.warehouse_id,
-                        table_id: non_existent_table_id,
-                    },
-                },
-            }],
-            error_on_not_found: true,
-        };
-
-        let result = check_internal(api_context.clone(), metadata.clone(), request).await;
-        assert!(result.is_err()); // Should return an error
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_no_id_defaults_to_index(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Check without providing IDs - should use None
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![
-                CatalogActionCheckItem {
-                    id: None,
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject {
-                            name: None,
-                            project_id: None,
-                        },
-                    },
-                },
-                CatalogActionCheckItem {
-                    id: None,
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Warehouse {
-                        action: CatalogWarehouseAction::Use,
-                        warehouse_id: test_warehouse.warehouse_id,
-                    },
-                },
-            ],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 2);
-        assert_eq!(response.results[0].id, None);
-        assert_eq!(response.results[1].id, None);
-        assert!(response.results[0].allowed);
-        assert!(response.results[1].allowed);
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_max_checks_limit(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, _test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Create more than MAX_CHECKS (1000) checks
-        let checks = (0..1001)
-            .map(|i| CatalogActionCheckItem {
-                id: Some(format!("check-{i}")),
-                identity: None,
-                operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject {
-                        name: None,
-                        project_id: None,
-                    },
-                },
-            })
-            .collect();
-
-        let request = CatalogActionsBatchCheckRequest {
-            checks,
-            error_on_not_found: false,
-        };
-
-        let result = check_internal(api_context.clone(), metadata.clone(), request).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.r#type, "TooManyChecks");
-    }
-
-    #[test]
-    fn test_table_action_update_property_serde() {
-        // Trino may send non-string properties (such as int `format_version`) to OPA, which then forwards to lakekeeper.
-        let expected = serde_json::json!({
-            "checks":[
-                {
-                    "identity":{
-                        "user":"oidc~9410d0bf-4487-4177-a34f-af364cac0a59"
-                    },
-                    "operation":{
-                        "table":{
-                            "action":{
-                                "action":"commit",
-                                "removed_properties":[],
-                                "updated_properties":{"format_version":2}
-                            },
-                            "namespace":["test_set_properties_trino"],
-                            "table":"my_table",
-                            "warehouse-id":"e2c21690-dce9-11f0-9036-c3bdc0f3ba79"
-                        }
-                    }
-                }],
-                "error-on-not-found":false});
-        let action = CatalogTableAction::Commit {
-            removed_properties: Arc::new(vec![]),
-            updated_properties: Arc::new({
-                let mut map = BTreeMap::new();
-                map.insert("format_version".to_string(), "2".to_string());
-                map
-            }),
-        };
-        let item = CatalogActionCheckItem {
-            id: None,
-            identity: Some(UserOrRole::User(UserId::new_unchecked(
-                "oidc",
-                "9410d0bf-4487-4177-a34f-af364cac0a59",
-            ))),
-            operation: CatalogActionCheckOperation::Table {
-                action,
-                table: TabularIdentOrUuid::Name {
-                    namespace: NamespaceIdent::from_strs(vec![
-                        "test_set_properties_trino".to_string(),
-                    ])
-                    .unwrap(),
-                    table: "my_table".to_string(),
-                    warehouse_id: uuid::Uuid::parse_str("e2c21690-dce9-11f0-9036-c3bdc0f3ba79")
-                        .unwrap()
-                        .into(),
-                },
-            },
-        };
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![item],
-            error_on_not_found: false,
-        };
-        let deserialized: CatalogActionsBatchCheckRequest =
-            serde_json::from_value(expected).unwrap();
-        assert_eq!(request, deserialized);
-    }
-
-    #[sqlx::test]
-    async fn test_check_internal_role_based_identity(pool: sqlx::PgPool) {
-        use crate::api::management::v1::{
-            ApiServer,
-            role::{CreateRoleRequest, Service as RoleService},
-        };
-
-        let prof = crate::server::test::memory_io_profile();
-        let authz = HidingAuthorizer::new();
-
-        let (api_context, test_warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Hard {},
-            None,
-        )
-        .await;
-
-        let metadata = RequestMetadata::new_unauthenticated();
-
-        // Create a role in the project so fetch_identity_roles can resolve it.
-        let role = ApiServer::<PostgresBackend, _, _>::create_role(
-            CreateRoleRequest {
-                name: "test-role".to_string(),
-                description: None,
-                project_id: Some((*test_warehouse.project_id).clone()),
-                provider_id: None,
-                source_id: None,
-            },
-            api_context.clone(),
-            metadata.clone(),
-        )
-        .await
-        .unwrap();
-        let role_id = role.id;
-
-        // Test 1: server action with role identity — exercises fetch_identity_roles +
-        // resolve_identity end-to-end.
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("role-server-check".to_string()),
-                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
-                operation: CatalogActionCheckOperation::Server {
-                    action: CatalogServerAction::CreateProject {
-                        name: None,
-                        project_id: None,
-                    },
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].id,
-            Some("role-server-check".to_string())
-        );
-        assert!(response.results[0].allowed);
-
-        // Test 2: warehouse action with role identity — allowed before hiding.
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("role-warehouse-allow".to_string()),
-                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
-                operation: CatalogActionCheckOperation::Warehouse {
-                    action: CatalogWarehouseAction::Use,
-                    warehouse_id: test_warehouse.warehouse_id,
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].id,
-            Some("role-warehouse-allow".to_string())
-        );
-        assert!(response.results[0].allowed);
-
-        // Test 3: hide the warehouse, then recheck with role identity — should be denied.
-        authz.hide(&format!("warehouse:{}", test_warehouse.warehouse_id));
-
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![CatalogActionCheckItem {
-                id: Some("role-warehouse-deny".to_string()),
-                identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
-                operation: CatalogActionCheckOperation::Warehouse {
-                    action: CatalogWarehouseAction::Use,
-                    warehouse_id: test_warehouse.warehouse_id,
-                },
-            }],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0].id,
-            Some("role-warehouse-deny".to_string())
-        );
-        assert!(!response.results[0].allowed);
-
-        // Test 4: batch mixing role identity with no-identity on the same server action —
-        // both must succeed, confirming prefetch deduplication works.
-        let request = CatalogActionsBatchCheckRequest {
-            checks: vec![
-                CatalogActionCheckItem {
-                    id: Some("batch-role".to_string()),
-                    identity: Some(UserOrRole::Role(RoleAssignee::from_role(role_id))),
-                    operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject {
-                            name: None,
-                            project_id: None,
-                        },
-                    },
-                },
-                CatalogActionCheckItem {
-                    id: Some("batch-no-identity".to_string()),
-                    identity: None,
-                    operation: CatalogActionCheckOperation::Server {
-                        action: CatalogServerAction::CreateProject {
-                            name: None,
-                            project_id: None,
-                        },
-                    },
-                },
-            ],
-            error_on_not_found: false,
-        };
-
-        let response = check_internal(api_context.clone(), metadata.clone(), request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.results.len(), 2);
-        assert!(response.results.iter().all(|r| r.allowed));
-        assert_eq!(response.results[0].id, Some("batch-role".to_string()));
-        assert_eq!(
-            response.results[1].id,
-            Some("batch-no-identity".to_string())
-        );
-    }
 }

@@ -8,7 +8,8 @@ use crate::{
             task_queue::SetTaskQueueConfigRequest,
             warehouse::{
                 RenameWarehouseRequest, UpdateWarehouseCredentialRequest,
-                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseStorageRequest,
+                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
+                UpdateWarehouseStorageRequest,
             },
         },
     },
@@ -52,6 +53,14 @@ pub struct RenameWarehouseEvent {
 #[derive(Clone, Debug)]
 pub struct UpdateWarehouseDeleteProfileEvent {
     pub request: Arc<UpdateWarehouseDeleteProfileRequest>,
+    pub updated_warehouse: Arc<ResolvedWarehouse>,
+    pub request_metadata: Arc<RequestMetadata>,
+}
+
+/// Event emitted when warehouse format version policy is updated
+#[derive(Clone, Debug)]
+pub struct UpdateWarehouseFormatVersionPolicyEvent {
+    pub request: Arc<UpdateWarehouseFormatVersionPolicyRequest>,
     pub updated_warehouse: Arc<ResolvedWarehouse>,
     pub request_metadata: Arc<RequestMetadata>,
 }
@@ -150,6 +159,25 @@ impl
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {
             let () = dispatcher.warehouse_protection_set(event).await;
+        });
+    }
+
+    /// Emit warehouse format version policy updated event
+    pub(crate) fn emit_warehouse_format_version_policy_updated(
+        self,
+        request: Arc<UpdateWarehouseFormatVersionPolicyRequest>,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+    ) {
+        let event = UpdateWarehouseFormatVersionPolicyEvent {
+            request,
+            updated_warehouse,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher
+                .warehouse_format_version_policy_updated(event)
+                .await;
         });
     }
 

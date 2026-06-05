@@ -14,7 +14,7 @@ pub use client::{
     BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
     new_authorizer_from_default_config, new_client_from_default_config,
 };
-pub(crate) use error::{OpenFGAError, OpenFGAResult};
+pub(crate) use error::{OpenFGAError, OpenFGAResult, ParseOpenFgaEntityError};
 use openfga_client::migration::AuthorizationModelVersion;
 
 mod api;
@@ -34,8 +34,8 @@ mod tuples;
 pub use config::CONFIG;
 pub use migration::migrate;
 pub use reconcile::{
-    RebuildReport, ReconcileMode, ReconcileReport, rebuild_hierarchy_tuples_from_catalog,
-    reconcile_hierarchy_tuples_from_catalog,
+    RECONCILE_LOCK_KEY, RebuildReport, ReconcileMode, ReconcileReport,
+    rebuild_hierarchy_tuples_from_catalog, reconcile_hierarchy_tuples_from_catalog,
 };
 
 const MAX_TUPLES_PER_WRITE: i32 = 100;
@@ -78,6 +78,8 @@ pub enum FgaType {
     Table,
     #[strum(serialize = "lakekeeper_view")]
     View,
+    #[strum(serialize = "lakekeeper_generic_table")]
+    GenericTable,
     ModelVersion,
     AuthModelId,
 }
