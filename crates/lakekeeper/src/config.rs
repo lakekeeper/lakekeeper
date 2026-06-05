@@ -530,6 +530,10 @@ pub struct DynAppConfig {
     #[serde(default)]
     pub debug: DebugConfig,
 
+    // ------------- Roles -------------
+    #[serde(default)]
+    pub role: RoleConfig,
+
     // ------------- Request Limits -------------
     /// Maximum request body size in bytes. Defaults to 2 MB.
     pub max_request_body_size: usize,
@@ -773,6 +777,25 @@ impl IdempotencyConfig {
     #[must_use]
     pub fn total_retention(&self) -> Duration {
         self.lifetime + self.grace_period
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct RoleConfig {
+    /// Maximum number of `role_membership` (role→role) edges allowed in any
+    /// nesting chain. Enforced at write time on the catalog (Postgres) path: an
+    /// edge that would make some chain longer than this is rejected with
+    /// `RoleMembershipDepthExceeded` (HTTP 409). The OpenFGA authorization path
+    /// is not bounded here — it relies on its own resolution limits, the same
+    /// asymmetry as cycle prevention. Default: 10.
+    pub max_nesting_depth: usize,
+}
+
+impl Default for RoleConfig {
+    fn default() -> Self {
+        Self {
+            max_nesting_depth: 10,
+        }
     }
 }
 
@@ -1044,6 +1067,7 @@ impl Default for DynAppConfig {
             skip_storage_validation: false,
             idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
+            role: RoleConfig::default(),
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
             max_request_time: Duration::from_secs(30),
@@ -2036,6 +2060,25 @@ mod test {
             let TrustedEngine::Trino(c) = engine;
             let oidc = c.identities.get("oidc").unwrap();
             assert_eq!(oidc.audiences, vec!["trino"]);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.role.max_nesting_depth, 10);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_max_nesting_depth_env_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ROLE__MAX_NESTING_DEPTH", "3");
+            let config = get_config();
+            assert_eq!(config.role.max_nesting_depth, 3);
             Ok(())
         });
     }

@@ -469,6 +469,7 @@ impl CatalogStore for super::PostgresBackend {
             project_id,
             parent_role_id,
             member_role_ids,
+            lakekeeper::CONFIG.role.max_nesting_depth,
             transaction,
         )
         .await
