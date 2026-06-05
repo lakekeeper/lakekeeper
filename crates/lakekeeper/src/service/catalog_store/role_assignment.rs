@@ -467,7 +467,8 @@ impl From<RoleMembershipCycle> for ErrorModel {
 }
 
 /// Adding the requested role->role edge would make some role-nesting chain
-/// longer than the configured maximum (`max_role_nesting_depth`). The depth is
+/// longer than the configured maximum (`LAKEKEEPER__ROLE__MAX_NESTING_DEPTH`).
+/// The depth is
 /// the number of `role_membership` (role→role) edges in a chain; adding edge
 /// `parent -> member` the longest chain through it is
 /// `longest_chain_above(parent) + 1 + longest_chain_below(member)`.

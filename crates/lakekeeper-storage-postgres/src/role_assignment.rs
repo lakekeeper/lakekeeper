@@ -1412,6 +1412,138 @@ mod tests {
         assert_eq!(e.max_depth, 3);
     }
 
+    /// A multi-member add is all-or-nothing: if any one member would exceed the
+    /// limit, the whole batch is rejected (naming that member) and no edge —
+    /// not even the in-limit ones — is written. With `max_depth = 2`, adding
+    /// `[shallow, deep]` to a parent rejects because `deep` has a 2-edge subtree
+    /// (`deep→d1→d2`), so `p→deep→d1→d2` = 3 edges; `p→shallow` (1 edge) is fine
+    /// but must not be persisted either.
+    #[sqlx::test]
+    async fn role_membership_depth_batch_is_all_or_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let p = create_managed_role(&state, &project_id, "p").await;
+        let shallow = create_managed_role(&state, &project_id, "shallow").await;
+        let deep = create_managed_role(&state, &project_id, "deep").await;
+        let d1 = create_managed_role(&state, &project_id, "d1").await;
+        let d2 = create_managed_role(&state, &project_id, "d2").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // deep -> d1 -> d2 (2 edges below `deep`), built without tripping the limit.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&project_id, deep, &[d1], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        add_role_members(&project_id, d1, &[d2], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Batch p -> [shallow, deep] at max_depth=2: only `deep` exceeds, but the
+        // whole call is rejected and it names `deep`.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_role_members(&project_id, p, &[shallow, deep], 2, t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, p);
+        assert_eq!(e.member_role_id, deep);
+        assert_eq!(e.max_depth, 2);
+        drop(t); // roll back the rejected transaction
+
+        // All-or-nothing: the in-limit `p -> shallow` edge was NOT written either.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let members =
+            list_role_memberships(p, RoleMembershipDirection::Members, &mut **t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(members, Vec::new());
+    }
+
+    /// The default limit (10) is enforced through the public trait path
+    /// (`PostgresBackend::add_role_members`), which reads
+    /// `CONFIG.role.max_nesting_depth` — proving the config is wired end-to-end,
+    /// not just the free fn. A 10-edge chain is allowed; the 11th edge is rejected.
+    #[sqlx::test]
+    async fn role_membership_default_depth_enforced_via_trait_path(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let mut roles = Vec::new();
+        for i in 0..=11 {
+            roles.push(create_managed_role(&state, &project_id, &format!("r{i}")).await);
+        }
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        // r0 -> r1 -> ... -> r10 == 10 edges, exactly the default limit → all allowed.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        for i in 0..10 {
+            PostgresBackend::add_role_members(
+                &project_id,
+                roles[i],
+                &[roles[i + 1]],
+                t.transaction(),
+            )
+            .await
+            .unwrap();
+        }
+        t.commit().await.unwrap();
+
+        // r10 -> r11 would be the 11th edge → rejected by the default max of 10.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = PostgresBackend::add_role_members(
+            &project_id,
+            roles[10],
+            &[roles[11]],
+            t.transaction(),
+        )
+        .await
+        .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, roles[10]);
+        assert_eq!(e.member_role_id, roles[11]);
+        assert_eq!(e.max_depth, 10);
+    }
+
+    /// `max_depth = 0` disables role nesting entirely: any role→role edge is a
+    /// 1-edge chain (`0 + 1 + 0 > 0`), so it is rejected. This is the documented
+    /// flat-roles-only policy — `0` is a valid configured value, not clamped away.
+    #[sqlx::test]
+    async fn role_membership_depth_zero_disables_nesting(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let p = create_managed_role(&state, &project_id, "p").await;
+        let m = create_managed_role(&state, &project_id, "m").await;
+        let project_id: ArcProjectId = Arc::new(project_id);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_role_members(&project_id, p, &[m], 0, t.transaction())
+            .await
+            .unwrap_err();
+        let AddRoleMembersError::RoleMembershipDepthExceeded(e) = err else {
+            panic!("expected RoleMembershipDepthExceeded, got {err:?}");
+        };
+        assert_eq!(e.parent_role_id, p);
+        assert_eq!(e.member_role_id, m);
+        assert_eq!(e.max_depth, 0);
+    }
+
     #[sqlx::test]
     async fn effective_roles_resolve_ancestor_closure_depth_3(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
