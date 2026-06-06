@@ -17,6 +17,11 @@
   ],
   "packageRules": [
     {
+      "description": "Don't auto-bump CI service/runner versions. postgres (the catalog DB) and the ubuntu runner OS define the test environment, not the dependency tree — major bumps should be a deliberate, reviewed choice (does CI still reflect the versions we support?), not an automatic PR.",
+      "matchDepNames": ["postgres", "ubuntu"],
+      "enabled": false
+    },
+    {
       "description": "Group all GitHub Actions updates (digest, minor, major) into one PR",
       "matchManagers": ["github-actions"],
       "groupName": "github-actions",
