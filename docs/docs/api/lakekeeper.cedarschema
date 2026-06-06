@@ -94,9 +94,11 @@ namespace Lakekeeper {
   entity User in [Role, Server] {
     // Email of the user, extracted from the authentication token.
     // Not available for all token types.
-    // Lakekeeper does not enforce email uniqueness. Two distinct
-    // users may share an email (e.g. service principals using a
-    // shared mailbox, or default emails issued by an IDP).
+    // NOT UNIQUE: Lakekeeper does not enforce email uniqueness. Two distinct
+    // users may legitimately share an email (e.g. service principals using a
+    // shared mailbox, or default emails issued by an IDP). Do not use `email`
+    // as an identity discriminator in policies — use the entity UID
+    // (`Lakekeeper::User::"<provider>~<source>"`) or `provider_id`/`source_id`.
     email?: String,
     // Provider-resolved role memberships as Cedar Role entity UIDs.
     // The user entity is a Cedar parent of every role in this set, so
@@ -226,6 +228,21 @@ namespace Lakekeeper {
     properties: ResourceProperties,
   };
 
+  // GenericTable entity for non-Iceberg ("generic") tables.
+  // ID: "<warehouse-UUID>/<generic-table-UUID>"
+  //     e.g. "01943e3d-43c5-7a4e-b6dd-a44b6685c8c9/01943e3d-43c5-7a4e-b6dd-a88faa29gcad"
+  entity GenericTable in [Namespace] {
+    project: Project,
+    warehouse: Warehouse,
+    // Direct parent namespace.
+    namespace: Namespace,
+    // Name of the generic table within its namespace.
+    name: String,
+    protected: Bool,
+    // Current properties of this generic table.
+    properties: ResourceProperties,
+  };
+
   // ---------- Resource Properties ----------
 
   // ResourceProperties is modeled as a Cedar entity with `tags` to represent
@@ -347,7 +364,8 @@ namespace Lakekeeper {
   action IntrospectWarehouseAuthorization, DeleteWarehouse, UpdateStorage, UpdateStorageCredential,
          DeactivateWarehouse, ActivateWarehouse,
          RenameWarehouse, ModifySoftDeletion,
-         ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection in ["WarehouseModifyActions"]
+         ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection,
+         SetWarehouseFormatVersionPolicy in ["WarehouseModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Warehouse]
@@ -371,7 +389,7 @@ namespace Lakekeeper {
   action "NamespaceModifyActions" in ["NamespaceActions"];
 
   action ListEverythingInNamespace, GetNamespaceMetadata, IncludeNamespaceInList,
-         ListTables, ListViews,
+         ListTables, ListViews, ListGenericTables,
          ListNamespacesInNamespace in ["NamespaceDescribeActions"]
     appliesTo {
       principal: [User, Role],
@@ -408,6 +426,27 @@ namespace Lakekeeper {
         view_name?: String,
         // Initial property values for the view being created.
         initial_view_properties: ResourceProperties,
+      }
+    };
+  action CreateGenericTableInNamespace in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Name of the generic table being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        generic_table_name?: String,
+        // Externally provided generic table ID. Absent when listing allowed
+        // actions or when not specified via the check API.
+        generic_table_id?: String,
+        // Generic table format (e.g. "lance", "delta"). Absent when listing
+        // allowed actions or when not specified via the check API.
+        format?: String,
+        // User-supplied base location override. Absent when listing allowed
+        // actions or when not specified via the check API.
+        base_location?: String,
+        // Initial property values for the generic table being created.
+        initial_generic_table_properties: ResourceProperties,
       }
     };
   action CreateNamespaceInNamespace in ["NamespaceModifyActions"]
@@ -499,5 +538,29 @@ namespace Lakekeeper {
         // Property keys to be removed from this view.
         view_properties_removal: Set<String>,
       }
+    };
+
+  // ---------- Generic Table Actions ----------
+  action "GenericTableActions";
+  action "GenericTableDescribeActions" in ["GenericTableActions", "GenericTableSelectActions", "GenericTableModifyActions"];
+  action "GenericTableSelectActions" in ["GenericTableActions", "GenericTableModifyActions"];
+  action "GenericTableModifyActions" in ["GenericTableActions"];
+  action GetGenericTableMetadata, IncludeGenericTableInList,
+         GetGenericTableTasks in ["GenericTableDescribeActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+  action ReadGenericTableData in ["GenericTableSelectActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
+    };
+  action IntrospectGenericTableAuthorization, DropGenericTable, WriteGenericTableData,
+         RenameGenericTable, UndropGenericTable, ControlGenericTableTasks,
+         SetGenericTableProtection in ["GenericTableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [GenericTable]
     };
 }

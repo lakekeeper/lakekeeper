@@ -16,8 +16,30 @@ deploy:
   dev/deploy.sh
 
 # Clean and build the docs site locally.
-build: 
+build:
   dev/build.sh
+
+# Build the docs and link-check the live content (nightly + top-level pages).
+# Two layers, both scoped to what's editable here:
+#   1. Anchors — mkdocs validates these per-page; we fail only on the `nightly`
+#      source version (released versions are frozen snapshots and may carry old links).
+#   2. File/asset existence — lychee resolves the cross-unit/shared-asset paths that
+#      mkdocs' per-unit validation can't. Fragments are skipped (lychee mis-resolves
+#      mkdocs' pretty `page/` URLs), and the doubled `nightly/docs` orphan is excluded.
+# Needs lychee: `cargo install lychee` (CI installs it via taiki-e/install-action).
+linkcheck:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  command -v lychee >/dev/null || { echo "lychee not found — run: cargo install lychee"; exit 127; }
+  ./dev/build.sh 2>&1 | tee /tmp/lk-build.log
+  if grep -qE "Doc file 'docs/nightly/.*does not contain an anchor" /tmp/lk-build.log; then
+    echo "::error:: broken anchor link(s) in nightly docs:"
+    grep -E "docs/nightly/.*does not contain an anchor" /tmp/lk-build.log || true
+    exit 1
+  fi
+  lychee --offline --root-dir "$PWD/site" --no-progress \
+    --exclude-path site/docs/nightly/docs \
+    site/index.html site/getting-started site/support site/about site/docs/nightly
 
 # Clean the local docs site.
 clean:
