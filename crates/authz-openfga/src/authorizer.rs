@@ -347,6 +347,11 @@ impl Authorizer for OpenFGAAuthorizer {
                     CatalogUserAction::Read => true,
                     CatalogUserAction::Update => can_update,
                     CatalogUserAction::Delete => can_delete,
+                    // List the roles assigned to this user: gated on the same
+                    // "allowed to know about this user" check as inspection
+                    // (`CanListUsers`). A user reading their own assignments is
+                    // already short-circuited above via `is_same_user`.
+                    CatalogUserAction::ReadRoleAssignments => is_allowed_to_know,
                 };
                 results.push((idx, allowed));
             }

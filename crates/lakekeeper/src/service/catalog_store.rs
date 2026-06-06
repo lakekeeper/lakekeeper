@@ -34,6 +34,7 @@ use crate::{
     service::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
+        authz::ListRoleAssignmentsResultPage,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -688,6 +689,25 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError>;
 
+    /// Additively assign users to a role (user→role `role_assignment` rows).
+    /// Idempotent (already-assigned users are skipped). The user→role relation is
+    /// bipartite, so unlike `add_role_members_impl` there is no cycle risk and no
+    /// advisory lock. Pre-checks user existence → `RoleAssignmentUserNotFound`
+    /// (provision-then-assign).
+    async fn add_user_role_assignments_impl<'a>(
+        project_id: &ArcProjectId,
+        role_id: RoleId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddUserRoleAssignmentsResult, AddUserRoleAssignmentsError>;
+
+    /// Remove user→role assignments. Idempotent.
+    async fn remove_user_role_assignments_impl<'a>(
+        role_id: RoleId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveUserRoleAssignmentsResult, RemoveUserRoleAssignmentsError>;
+
     async fn list_role_memberships_impl(
         role_id: RoleId,
         direction: RoleMembershipDirection,
@@ -703,6 +723,40 @@ where
         member_role_id: RoleId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    // ---------------- Role-membership management API (cold, paginated reads) ----
+    //
+    // These back the public `/role/{id}/members`, `/role/{id}/parents` and
+    // `/user/{id}/roles` listings on authorizers that do NOT manage assignments
+    // (Cedar/AllowAll). They are deliberately separate from the cached, full-set
+    // hot-path readers above: paginating those would defeat their cache.
+
+    /// Direct members of `role_id` (user members ∪ member roles) merged into one
+    /// keyset-paginated, project-scoped listing. `type_filter` optionally restricts
+    /// to one member kind.
+    async fn list_direct_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRoleAssignmentsResultPage>;
+
+    /// Direct parent roles of `role_id`, keyset-paginated and project-scoped.
+    async fn list_direct_role_parents_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage>;
+
+    /// Direct roles a user is assigned to, keyset-paginated and project-scoped.
+    async fn list_direct_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
@@ -728,10 +782,15 @@ where
         catalog_state: Self::State,
     ) -> Result<ListUsersResponse>;
 
+    /// Soft-deletes the user and removes their role assignments + provider sync
+    /// log (so a deleted user is no member of any role, matching the OpenFGA
+    /// authorizer). Returns `None` if absent, else the roles the user was
+    /// assigned to — the caller evicts those roles' member caches and the user's
+    /// effective-roles cache after commit.
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<()>>;
+    ) -> Result<Option<Vec<RoleId>>>;
 
     // ---------------- Endpoint Statistics ----------------
     /// Get endpoint statistics for the project

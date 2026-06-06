@@ -336,6 +336,8 @@ pub enum CatalogUserAction {
     Update,
     /// Can delete this user
     Delete,
+    /// Can list the role assignments held by this user.
+    ReadRoleAssignments,
 }
 
 impl CatalogAction for CatalogUserAction {
@@ -513,6 +515,10 @@ pub enum CatalogRoleAction {
     ReadMetadata,
     Delete,
     Update,
+    /// Can add/remove members (user or role) of this role.
+    ManageRoleAssignments,
+    /// Can list members / parents / assignments of this role.
+    ReadRoleAssignments,
 }
 impl CatalogAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {

@@ -246,6 +246,8 @@ impl ReducedRelation for CatalogRoleAction {
             CatalogRoleAction::Update => RoleRelation::CanUpdate,
             CatalogRoleAction::Read => RoleRelation::CanRead,
             CatalogRoleAction::ReadMetadata => RoleRelation::CanReadMetadata,
+            CatalogRoleAction::ManageRoleAssignments => RoleRelation::CanGrantAssignee,
+            CatalogRoleAction::ReadRoleAssignments => RoleRelation::CanReadAssignments,
         }
     }
 }
