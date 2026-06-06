@@ -4,6 +4,17 @@ site_description: Lakekeeper is a rust native Iceberg REST Catalog
 site_author: Lakekeeper Team
 edit_uri: blob/main/docs/
 
+# Link validation. The monorepo plugin builds each version as a separate unit, so
+# cross-unit / shared-asset links (../../assets, ../../about, ../../getting-started)
+# can't be resolved here — they only resolve in the assembled site — so keep them at
+# `info`. Anchors are per-page, so broken anchors ARE real — keep them as warnings.
+# `just linkcheck` validates the assembled site (lychee) as the real gate.
+validation:
+  links:
+    not_found: info
+    anchors: warn
+    absolute_links: info
+
 theme:
   custom_dir: overrides
   name: material
