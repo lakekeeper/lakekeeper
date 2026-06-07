@@ -163,6 +163,10 @@ impl EventDispatcher {
         dispatch_event!(self, warehouse_protection_set, event);
     }
 
+    pub(crate) async fn warehouse_managed_by_set(&self, event: types::SetWarehouseManagedByEvent) {
+        dispatch_event!(self, warehouse_managed_by_set, event);
+    }
+
     pub(crate) async fn warehouse_renamed(&self, event: types::RenameWarehouseEvent) {
         dispatch_event!(self, warehouse_renamed, event);
     }
@@ -417,6 +421,14 @@ pub trait EventListener: Send + Sync + Debug + Display {
     async fn warehouse_protection_set(
         &self,
         _event: types::SetWarehouseProtectionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after the warehouse managed-by marker has been successfully changed
+    async fn warehouse_managed_by_set(
+        &self,
+        _event: types::SetWarehouseManagedByEvent,
     ) -> anyhow::Result<()> {
         Ok(())
     }

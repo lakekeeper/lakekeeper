@@ -10,6 +10,7 @@ use crate::{
     api::management::v1::{DeleteWarehouseQuery, warehouse::TabularDeleteProfile},
     service::{
         ArcProjectId, DatabaseIntegrityError,
+        authz::CatalogWarehouseAction,
         catalog_store::{
             CatalogBackendError, define_transparent_error, impl_error_stack_methods,
             impl_from_with_detail,
@@ -50,6 +51,56 @@ pub enum WarehouseStatus {
     Active,
     /// The warehouse is inactive and cannot be used.
     Inactive,
+}
+
+/// Records which control plane, if any, exclusively manages a warehouse's spec
+/// (storage profile, credentials, delete profile, rename, status, protection,
+/// format-version policy, task-queue config, deletion, and the marker itself).
+///
+/// When set to anything other than [`ManagedBy::SelfManaged`], those spec mutations
+/// are rejected for normal callers — even ones holding OpenFGA grants — and
+/// succeed only for the managing control plane. Child resources (namespaces,
+/// tables, grants) and data-plane operations are never affected.
+///
+/// Default `SelfManaged` => no behavior change for existing warehouses.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    strum_macros::Display,
+    strum_macros::EnumIter,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "sqlx-postgres",
+    sqlx(type_name = "managed_by", rename_all = "kebab-case")
+)]
+pub enum ManagedBy {
+    /// Self-managed: the warehouse's own owners mutate the spec through the usual
+    /// grants. No external control plane locks it. This is the default.
+    #[default]
+    SelfManaged,
+    /// Managed by the instance: spec mutations require instance-admin privilege
+    /// (any principal in `LAKEKEEPER__INSTANCE_ADMINS`, or an in-process caller).
+    InstanceAdmin,
+}
+
+impl ManagedBy {
+    /// Whether an external control plane manages the spec, locking it against the
+    /// warehouse's own grant-holders. False for [`ManagedBy::SelfManaged`].
+    #[must_use]
+    pub fn is_externally_managed(self) -> bool {
+        !matches!(self, ManagedBy::SelfManaged)
+    }
 }
 
 impl WarehouseStatus {
@@ -170,6 +221,16 @@ pub struct WarehouseFormatVersionPolicy {
     pub default_format_version: Option<FormatVersion>,
 }
 
+/// Storage configuration for a warehouse: the storage profile together with the
+/// secret holding its credentials (if any). These two always travel as a unit.
+#[derive(Debug, Clone)]
+pub struct WarehouseStorage {
+    /// Storage profile used for the warehouse.
+    pub profile: StorageProfile,
+    /// Secret holding the storage credentials, if any.
+    pub secret_id: Option<SecretId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWarehouse {
     /// ID of the warehouse.
@@ -188,6 +249,10 @@ pub struct ResolvedWarehouse {
     pub tabular_delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Which control plane, if any, exclusively manages this warehouse's spec.
+    /// When not [`ManagedBy::SelfManaged`], spec mutations are restricted to the
+    /// managing control plane (see [`ManagedBy`]).
+    pub managed_by: ManagedBy,
     /// Iceberg table format versions that may be created in, or upgraded to,
     /// within this warehouse.
     pub allowed_format_versions: AllowedFormatVersions,
@@ -219,6 +284,7 @@ impl ResolvedWarehouse {
             status: WarehouseStatus::Active,
             tabular_delete_profile: TabularDeleteProfile::default(),
             protected: false,
+            managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: AllowedFormatVersions::default(),
             default_format_version: None,
             updated_at: None,
@@ -241,6 +307,7 @@ impl ResolvedWarehouse {
             status: WarehouseStatus::Active,
             tabular_delete_profile: TabularDeleteProfile::default(),
             protected: false,
+            managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: AllowedFormatVersions::default(),
             default_format_version: None,
             updated_at: None,
@@ -599,6 +666,73 @@ define_transparent_error! {
     ]
 }
 
+// --------------------------- Set Warehouse Managed-By Error ---------------------------
+define_transparent_error! {
+    pub enum SetWarehouseManagedByError,
+    stack_message: "Error setting warehouse managed-by marker in catalog",
+    variants: [
+        CatalogBackendError,
+        WarehouseIdNotFound,
+        DatabaseIntegrityError,
+    ]
+}
+
+// --------------------------- Warehouse Spec Locked (managed-by) ---------------------------
+/// Returned when a spec mutation targets a managed warehouse and the caller is
+/// not the managing control plane (instance admin / in-process). HTTP 403 with a
+/// stable `WarehouseManaged` type so clients can recognise the conflict.
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error(
+    "Warehouse spec is managed by '{managed_by}' and cannot be modified by this caller. \
+     Manage it through the controlling instance admin (e.g. your operator / IaC), \
+     or have an instance admin clear the managed-by marker."
+)]
+pub struct WarehouseSpecLocked {
+    pub managed_by: ManagedBy,
+    pub stack: Vec<String>,
+}
+impl WarehouseSpecLocked {
+    #[must_use]
+    pub fn new(managed_by: ManagedBy) -> Self {
+        Self {
+            managed_by,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(WarehouseSpecLocked);
+
+impl From<WarehouseSpecLocked> for ErrorModel {
+    fn from(err: WarehouseSpecLocked) -> Self {
+        ErrorModel::builder()
+            .r#type("WarehouseManaged")
+            .code(StatusCode::FORBIDDEN.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+impl crate::service::events::AuthorizationFailureSource for WarehouseSpecLocked {
+    fn to_failure_reason(&self) -> crate::service::events::AuthorizationFailureReason {
+        crate::service::events::AuthorizationFailureReason::ActionForbidden
+    }
+
+    fn into_error_model(self) -> ErrorModel {
+        self.into()
+    }
+}
+
+define_transparent_error! {
+    pub enum EnsureWarehouseSpecMutableError,
+    stack_message: "Error verifying warehouse spec is mutable",
+    variants: [
+        CatalogBackendError,
+        WarehouseSpecLocked,
+        DatabaseIntegrityError,
+    ]
+}
+
 #[derive(Debug, Clone, Default, Copy)]
 pub enum CachePolicy {
     /// Use cached data if available
@@ -619,24 +753,57 @@ where
     async fn create_warehouse<'a>(
         warehouse_name: String,
         project_id: &ProjectId,
-        storage_profile: StorageProfile,
+        storage: WarehouseStorage,
         tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretId>,
         format_version_policy: WarehouseFormatVersionPolicy,
+        managed_by: ManagedBy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
         let warehouse = Self::create_warehouse_impl(
             warehouse_name,
             project_id,
-            storage_profile,
+            storage,
             tabular_delete_profile,
-            storage_secret_id,
             format_version_policy,
+            managed_by,
             transaction,
         )
         .await?;
         let warehouse_ref = Arc::new(warehouse);
         Ok(warehouse_ref)
+    }
+
+    /// Set (or clear) the managed-by marker on a warehouse.
+    async fn set_warehouse_managed_by<'a>(
+        warehouse_id: WarehouseId,
+        managed_by: ManagedBy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Arc<ResolvedWarehouse>, SetWarehouseManagedByError> {
+        Self::set_warehouse_managed_by_impl(warehouse_id, managed_by, transaction)
+            .await
+            .map(Arc::new)
+    }
+
+    /// Verify, within the active write transaction, that `action` may mutate this
+    /// warehouse's spec given the managed-by lock. `bypass` should be
+    /// `request_metadata.bypasses_control_plane_authz(None)` (instance admin or
+    /// in-process).
+    ///
+    /// [`CatalogWarehouseAction::is_spec_mutation`] is the single source of truth
+    /// for what the lock covers: only spec-mutating actions consult the marker, so
+    /// a handler may call this unconditionally with the action it is performing.
+    /// For a locked action it loads the warehouse row `FOR UPDATE`, making the
+    /// check TOCTOU-safe against concurrent marker changes.
+    async fn ensure_warehouse_spec_mutable<'a>(
+        warehouse_id: WarehouseId,
+        action: &CatalogWarehouseAction,
+        bypass: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), EnsureWarehouseSpecMutableError> {
+        if !action.is_spec_mutation() {
+            return Ok(());
+        }
+        Self::ensure_warehouse_spec_mutable_impl(warehouse_id, bypass, transaction).await
     }
 
     /// Delete a warehouse.

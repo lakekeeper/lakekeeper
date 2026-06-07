@@ -150,10 +150,13 @@ mod test {
         let warehouse = create_warehouse(
             "My Warehouse".to_string(),
             project_id,
-            storage_profile,
+            lakekeeper::service::WarehouseStorage {
+                profile: storage_profile,
+                secret_id: None,
+            },
             tabular_delete_profile,
-            None,
             WarehouseFormatVersionPolicy::default(),
+            lakekeeper::service::ManagedBy::SelfManaged,
             &mut tx,
         )
         .await

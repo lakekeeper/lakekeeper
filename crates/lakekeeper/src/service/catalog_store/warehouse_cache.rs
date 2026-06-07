@@ -235,6 +235,19 @@ impl EventListener for WarehouseCacheEventListener {
         Ok(())
     }
 
+    async fn warehouse_managed_by_set(
+        &self,
+        event: events::SetWarehouseManagedByEvent,
+    ) -> anyhow::Result<()> {
+        let events::SetWarehouseManagedByEvent {
+            requested_managed_by: _requested_managed_by,
+            updated_warehouse,
+            request_metadata: _request_metadata,
+        } = event;
+        warehouse_cache_insert(updated_warehouse).await;
+        Ok(())
+    }
+
     async fn warehouse_renamed(&self, event: events::RenameWarehouseEvent) -> anyhow::Result<()> {
         let events::RenameWarehouseEvent {
             request: _request,
@@ -327,6 +340,7 @@ mod tests {
             status: WarehouseStatus::Active,
             tabular_delete_profile: TabularDeleteProfile::Hard {},
             protected: false,
+            managed_by: crate::service::ManagedBy::SelfManaged,
             allowed_format_versions: crate::service::AllowedFormatVersions::default(),
             default_format_version: None,
             updated_at,

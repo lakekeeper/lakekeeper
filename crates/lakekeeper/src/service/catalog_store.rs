@@ -271,10 +271,10 @@ where
     async fn create_warehouse_impl<'a>(
         warehouse_name: String,
         project_id: &ProjectId,
-        storage_profile: StorageProfile,
+        storage: WarehouseStorage,
         tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretId>,
         format_version_policy: WarehouseFormatVersionPolicy,
+        managed_by: ManagedBy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
@@ -357,6 +357,22 @@ where
         policy: &WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
+
+    /// Set (or clear) the managed-by marker on a warehouse.
+    async fn set_warehouse_managed_by_impl<'a>(
+        warehouse_id: WarehouseId,
+        managed_by: ManagedBy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseManagedByError>;
+
+    /// Verify within the active write transaction that the warehouse spec may be
+    /// mutated by this caller (managed-by lock). See
+    /// [`CatalogWarehouseOps::ensure_warehouse_spec_mutable`].
+    async fn ensure_warehouse_spec_mutable_impl<'a>(
+        warehouse_id: WarehouseId,
+        bypass: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), EnsureWarehouseSpecMutableError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
