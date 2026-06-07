@@ -3,7 +3,10 @@ use std::{
     time::Duration,
 };
 
-use azure_core::{FixedRetryOptions, RetryOptions, TransportOptions};
+use azure_core::{
+    FixedRetryOptions, RetryOptions, TransportOptions,
+    auth::{AccessToken, TokenCredential},
+};
 use azure_identity::{
     DefaultAzureCredential, DefaultAzureCredentialBuilder, TokenCredentialOptions,
 };
@@ -25,6 +28,37 @@ pub use adls_location::{
 pub use adls_storage::AdlsStorage;
 
 use crate::InitializeClientError;
+
+/// Wraps a [`TokenCredential`] to retry transient failures when acquiring a
+/// bearer token. The Azure storage data-plane retry policy ([`RetryOptions`])
+/// does not cover the credential/token endpoint, so a single transient connect
+/// timeout to the OAuth endpoint (e.g. SNAT/ephemeral-port exhaustion under
+/// high concurrency) would otherwise fail the operation, unretried.
+#[derive(Debug)]
+struct RetryingTokenCredential {
+    inner: Arc<dyn TokenCredential>,
+}
+
+impl RetryingTokenCredential {
+    fn new(inner: Arc<dyn TokenCredential>) -> Arc<Self> {
+        Arc::new(Self { inner })
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenCredential for RetryingTokenCredential {
+    async fn get_token(&self, scopes: &[&str]) -> azure_core::Result<AccessToken> {
+        tryhard::retry_fn(|| self.inner.get_token(scopes))
+            .retries(3)
+            .exponential_backoff(Duration::from_millis(200))
+            .max_delay(Duration::from_secs(10))
+            .await
+    }
+
+    async fn clear_cache(&self) -> azure_core::Result<()> {
+        self.inner.clear_cache().await
+    }
+}
 
 const DEFAULT_HOST: &str = "dfs.core.windows.net";
 static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
@@ -154,14 +188,16 @@ impl AzureSettings {
                     client_secret.clone(),
                 );
 
-                StorageCredentials::token_credential(Arc::new(azure_auth))
+                StorageCredentials::token_credential(RetryingTokenCredential::new(Arc::new(
+                    azure_auth,
+                )))
             }
             AzureAuth::SharedAccessKey(AzureSharedAccessKeyAuth { key }) => {
                 StorageCredentials::access_key(account_name, key.clone())
             }
             AzureAuth::AzureSystemIdentity => {
                 let identity: Arc<DefaultAzureCredential> = self.get_system_identity().await?;
-                StorageCredentials::token_credential(identity)
+                StorageCredentials::token_credential(RetryingTokenCredential::new(identity))
             }
             AzureAuth::Sas(AzureSasAuth { sas_token }) => StorageCredentials::sas_token(sas_token)
                 .map_err(|e| InitializeClientError {
