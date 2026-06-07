@@ -952,15 +952,20 @@ pub(crate) async fn add_user_role_assignments(
     // typed error. `managed_providers` ($4) is the allowlist, passed from the
     // Rust constants so there is no SQL/Rust drift. `ON CONFLICT DO NOTHING` +
     // `RETURNING` makes the add idempotent and reports exactly the new rows.
+    //
+    // The role/user CTEs lock their rows `FOR UPDATE` so a concurrent role-delete
+    // or `delete_user` soft-delete can't race the INSERT: the user FK passes
+    // against a soft-deleted row, so without the lock we'd leave a dangling
+    // assignment instead of the typed not-found.
     let managed_providers: [&str; 2] = [LAKEKEEPER_ROLE_PROVIDER_NAME, SYSTEM_ROLE_PROVIDER_NAME];
     let result = sqlx::query!(
         r#"
         WITH
         target_role AS (
-            SELECT provider_id FROM "role" WHERE id = $1 AND project_id = $2
+            SELECT provider_id FROM "role" WHERE id = $1 AND project_id = $2 FOR UPDATE
         ),
         existing_users AS (
-            SELECT id FROM users WHERE id = ANY($3::text[]) AND deleted_at IS NULL
+            SELECT id FROM users WHERE id = ANY($3::text[]) AND deleted_at IS NULL FOR UPDATE
         ),
         inserted AS (
             INSERT INTO role_assignment (user_id, role_id)
@@ -998,22 +1003,32 @@ pub(crate) async fn add_user_role_assignments(
     if !(provider.is_lakekeeper() || provider.is_system()) {
         return Err(RoleNotManuallyAssignable::new(role_id, provider).into());
     }
-    let existing: HashSet<String> = result.existing_users.into_iter().collect();
-    if let Some(missing) = user_ids.iter().find(|u| !existing.contains(&u.to_string())) {
-        return Err(RoleAssignmentUserNotFound::new((*missing).clone()).into());
+    // Reuse the already-computed `user_id_strings` (same order as `user_ids`)
+    // rather than re-`to_string()`ing each id; the lookup sets borrow `&str`.
+    let existing: HashSet<&str> = result.existing_users.iter().map(String::as_str).collect();
+    if let Some((missing, _)) = user_ids
+        .iter()
+        .zip(&user_id_strings)
+        .find(|(_, s)| !existing.contains(s.as_str()))
+    {
+        return Err(RoleAssignmentUserNotFound::new(missing.clone()).into());
     }
 
-    let inserted: HashSet<String> = result.inserted_users.into_iter().collect();
+    let inserted: HashSet<&str> = result.inserted_users.iter().map(String::as_str).collect();
     let added: Vec<UserId> = user_ids
         .iter()
-        .filter(|u| inserted.contains(&u.to_string()))
-        .cloned()
+        .zip(&user_id_strings)
+        .filter(|(_, s)| inserted.contains(s.as_str()))
+        .map(|(u, _)| u.clone())
         .collect();
     Ok(AddUserRoleAssignmentsResult { added })
 }
 
 // ─── remove_user_role_assignments ─────────────────────────────────────────────
 
+/// `user_ids` is assumed unique (the `*Ops` layer deduplicates before calling):
+/// `removed` is rebuilt from the input matched against `RETURNING`, so a duplicate
+/// would otherwise be reported twice — same contract as `add_user_role_assignments`.
 pub(crate) async fn remove_user_role_assignments(
     role_id: RoleId,
     user_ids: &[UserId],
@@ -1026,7 +1041,7 @@ pub(crate) async fn remove_user_role_assignments(
     }
     let user_id_strings: Vec<String> = user_ids.iter().map(ToString::to_string).collect();
     // `RETURNING` yields exactly the assignments that existed and were deleted.
-    let returned: HashSet<String> = sqlx::query_scalar!(
+    let returned_rows = sqlx::query_scalar!(
         r#"
         DELETE FROM role_assignment
         WHERE role_id = $1 AND user_id = ANY($2::text[])
@@ -1037,14 +1052,15 @@ pub(crate) async fn remove_user_role_assignments(
     )
     .fetch_all(&mut **transaction)
     .await
-    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
-    .into_iter()
-    .collect();
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    // `RETURNING` yields exactly the assignments that existed and were deleted.
+    let returned: HashSet<&str> = returned_rows.iter().map(String::as_str).collect();
 
     let removed: Vec<UserId> = user_ids
         .iter()
-        .filter(|u| returned.contains(&u.to_string()))
-        .cloned()
+        .zip(&user_id_strings)
+        .filter(|(_, s)| returned.contains(s.as_str()))
+        .map(|(u, _)| u.clone())
         .collect();
     Ok(RemoveUserRoleAssignmentsResult { removed })
 }
@@ -1842,6 +1858,45 @@ mod tests {
         .unwrap();
         t.commit().await.unwrap();
         assert_eq!(res.added, vec![alice], "duplicate input reported once");
+    }
+
+    /// Duplicate user ids in one remove request delete the row once and are
+    /// reported once. Dedup lives in the `*Ops` layer (like the add path), so this
+    /// goes through the `*Ops` method, not the storage free fn.
+    #[sqlx::test]
+    async fn user_role_assignments_remove_deduplicates(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let alice = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &alice, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_user_role_assignments(
+            &arc_project,
+            role,
+            std::slice::from_ref(&alice),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let res = PostgresBackend::remove_user_role_assignments(
+            role,
+            &[alice.clone(), alice.clone()],
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(res.removed, vec![alice], "duplicate input reported once");
     }
 
     /// Deleting a user removes their role assignments (matching the OpenFGA

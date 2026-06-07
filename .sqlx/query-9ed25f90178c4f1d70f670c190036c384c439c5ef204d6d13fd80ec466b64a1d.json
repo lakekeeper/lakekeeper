@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH\n        deleted_user AS (\n            UPDATE users\n            SET deleted_at = now(),\n                name = 'Deleted User',\n                email = null\n            WHERE id = $1 AND deleted_at IS NULL\n            RETURNING id\n        ),\n        deleted_assignments AS (\n            DELETE FROM role_assignment WHERE user_id = $1 RETURNING role_id\n        ),\n        deleted_sync AS (\n            DELETE FROM role_assignment_sync WHERE user_id = $1\n        )\n        SELECT\n            (SELECT id FROM deleted_user) AS \"user_id?\",\n            COALESCE((SELECT array_agg(role_id) FROM deleted_assignments), ARRAY[]::uuid[])\n                AS \"affected_roles!: Vec<uuid::Uuid>\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "affected_roles!: Vec<uuid::Uuid>",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "9ed25f90178c4f1d70f670c190036c384c439c5ef204d6d13fd80ec466b64a1d"
+}

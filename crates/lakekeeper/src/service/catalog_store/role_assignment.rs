@@ -1208,7 +1208,8 @@ where
         user_ids: &[UserId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<RemoveUserRoleAssignmentsResult, RemoveUserRoleAssignmentsError> {
-        Self::remove_user_role_assignments_impl(role_id, user_ids, transaction).await
+        let user_ids = dedup_user_ids(user_ids);
+        Self::remove_user_role_assignments_impl(role_id, &user_ids, transaction).await
     }
 
     /// Standalone counterpart to [`add_user_role_assignments`] that owns its
@@ -1247,9 +1248,10 @@ where
         user_ids: &[UserId],
         catalog_state: Self::State,
     ) -> crate::api::Result<RemoveUserRoleAssignmentsResult> {
+        let user_ids = dedup_user_ids(user_ids);
         let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
         let result =
-            Self::remove_user_role_assignments_impl(role_id, user_ids, t.transaction()).await?;
+            Self::remove_user_role_assignments_impl(role_id, &user_ids, t.transaction()).await?;
         t.commit().await?;
 
         for user_id in &result.removed {

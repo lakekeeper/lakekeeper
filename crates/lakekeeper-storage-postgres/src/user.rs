@@ -182,9 +182,13 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
 /// role. This matches the OpenFGA authorizer, whose `delete_user` drops all of
 /// the user's tuples — keeping the two backends consistent on delete.
 ///
-/// Returns `None` if no such user exists; otherwise the (possibly empty) set of
-/// roles the user was assigned to, so the caller can evict those roles' member
-/// caches and the user's effective-roles cache. Done in one round-trip.
+/// Only acts on an *active* row (`deleted_at IS NULL`). Returns `None` if no
+/// active user with this id exists — including re-deleting an already
+/// soft-deleted user, which is a no-op that preserves the original `deleted_at`
+/// (consistent with `get`/`list`, which hide soft-deleted users). Otherwise
+/// returns the (possibly empty) set of roles the user was assigned to, so the
+/// caller can evict those roles' member caches and the user's effective-roles
+/// cache. Done in one round-trip.
 pub(crate) async fn delete_user<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     id: UserId,
     connection: E,
@@ -197,7 +201,7 @@ pub(crate) async fn delete_user<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sql
             SET deleted_at = now(),
                 name = 'Deleted User',
                 email = null
-            WHERE id = $1
+            WHERE id = $1 AND deleted_at IS NULL
             RETURNING id
         ),
         deleted_assignments AS (
@@ -449,6 +453,40 @@ mod test {
             .await
             .unwrap();
         assert_eq!(result, None);
+    }
+
+    /// Re-deleting an already soft-deleted user is a no-op: it returns `None`
+    /// (consistent with `get`/`list`, which hide soft-deleted users) rather than
+    /// matching the tombstone row and resetting its `deleted_at`. A `None` return
+    /// means the `deleted_at IS NULL` guard matched zero rows, so the original
+    /// tombstone is left untouched.
+    #[sqlx::test]
+    async fn test_delete_user_already_deleted_is_noop(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let user_id = UserId::new_unchecked("oidc", "test_user_1");
+
+        create_or_update_user(
+            &user_id,
+            "Test User 1",
+            None,
+            UserLastUpdatedWith::ConfigCallCreation,
+            UserType::Application,
+            &state.read_write.write_pool,
+        )
+        .await
+        .unwrap();
+
+        // First delete acts on the active row.
+        let first = delete_user(user_id.clone(), &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert!(first.is_some());
+
+        // Second delete finds no active row → no-op, no tombstone reset.
+        let second = delete_user(user_id, &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert_eq!(second, None);
     }
 
     #[sqlx::test]
