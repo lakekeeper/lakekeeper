@@ -1,4 +1,4 @@
-# Lakekeeper Enterprise Release Notes
+# Lakekeeper Plus Release Notes
 
 ## v0.12.2 (2026-05-26)
 

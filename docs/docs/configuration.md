@@ -178,7 +178,6 @@ Checking configuration parameters is deferred to `rdkafka`
 
 ### Logging Cloudevents
 
-Cloudevents can also be logged, if you do not have Nats up and running. This feature can be enabled by setting
 Cloudevents can also be logged, if you do not have Nats or Kafka up and running. This feature can be enabled by setting
 
 `LAKEKEEPER__LOG_CLOUDEVENTS=true`
@@ -234,7 +233,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
-| `LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 
 #### Multiple OIDC Providers
 
@@ -826,7 +825,7 @@ Lakekeeper provides debugging options to help troubleshoot issues during develop
 
 
 ### License Configuration
-<nobr><span class="lkp"></span></nobr>, the enterprise distribution of Lakekeeper, requires a License to operate. The license can be provided via either of the following environment variables. If both are set, `LAKEKEEPER__LICENSE__KEY` takes precedence.
+Lakekeeper Plus<nobr><span class="lkp"></span></nobr> requires a License to operate. The license can be provided via either of the following environment variables. If both are set, `LAKEKEEPER__LICENSE__KEY` takes precedence.
 
 | Variable                                     | Example                | Description |
 |----------------------------------------------|------------------------|------|

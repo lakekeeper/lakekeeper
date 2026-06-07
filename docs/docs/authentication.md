@@ -113,7 +113,7 @@ That's it! We can now use the second App Registration to sign into Lakekeeper us
     import pyspark
 
     conf = {
-        "spark.jars.packages": "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.0,org.apache.iceberg:iceberg-azure-bundle:1.7.0",
+        "spark.jars.packages": "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1,org.apache.iceberg:iceberg-azure-bundle:1.10.1",
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.catalog.lakekeeper": "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.lakekeeper.type": "rest",
@@ -377,7 +377,7 @@ That's it! We can now use the third App Registration to sign into Lakekeeper usi
     import pyspark
 
     conf = {
-        "spark.jars.packages": "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.0,org.apache.iceberg:iceberg-azure-bundle:1.7.0",
+        "spark.jars.packages": "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1,org.apache.iceberg:iceberg-azure-bundle:1.10.1",
         "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         "spark.sql.catalog.azure-docs": "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.azure-docs.type": "rest",

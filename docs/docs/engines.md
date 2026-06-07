@@ -280,7 +280,7 @@ Basic setup in spark:
 
     pyspark_version = pyspark.__version__
     pyspark_version = ".".join(pyspark_version.split(".")[:2]) # Strip patch version
-    iceberg_version = "1.8.1"
+    iceberg_version = "1.10.1"
 
     # Disable the jars which are not needed
     spark_jars_packages = (

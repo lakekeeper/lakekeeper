@@ -22,11 +22,13 @@ Lakekeeper uses the built-in Cedar Authorizer to evaluate whether a request is a
 To evaluate authorization requests, Cedar requires the following information:
 
 1. **Policies**: Define which principals can perform which actions on which resources. Policies are provided via files (`LAKEKEEPER__CEDAR__POLICY_SOURCES__LOCAL_FILES`) or Kubernetes ConfigMaps (`LAKEKEEPER__CEDAR__POLICY_SOURCES__K8S_CM`). See [Policy Examples](#policy-examples) below.
-1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Namespaces, Warehouses, etc.) for each decision. User roles are also included if present in the user's token and `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured. For scenarios where role information isn't available in tokens, you can provide external entities—see [External Entity Management](#external-entity-management).
+1. **Entities**: Application data Cedar uses to make authorization decisions, such as tables (including name, ID, warehouse, namespace, properties, etc.). Lakekeeper automatically provides all required entities (Tables, Generic Tables, Namespaces, Warehouses, etc.) for each decision. User roles are also included if present in the user's token and `LAKEKEEPER__OPENID_ROLES_CLAIM` is configured. For scenarios where role information isn't available in tokens, you can provide external entities—see [External Entity Management](#external-entity-management).
 1. **Context**: Transient request-specific data related to an action. For example, the `table_properties_updates` field is available when checking `Lakekeeper::Action::"CommitTable"`. Context is handled internally by Lakekeeper and requires no configuration.
 1. **Schema**: Defines entity types recognized by the application. Lakekeeper uses a built-in schema (downloadable above) that can be customized via `LAKEKEEPER__CEDAR__SCHEMA_*` environment variables. We recommend schema customization only for advanced use cases.
 
 Most deployments only need to configure `LAKEKEEPER__CEDAR__POLICY_SOURCES__*` and optionally `LAKEKEEPER__OPENID_ROLES_CLAIM` if role information is available in user tokens.
+
+Generic (non-Iceberg) tables are a first-class resource in Cedar too: they have their own `Lakekeeper::GenericTable` entity and a parallel set of action groups — `GenericTableActions`, `GenericTableDescribeActions`, `GenericTableSelectActions` and `GenericTableModifyActions` — that mirror the regular `Table` actions. Use them in policies exactly as you would the `Table` equivalents.
 
 ## RBAC and ABAC Support
 Cedar supports both Role-Based Access Control (RBAC) and Attribute-Based Access Control (ABAC). RBAC grants permissions based on `Lakekeeper::Role` entities, while ABAC uses resource attributes — such as Table, View, and Namespace properties — for authorization decisions. See the ABAC examples in [Policy Examples](#policy-examples) below for more information.
@@ -506,7 +508,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
 
 ??? example "Read access to a warehouse and all its contents for a group"
 
-    **Option 1 — full Role ID:
+    **Option 1 — full Role ID:**
 
     ```cedar
     permit (
@@ -525,7 +527,7 @@ The following examples demonstrate common Cedar policy patterns. Unless otherwis
     };
     ```
 
-    **Option 2 — `project_roles`, no project ID needed:
+    **Option 2 — `project_roles`, no project ID needed:**
 
     ```cedar
     permit (

@@ -21,6 +21,7 @@ theme:
   palette:
     scheme: lakekeeper
   logo: assets/bear.svg
+  favicon: assets/bear.svg
   locale: en
   highlightjs: true
   hljs_languages:
@@ -63,7 +64,7 @@ nav:
       - Release 0.5.x: "!include docs/docs/0.5.x/mkdocs.yml"
   - Release Notes:
       - Lakekeeper (OSS): about/release-notes.md
-      - Enterprise: about/enterprise-release-notes.md
+      - Lakekeeper Plus: about/enterprise-release-notes.md
   - Community: support.md
   - About:
       - License: about/license.md
@@ -125,17 +126,9 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/lakekeeper/lakekeeper
 
+# Site-wide CSS only. Home-page assets (bootstrap, fontawesome, animate,
+# odometer, home.css, header.css + jQuery/WOW/odometer/main.js) are loaded
+# exclusively by the landing page via overrides/home.html, so every other
+# docs page stays light.
 extra_css:
   - /assets/css/extra.css
-  - /assets/css/home.css
-  - /assets/css/bootstrap.min.css
-  - /assets/css/animate.css
-  - /assets/css/odometer.css
-  - /assets/css/fontawesome.min.css
-  - /assets/css/header.css
-
-extra_javascript:
-  - /assets/js/jquery-3.6.0.min.js
-  - /assets/js/main.js
-  - /assets/js/odometer.js
-  - /assets/js/wow.min.js

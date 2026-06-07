@@ -4,7 +4,7 @@ There are multiple ways to deploy Lakekeeper. Our [self-contained examples](#opt
 
 If you have your own Storage (e.g. S3) available, you can deploy Lakekeeper using [docker compose](#option-2-docker-compose), deploy on [Kubernetes](#option-3-kubernetes), deploy the pre-build [Binary](#option-4-binary) directly or [compile Lakekeeper yourself](#option-5-build-from-sources).
 
-Lakekeeper is currently only compatible with Postgres >= 15.
+Lakekeeper is currently compatible with Postgres >= 15.
 
 ## Deployment
 
@@ -110,6 +110,7 @@ Now that the catalog is up-and-running, the following endpoints are available:
 1. `<LAKEKEEPER__BASE_URI>/ui/` - the UI - by default: [http://localhost:8181/ui/](http://localhost:8181/ui/)
 1. `<LAKEKEEPER__BASE_URI>/catalog` is the Iceberg REST API
 1. `<LAKEKEEPER__BASE_URI>/management` contains the management API
+1. `<LAKEKEEPER__BASE_URI>/lakekeeper` is the Data API (e.g. generic, non-Iceberg tables)
 1. `<LAKEKEEPER__BASE_URI>/swagger-ui` hosts Swagger to inspect the API specifications
 
 ### Bootstrapping
@@ -162,7 +163,11 @@ If you want to use a different storage backend, see the [Storage Guide](docs/nig
 
 ### Connect Compute
 
-That's it - we can now use the catalog:
+That's it - we can now use the catalog. The example below targets the **unsecured** deployment: it sends the literal token `dummy` because no Authentication is configured, so any bearer token is accepted. If you enabled Authentication, replace `"dummy"` with a real OAuth2 token (or configure your engine's OAuth2 flow) — see the [Authentication Guide](./docs/nightly/docs/authentication.md).
+
+!!! tip
+
+    `ICEBERG_VERSION` below pins a known-good Iceberg release. Check [Iceberg releases](https://iceberg.apache.org/releases/) for the latest version.
 
 ```python
 import pandas as pd
@@ -170,7 +175,7 @@ import pyspark
 
 SPARK_VERSION = pyspark.__version__
 SPARK_MINOR_VERSION = '.'.join(SPARK_VERSION.split('.')[:2])
-ICEBERG_VERSION = "1.6.1"
+ICEBERG_VERSION = "1.10.1"
 
 # if you use adls as storage backend, you need iceberg-azure instead of iceberg-aws-bundle
 configuration = {
@@ -180,7 +185,7 @@ configuration = {
     "spark.sql.catalog.demo": "org.apache.iceberg.spark.SparkCatalog",
     "spark.sql.catalog.demo.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
     "spark.sql.catalog.demo.uri": "http://localhost:8181/catalog/",
-    "spark.sql.catalog.demo.token": "dummy",
+    "spark.sql.catalog.demo.token": "dummy",  # unsecured deployment only; use a real token if Authentication is enabled
     "spark.sql.catalog.demo.warehouse": "my-warehouse",
 }
 spark_conf = pyspark.SparkConf()
