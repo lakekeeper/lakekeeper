@@ -141,24 +141,23 @@ impl GCSSettings {
             };
 
             match auth {
-                GcsAuth::GcpSystemIdentity {} => config.with_auth().await.map_err(|e| {
-                    InitializeClientError {
+                GcsAuth::GcpSystemIdentity {} => {
+                    config.with_auth().await.map_err(|e| InitializeClientError {
                         reason: format!(
                             "Failed to initialize GCS client with system identity: {e}"
                         ),
                         source: Some(e.into()),
-                    }
-                }),
-                GcsAuth::CredentialsFile { file } => {
-                    config.with_credentials(file.clone()).await.map_err(|e| {
-                        InitializeClientError {
-                            reason: format!(
-                                "Failed to initialize GCS client with credentials file: {e}"
-                            ),
-                            source: Some(e.into()),
-                        }
                     })
                 }
+                GcsAuth::CredentialsFile { file } => config
+                    .with_credentials(file.clone())
+                    .await
+                    .map_err(|e| InitializeClientError {
+                        reason: format!(
+                            "Failed to initialize GCS client with credentials file: {e}"
+                        ),
+                        source: Some(e.into()),
+                    }),
                 GcsAuth::BearerToken(GcsBearerTokenAuth { access_token }) => {
                     let mut config = config;
                     let provider = StaticTokenSourceProvider {
