@@ -56,12 +56,15 @@ pub enum WarehouseStatus {
 
 /// Records which control plane, if any, exclusively manages a warehouse's spec
 /// (storage profile, credentials, delete profile, rename, status, protection,
-/// format-version policy, task-queue config, deletion, and the marker itself).
+/// format-version policy, deletion, and the marker itself).
 ///
 /// When set to anything other than [`ManagedBy::SelfManaged`], those spec mutations
 /// are rejected for normal callers — even ones holding OpenFGA grants — and
 /// succeed only for the managing control plane. Child resources (namespaces,
-/// tables, grants) and data-plane operations are never affected.
+/// tables, grants), task-queue config, and data-plane operations are never
+/// affected. The authoritative locked set is
+/// [`CatalogWarehouseAction::is_spec_mutation`](crate::service::authz::CatalogWarehouseAction::is_spec_mutation),
+/// which deliberately excludes `ModifyTaskQueueConfig`.
 ///
 /// Default `SelfManaged` => no behavior change for existing warehouses.
 #[derive(
