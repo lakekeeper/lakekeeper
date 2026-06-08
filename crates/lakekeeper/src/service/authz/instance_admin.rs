@@ -19,12 +19,17 @@
 //! Instance-admin membership is resolved once in authn and carried on
 //! [`RequestMetadata`]; this layer is therefore stateless.
 
+use std::collections::HashSet;
+
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 
 use crate::{
+    CONFIG,
     request_metadata::RequestMetadata,
     service::{
+        UserId,
+        authn::Actor,
         authz::{ActionDescriptor, CatalogAction},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
@@ -94,6 +99,68 @@ impl InstanceAdminAuthorizer {
     }
 }
 
+/// Resolves whether an [`Actor`] holds instance-admin (break-glass) status.
+///
+/// The decision is made **once per request** on the authn path and cached on
+/// [`RequestMetadata`] as a binary flag ([`RequestMetadata::is_instance_admin`]);
+/// only the *source* of that decision is pluggable, never the capabilities it
+/// grants. The bypass is intentionally all-or-nothing — granularity belongs on
+/// the exclusive-action side ([`InstanceAdminAction`]), not here.
+///
+/// The default [`ConfiguredInstanceAdmins`] reads the static
+/// `LAKEKEEPER__INSTANCE_ADMINS` configuration, preserving zero-config bootstrap.
+/// Deployments that need runtime promote/demote (e.g. a control-plane UI backed by
+/// a database) inject their own implementation when building the router. The
+/// method is `async` because it is consulted on the already-async authn path and a
+/// non-config source typically performs (cached) I/O.
+#[async_trait::async_trait]
+pub trait InstanceAdminMembership: Send + Sync + std::fmt::Debug {
+    /// Whether `actor` is an instance admin. Assumed-roles and anonymous callers
+    /// are never instance admins, regardless of the source.
+    async fn is_instance_admin(&self, actor: &Actor) -> bool;
+}
+
+/// Default [`InstanceAdminMembership`]: membership is a fixed set of principals,
+/// normally sourced from the static `LAKEKEEPER__INSTANCE_ADMINS` configuration
+/// via [`ConfiguredInstanceAdmins::from_config`].
+#[derive(Debug)]
+pub struct ConfiguredInstanceAdmins {
+    admins: HashSet<UserId>,
+}
+
+impl ConfiguredInstanceAdmins {
+    /// Build from an explicit admin set.
+    #[must_use]
+    pub fn new(admins: HashSet<UserId>) -> Self {
+        Self { admins }
+    }
+
+    /// Snapshot the configured admin set (`LAKEKEEPER__INSTANCE_ADMINS`). Config is
+    /// loaded once at process start, so this is a stable, process-lifetime set.
+    #[must_use]
+    pub fn from_config() -> Self {
+        Self::new(CONFIG.instance_admins.clone())
+    }
+
+    /// Only an authenticated [`Actor::Principal`] in the set is an admin —
+    /// assumed-roles (`Actor::Role`) deliberately do not inherit the bypass, since
+    /// role assumption is an explicit opt-in to a narrower scope.
+    #[must_use]
+    fn is_member(&self, actor: &Actor) -> bool {
+        match actor {
+            Actor::Principal(user_id) => self.admins.contains(user_id),
+            Actor::Anonymous | Actor::Role { .. } => false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl InstanceAdminMembership for ConfiguredInstanceAdmins {
+    async fn is_instance_admin(&self, actor: &Actor) -> bool {
+        self.is_member(actor)
+    }
+}
+
 /// Returned when a non-instance-admin attempts an [`InstanceAdminAction`]. 403.
 #[derive(Debug, thiserror::Error)]
 #[error("Action `{action}` requires instance-admin privilege.")]
@@ -160,5 +227,31 @@ mod tests {
         let model = ErrorModel::from(err);
         assert_eq!(model.code, StatusCode::FORBIDDEN.as_u16());
         assert_eq!(model.r#type, "InstanceAdminRequired");
+    }
+
+    #[test]
+    fn configured_membership_only_matches_principals_in_set() {
+        use std::sync::Arc;
+
+        use crate::service::{Role, RoleId};
+
+        let alice = UserId::try_from("oidc~alice").unwrap();
+        let bob = UserId::try_from("oidc~bob").unwrap();
+        let source = ConfiguredInstanceAdmins::new([alice.clone()].into_iter().collect());
+
+        assert!(source.is_member(&Actor::Principal(alice.clone())));
+        assert!(!source.is_member(&Actor::Principal(bob.clone())));
+        assert!(!source.is_member(&Actor::Anonymous));
+
+        // Role-assumed: even when the principal is an admin, the actor does NOT
+        // qualify. Role assumption is an explicit opt-in to a narrower scope.
+        let role = Arc::new(Role::new_random_with_id(RoleId::new(uuid::Uuid::now_v7())));
+        assert!(!source.is_member(&Actor::Role {
+            principal: alice,
+            assumed_role: role,
+        }));
+
+        let empty = ConfiguredInstanceAdmins::new(HashSet::new());
+        assert!(!empty.is_member(&Actor::Principal(bob)));
     }
 }

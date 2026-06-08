@@ -36,8 +36,9 @@ use crate::{
     server::UnfilteredPage,
     service::{
         AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
-        CatalogTabularOps, CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags,
-        Transaction, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy,
+        CatalogTabularOps, CatalogWarehouseOps, EnsureWarehouseSpecMutableError, NamespaceId,
+        State, TabularId, TabularListFlags, Transaction, ViewOrTableDeletionInfo,
+        WarehouseFormatVersionPolicy, WarehouseSpecLocked,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
@@ -451,7 +452,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             && !request_metadata.bypasses_control_plane_authz(None)
         {
             return Err(event_ctx
-                .emit_late_authz_failure(crate::service::WarehouseSpecLocked::new(managed_by))
+                .emit_late_authz_failure(WarehouseSpecLocked::new(managed_by))
                 .into());
         }
 
@@ -1772,31 +1773,30 @@ async fn resolve_credential_type<S: SecretStore>(
     }
 }
 
-/// Reject creation when the new storage profile overlaps the location of an
-/// existing warehouse in the same project.
 /// Map the spec-mutability guard's error to an API error. A [`WarehouseSpecLocked`]
 /// rejection is the *actual* authorization outcome — the resource authorizer already
 /// allowed the action, so the lock is the decision that denied it — and is recorded
 /// as a late authorization-failure audit event. Backend/integrity errors propagate
 /// without an authz event.
-///
-/// [`WarehouseSpecLocked`]: crate::service::WarehouseSpecLocked
 fn spec_lock_to_error<P, R, A>(
     event_ctx: &APIEventContext<P, R, A, AuthzChecked>,
-    err: crate::service::EnsureWarehouseSpecMutableError,
+    err: EnsureWarehouseSpecMutableError,
 ) -> ErrorModel
 where
     P: UserProvidedEntity,
     R: ResolutionState,
     A: APIEventActions,
 {
-    use crate::service::EnsureWarehouseSpecMutableError as E;
     match err {
-        E::WarehouseSpecLocked(locked) => event_ctx.emit_late_authz_failure(locked),
+        EnsureWarehouseSpecMutableError::WarehouseSpecLocked(locked) => {
+            event_ctx.emit_late_authz_failure(locked)
+        }
         other => other.into(),
     }
 }
 
+/// Reject creation when the new storage profile overlaps the location of an
+/// existing warehouse in the same project.
 async fn ensure_no_storage_overlap<C: CatalogStore>(
     project_id: &ProjectId,
     storage_profile: &StorageProfile,

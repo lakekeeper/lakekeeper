@@ -19,6 +19,7 @@ use crate::{
             },
         },
         define_simple_error, define_version_newtype,
+        events::{AuthorizationFailureReason, AuthorizationFailureSource},
         storage::StorageProfile,
     },
 };
@@ -713,9 +714,9 @@ impl From<WarehouseSpecLocked> for ErrorModel {
     }
 }
 
-impl crate::service::events::AuthorizationFailureSource for WarehouseSpecLocked {
-    fn to_failure_reason(&self) -> crate::service::events::AuthorizationFailureReason {
-        crate::service::events::AuthorizationFailureReason::ActionForbidden
+impl AuthorizationFailureSource for WarehouseSpecLocked {
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::ActionForbidden
     }
 
     fn into_error_model(self) -> ErrorModel {
