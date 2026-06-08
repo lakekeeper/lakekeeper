@@ -217,7 +217,7 @@ impl AdlsProfile {
         if let Some(host) = &self.host {
             CloudLocation::Custom {
                 account: self.account_name.clone(),
-                uri: host.clone(),
+                uri: format!("https://{}.{}", self.account_name, host),
             }
         } else {
             CloudLocation::Public {
