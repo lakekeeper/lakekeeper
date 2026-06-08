@@ -13,8 +13,8 @@ use lakekeeper::{
         },
     },
     service::{
-        CachePolicy, CatalogStore, CatalogWarehouseOps, ManagedBy, Transaction, UserId,
-        WarehouseFormatVersionPolicy, WarehouseStatus, authz::AllowAllAuthorizer,
+        CachePolicy, CatalogCreateWarehouseRequest, CatalogStore, CatalogWarehouseOps, ManagedBy,
+        Transaction, UserId, WarehouseStatus, authz::AllowAllAuthorizer,
         warehouse_cache::WAREHOUSE_CACHE,
     },
 };
@@ -44,15 +44,12 @@ async fn test_create_warehouse(pool: PgPool) {
 
     // Create warehouse
     let warehouse = PostgresBackend::create_warehouse(
-        format!("test-warehouse-{}", Uuid::now_v7()),
         &project_id,
-        lakekeeper::service::WarehouseStorage {
-            profile: storage_profile.clone(),
-            secret_id: None,
-        },
-        TabularDeleteProfile::Hard {},
-        WarehouseFormatVersionPolicy::default(),
-        lakekeeper::service::ManagedBy::SelfManaged,
+        CatalogCreateWarehouseRequest::builder()
+            .name(format!("test-warehouse-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
         transaction.transaction(),
     )
     .await
@@ -93,17 +90,15 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
 
     // Create warehouse with secret
     let warehouse = PostgresBackend::create_warehouse(
-        format!("test-warehouse-secret-{}", Uuid::now_v7()),
         &project_id,
-        lakekeeper::service::WarehouseStorage {
-            profile: storage_profile.clone(),
-            secret_id: Some(secret_id),
-        },
-        TabularDeleteProfile::Soft {
-            expiration_seconds: chrono::TimeDelta::seconds(86400),
-        },
-        WarehouseFormatVersionPolicy::default(),
-        lakekeeper::service::ManagedBy::SelfManaged,
+        CatalogCreateWarehouseRequest::builder()
+            .name(format!("test-warehouse-secret-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile.clone())
+            .storage_secret_id(Some(secret_id))
+            .delete_profile(TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::TimeDelta::seconds(86400),
+            })
+            .build(),
         transaction.transaction(),
     )
     .await
@@ -139,15 +134,12 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
 
     // Try to create warehouse with same name
     let result = PostgresBackend::create_warehouse(
-        warehouse_resp.warehouse_name.clone(),
         &project_id,
-        lakekeeper::service::WarehouseStorage {
-            profile: storage_profile.clone(),
-            secret_id: None,
-        },
-        TabularDeleteProfile::Hard {},
-        WarehouseFormatVersionPolicy::default(),
-        lakekeeper::service::ManagedBy::SelfManaged,
+        CatalogCreateWarehouseRequest::builder()
+            .name(warehouse_resp.warehouse_name.clone())
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
         transaction.transaction(),
     )
     .await;
@@ -1516,15 +1508,14 @@ async fn test_create_managed_warehouse_requires_instance_admin(pool: PgPool) {
         .await;
 
     let project_id = ProjectId::from(Uuid::nil());
-    let managed_request = |name: &str| CreateWarehouseRequest {
-        warehouse_name: name.to_string(),
-        project_id: Some(project_id.clone()),
-        storage_profile: storage_profile.clone(),
-        storage_credential: None,
-        delete_profile: TabularDeleteProfile::Hard {},
-        allowed_format_versions: None,
-        default_format_version: None,
-        managed_by: ManagedBy::InstanceAdmin,
+    let managed_request = |name: &str| {
+        CreateWarehouseRequest::builder()
+            .warehouse_name(name.to_string())
+            .project_id(project_id.clone())
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .managed_by(ManagedBy::InstanceAdmin)
+            .build()
     };
 
     // Non-admin: rejected, warehouse never created.

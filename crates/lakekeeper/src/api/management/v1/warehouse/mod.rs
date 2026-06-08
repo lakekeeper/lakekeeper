@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
-    ManagedBy, WarehouseStatus, WarehouseStorage,
+    CatalogCreateWarehouseRequest, ManagedBy, WarehouseStatus,
     storage::{
         AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
         S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
@@ -493,15 +493,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         };
 
         let resolved_warehouse = C::create_warehouse(
-            warehouse_name,
             project_id,
-            WarehouseStorage {
-                profile: storage_profile,
-                secret_id,
-            },
-            delete_profile,
-            format_version_policy,
-            managed_by,
+            CatalogCreateWarehouseRequest::builder()
+                .name(warehouse_name)
+                .storage_profile(storage_profile)
+                .storage_secret_id(secret_id)
+                .delete_profile(delete_profile)
+                .format_version_policy(format_version_policy)
+                .managed_by(managed_by)
+                .build(),
             transaction.transaction(),
         )
         .await?;

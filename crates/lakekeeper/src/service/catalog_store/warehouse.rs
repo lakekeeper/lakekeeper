@@ -4,7 +4,7 @@ use http::StatusCode;
 use iceberg::spec::FormatVersion;
 use iceberg_ext::catalog::rest::ErrorModel;
 
-use super::{CatalogStore, Transaction};
+use super::{CatalogCreateWarehouseRequest, CatalogStore, Transaction};
 use crate::{
     ProjectId, SecretId, WarehouseId,
     api::management::v1::{DeleteWarehouseQuery, warehouse::TabularDeleteProfile},
@@ -220,16 +220,6 @@ pub struct WarehouseFormatVersionPolicy {
     /// Default version used when a create-table request omits one. When `None`,
     /// resolves to `V2` if allowed, otherwise the highest allowed version.
     pub default_format_version: Option<FormatVersion>,
-}
-
-/// Storage configuration for a warehouse: the storage profile together with the
-/// secret holding its credentials (if any). These two always travel as a unit.
-#[derive(Debug, Clone)]
-pub struct WarehouseStorage {
-    /// Storage profile used for the warehouse.
-    pub profile: StorageProfile,
-    /// Secret holding the storage credentials, if any.
-    pub secret_id: Option<SecretId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -752,24 +742,11 @@ where
 {
     /// Create a warehouse.
     async fn create_warehouse<'a>(
-        warehouse_name: String,
         project_id: &ProjectId,
-        storage: WarehouseStorage,
-        tabular_delete_profile: TabularDeleteProfile,
-        format_version_policy: WarehouseFormatVersionPolicy,
-        managed_by: ManagedBy,
+        request: CatalogCreateWarehouseRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Arc<ResolvedWarehouse>, CatalogCreateWarehouseError> {
-        let warehouse = Self::create_warehouse_impl(
-            warehouse_name,
-            project_id,
-            storage,
-            tabular_delete_profile,
-            format_version_policy,
-            managed_by,
-            transaction,
-        )
-        .await?;
+        let warehouse = Self::create_warehouse_impl(project_id, request, transaction).await?;
         let warehouse_ref = Arc::new(warehouse);
         Ok(warehouse_ref)
     }

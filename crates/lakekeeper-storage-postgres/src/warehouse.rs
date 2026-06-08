@@ -12,17 +12,17 @@ use lakekeeper::{
         },
     },
     service::{
-        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
-        CatalogRenameWarehouseError, CatalogRoleOps, DatabaseIntegrityError,
-        EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy, ProjectIdNotFoundError,
-        ResolvedWarehouse, SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
-        WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
-        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked,
-        WarehouseStatus, WarehouseStorage, WarehouseVersion, registered_system_roles,
-        storage::StorageProfile,
+        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogCreateWarehouseRequest,
+        CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
+        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogRoleOps,
+        DatabaseIntegrityError, EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy,
+        ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
+        SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
+        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
+        WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
+        WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
 use sqlx::{PgPool, types::Json};
@@ -87,18 +87,18 @@ pub(super) async fn set_warehouse_deletion_profile<
 }
 
 pub(crate) async fn create_warehouse(
-    warehouse_name: String,
     project_id: &ProjectId,
-    storage: WarehouseStorage,
-    tabular_delete_profile: TabularDeleteProfile,
-    format_version_policy: WarehouseFormatVersionPolicy,
-    managed_by: ManagedBy,
+    request: CatalogCreateWarehouseRequest,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
-    let WarehouseStorage {
-        profile: storage_profile,
-        secret_id: storage_secret_id,
-    } = storage;
+    let CatalogCreateWarehouseRequest {
+        name: warehouse_name,
+        storage_profile,
+        storage_secret_id,
+        delete_profile: tabular_delete_profile,
+        format_version_policy,
+        managed_by,
+    } = request;
     let storage_profile_ser =
         serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
 
@@ -1071,17 +1071,15 @@ pub mod test {
         ));
 
         let warehouse = PostgresBackend::create_warehouse(
-            "test_warehouse".to_string(),
             &project_id,
-            WarehouseStorage {
-                profile: storage_profile,
-                secret_id,
-            },
-            TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(5),
-            },
-            WarehouseFormatVersionPolicy::default(),
-            ManagedBy::SelfManaged,
+            CatalogCreateWarehouseRequest::builder()
+                .name("test_warehouse".to_string())
+                .storage_profile(storage_profile)
+                .storage_secret_id(secret_id)
+                .delete_profile(TabularDeleteProfile::Soft {
+                    expiration_seconds: chrono::Duration::seconds(5),
+                })
+                .build(),
             t.transaction(),
         )
         .await

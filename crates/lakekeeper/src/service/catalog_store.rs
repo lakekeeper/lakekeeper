@@ -162,6 +162,24 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub provider_id: &'a RoleProviderId,
 }
 
+/// Spec for creating a warehouse, passed to
+/// [`CatalogWarehouseOps::create_warehouse`](crate::service::CatalogWarehouseOps::create_warehouse).
+/// `project_id` is supplied separately (the parent scope), mirroring
+/// [`CatalogCreateRoleRequest`]. `format_version_policy` and `managed_by` default
+/// (all versions allowed; self-managed) so most callers omit them.
+#[derive(Debug, typed_builder::TypedBuilder)]
+pub struct CatalogCreateWarehouseRequest {
+    pub name: String,
+    pub storage_profile: StorageProfile,
+    #[builder(default)]
+    pub storage_secret_id: Option<SecretId>,
+    pub delete_profile: TabularDeleteProfile,
+    #[builder(default)]
+    pub format_version_policy: WarehouseFormatVersionPolicy,
+    #[builder(default)]
+    pub managed_by: ManagedBy,
+}
+
 /// How [`CatalogStore::create_roles_impl`] should handle a row that already
 /// exists with the same `(project_id, provider_id, source_id)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -269,12 +287,8 @@ where
     // ---------------- Warehouse Management ----------------
     /// Create a warehouse.
     async fn create_warehouse_impl<'a>(
-        warehouse_name: String,
         project_id: &ProjectId,
-        storage: WarehouseStorage,
-        tabular_delete_profile: TabularDeleteProfile,
-        format_version_policy: WarehouseFormatVersionPolicy,
-        managed_by: ManagedBy,
+        request: CatalogCreateWarehouseRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
