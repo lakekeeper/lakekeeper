@@ -156,48 +156,38 @@ pub(crate) async fn sync_role_members_by_ident(
               AND NOT EXISTS (SELECT 1 FROM upserted_role)
         ),
         user_input AS (
-            SELECT u.id,
-                   u.name,
-                   u.name AS effective_name,
-                   u.email,
-                   NULLIF(u.email, '') AS effective_email,
-                   u.utype,
-                   COALESCE(u.utype, 'human'::user_type) AS effective_utype,
-                   u.updated_with
+            SELECT u.id, u.name, u.email, u.utype, u.updated_with
             FROM UNNEST($6::TEXT[], $7::TEXT[], $8::TEXT[], $9::user_type[], $10::user_last_updated_with[])
                 AS u(id, name, email, utype, updated_with)
         ),
+        -- Resolve each desired user's final column values ONCE by joining the
+        -- requested set against existing rows (an O(n) hash/index join). This lets
+        -- the upsert use plain EXCLUDED.* instead of per-row correlated subqueries
+        -- over user_input, which were O(n²) (re-scanned once per conflicting row;
+        -- ~3s for a 5000-member re-sync). Semantics are unchanged: a value the
+        -- provider omits (NULL) keeps the existing one; a new row defaults
+        -- user_type to 'human' and an absent name to NULL (rendered at read time).
+        merged_users AS (
+            SELECT ui.id,
+                   COALESCE(ui.name, ex.name)                                            AS name,
+                   CASE WHEN ui.email IS NULL THEN ex.email ELSE NULLIF(ui.email, '') END AS email,
+                   ui.updated_with                                                       AS last_updated_with,
+                   COALESCE(ui.utype, ex.user_type, 'human'::user_type)                  AS user_type
+            FROM user_input ui
+            LEFT JOIN users ex ON ex.id = ui.id
+        ),
         upserted_users AS (
             INSERT INTO users (id, name, email, last_updated_with, user_type)
-            SELECT id, effective_name, effective_email, updated_with, effective_utype
-            FROM user_input
+            SELECT id, name, email, last_updated_with, user_type FROM merged_users
             ON CONFLICT (id) DO UPDATE SET
-                name              = COALESCE(
-                                        (SELECT name FROM user_input WHERE id = EXCLUDED.id),
-                                        users.name),
-                email             = CASE
-                                        WHEN (SELECT email FROM user_input WHERE id = EXCLUDED.id) IS NULL
-                                            THEN users.email
-                                        ELSE NULLIF(
-                                                (SELECT email FROM user_input WHERE id = EXCLUDED.id),
-                                                '')
-                                    END,
+                name              = EXCLUDED.name,
+                email             = EXCLUDED.email,
                 last_updated_with = EXCLUDED.last_updated_with,
-                user_type         = COALESCE(
-                                        (SELECT utype FROM user_input WHERE id = EXCLUDED.id),
-                                        users.user_type),
+                user_type         = EXCLUDED.user_type,
                 deleted_at        = null
-            WHERE users.name IS DISTINCT FROM COALESCE(
-                                                 (SELECT name FROM user_input WHERE id = EXCLUDED.id),
-                                                 users.name)
-               OR users.email IS DISTINCT FROM
-                  CASE WHEN (SELECT email FROM user_input WHERE id = EXCLUDED.id) IS NULL
-                           THEN users.email
-                       ELSE NULLIF((SELECT email FROM user_input WHERE id = EXCLUDED.id), '')
-                  END
-               OR users.user_type IS DISTINCT FROM COALESCE(
-                                                        (SELECT utype FROM user_input WHERE id = EXCLUDED.id),
-                                                        users.user_type)
+            WHERE users.name       IS DISTINCT FROM EXCLUDED.name
+               OR users.email      IS DISTINCT FROM EXCLUDED.email
+               OR users.user_type  IS DISTINCT FROM EXCLUDED.user_type
                OR users.deleted_at IS NOT NULL
         ),
         -- Remove members no longer in the desired set.
@@ -324,38 +314,32 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
                OR users.deleted_at IS NOT NULL
         ),
         role_input AS (
-            SELECT u.name,
-                   COALESCE(u.name, u.source_id || ' in Provider ' || $6) AS effective_name,
-                   u.description,
-                   NULLIF(u.description, '') AS effective_description,
-                   u.source_id
+            SELECT u.name, u.description, u.source_id
             FROM UNNEST($8::TEXT[], $9::TEXT[], $10::TEXT[]) AS u(name, description, source_id)
+        ),
+        -- Resolve each role's final values ONCE via a join against existing rows
+        -- (O(n)), so the upsert uses plain EXCLUDED.* instead of per-row correlated
+        -- subqueries over role_input (which were O(n²)). Semantics unchanged: an
+        -- omitted name/description keeps the existing one; a new role defaults its
+        -- name to "<source_id> in Provider <provider_id>".
+        merged_roles AS (
+            SELECT ri.source_id,
+                   COALESCE(ri.name, ex.name, ri.source_id || ' in Provider ' || $6)        AS name,
+                   CASE WHEN ri.description IS NULL THEN ex.description
+                        ELSE NULLIF(ri.description, '') END                                  AS description
+            FROM role_input ri
+            LEFT JOIN "role" ex
+              ON ex.source_id = ri.source_id AND ex.provider_id = $6 AND ex.project_id = $7
         ),
         upserted_roles AS (
             INSERT INTO "role" (id, name, description, source_id, provider_id, project_id)
-            SELECT gen_random_uuid(), effective_name, effective_description, source_id, $6, $7
-            FROM role_input
+            SELECT gen_random_uuid(), name, description, source_id, $6, $7
+            FROM merged_roles
             ON CONFLICT ON CONSTRAINT unique_role_provider_source_in_project DO UPDATE SET
-                name        = COALESCE(
-                                  (SELECT name FROM role_input WHERE source_id = EXCLUDED.source_id),
-                                  "role".name),
-                description = CASE
-                                  WHEN (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id) IS NULL
-                                      THEN "role".description
-                                  ELSE NULLIF(
-                                          (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),
-                                          '')
-                              END
-            WHERE "role".name IS DISTINCT FROM COALESCE(
-                                                  (SELECT name FROM role_input WHERE source_id = EXCLUDED.source_id),
-                                                  "role".name)
-               OR "role".description IS DISTINCT FROM
-                  CASE WHEN (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id) IS NULL
-                           THEN "role".description
-                       ELSE NULLIF(
-                               (SELECT description FROM role_input WHERE source_id = EXCLUDED.source_id),
-                               '')
-                  END
+                name        = EXCLUDED.name,
+                description = EXCLUDED.description
+            WHERE "role".name        IS DISTINCT FROM EXCLUDED.name
+               OR "role".description IS DISTINCT FROM EXCLUDED.description
             RETURNING id
         ),
         -- Fallback: when the upsert WHERE was false (nothing changed) upserted_roles
@@ -1392,13 +1376,16 @@ pub(crate) async fn list_direct_user_roles_page<
         .to_string()
     });
 
-    // A non-empty page — or any continuation request (a page token was supplied) —
-    // proves the user exists. Only an empty *first* page is ambiguous, so there we
-    // disambiguate "no such user" (`None` → the handler 404s) from "user with zero
-    // roles" (an empty page). `connection` is reusable (`E: Copy`, a `&PgPool`), so
-    // this costs a second query only on that empty-first-page path. The OpenFGA
-    // reader can't make this distinction and always yields `Some`.
-    if !entries.is_empty() || token.is_some() {
+    // A non-empty page proves the user exists. An empty page is ambiguous — "no
+    // such user" (or one deleted, possibly mid-pagination) vs "user with zero
+    // roles" — so we disambiguate with an existence check and return `None`
+    // (→ the handler 404s) when the user is gone. We check on EVERY empty page,
+    // not just the first: a page token does NOT prove existence — it is an
+    // unauthenticated keyset coordinate, and the user may have been deleted since
+    // page 1 (or the token forged). `connection` is reusable (`E: Copy`, a
+    // `&PgPool`), so this costs a second query only on the empty-page path. The
+    // OpenFGA reader can't make this distinction and always yields `Some`.
+    if !entries.is_empty() {
         return Ok(Some(ListRolesPage {
             entries,
             next_page_token,
@@ -2241,6 +2228,83 @@ mod tests {
                 .map(String::from)
                 .collect()
         );
+    }
+
+    /// A continuation page token must NOT bypass the unknown-user check. If the
+    /// user is deleted between page 1 and page 2 (a race, or a forged token for a
+    /// since-deleted user), the empty page 2 must still resolve to `None` (the
+    /// handler 404s) rather than a `Some(empty page)` that hides the deletion.
+    #[sqlx::test]
+    async fn page_1_exists_user_deleted_page_2_should_404(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let user = make_user(&user_id, "Alice");
+
+        // Assign the user to two roles so page 1 (size 1) returns an entry + token.
+        let idents = [
+            Arc::new(RoleIdent::new_unchecked("ldap", "group-1")),
+            Arc::new(RoleIdent::new_unchecked("ldap", "group-2")),
+        ];
+        let roles: Vec<_> = idents
+            .iter()
+            .enumerate()
+            .map(|(n, i)| make_role(i, ["Group 1", "Group 2"][n]))
+            .collect();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&roles),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // Page 1: one entry + a continuation token (proves the user exists now).
+        let page1 = list_direct_user_roles_page(
+            &project_id,
+            &user_id,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(1),
+            },
+            &pool,
+        )
+        .await
+        .unwrap()
+        .expect("seeded user exists");
+        assert_eq!(page1.entries.len(), 1);
+        let token = page1.next_page_token.clone().expect("page 1 has a token");
+
+        // The user is deleted between pages (cascades away their assignments).
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::delete_user((*user_id).clone(), t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Page 2 with the carried token must NOT short-circuit on the token: the
+        // user is gone, so the reader returns None (→ 404), not Some(empty).
+        let page2 = list_direct_user_roles_page(
+            &project_id,
+            &user_id,
+            PaginationQuery {
+                page_token: PageToken::Present(token),
+                page_size: Some(1),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(page2.is_none());
     }
 
     /// `list_direct_role_members_page` merges user members (`role_assignment`) and role

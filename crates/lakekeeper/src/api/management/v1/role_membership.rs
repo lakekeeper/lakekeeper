@@ -277,7 +277,7 @@ fn parse_member(r#type: RoleMemberType, id: &str) -> Result<UserOrRoleId> {
 /// (the house convention treats an empty page as end-of-listing).
 fn listing_not_supported_under_authorizer() -> ErrorModel {
     ErrorModel::not_implemented(
-        "Listing role members is not yet supported under this authorizer backend.",
+        "Listing role membership is not yet supported under this authorizer backend.",
         "RoleMembershipListingNotImplemented",
         None,
     )

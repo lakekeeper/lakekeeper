@@ -328,7 +328,7 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
 ) -> Result<SearchUserResponse> {
     let users = sqlx::query!(
         r#"
-        SELECT id, name, email, (name || ' ' || email) <-> $1 AS dist, user_type as "user_type: DbUserType"
+        SELECT id, name, email, (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist, user_type as "user_type: DbUserType"
         FROM users
         ORDER BY 
             CASE 
