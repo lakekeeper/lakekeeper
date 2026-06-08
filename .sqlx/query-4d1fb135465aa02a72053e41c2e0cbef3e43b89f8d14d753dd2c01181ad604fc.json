@@ -152,7 +152,7 @@
             "name": "managed_by",
             "kind": {
               "Enum": [
-                "unmanaged",
+                "self-managed",
                 "instance-admin"
               ]
             }
@@ -195,7 +195,7 @@
             "name": "managed_by",
             "kind": {
               "Enum": [
-                "unmanaged",
+                "self-managed",
                 "instance-admin"
               ]
             }

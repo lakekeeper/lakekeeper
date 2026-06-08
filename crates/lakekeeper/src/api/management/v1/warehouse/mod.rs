@@ -1802,7 +1802,14 @@ async fn ensure_no_storage_overlap<C: CatalogStore>(
     storage_profile: &StorageProfile,
     catalog_state: C::State,
 ) -> Result<()> {
-    let warehouses = C::list_warehouses(project_id, None, catalog_state).await?;
+    // Include inactive warehouses: a deactivated warehouse still occupies its
+    // storage location, so a new warehouse overlapping it is still a conflict.
+    let warehouses = C::list_warehouses(
+        project_id,
+        Some(WarehouseStatus::active_and_inactive().to_vec()),
+        catalog_state,
+    )
+    .await?;
     for w in &warehouses {
         if storage_profile.is_overlapping_location(&w.storage_profile) {
             return Err(ErrorModel::bad_request(
