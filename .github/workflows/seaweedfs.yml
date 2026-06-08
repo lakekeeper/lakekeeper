@@ -61,7 +61,7 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       GCS_CREDENTIAL: ${{ secrets.GCS_CREDENTIAL }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
@@ -131,7 +131,7 @@ jobs:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2
         with:
           tool: cargo-nextest
 

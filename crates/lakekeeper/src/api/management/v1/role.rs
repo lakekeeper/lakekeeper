@@ -22,6 +22,7 @@ use crate::{
             CatalogRoleAction,
         },
         events::{APIEventContext, context::Unresolved},
+        role_assignments_cache,
     },
 };
 
@@ -710,6 +711,14 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+    // Read the affected-user closure PRE-commit: the `ON DELETE CASCADE` on
+    // `delete_role` erases the `role_assignment`/`role_membership` rows, so after
+    // the delete this walk would return nothing. These are exactly the users whose
+    // effective-role set loses `role_id` (direct assignees ∪ descendant-closure
+    // assignees). Mirrors `delete_user`'s pre-commit/post-commit eviction.
+    let affected_users = C::affected_users_for_membership_edge_impl(role_id, t.transaction())
+        .await
+        .map_err::<DeleteRoleError, _>(Into::into)?;
     C::delete_role(&project_id, role_id, t.transaction()).await?;
     authorizer
         .delete_role(request_metadata, role_id)
@@ -718,6 +727,14 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     t.commit()
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+
+    // Post-commit (infallible, in-memory): the role and its assignments are gone,
+    // so each affected user's effective-roles entry and the deleted role's own
+    // direct-user-assignee list are stale. No parent eviction — `ROLE_MEMBERS_CACHE`
+    // stores a role's user-assignees only, never its member-roles (see G2 in the
+    // cache-hardening notes).
+    role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
+    role_assignments_cache::role_members_cache_invalidate(role_id).await;
     Ok(role)
 }
 
