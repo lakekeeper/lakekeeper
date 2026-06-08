@@ -2247,6 +2247,13 @@ paths:
         Adds one or more members (users and/or roles) to a role in a single atomic
         (all-or-nothing) batch. Idempotent — already-present members are accepted.
         Returns the requested members confirmed present.
+
+        Handling of a not-yet-provisioned member depends on the configured
+        authorization backend: a backend that stores assignments itself accepts the
+        member by id, whereas catalog-backed authorization requires the member to
+        exist first and otherwise returns `404` — provision the user (via
+        `POST /user`) or create the role before assigning. Behavior is consistent
+        within a deployment.
       operationId: add_role_members
       parameters:
         - name: role_id
