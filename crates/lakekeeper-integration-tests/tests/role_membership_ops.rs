@@ -16,7 +16,8 @@ use lakekeeper::{
     },
     service::{
         CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
-        RoleSourceId, State, Transaction, UserId, authn::Actor, authz::AllowAllAuthorizer,
+        RoleSourceId, State, Transaction, UserId, UserUpsertMode, authn::Actor,
+        authz::AllowAllAuthorizer,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
@@ -83,6 +84,7 @@ async fn provision_user(ctx: &Ctx, user_id: &UserId, name: &str) {
         None,
         UserLastUpdatedWith::RoleProvider,
         UserType::Human,
+        UserUpsertMode::Overwrite,
         tx.transaction(),
     )
     .await

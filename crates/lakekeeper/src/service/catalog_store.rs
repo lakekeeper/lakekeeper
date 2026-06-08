@@ -764,6 +764,12 @@ where
     ) -> Result<Option<ListRolesPage>>;
 
     // ---------------- User Management API ----------------
+    /// Insert or update a user. `mode` controls whether an existing row is
+    /// overwritten unconditionally ([`UserUpsertMode::Overwrite`], the explicit
+    /// create/update endpoints) or only an un-named role-provider stub is
+    /// backfilled ([`UserUpsertMode::BackfillUnnamedStub`], the first-login hook).
+    /// The backfill guard is applied atomically, so a row that already carries a
+    /// real name is never clobbered, even by a concurrent role-provider sync.
     async fn create_or_update_user<'a>(
         user_id: &UserId,
         name: &str,
@@ -771,6 +777,7 @@ where
         email: Option<&str>,
         last_updated_with: UserLastUpdatedWith,
         user_type: UserType,
+        mode: UserUpsertMode,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<CreateOrUpdateUserResponse>;
 

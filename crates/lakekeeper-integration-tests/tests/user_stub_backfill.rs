@@ -1,11 +1,12 @@
 //! Story 3a — first-login backfill of role-provider placeholder-stub `users` rows.
 //!
-//! Role-provider sync stubs a row (`name = "Nameless User with id <id>"`,
-//! `last_updated_with = RoleProvider`) for an unknown user so that #1824's
-//! "assignment requires an existing user" contract is satisfiable before login.
+//! Role-provider sync stubs a row (`name IS NULL`, `last_updated_with =
+//! RoleProvider`) for an unknown user so that #1824's "assignment requires an
+//! existing user" contract is satisfiable before login. The NULL name renders as
+//! a `"Nameless User with id <id>"` placeholder at read time.
 //! `maybe_register_user` (the `GET /v1/config` first-touch hook) must backfill
-//! that placeholder from the token on first login — but must NOT overwrite a row
-//! that already carries a real, human-set identity.
+//! that stub from the token on first login — but must NOT overwrite a row that
+//! already carries a real, human-set identity (the `WHERE name IS NULL` guard).
 
 use lakekeeper::{
     api::{
@@ -14,7 +15,10 @@ use lakekeeper::{
         management::v1::user::{UserLastUpdatedWith, UserType},
     },
     server::CatalogServer,
-    service::{CatalogStore, Transaction, UserId, authz::AllowAllAuthorizer},
+    service::{
+        CatalogRoleAssignmentOps, CatalogStore, CatalogUserRoleAssignmentUser, RoleProviderId,
+        Transaction, UserId, UserUpsertMode, authz::AllowAllAuthorizer,
+    },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
@@ -52,6 +56,37 @@ async fn seed_user(
         None,
         last_updated_with,
         UserType::Human,
+        UserUpsertMode::Overwrite,
+        tx.transaction(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Create a role-provider stub the way production does: drive the real
+/// role-provider sync with a nameless user and no role assignments. The sync
+/// upserts the user with a NULL name (`last_updated_with = role-provider`) — no
+/// raw SQL, so the test follows the real write path instead of duplicating the
+/// schema.
+async fn seed_null_stub(ctx: &Ctx, project_id: &lakekeeper::ProjectId, user_id: &UserId) {
+    let user_id = std::sync::Arc::new(user_id.clone());
+    let provider = RoleProviderId::new_unchecked("ldap");
+    let mut tx =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    PostgresBackend::sync_user_role_assignments_by_provider(
+        CatalogUserRoleAssignmentUser {
+            user_id: &user_id,
+            name: None,
+            email: None,
+            user_type: None,
+            updated_with: UserLastUpdatedWith::RoleProvider,
+        },
+        project_id,
+        &provider,
+        &[],
         tx.transaction(),
     )
     .await
@@ -77,20 +112,28 @@ fn config_query(project: &lakekeeper::ProjectId, warehouse_name: &str) -> GetCon
     }
 }
 
-/// A role-provider placeholder stub is backfilled from the token on first login.
+/// A role-provider NULL-name stub renders as the placeholder at read time,
+/// before any login backfills it.
 #[sqlx::test]
-async fn first_login_backfills_role_provider_stub(pool: PgPool) {
-    let (ctx, project_id, warehouse_name) = setup(pool).await;
+async fn null_stub_renders_placeholder_name(pool: PgPool) {
+    let (ctx, project_id, _warehouse_name) = setup(pool.clone()).await;
     let alice = UserId::new_unchecked("oidc", "alice");
 
-    // Stub exactly as role-provider sync writes it.
-    seed_user(
-        &ctx,
-        &alice,
-        &format!("Nameless User with id {alice}"),
-        UserLastUpdatedWith::RoleProvider,
-    )
-    .await;
+    seed_null_stub(&ctx, &project_id, &alice).await;
+
+    let row = get_user_row(&ctx, &alice).await;
+    assert_eq!(row.name, format!("Nameless User with id {alice}"));
+    assert_eq!(row.last_updated_with, UserLastUpdatedWith::RoleProvider);
+}
+
+/// A role-provider stub (NULL name) is backfilled from the token on first login.
+#[sqlx::test]
+async fn first_login_backfills_role_provider_stub(pool: PgPool) {
+    let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
+    let alice = UserId::new_unchecked("oidc", "alice");
+
+    // Stub exactly as role-provider sync writes it: NULL name.
+    seed_null_stub(&ctx, &project_id, &alice).await;
 
     // First login (the `GET /v1/config` first-touch hook), token name "Test User".
     CatalogServer::get_config(

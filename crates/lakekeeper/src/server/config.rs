@@ -8,13 +8,13 @@ use crate::{
             ApiContext, CatalogConfig, ErrorModel, PageToken, PaginationQuery, Result,
             config::GetConfigQueryParams,
         },
-        management::v1::user::{User, UserLastUpdatedWith, parse_create_user_request},
+        management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
     config::MaintenanceMode,
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
-        WarehouseNameNotFound, WarehouseStatus,
+        UserUpsertMode, WarehouseNameNotFound, WarehouseStatus,
         authz::{
             Authorizer, AuthzWarehouseOps, CatalogWarehouseAction, RequireWarehouseActionError,
         },
@@ -165,24 +165,6 @@ fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
     }
 }
 
-/// Placeholder name the role-provider sync path assigns to a user with no name
-/// yet (`COALESCE(name, 'Nameless User with id ' || id)`). **Load-bearing:** the
-/// exact string is inlined in the `sync_*` SQL in
-/// `lakekeeper-storage-postgres/src/role_assignment.rs` (two writers). If it is
-/// renamed there, [`is_unbackfilled_stub`] silently stops matching — rename in
-/// lockstep.
-const STUB_NAME_PREFIX: &str = "Nameless User with id ";
-
-/// True if `user` is an un-backfilled role-provider placeholder stub: a row
-/// auto-created by role-provider sync (`last_updated_with == RoleProvider`) whose
-/// name is still the [`STUB_NAME_PREFIX`] placeholder. A real role-provider name
-/// (also `RoleProvider`, but a non-placeholder name — e.g. a SCIM-synced
-/// "Alice Smith") is intentionally NOT a stub and is left untouched.
-fn is_unbackfilled_stub(user: &User) -> bool {
-    user.last_updated_with == UserLastUpdatedWith::RoleProvider
-        && user.name == format!("{STUB_NAME_PREFIX}{}", user.id)
-}
-
 /// True if the token carries a non-empty name claim. Backfilling a stub is only
 /// useful — and only safe — when the token actually provides a name: backfilling
 /// from a nameless token would flip the row to `ConfigCallCreation` with a still-
@@ -214,16 +196,22 @@ async fn maybe_register_user<D: CatalogStore>(
     )
     .await?;
 
-    // Register on first touch, OR backfill a role-provider placeholder stub once
-    // a real name is available. #1824 made admin-facing assignment writes 404 on
-    // unknown users, so role-provider sync now stubs a `users` row (name =
-    // `"Nameless User with id <id>"`, `last_updated_with = RoleProvider`) before
-    // the user ever logs in; without this, that placeholder would survive the
-    // user's first login forever. The `token_provides_name` gate keeps the
-    // backfill from being a downgrade (see its doc).
+    // Register on first touch, OR backfill a role-provider stub once a real name
+    // is available. #1824 made admin-facing assignment writes 404 on unknown
+    // users, so role-provider sync now stubs a `users` row (`name IS NULL`,
+    // `last_updated_with = RoleProvider`) before the user ever logs in; without
+    // this, that stub (rendered as a placeholder name) would survive first login
+    // forever. A `RoleProvider` row is the only ambiguous case — it may be an
+    // un-named stub OR a real SCIM-synced name — so we attempt the write and let
+    // `create_or_backfill_user`'s `WHERE name IS NULL` guard disambiguate
+    // atomically: a real name (even a concurrent one) is left untouched. The
+    // `token_provides_name` gate keeps the backfill from being a downgrade.
     let should_register = match user.users.first() {
         None => true,
-        Some(existing) => is_unbackfilled_stub(existing) && token_provides_name(request_metadata),
+        Some(existing) => {
+            existing.last_updated_with == UserLastUpdatedWith::RoleProvider
+                && token_provides_name(request_metadata)
+        }
     };
 
     if should_register {
@@ -238,6 +226,7 @@ async fn maybe_register_user<D: CatalogStore>(
             email.as_deref(),
             UserLastUpdatedWith::ConfigCallCreation,
             user_type,
+            UserUpsertMode::BackfillUnnamedStub,
             t.transaction(),
         )
         .await?;

@@ -49,9 +49,9 @@ use lakekeeper::{
         SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
         TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
         TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
-        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
-        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
-        WarehouseId, WarehouseStatus,
+        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, UserUpsertMode,
+        ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::ListRoleAssignmentsResultPage,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
@@ -588,6 +588,7 @@ impl CatalogStore for super::PostgresBackend {
         email: Option<&str>,
         last_updated_with: UserLastUpdatedWith,
         user_type: UserType,
+        mode: UserUpsertMode,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<CreateOrUpdateUserResponse> {
         create_or_update_user(
@@ -596,6 +597,7 @@ impl CatalogStore for super::PostgresBackend {
             email,
             last_updated_with,
             user_type,
+            mode,
             &mut **transaction,
         )
         .await

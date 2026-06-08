@@ -158,7 +158,7 @@ pub(crate) async fn sync_role_members_by_ident(
         user_input AS (
             SELECT u.id,
                    u.name,
-                   COALESCE(u.name, 'Nameless User with id ' || u.id) AS effective_name,
+                   u.name AS effective_name,
                    u.email,
                    NULLIF(u.email, '') AS effective_email,
                    u.utype,
@@ -310,7 +310,7 @@ pub(crate) async fn sync_user_role_assignments_by_provider(
         WITH
         upserted_user AS (
             INSERT INTO users (id, name, email, last_updated_with, user_type)
-            VALUES ($1, COALESCE($2, 'Nameless User with id ' || $1), NULLIF($3, ''), $4, COALESCE($5, 'human'::user_type))
+            VALUES ($1, $2, NULLIF($3, ''), $4, COALESCE($5, 'human'::user_type))
             ON CONFLICT (id) DO UPDATE SET
                 name              = COALESCE($2, users.name),
                 email             = CASE WHEN $3 IS NULL THEN users.email ELSE NULLIF($3, '') END,
@@ -1504,7 +1504,7 @@ mod tests {
             AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
             CatalogRoleForAssignment, CatalogRoleOps, CatalogStore, CatalogUserRoleAssignmentUser,
             RoleId, RoleIdent, RoleProviderId, RoleSourceId, SyncRoleMembersError,
-            SyncUserRoleAssignmentsError, Transaction, UniqueMembers, UniqueRoles,
+            SyncUserRoleAssignmentsError, Transaction, UniqueMembers, UniqueRoles, UserUpsertMode,
             authn::{UserId, UserIdRef},
         },
     };
@@ -1623,6 +1623,7 @@ mod tests {
             None,
             UserLastUpdatedWith::RoleProvider,
             UserType::Human,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await

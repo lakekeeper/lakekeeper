@@ -13,6 +13,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
+        UserUpsertMode,
         authz::{
             AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction,
             RequireServerActionError,
@@ -330,6 +331,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             email.as_deref(),
             UserLastUpdatedWith::CreateEndpoint,
             user_type,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await?;
@@ -492,6 +494,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             email,
             UserLastUpdatedWith::UpdateEndpoint,
             request.user_type,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await?;

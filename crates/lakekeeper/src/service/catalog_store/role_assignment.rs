@@ -27,8 +27,9 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct CatalogUserRoleAssignmentUser<'a> {
     pub user_id: &'a UserIdRef,
-    /// Display name. When `None` the user is stored with `"Nameless User with id {id}"`
-    /// as fallback for new rows, and the existing name is preserved for updates.
+    /// Display name. When `None` a new row is stored with a NULL name (rendered
+    /// as a `"Nameless User with id {id}"` placeholder at read time); the
+    /// existing name is preserved for updates.
     pub name: Option<&'a str>,
     pub email: Option<&'a str>,
     /// User type. When `None` defaults to `Human` for new users and preserves
