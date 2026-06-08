@@ -12,5 +12,5 @@ ALTER TABLE users ALTER COLUMN name DROP NOT NULL;
 -- Reset existing stubs to NULL.
 UPDATE users
 SET name = NULL
-WHERE last_updated_with = 'role-provider'::user_last_updated_with
+WHERE last_updated_with::text = 'role-provider'
   AND name = 'Nameless User with id ' || id;
