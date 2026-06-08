@@ -8,7 +8,7 @@ use crate::{
             ApiContext, CatalogConfig, ErrorModel, PageToken, PaginationQuery, Result,
             config::GetConfigQueryParams,
         },
-        management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
+        management::v1::user::{User, UserLastUpdatedWith, parse_create_user_request},
     },
     config::MaintenanceMode,
     request_metadata::RequestMetadata,
@@ -165,6 +165,35 @@ fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
     }
 }
 
+/// Placeholder name the role-provider sync path assigns to a user with no name
+/// yet (`COALESCE(name, 'Nameless User with id ' || id)`). **Load-bearing:** the
+/// exact string is inlined in the `sync_*` SQL in
+/// `lakekeeper-storage-postgres/src/role_assignment.rs` (two writers). If it is
+/// renamed there, [`is_unbackfilled_stub`] silently stops matching — rename in
+/// lockstep.
+const STUB_NAME_PREFIX: &str = "Nameless User with id ";
+
+/// True if `user` is an un-backfilled role-provider placeholder stub: a row
+/// auto-created by role-provider sync (`last_updated_with == RoleProvider`) whose
+/// name is still the [`STUB_NAME_PREFIX`] placeholder. A real role-provider name
+/// (also `RoleProvider`, but a non-placeholder name — e.g. a SCIM-synced
+/// "Alice Smith") is intentionally NOT a stub and is left untouched.
+fn is_unbackfilled_stub(user: &User) -> bool {
+    user.last_updated_with == UserLastUpdatedWith::RoleProvider
+        && user.name == format!("{STUB_NAME_PREFIX}{}", user.id)
+}
+
+/// True if the token carries a non-empty name claim. Backfilling a stub is only
+/// useful — and only safe — when the token actually provides a name: backfilling
+/// from a nameless token would flip the row to `ConfigCallCreation` with a still-
+/// placeholder name, locking out a later name-bearing login or SCIM full-sync.
+fn token_provides_name(request_metadata: &RequestMetadata) -> bool {
+    request_metadata
+        .authentication()
+        .and_then(|auth| auth.full_name())
+        .is_some_and(|name| !name.is_empty())
+}
+
 async fn maybe_register_user<D: CatalogStore>(
     request_metadata: &RequestMetadata,
     state: <D as CatalogStore>::State,
@@ -185,11 +214,23 @@ async fn maybe_register_user<D: CatalogStore>(
     )
     .await?;
 
-    if user.users.is_empty() {
+    // Register on first touch, OR backfill a role-provider placeholder stub once
+    // a real name is available. #1824 made admin-facing assignment writes 404 on
+    // unknown users, so role-provider sync now stubs a `users` row (name =
+    // `"Nameless User with id <id>"`, `last_updated_with = RoleProvider`) before
+    // the user ever logs in; without this, that placeholder would survive the
+    // user's first login forever. The `token_provides_name` gate keeps the
+    // backfill from being a downgrade (see its doc).
+    let should_register = match user.users.first() {
+        None => true,
+        Some(existing) => is_unbackfilled_stub(existing) && token_provides_name(request_metadata),
+    };
+
+    if should_register {
         let (creation_user_id, name, user_type, email) =
             parse_create_user_request(request_metadata, None)?;
 
-        // If the user is authenticated, create a user in the catalog
+        // If the user is authenticated, create or backfill the catalog user.
         let mut t = D::Transaction::begin_write(state).await?;
         D::create_or_update_user(
             &creation_user_id,

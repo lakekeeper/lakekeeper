@@ -922,7 +922,7 @@ impl ManagesRoleAssignments for OpenFGAAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _project_id: ArcProjectId,
-        assignments: &[(UserOrRole, RoleId)],
+        assignments: &[(UserOrRoleId, RoleId)],
     ) -> std::result::Result<(), AddRoleAssignmentsError> {
         // Just persist the `#assignee` tuples. Cycle prevention is a catalog concern
         // (`add_role_members`); OpenFGA tolerates cycles, so this never returns
@@ -959,7 +959,7 @@ impl ManagesRoleAssignments for OpenFGAAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _project_id: ArcProjectId,
-        assignments: &[(UserOrRole, RoleId)],
+        assignments: &[(UserOrRoleId, RoleId)],
     ) -> std::result::Result<(), AuthorizationBackendUnavailable> {
         let deletes = assignments
             .iter()
@@ -1541,10 +1541,7 @@ pub(crate) mod tests {
     pub(crate) mod openfga_integration_tests {
         use http::StatusCode;
         use lakekeeper::{
-            service::{
-                authz::{AuthZProjectOps, RoleAssignee},
-                events::AuthorizationFailureSource,
-            },
+            service::{authz::AuthZProjectOps, events::AuthorizationFailureSource},
             tokio,
         };
         use openfga_client::client::ConsistencyPreference;
@@ -2319,10 +2316,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(
-                        UserOrRole::Role(RoleAssignee::from_role(role_b.clone())),
-                        role_a.id,
-                    )],
+                    &[(UserOrRoleId::Role(role_b.id), role_a.id)],
                 )
                 .await
                 .unwrap();
@@ -2334,7 +2328,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(UserOrRole::User(user_id.clone()), role_b.id)],
+                    &[(UserOrRoleId::User(user_id.clone()), role_b.id)],
                 )
                 .await
                 .unwrap();
@@ -2386,7 +2380,7 @@ pub(crate) mod tests {
                         .add_role_assignments(
                             &metadata,
                             project_id.clone(),
-                            &[(UserOrRole::Role(RoleAssignee::from_role(member)), parent)],
+                            &[(UserOrRoleId::Role(member.id), parent)],
                         ),
                 )
                 .await
@@ -2404,7 +2398,7 @@ pub(crate) mod tests {
                     .add_role_assignments(
                         &metadata,
                         project_id.clone(),
-                        &[(UserOrRole::User(user_id.clone()), role_a.id)],
+                        &[(UserOrRoleId::User(user_id.clone()), role_a.id)],
                     ),
             )
             .await
@@ -2456,10 +2450,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(
-                        UserOrRole::Role(RoleAssignee::from_role(role_a.clone())),
-                        role_b.id,
-                    )],
+                    &[(UserOrRoleId::Role(role_a.id), role_b.id)],
                 )
                 .await;
             assert!(
@@ -2475,10 +2466,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(
-                        UserOrRole::Role(RoleAssignee::from_role(role_c.clone())),
-                        role_a.id,
-                    )],
+                    &[(UserOrRoleId::Role(role_c.id), role_a.id)],
                 )
                 .await;
             assert!(
@@ -2493,7 +2481,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(UserOrRole::User(user_id.clone()), role_c.id)],
+                    &[(UserOrRoleId::User(user_id.clone()), role_c.id)],
                 )
                 .await
                 .unwrap();
@@ -2555,11 +2543,8 @@ pub(crate) mod tests {
                     &metadata,
                     project_id.clone(),
                     &[
-                        (
-                            UserOrRole::Role(RoleAssignee::from_role(role_b.clone())),
-                            role_a.id,
-                        ),
-                        (UserOrRole::User(user_id.clone()), role_a.id),
+                        (UserOrRoleId::Role(role_b.id), role_a.id),
+                        (UserOrRoleId::User(user_id.clone()), role_a.id),
                     ],
                 )
                 .await
@@ -2608,7 +2593,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(UserOrRole::User(user_id.clone()), role.id)],
+                    &[(UserOrRoleId::User(user_id.clone()), role.id)],
                 )
                 .await
                 .unwrap();
@@ -2641,7 +2626,7 @@ pub(crate) mod tests {
                 .add_role_assignments(
                     &metadata,
                     project_id.clone(),
-                    &[(UserOrRole::User(user_id.clone()), role.id)],
+                    &[(UserOrRoleId::User(user_id.clone()), role.id)],
                 )
                 .await
                 .unwrap();
@@ -2682,8 +2667,8 @@ pub(crate) mod tests {
                     &metadata,
                     project_id.clone(),
                     &[
-                        (UserOrRole::User(user_id.clone()), role_a.id),
-                        (UserOrRole::User(user_id.clone()), role_b.id),
+                        (UserOrRoleId::User(user_id.clone()), role_a.id),
+                        (UserOrRoleId::User(user_id.clone()), role_b.id),
                     ],
                 )
                 .await
@@ -2719,10 +2704,7 @@ pub(crate) mod tests {
             let metadata = RequestMetadata::test_user(user_id.clone());
             let role_a = Arc::new(Role::new_random());
             let role_b = Arc::new(Role::new_random());
-            let edge = [(
-                UserOrRole::Role(RoleAssignee::from_role(role_b.clone())),
-                role_a.id,
-            )];
+            let edge = [(UserOrRoleId::Role(role_b.id), role_a.id)];
 
             // B is a member of A.
             authorizer
@@ -2799,8 +2781,8 @@ pub(crate) mod tests {
                     &metadata,
                     project_id.clone(),
                     &[
-                        (UserOrRole::User(u1.clone()), role.id),
-                        (UserOrRole::User(u2.clone()), role.id),
+                        (UserOrRoleId::User(u1.clone()), role.id),
+                        (UserOrRoleId::User(u2.clone()), role.id),
                     ],
                 )
                 .await

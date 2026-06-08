@@ -551,13 +551,13 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn list_direct_role_parents_page(
+    async fn list_direct_role_member_of_page(
         project_id: &ProjectId,
         role_id: RoleId,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesPage> {
-        super::role_assignment::list_direct_role_parents_page(
+        super::role_assignment::list_direct_role_member_of_page(
             project_id,
             role_id,
             pagination,
@@ -571,7 +571,7 @@ impl CatalogStore for super::PostgresBackend {
         user_id: &UserId,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRolesPage> {
+    ) -> Result<Option<ListRolesPage>> {
         super::role_assignment::list_direct_user_roles_page(
             project_id,
             user_id,

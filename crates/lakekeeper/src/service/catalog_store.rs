@@ -726,7 +726,7 @@ where
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
     //
-    // These back the public `/role/{id}/members`, `/role/{id}/parents` and
+    // These back the public `/role/{id}/members`, `/role/{id}/member-of` and
     // `/user/{id}/roles` listings on authorizers that do NOT manage assignments
     // (Cedar/AllowAll). They are deliberately separate from the cached, full-set
     // hot-path readers above: paginating those would defeat their cache.
@@ -742,8 +742,8 @@ where
         catalog_state: Self::State,
     ) -> Result<ListRoleAssignmentsResultPage>;
 
-    /// Direct parent roles of `role_id`, keyset-paginated and project-scoped.
-    async fn list_direct_role_parents_page(
+    /// Direct roles `role_id` is a member of, keyset-paginated and project-scoped.
+    async fn list_direct_role_member_of_page(
         project_id: &ProjectId,
         role_id: RoleId,
         pagination: PaginationQuery,
@@ -751,12 +751,17 @@ where
     ) -> Result<ListRolesPage>;
 
     /// Direct roles a user is assigned to, keyset-paginated and project-scoped.
+    ///
+    /// `Ok(None)` signals the user does not exist in the catalog (the handler maps
+    /// it to 404); `Ok(Some(page))` is a user that exists, whose page may be empty.
+    /// Backends that cannot prove non-existence (e.g. OpenFGA-only users) return
+    /// `Some`.
     async fn list_direct_user_roles_page(
         project_id: &ProjectId,
         user_id: &UserId,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRolesPage>;
+    ) -> Result<Option<ListRolesPage>>;
 
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(

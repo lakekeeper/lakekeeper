@@ -1120,16 +1120,18 @@ pub(crate) async fn list_role_memberships<
 ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError> {
     // Two static queries rather than a single CASE-based one: each keeps its
     // WHERE column sargable so the (parent,member) / (member,parent) indexes are
-    // usable. `Members` walks parent→member; `Parents` walks member→parent.
+    // usable. `Members` walks parent→member; `MemberOf` walks member→parent.
     fn entry(
         id: Uuid,
         source_id: String,
         provider_id: String,
+        name: String,
         created_at: chrono::DateTime<chrono::Utc>,
     ) -> RoleMembershipEntry {
         RoleMembershipEntry {
             role_id: RoleId::new(id),
             role_ident: Arc::new(RoleIdent::from_db_unchecked(provider_id, source_id)),
+            name,
             created_at,
         }
     }
@@ -1137,7 +1139,7 @@ pub(crate) async fn list_role_memberships<
     let entries = match direction {
         RoleMembershipDirection::Members => sqlx::query!(
             r#"
-            SELECT r.id, r.source_id, r.provider_id, rm.created_at
+            SELECT r.id, r.source_id, r.provider_id, r.name, rm.created_at
             FROM role_membership rm
             JOIN "role" r ON r.id = rm.member_role_id
             WHERE rm.parent_role_id = $1
@@ -1149,11 +1151,19 @@ pub(crate) async fn list_role_memberships<
         .await
         .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
         .into_iter()
-        .map(|row| entry(row.id, row.source_id, row.provider_id, row.created_at))
+        .map(|row| {
+            entry(
+                row.id,
+                row.source_id,
+                row.provider_id,
+                row.name,
+                row.created_at,
+            )
+        })
         .collect(),
-        RoleMembershipDirection::Parents => sqlx::query!(
+        RoleMembershipDirection::MemberOf => sqlx::query!(
             r#"
-            SELECT r.id, r.source_id, r.provider_id, rm.created_at
+            SELECT r.id, r.source_id, r.provider_id, r.name, rm.created_at
             FROM role_membership rm
             JOIN "role" r ON r.id = rm.parent_role_id
             WHERE rm.member_role_id = $1
@@ -1165,7 +1175,15 @@ pub(crate) async fn list_role_memberships<
         .await
         .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?
         .into_iter()
-        .map(|row| entry(row.id, row.source_id, row.provider_id, row.created_at))
+        .map(|row| {
+            entry(
+                row.id,
+                row.source_id,
+                row.provider_id,
+                row.name,
+                row.created_at,
+            )
+        })
         .collect(),
     };
     Ok(entries)
@@ -1315,13 +1333,13 @@ pub(crate) async fn list_direct_role_members_page<
 pub(crate) async fn list_direct_user_roles_page<
     'c,
     'e: 'c,
-    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres> + Copy,
 >(
     project_id: &ProjectId,
     user_id: &UserId,
     pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
     connection: E,
-) -> lakekeeper::service::Result<ListRolesPage> {
+) -> lakekeeper::service::Result<Option<ListRolesPage>> {
     let lakekeeper::api::iceberg::v1::PaginationQuery {
         page_token,
         page_size,
@@ -1339,7 +1357,7 @@ pub(crate) async fn list_direct_user_roles_page<
 
     let entries: Vec<RoleMembershipEntry> = sqlx::query!(
         r#"
-        SELECT r.id, r.source_id, r.provider_id, ra.created_at
+        SELECT r.id, r.source_id, r.provider_id, r.name, ra.created_at
         FROM role_assignment ra
         JOIN "role" r ON r.id = ra.role_id
         WHERE ra.user_id = $1
@@ -1361,6 +1379,7 @@ pub(crate) async fn list_direct_user_roles_page<
     .map(|row| RoleMembershipEntry {
         role_id: RoleId::new(row.id),
         role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+        name: row.name,
         created_at: row.created_at,
     })
     .collect();
@@ -1373,17 +1392,37 @@ pub(crate) async fn list_direct_user_roles_page<
         .to_string()
     });
 
-    Ok(ListRolesPage {
+    // A non-empty page — or any continuation request (a page token was supplied) —
+    // proves the user exists. Only an empty *first* page is ambiguous, so there we
+    // disambiguate "no such user" (`None` → the handler 404s) from "user with zero
+    // roles" (an empty page). `connection` is reusable (`E: Copy`, a `&PgPool`), so
+    // this costs a second query only on that empty-first-page path. The OpenFGA
+    // reader can't make this distinction and always yields `Some`.
+    if !entries.is_empty() || token.is_some() {
+        return Ok(Some(ListRolesPage {
+            entries,
+            next_page_token,
+        }));
+    }
+    let user_exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL) AS "exists!""#,
+        user_id.to_string(),
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error checking whether the user exists".to_string()))?;
+
+    Ok(user_exists.then_some(ListRolesPage {
         entries,
         next_page_token,
-    })
+    }))
 }
 
-// ─── list_direct_role_parents_page ───────────────────────────────────────────────────
+// ─── list_direct_role_member_of_page ───────────────────────────────────────────────────
 
-/// Direct (depth-1) parent roles of `role_id`, in `project_id`, keyset-paginated
+/// Direct (depth-1) roles `role_id` is a member of, in `project_id`, keyset-paginated
 /// by `(role_membership.created_at, parent_role_id)`.
-pub(crate) async fn list_direct_role_parents_page<
+pub(crate) async fn list_direct_role_member_of_page<
     'c,
     'e: 'c,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
@@ -1410,7 +1449,7 @@ pub(crate) async fn list_direct_role_parents_page<
 
     let entries: Vec<RoleMembershipEntry> = sqlx::query!(
         r#"
-        SELECT r.id, r.source_id, r.provider_id, rm.created_at
+        SELECT r.id, r.source_id, r.provider_id, r.name, rm.created_at
         FROM role_membership rm
         JOIN "role" r ON r.id = rm.parent_role_id
         WHERE rm.member_role_id = $1
@@ -1432,6 +1471,7 @@ pub(crate) async fn list_direct_role_parents_page<
     .map(|row| RoleMembershipEntry {
         role_id: RoleId::new(row.id),
         role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+        name: row.name,
         created_at: row.created_at,
     })
     .collect();
@@ -2133,7 +2173,8 @@ mod tests {
             &pool,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("seeded user exists");
         assert_eq!(page1.entries.len(), 2);
         let token = page1.next_page_token.clone().expect("page 1 has a token");
 
@@ -2151,7 +2192,8 @@ mod tests {
             &pool,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("seeded user exists");
         assert_eq!(page2.entries.len(), 1);
         let token = page2
             .next_page_token
@@ -2169,7 +2211,8 @@ mod tests {
             &pool,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("seeded user exists");
         assert_eq!(page3.entries.len(), 0);
         assert_eq!(page3.next_page_token, None);
 
@@ -2182,6 +2225,21 @@ mod tests {
             .collect();
         assert_eq!(union.len(), 3, "no role appears on two pages");
         assert_eq!(union, ground_truth);
+
+        // Each entry carries the role's display name, sourced from `role.name`.
+        let names: std::collections::HashSet<String> = page1
+            .entries
+            .iter()
+            .chain(&page2.entries)
+            .map(|e| e.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            ["Group 1", "Group 2", "Group 3"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
     }
 
     /// `list_direct_role_members_page` merges user members (`role_assignment`) and role
@@ -2432,15 +2490,16 @@ mod tests {
             &pool,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("seeded user exists");
         assert_eq!(in_a.entries.len(), 1, "only the project-A role is returned");
     }
 
-    /// `list_direct_role_parents_page` keyset-paginates the direct parents of a role:
-    /// each parent appears once across pages, the final non-empty page still
+    /// `list_direct_role_member_of_page` keyset-paginates the direct roles a role is a
+    /// member of: each appears once across pages, the final non-empty page still
     /// carries a token, and the drained page is empty with no token.
     #[sqlx::test]
-    async fn list_direct_role_parents_page_paginates(pool: sqlx::PgPool) {
+    async fn list_direct_role_member_of_page_paginates(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let project_id = make_project(&state).await;
         let child = create_managed_role(&state, &project_id, "child").await;
@@ -2462,7 +2521,7 @@ mod tests {
 
         let expected: std::collections::HashSet<Uuid> = [p1, p2, p3].iter().map(|r| **r).collect();
 
-        let page1 = list_direct_role_parents_page(
+        let page1 = list_direct_role_member_of_page(
             &project_id,
             child,
             PaginationQuery {
@@ -2476,7 +2535,7 @@ mod tests {
         assert_eq!(page1.entries.len(), 2);
         let token = page1.next_page_token.clone().expect("page 1 has a token");
 
-        let page2 = list_direct_role_parents_page(
+        let page2 = list_direct_role_member_of_page(
             &project_id,
             child,
             PaginationQuery {
@@ -2493,7 +2552,7 @@ mod tests {
             .clone()
             .expect("page 2 still has a token");
 
-        let page3 = list_direct_role_parents_page(
+        let page3 = list_direct_role_member_of_page(
             &project_id,
             child,
             PaginationQuery {
@@ -2515,6 +2574,18 @@ mod tests {
             .collect();
         assert_eq!(union.len(), 3, "no parent appears on two pages");
         assert_eq!(union, expected);
+
+        // Each entry carries the parent role's display name, sourced from `role.name`.
+        let names: std::collections::HashSet<String> = page1
+            .entries
+            .iter()
+            .chain(&page2.entries)
+            .map(|e| e.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            ["p1", "p2", "p3"].into_iter().map(String::from).collect()
+        );
     }
 
     // ── role_membership graph ──────────────────────────────────────────────
@@ -3244,7 +3315,7 @@ mod tests {
 
         let parents: HashSet<RoleId> = PostgresBackend::list_role_memberships(
             member,
-            RoleMembershipDirection::Parents,
+            RoleMembershipDirection::MemberOf,
             state.clone(),
         )
         .await

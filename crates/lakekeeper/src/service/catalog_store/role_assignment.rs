@@ -717,6 +717,10 @@ impl From<RoleMembershipLockTimeout> for ErrorModel {
 pub struct RoleMembershipEntry {
     pub role_id: RoleId,
     pub role_ident: Arc<RoleIdent>,
+    /// The role's human-readable display name (`role.name`). Carried so the
+    /// `member-of` and `user roles` listings can render names without a
+    /// per-row follow-up lookup.
+    pub name: String,
     /// When the membership edge to this role was created. Non-optional: the
     /// `role_membership.created_at` column is `NOT NULL`.
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -754,8 +758,8 @@ pub struct ListRolesPage {
 pub enum RoleMembershipDirection {
     /// Direct (depth-1) member roles of the given role (it is the parent).
     Members,
-    /// Direct (depth-1) parent roles of the given role (it is the member).
-    Parents,
+    /// Direct (depth-1) roles the given role is a member of (it is the member).
+    MemberOf,
 }
 
 /// Outcome of adding role->role edges.
@@ -1261,9 +1265,61 @@ where
         Ok(result)
     }
 
+    /// Atomic mixed batch for `POST /role/{id}/members`: in ONE transaction,
+    /// assign `user_ids` (direct user→role) AND add `member_role_ids` (role→role
+    /// edges) to `role_id`, then invalidate caches. All-or-nothing — any failure
+    /// rolls the whole batch back. The two single-kind `*_and_invalidate` wrappers
+    /// each own a separate transaction, so calling both would not be atomic across
+    /// kinds; this wrapper exists precisely to span both writes on one transaction.
+    ///
+    /// Combines their cache rationale: each newly-assigned user evicts its
+    /// `USER_ASSIGNMENTS_CACHE`, the role's `ROLE_MEMBERS_CACHE` is evicted iff a
+    /// direct user member was added, and edge additions evict the transitively-
+    /// affected users' `USER_ASSIGNMENTS_CACHE`.
+    async fn add_role_members_mixed_and_invalidate(
+        project_id: &ArcProjectId,
+        role_id: RoleId,
+        user_ids: &[UserId],
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> crate::api::Result<(AddUserRoleAssignmentsResult, AddRoleMembersResult)> {
+        let user_ids = dedup_user_ids(user_ids);
+        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+
+        let user_result = if user_ids.is_empty() {
+            AddUserRoleAssignmentsResult::default()
+        } else {
+            Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
+                .await?
+        };
+        let role_result = if member_role_ids.is_empty() {
+            AddRoleMembersResult::default()
+        } else {
+            Self::add_role_members_impl(project_id, role_id, member_role_ids, t.transaction())
+                .await?
+        };
+
+        // Transitively-affected users from the edge additions, computed on the same
+        // transaction before commit (see `add_role_members_and_invalidate`).
+        let edge_affected = membership_edge_affected_users::<Self>(&role_result.added, &mut t)
+            .await
+            .map_err(ErrorModel::from)?;
+        t.commit().await?;
+
+        // Post-commit, infallible in-memory eviction.
+        for user_id in &user_result.added {
+            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
+        }
+        role_assignments_cache::user_assignments_cache_invalidate_many(&edge_affected).await;
+        if !user_result.added.is_empty() {
+            role_assignments_cache::role_members_cache_invalidate(role_id).await;
+        }
+        Ok((user_result, role_result))
+    }
+
     /// Direct (depth-1) adjacent roles of `role_id` in the membership graph:
-    /// its member roles ([`RoleMembershipDirection::Members`]) or its parent
-    /// roles ([`RoleMembershipDirection::Parents`]).
+    /// its member roles ([`RoleMembershipDirection::Members`]) or the roles it
+    /// is a member of ([`RoleMembershipDirection::MemberOf`]).
     async fn list_role_memberships(
         role_id: RoleId,
         direction: RoleMembershipDirection,

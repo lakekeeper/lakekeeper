@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id, r.source_id, r.provider_id, rm.created_at\n            FROM role_membership rm\n            JOIN \"role\" r ON r.id = rm.parent_role_id\n            WHERE rm.member_role_id = $1\n            ORDER BY rm.parent_role_id\n            ",
+  "query": "\n            SELECT r.id, r.source_id, r.provider_id, r.name, rm.created_at\n            FROM role_membership rm\n            JOIN \"role\" r ON r.id = rm.member_role_id\n            WHERE rm.parent_role_id = $1\n            ORDER BY rm.member_role_id\n            ",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "role",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -57,8 +68,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "8b7c0c2f8e451fe68dc0a9a873a1cea2973fbeba64928a732d6c006856fdff69"
+  "hash": "372748d67e3d65be75a8ecb63f684300c40531a492d4b1949159881a6b66bcb1"
 }
