@@ -51,6 +51,10 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Before adding new code, check if existing crates already solve the problem. Reuse over reinvention.
 - Challenge duplication — if similar logic exists elsewhere, refactor to share it.
 - New features should extend existing traits/interfaces where possible rather than introducing parallel abstractions.
+- Cold path (management/admin routes): bypass per-process in-memory caches; read authoritative data from the DB.
+- Hot authz path: may tolerate cache lag.
+- After any write: invalidate the local replica's in-memory cache immediately.
+- Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
 
 ## Rules
 - Never skip or disable tests.

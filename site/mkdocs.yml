@@ -4,12 +4,24 @@ site_description: Lakekeeper is a rust native Iceberg REST Catalog
 site_author: Lakekeeper Team
 edit_uri: blob/main/docs/
 
+# Link validation. The monorepo plugin builds each version as a separate unit, so
+# cross-unit / shared-asset links (../../assets, ../../about, ../../getting-started)
+# can't be resolved here — they only resolve in the assembled site — so keep them at
+# `info`. Anchors are per-page, so broken anchors ARE real — keep them as warnings.
+# `just linkcheck` validates the assembled site (lychee) as the real gate.
+validation:
+  links:
+    not_found: info
+    anchors: warn
+    absolute_links: info
+
 theme:
   custom_dir: overrides
   name: material
   palette:
     scheme: lakekeeper
   logo: assets/bear.svg
+  favicon: assets/bear.svg
   locale: en
   highlightjs: true
   hljs_languages:
@@ -50,9 +62,11 @@ nav:
       - Release 0.7.x: "!include docs/docs/0.7.x/mkdocs.yml"
       - Release 0.6.x: "!include docs/docs/0.6.x/mkdocs.yml"
       - Release 0.5.x: "!include docs/docs/0.5.x/mkdocs.yml"
+  - Release Notes:
+      - Lakekeeper (OSS): about/release-notes.md
+      - Lakekeeper Plus: about/enterprise-release-notes.md
   - Community: support.md
   - About:
-      - Release Notes: about/release-notes.md
       - License: about/license.md
       - Code of Conduct: about/code-of-conduct.md
       - Logos: about/logos.md
@@ -112,17 +126,9 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/lakekeeper/lakekeeper
 
+# Site-wide CSS only. Home-page assets (bootstrap, fontawesome, animate,
+# odometer, home.css, header.css + jQuery/WOW/odometer/main.js) are loaded
+# exclusively by the landing page via overrides/home.html, so every other
+# docs page stays light.
 extra_css:
   - /assets/css/extra.css
-  - /assets/css/home.css
-  - /assets/css/bootstrap.min.css
-  - /assets/css/animate.css
-  - /assets/css/odometer.css
-  - /assets/css/fontawesome.min.css
-  - /assets/css/header.css
-
-extra_javascript:
-  - /assets/js/jquery-3.6.0.min.js
-  - /assets/js/main.js
-  - /assets/js/odometer.js
-  - /assets/js/wow.min.js

@@ -21,7 +21,8 @@ use lakekeeper::{
         },
     },
     service::{
-        AddRoleMembersError, AddRoleMembersResult, ArcProjectId, CatalogBackendError,
+        AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
+        AddUserRoleAssignmentsResult, ArcProjectId, CatalogBackendError,
         CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError,
         CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
         CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
@@ -35,12 +36,13 @@ use lakekeeper::{
         DropTabularError, EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId,
         GenericTableInfo, GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListGenericTablesError, ListNamespacesQuery,
-        ListRoleMembersResult, ListRolesError, ListRolesResponse, ListTabularsError,
+        ListRoleMembersResult, ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
         ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
         LoadViewError, ManagedBy, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
         NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
-        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
-        RoleId, RoleIdent, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
+        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
+        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
+        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
         SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
         SetTabularProtectionError, SetWarehouseDeletionProfileError,
         SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
@@ -52,6 +54,7 @@ use lakekeeper::{
         ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
         WarehouseId, WarehouseStatus,
         authn::UserId,
+        authz::ListRoleAssignmentsResultPage,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -486,6 +489,29 @@ impl CatalogStore for super::PostgresBackend {
             .await
     }
 
+    async fn add_user_role_assignments_impl<'a>(
+        project_id: &ArcProjectId,
+        role_id: RoleId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddUserRoleAssignmentsResult, AddUserRoleAssignmentsError> {
+        super::role_assignment::add_user_role_assignments(
+            project_id,
+            role_id,
+            user_ids,
+            transaction,
+        )
+        .await
+    }
+
+    async fn remove_user_role_assignments_impl<'a>(
+        role_id: RoleId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveUserRoleAssignmentsResult, RemoveUserRoleAssignmentsError> {
+        super::role_assignment::remove_user_role_assignments(role_id, user_ids, transaction).await
+    }
+
     async fn list_role_memberships_impl(
         role_id: RoleId,
         direction: RoleMembershipDirection,
@@ -506,6 +532,53 @@ impl CatalogStore for super::PostgresBackend {
         super::role_assignment::affected_users_for_membership_edge(
             member_role_id,
             &mut **transaction,
+        )
+        .await
+    }
+
+    async fn list_direct_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRoleAssignmentsResultPage> {
+        super::role_assignment::list_direct_role_members_page(
+            project_id,
+            role_id,
+            type_filter,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_direct_role_parents_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage> {
+        super::role_assignment::list_direct_role_parents_page(
+            project_id,
+            role_id,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_direct_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage> {
+        super::role_assignment::list_direct_user_roles_page(
+            project_id,
+            user_id,
+            pagination,
+            &catalog_state.read_pool(),
         )
         .await
     }
@@ -556,7 +629,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<()>> {
+    ) -> Result<Option<Vec<RoleId>>> {
         delete_user(user_id, &mut **transaction).await
     }
 

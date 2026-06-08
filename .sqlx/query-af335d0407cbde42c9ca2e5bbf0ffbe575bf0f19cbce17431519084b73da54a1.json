@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            m.created_at  AS \"created_at!\",\n            m.member_type AS \"member_type!\",\n            m.member_id   AS \"member_id!\"\n        FROM (\n            SELECT ra.created_at, 'user'::text AS member_type, ra.user_id AS member_id\n            FROM role_assignment ra\n            JOIN \"role\" r ON r.id = ra.role_id\n            WHERE ra.role_id = $1 AND r.project_id = $2 AND $3\n          UNION ALL\n            SELECT rm.created_at, 'role'::text AS member_type, rm.member_role_id::text AS member_id\n            FROM role_membership rm\n            JOIN \"role\" r ON r.id = rm.member_role_id\n            WHERE rm.parent_role_id = $1 AND r.project_id = $2 AND $4\n        ) m\n        WHERE ($5::timestamptz IS NULL)\n           OR (m.created_at, m.member_type, m.member_id) > ($5, $6, $7)\n        ORDER BY m.created_at, m.member_type, m.member_id\n        LIMIT $8\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "member_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "member_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool",
+        "Timestamptz",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "af335d0407cbde42c9ca2e5bbf0ffbe575bf0f19cbce17431519084b73da54a1"
+}

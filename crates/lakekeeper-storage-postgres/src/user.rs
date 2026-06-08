@@ -6,7 +6,7 @@ use lakekeeper::{
             ListUsersResponse, SearchUser, SearchUserResponse, User, UserLastUpdatedWith, UserType,
         },
     },
-    service::{CreateOrUpdateUserResponse, Result, UserId},
+    service::{CreateOrUpdateUserResponse, Result, RoleId, UserId},
 };
 
 use super::dbutils::DBErrorHandler;
@@ -176,29 +176,54 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
     })
 }
 
+/// Soft-deletes a user (scrubs PII, sets `deleted_at`) **and** removes the
+/// user's role assignments (`role_assignment`) and provider sync log
+/// (`role_assignment_sync`), so a deleted user is no longer a member of any
+/// role. This matches the OpenFGA authorizer, whose `delete_user` drops all of
+/// the user's tuples — keeping the two backends consistent on delete.
+///
+/// Only acts on an *active* row (`deleted_at IS NULL`). Returns `None` if no
+/// active user with this id exists — including re-deleting an already
+/// soft-deleted user, which is a no-op that preserves the original `deleted_at`
+/// (consistent with `get`/`list`, which hide soft-deleted users). Otherwise
+/// returns the (possibly empty) set of roles the user was assigned to, so the
+/// caller can evict those roles' member caches and the user's effective-roles
+/// cache. Done in one round-trip.
 pub(crate) async fn delete_user<'c, 'e: 'c, E: sqlx::Executor<'c, Database = sqlx::Postgres>>(
     id: UserId,
     connection: E,
-) -> Result<Option<()>> {
+) -> Result<Option<Vec<RoleId>>> {
     let row = sqlx::query!(
         r#"
-        UPDATE users
-        SET deleted_at = now(),
-            name = 'Deleted User',
-            email = null
-        WHERE id = $1
+        WITH
+        deleted_user AS (
+            UPDATE users
+            SET deleted_at = now(),
+                name = 'Deleted User',
+                email = null
+            WHERE id = $1 AND deleted_at IS NULL
+            RETURNING id
+        ),
+        deleted_assignments AS (
+            DELETE FROM role_assignment WHERE user_id = $1 RETURNING role_id
+        ),
+        deleted_sync AS (
+            DELETE FROM role_assignment_sync WHERE user_id = $1
+        )
+        SELECT
+            (SELECT id FROM deleted_user) AS "user_id?",
+            COALESCE((SELECT array_agg(role_id) FROM deleted_assignments), ARRAY[]::uuid[])
+                AS "affected_roles!: Vec<uuid::Uuid>"
         "#,
         id.to_string(),
     )
-    .execute(connection)
+    .fetch_one(connection)
     .await
     .map_err(|e| e.into_error_model("Error deleting user".to_string()))?;
 
-    if row.rows_affected() == 0 {
-        return Ok(None);
-    }
-
-    Ok(Some(()))
+    Ok(row
+        .user_id
+        .map(|_| row.affected_roles.into_iter().map(RoleId::new).collect()))
 }
 
 pub(crate) async fn create_or_update_user<
@@ -428,6 +453,40 @@ mod test {
             .await
             .unwrap();
         assert_eq!(result, None);
+    }
+
+    /// Re-deleting an already soft-deleted user is a no-op: it returns `None`
+    /// (consistent with `get`/`list`, which hide soft-deleted users) rather than
+    /// matching the tombstone row and resetting its `deleted_at`. A `None` return
+    /// means the `deleted_at IS NULL` guard matched zero rows, so the original
+    /// tombstone is left untouched.
+    #[sqlx::test]
+    async fn test_delete_user_already_deleted_is_noop(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let user_id = UserId::new_unchecked("oidc", "test_user_1");
+
+        create_or_update_user(
+            &user_id,
+            "Test User 1",
+            None,
+            UserLastUpdatedWith::ConfigCallCreation,
+            UserType::Application,
+            &state.read_write.write_pool,
+        )
+        .await
+        .unwrap();
+
+        // First delete acts on the active row.
+        let first = delete_user(user_id.clone(), &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert!(first.is_some());
+
+        // Second delete finds no active row → no-op, no tombstone reset.
+        let second = delete_user(user_id, &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert_eq!(second, None);
     }
 
     #[sqlx::test]

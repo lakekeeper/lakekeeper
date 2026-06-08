@@ -5798,6 +5798,22 @@ components:
               type: string
               enum:
                 - update
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_role_assignments
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_role_assignments
     LakekeeperServerAction:
       oneOf:
         - type: object
@@ -5981,6 +5997,14 @@ components:
               type: string
               enum:
                 - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_role_assignments
     LakekeeperViewAction:
       oneOf:
         - type: object

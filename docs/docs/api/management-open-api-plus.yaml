@@ -1052,6 +1052,119 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAWarehouseActionsResponse'
+  /management/v1/permissions/warehouse/{warehouse_id}/generic-table/{generic_table_id}/assignments:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get user and role assignments for a generic table
+      operationId: get_generic_table_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/GenericTableRelation'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetGenericTableAssignmentsResponse'
+    post:
+      tags:
+        - permissions-openfga
+      summary: Update permissions for a generic table
+      operationId: update_generic_table_assignments_by_id
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGenericTableAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
+  /management/v1/permissions/warehouse/{warehouse_id}/generic-table/{generic_table_id}/authorizer-actions:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get allowed Authorizer actions on a generic table
+      description: |-
+        Returns Authorizer permissions (OpenFGA relations) for the specified generic table.
+        For Catalog permissions, use `/management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions` instead.
+      operationId: get_authorizer_generic_table_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Generic Table Authorizer Actions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetOpenFGAGenericTableActionsResponse'
   /management/v1/permissions/warehouse/{warehouse_id}/managed-access:
     post:
       tags:
@@ -2805,6 +2918,162 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/format-version-policy:
+    post:
+      tags:
+        - warehouse
+      summary: Update Format Version Policy
+      description: |-
+        Configures which Iceberg table format versions may be created in, or
+        upgraded to, within a warehouse, and the default version applied when a
+        create-table request does not specify one.
+      operationId: update_warehouse_format_version_policy
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseFormatVersionPolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: Format version policy updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/actions:
+    get:
+      tags:
+        - warehouse
+      summary: Get allowed actions for a generic table
+      operationId: get_generic_table_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperGenericTableActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection:
+    get:
+      tags:
+        - warehouse
+      summary: Get Generic Table Protection
+      description: Retrieves whether a generic table is protected from deletion.
+      operationId: get_generic_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - warehouse
+      summary: Set Generic Table Protection
+      description: Configures whether a generic table should be protected from deletion.
+      operationId: set_generic_table_protection
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetProtectionRequest'
+        required: true
+      responses:
+        '200':
+          description: Generic table protection set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions:
     get:
       tags:
@@ -3336,6 +3605,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/expire_snapshots/schedule:
+    post:
+      tags:
+        - tasks
+      summary: Schedule a task for an entity.
+      description: |-
+        Pre-checks run against the warehouse config and target entity
+        properties before the task is enqueued. A failure surfaces as `400`
+        with a specific error code (see the operator guide for the full set
+        of pre-check codes).
+
+        When a task is already active for the same (warehouse, entity,
+        queue) triple, the call returns `409 TaskAlreadyActive` with the
+        existing `task-id` in the body — chain to `POST /task/control`
+        with `run-now` or `run-at` to retime it without an extra
+        `task/list` round-trip.
+      operationId: schedule_task_expire_snapshots
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleExpireSnapshotsTaskRequest'
+        required: true
+      responses:
+        '200':
+          description: Task scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleTaskResponse'
+        '400':
+          description: Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: Target entity not found in this warehouse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/task-queue/remove_orphan_files/config:
     get:
       tags:
@@ -3391,6 +3721,67 @@ paths:
       responses:
         '204':
           description: Task queue config set successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/task-queue/remove_orphan_files/schedule:
+    post:
+      tags:
+        - tasks
+      summary: Schedule a task for an entity.
+      description: |-
+        Pre-checks run against the warehouse config and target entity
+        properties before the task is enqueued. A failure surfaces as `400`
+        with a specific error code (see the operator guide for the full set
+        of pre-check codes).
+
+        When a task is already active for the same (warehouse, entity,
+        queue) triple, the call returns `409 TaskAlreadyActive` with the
+        existing `task-id` in the body — chain to `POST /task/control`
+        with `run-now` or `run-at` to retime it without an extra
+        `task/list` round-trip.
+      operationId: schedule_task_remove_orphan_files
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleRemoveOrphanFilesTaskRequest'
+        required: true
+      responses:
+        '200':
+          description: Task scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleTaskResponse'
+        '400':
+          description: Pre-check failed (e.g. scheduling disabled at the warehouse, entity opted out, unsupported entity type) or the request violates a shape limit (e.g. scheduled-for too far in the future).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '404':
+          description: Target entity not found in this warehouse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '409':
+          description: A task is already active for this (warehouse, entity, queue). The error message includes the existing task-id; retime or cancel via POST /task/control.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -4006,6 +4397,19 @@ components:
                   properties:
                     action:
                       $ref: '#/components/schemas/LakekeeperViewAction'
+        - type: object
+          required:
+            - generic-table
+          properties:
+            generic-table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/LakekeeperGenericTableAction'
       description: Represents an action on an object
     CatalogActionsBatchCheckRequest:
       type: object
@@ -4199,6 +4603,13 @@ components:
             view:
               allOf:
                 - $ref: '#/components/schemas/TabularIdentOrUuid'
+        - type: object
+          required:
+            - generic-table
+          properties:
+            generic-table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
       description: |-
         Identifies the resource whose Cedar entity hierarchy should be resolved.
 
@@ -4239,6 +4650,14 @@ components:
           type: boolean
           description: Include policies where `resource` is unconstrained (applies to all resources)
           default: false
+        generic-table:
+          oneOf:
+            - $ref: '#/components/schemas/CedarResourceConstraintPattern'
+              description: Constraint patterns for `Lakekeeper::GenericTable` resources
+          default:
+            eq: false
+            in: false
+            is: false
         namespace:
           oneOf:
             - $ref: '#/components/schemas/CedarResourceConstraintPattern'
@@ -4408,6 +4827,19 @@ components:
                   properties:
                     action:
                       $ref: '#/components/schemas/ViewAction'
+        - type: object
+          required:
+            - generic-table
+          properties:
+            generic-table:
+              allOf:
+                - $ref: '#/components/schemas/TabularIdentOrUuid'
+                - type: object
+                  required:
+                    - action
+                  properties:
+                    action:
+                      $ref: '#/components/schemas/GenericTableAction'
       description: Represents an action on an object
     CheckRequest:
       type: object
@@ -4618,6 +5050,26 @@ components:
         - warehouse-name
         - storage-profile
       properties:
+        allowed-format-versions:
+          type:
+            - array
+            - 'null'
+          items:
+            type: integer
+            format: int32
+          description: |-
+            Iceberg table format versions that may be created in, or upgraded to,
+            within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+            Defaults to all supported versions when omitted.
+        default-format-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Default Iceberg table format version applied when a create-table request
+            does not specify one. Must be a member of `allowed-format-versions`. When
+            omitted, resolves to v2 if allowed, otherwise the highest allowed version.
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
           description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
@@ -4992,6 +5444,103 @@ components:
           type: string
         universe_domain:
           type: string
+    GenericTableAction:
+      type: string
+      enum:
+        - drop
+        - undrop
+        - write_data
+        - read_data
+        - get_metadata
+        - rename
+        - include_in_list
+        - get_tasks
+        - control_tasks
+        - set_protection
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_select
+        - grant_modify
+        - change_ownership
+    GenericTableAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: GenericTableAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - pass_grants
+          title: GenericTableAssignmentPassGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_grants
+          title: GenericTableAssignmentManageGrants
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - describe
+          title: GenericTableAssignmentDescribe
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - select
+          title: GenericTableAssignmentSelect
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - modify
+          title: GenericTableAssignmentModify
+    GenericTableRelation:
+      type: string
+      enum:
+        - ownership
+        - pass_grants
+        - manage_grants
+        - describe
+        - select
+        - modify
     GetCedarPoliciesResponse:
       type: object
       required:
@@ -5070,6 +5619,24 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/ExpireSnapshotsQueueConfig'
+    GetGenericTableAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenericTableAssignment'
+    GetLakekeeperGenericTableActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperGenericTableAction'
     GetLakekeeperNamespaceActionsResponse:
       type: object
       required:
@@ -5170,6 +5737,15 @@ components:
           type: boolean
         managed-access-inherited:
           type: boolean
+    GetOpenFGAGenericTableActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenFGAGenericTableAction'
     GetOpenFGANamespaceActionsResponse:
       type: object
       required:
@@ -5467,7 +6043,25 @@ components:
         - delete-profile
         - status
         - protected
+        - allowed-format-versions
       properties:
+        allowed-format-versions:
+          type: array
+          items:
+            type: integer
+            format: int32
+          description: |-
+            Iceberg table format versions that may be created in, or upgraded to,
+            within this warehouse.
+        default-format-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Default Iceberg table format version applied when a create-table request
+            does not specify one. When absent, resolves to v2 if allowed, otherwise
+            the highest allowed version.
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
           description: Delete profile used for the warehouse.
@@ -5518,6 +6112,88 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorModel'
+    LakekeeperGenericTableAction:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - write_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperNamespaceAction:
       oneOf:
         - type: object
@@ -5665,6 +6341,53 @@ components:
               type: string
               enum:
                 - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_generic_table
+            base_location:
+              type:
+                - string
+                - 'null'
+              description: |-
+                User-supplied base location override — primary lever for
+                path-based authorization policy.
+            format:
+              type:
+                - string
+                - 'null'
+              description: |-
+                Generic table format (e.g. "lance", "delta") — primary lever for
+                format-based authorization policy.
+            generic_table_id:
+              type:
+                - string
+                - 'null'
+              format: uuid
+              description: Generic table ID, if externally provided.
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the generic table to create.
+            properties:
+              type: object
+              additionalProperties:
+                type: string
+              propertyNames:
+                type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_generic_tables
     LakekeeperProjectAction:
       oneOf:
         - type: object
@@ -6278,6 +7001,14 @@ components:
             action:
               type: string
               enum:
+                - set_format_version_policy
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
                 - get_endpoint_statistics
     LicenseStatus:
       type: object
@@ -6590,6 +7321,7 @@ components:
       enum:
         - create_table
         - create_view
+        - create_generic_table
         - create_namespace
         - delete
         - update_properties
@@ -6717,6 +7449,16 @@ components:
         - select
         - create
         - modify
+    OpenFGAGenericTableAction:
+      type: string
+      enum:
+        - read_assignments
+        - grant_pass_grants
+        - grant_manage_grants
+        - grant_describe
+        - grant_select
+        - grant_modify
+        - change_ownership
     OpenFGANamespaceAction:
       type: string
       enum:
@@ -7497,6 +8239,60 @@ components:
         - path
         - virtual_host
         - auto
+    ScheduleExpireSnapshotsTaskRequest:
+      type: object
+      description: Request body for scheduling a task.
+      required:
+        - entity
+      properties:
+        entity:
+          $ref: '#/components/schemas/WarehouseTaskEntityId'
+          description: |-
+            Entity to schedule the task for. Unsupported entity types return
+            `400` from the pre-check.
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the task should run. Omit (or pass `null`) to run on the next
+            worker poll. RFC 3339 / ISO 8601 format. Must be within roughly one
+            year of now; further-out values return
+            `400 ScheduledForTooFarInFuture`.
+          example: 2026-12-31T23:59:59Z
+    ScheduleRemoveOrphanFilesTaskRequest:
+      type: object
+      description: Request body for scheduling a task.
+      required:
+        - entity
+      properties:
+        entity:
+          $ref: '#/components/schemas/WarehouseTaskEntityId'
+          description: |-
+            Entity to schedule the task for. Unsupported entity types return
+            `400` from the pre-check.
+        scheduled-for:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: |-
+            When the task should run. Omit (or pass `null`) to run on the next
+            worker poll. RFC 3339 / ISO 8601 format. Must be within roughly one
+            year of now; further-out values return
+            `400 ScheduledForTooFarInFuture`.
+          example: 2026-12-31T23:59:59Z
+    ScheduleTaskResponse:
+      type: object
+      description: Response returned on a successful schedule call.
+      required:
+        - task-id
+      properties:
+        task-id:
+          type: string
+          format: uuid
+          description: The id of the newly scheduled task.
     SearchRoleRequest:
       type: object
       required:
@@ -8272,11 +9068,15 @@ components:
                 type: string
             table:
               type: string
-              description: Name of the table or view
+              description: Name of the table, view, or generic table.
             warehouse-id:
               type: string
               format: uuid
-      description: Identifier for a table or view, either a UUID or its name and namespace
+      description: |-
+        Identifier for a tabular (table, view, or generic table) — either a UUID
+        or its name and namespace. Wire format primary names are `table-id` and
+        `table`; `view_id` / `view` and `generic_table_id` / `generic_table` are
+        accepted as input aliases for client ergonomics.
     TabularIdentUuid:
       oneOf:
         - type: object
@@ -8303,12 +9103,25 @@ components:
               type: string
               enum:
                 - view
+        - type: object
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - generic-table
     TabularType:
       type: string
       description: Type of tabular
       enum:
         - table
         - view
+        - generic-table
     TaskAttempt:
       type: object
       required:
@@ -8444,6 +9257,17 @@ components:
           items:
             $ref: '#/components/schemas/TabularIdentUuid'
           description: Tabulars to undrop
+    UpdateGenericTableAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenericTableAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenericTableAssignment'
     UpdateNamespaceAssignmentsRequest:
       type: object
       properties:
@@ -8577,6 +9401,28 @@ components:
       properties:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
+    UpdateWarehouseFormatVersionPolicyRequest:
+      type: object
+      required:
+        - allowed-format-versions
+      properties:
+        allowed-format-versions:
+          type: array
+          items:
+            type: integer
+            format: int32
+          description: |-
+            Iceberg table format versions that may be created in, or upgraded to,
+            within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+        default-format-version:
+          type:
+            - integer
+            - 'null'
+          format: int32
+          description: |-
+            Default Iceberg table format version applied when a create-table request
+            does not specify one. Must be a member of `allowed-format-versions`. When
+            omitted, resolves to v2 if allowed, otherwise the highest allowed version.
     UpdateWarehouseStorageRequest:
       type: object
       required:
@@ -8793,6 +9639,7 @@ components:
         - get_all_tasks
         - control_all_tasks
         - set_protection
+        - set_format_version_policy
         - get_endpoint_statistics
     WarehouseAssignment:
       oneOf:
@@ -9000,6 +9847,19 @@ components:
               type: string
               format: uuid
         - type: object
+          description: Get tasks for a specific generic table
+          required:
+            - generic-table-id
+            - type
+          properties:
+            generic-table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - generic-table
+        - type: object
           description: |-
             Get Warehouse-level tasks which are not associated with a specific entity
             inside the warehouse
@@ -9036,6 +9896,18 @@ components:
             view-id:
               type: string
               format: uuid
+        - type: object
+          required:
+            - generic-table-id
+            - type
+          properties:
+            generic-table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - generic-table
     WarehouseTaskInfo:
       type: object
       required:

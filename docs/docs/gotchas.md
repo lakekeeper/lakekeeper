@@ -47,4 +47,4 @@ Caused by:
 1: syntax error at or near "NULLS"
 ```
 
-Lakekeeper is currently only compatible with Postgres >= 15 since we rely on `NULLS not distinct` which was added with PG 15.
+Lakekeeper is currently compatible with Postgres >= 15 since we rely on `NULLS not distinct` which was added with PG 15.

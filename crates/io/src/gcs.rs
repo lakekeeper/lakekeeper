@@ -2,7 +2,10 @@ mod gcs_error;
 mod gcs_location;
 mod gcs_storage;
 
-use std::sync::{Arc, LazyLock};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 pub use gcs_location::{GcsLocation, InvalidGCSBucketName, validate_bucket_name};
@@ -125,41 +128,52 @@ impl GCSSettings {
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
 
-        let config = ClientConfig {
-            http: Some(mid_client),
-            ..ClientConfig::default()
-        };
+        // Acquiring the OAuth token during client init (with_auth /
+        // with_credentials) hits the token endpoint directly and is NOT covered
+        // by the data-plane retry middleware above. A single transient connect
+        // timeout to the token endpoint (e.g. SNAT/ephemeral-port exhaustion
+        // under high concurrency) would otherwise fail init, unretried — so
+        // retry the whole construction on transient failures.
+        let config = tryhard::retry_fn(|| async {
+            let config = ClientConfig {
+                http: Some(mid_client.clone()),
+                ..ClientConfig::default()
+            };
 
-        let config = match auth {
-            GcsAuth::GcpSystemIdentity {} => {
-                config
-                    .with_auth()
-                    .await
-                    .map_err(|e| InitializeClientError {
+            match auth {
+                GcsAuth::GcpSystemIdentity {} => {
+                    config.with_auth().await.map_err(|e| InitializeClientError {
                         reason: format!(
                             "Failed to initialize GCS client with system identity: {e}"
                         ),
                         source: Some(e.into()),
-                    })?
-            }
-            GcsAuth::CredentialsFile { file } => config
-                .with_credentials(file.clone())
-                .await
-                .map_err(|e| InitializeClientError {
-                    reason: format!("Failed to initialize GCS client with credentials file: {e}"),
-                    source: Some(e.into()),
-                })?,
-            GcsAuth::BearerToken(GcsBearerTokenAuth { access_token }) => {
-                let mut config = config;
-                let provider = StaticTokenSourceProvider {
-                    source: Arc::new(StaticTokenSource {
-                        bearer: format!("Bearer {access_token}"),
+                    })
+                }
+                GcsAuth::CredentialsFile { file } => config
+                    .with_credentials(file.clone())
+                    .await
+                    .map_err(|e| InitializeClientError {
+                        reason: format!(
+                            "Failed to initialize GCS client with credentials file: {e}"
+                        ),
+                        source: Some(e.into()),
                     }),
-                };
-                config.token_source_provider = Some(Box::new(provider));
-                config
+                GcsAuth::BearerToken(GcsBearerTokenAuth { access_token }) => {
+                    let mut config = config;
+                    let provider = StaticTokenSourceProvider {
+                        source: Arc::new(StaticTokenSource {
+                            bearer: format!("Bearer {access_token}"),
+                        }),
+                    };
+                    config.token_source_provider = Some(Box::new(provider));
+                    Ok(config)
+                }
             }
-        };
+        })
+        .retries(3)
+        .exponential_backoff(Duration::from_millis(200))
+        .max_delay(Duration::from_secs(10))
+        .await?;
 
         Ok(Client::new(config))
     }

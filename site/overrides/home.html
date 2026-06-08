@@ -1,4 +1,18 @@
-{% extends "main.html" %} {% block tabs %} {{ super() }}
+{% extends "main.html" %}
+
+<!-- Home-page-only stylesheets. Kept out of the global config and out of
+     main.html so every *other* docs page stays light (mkdocs-material only). -->
+{% block extrahead %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ 'assets/css/home.css' | url }}" />
+  <link rel="stylesheet" href="{{ 'assets/css/bootstrap.min.css' | url }}" />
+  <link rel="stylesheet" href="{{ 'assets/css/fontawesome.min.css' | url }}" />
+  <link rel="stylesheet" href="{{ 'assets/css/animate.css' | url }}" />
+  <link rel="stylesheet" href="{{ 'assets/css/odometer.css' | url }}" />
+  <link rel="stylesheet" href="{{ 'assets/css/header.css' | url }}" />
+{% endblock %}
+
+{% block tabs %} {{ super() }}
 <!--Lakekeeper documentation-->
 
 <!-- disable side bars for home page -->
@@ -75,19 +89,19 @@
       <div class="cs_counter_1_wrap">
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="400000" class="odometer" id="download-counter"></span>+
+            <span data-count-to="1" class="odometer" id="download-counter"></span>M+
           </div>
           <p class="cs_counter_title mb-0">Monthly Downloads</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="1200" class="odometer"></span>+
+            <span data-count-to="1300" class="odometer"></span>+
           </div>
           <p class="cs_counter_title mb-0">Stars</p>
         </div>
         <div class="cs_counter cs_style_1">
           <div class="cs_counter_number cs_semibold">
-            <span data-count-to="1700" class="odometer" id="pull-requests-counter"></span>+
+            <span data-count-to="1800" class="odometer" id="pull-requests-counter"></span>+
           </div>
           <p class="cs_counter_title mb-0">Pull Requests</p>
         </div>
@@ -109,6 +123,16 @@
     <div class="container">
       <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
         <h2 class="cs_section_title mb-0">Overview</h2>
+      </div>
+      <div class="cs_height_30 cs_height_lg_20"></div>
+      <div class="row justify-content-center wow fadeIn" data-wow-duration="1s" data-wow-delay="0.25s">
+        <div class="col-lg-8 text-center">
+          <p class="mb-0">
+            Iceberg delivers the transactional consistency of a data warehouse
+            while letting compute and storage scale independently on a data lake —
+            warehouse guarantees with data-lake scale.
+          </p>
+        </div>
       </div>
       <div class="cs_height_50 cs_height_lg_50"></div>
       <div class="row justify-content-center">
@@ -132,65 +156,69 @@
       </div>
       <div class="cs_height_50 cs_height_lg_50"></div>
       <div class="cs_iconbox_wrapper cs_style_1">
-        <!-- Feature 01: Warehouse in the Front -->
+        <!-- Group: Security, access & governance -->
+        <!-- Feature: Centralized & Open Access Control (merged) -->
         <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.2s">
-          <div class="cs_iconbox_inner">
-            <div class="cs_iconbox_header">
-              <div class="cs_iconbox_icon cs_center">
-                <img src="assets/img/icons/data-lake.png" alt="Icon" />
-              </div>
-              <div class="cs_iconbox_index">01</div>
-            </div>
-            <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">
-                Warehouse in the Front, data lake in the back
-              </h3>
-              <p class="cs_iconbox_subtitle mb-0">
-                Iceberg achieves transactional consistency of data warehouses,
-                while enabling modular horizontal scaling of compute and storage
-                on data lakes.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Feature 02: Centralized Data Governance -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.3s">
-          <div class="cs_iconbox_inner">
-            <div class="cs_iconbox_header">
-              <div class="cs_iconbox_icon cs_center">
-                <img src="assets/img/icons/decentralized.png" alt="Icon" />
-              </div>
-              <div class="cs_iconbox_index">02</div>
-            </div>
-            <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">
-                Centralized Data Governance + Decentralized Compute
-              </h3>
-              <p class="cs_iconbox_subtitle mb-0">
-                Manage data access policies centrally - without
-                duplication in compute engines.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Feature 03: Open Data Governance -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.4s">
           <div class="cs_iconbox_inner">
             <div class="cs_iconbox_header">
               <div class="cs_iconbox_icon cs_center">
                 <img src="assets/img/icons/opendata.png" alt="Icon" />
               </div>
+              <div class="cs_iconbox_index">01</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Centralized &amp; Open Access Control</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Define access control once, in the catalog, and enforce it across
+                every compute engine — no rules duplicated per engine. Permissions
+                are fine-grained and inherited down to individual tables and views,
+                in the model you already use (RBAC, ReBAC, or policy-/attribute-based
+                ABAC), powered by open systems like OpenFGA and OPA with
+                best-in-class engine integration such as Trino.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature: Dynamic Catalog Management -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.4s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/data-lake.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">02</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Dynamic Catalog Management</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Create, configure and remove Warehouses — your catalogs — at
+                runtime through the API, with no static config files and no server
+                restarts. Storage credentials live in a secure secret store
+                (encrypted in Postgres or a HashiCorp Vault-compatible store), so
+                onboarding a new catalog is a single API call.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature: Row & Column-Level Security -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.5s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/storage-access.png" alt="Icon" />
+              </div>
               <div class="cs_iconbox_index">03</div>
             </div>
             <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">Open Data Governance</h3>
+              <h3 class="cs_iconbox_title">Row &amp; Column-Level Security</h3>
               <p class="cs_iconbox_subtitle mb-0">
-                Lakekeeper connects to open external permission systems
-                like OpenFGA and can expose permissions via Open Policy Agent (OPA).
-                This enables best-in-class integration with query engines like trino that support external permission
-                systems.
+                Restrict access to specific rows and columns, not just whole
+                tables. Security-DEFINER views — built on Iceberg's referenced-by
+                model and enforced through trusted query engines — let users read
+                only what an authorized view exposes, never the underlying table
+                directly.
               </p>
             </div>
           </div>
@@ -216,54 +244,14 @@
           </div>
         </div>
 
-        <!-- Feature 05: Automatic Table Maintenance -->
+        <!-- Feature 05: Storage Access Management -->
         <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.6s">
-          <div class="cs_iconbox_inner">
-            <div class="cs_iconbox_header">
-              <div class="cs_iconbox_icon cs_center">
-                <img src="assets/img/icons/automatic.png" alt="Icon" />
-              </div>
-              <div class="cs_iconbox_index">05</div>
-            </div>
-            <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">Automatic Table Maintenance</h3>
-              <p class="cs_iconbox_subtitle mb-0">
-                Optimize query performance for all your data lake engines with
-                out-of-the-box automated compaction and maintenance strategies.
-                (Coming soon)
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Feature 06: Ops Friendly -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.7s">
-          <div class="cs_iconbox_inner">
-            <div class="cs_iconbox_header">
-              <div class="cs_iconbox_icon cs_center">
-                <img src="assets/img/icons/binary.png" alt="Icon" />
-              </div>
-              <div class="cs_iconbox_index">06</div>
-            </div>
-            <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">Easy to Use</h3>
-              <p class="cs_iconbox_subtitle mb-0">
-                Single binary executable for all major platforms; no JVM or
-                Python environment required. Native Kubernetes deployments with Helm
-                chart or k8s operator. UI and batteries included.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Feature 07: Storage Access Management -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.8s">
           <div class="cs_iconbox_inner">
             <div class="cs_iconbox_header">
               <div class="cs_iconbox_icon cs_center">
                 <img src="assets/img/icons/storage-access.png" alt="Icon" />
               </div>
-              <div class="cs_iconbox_index">07</div>
+              <div class="cs_iconbox_index">05</div>
             </div>
             <div class="cs_iconbox_text">
               <h3 class="cs_iconbox_title">Storage Access Management</h3>
@@ -275,14 +263,79 @@
           </div>
         </div>
 
-        <!-- Feature 08: Monitoring -->
+        <!-- Group: Data & catalog -->
+        <!-- Feature: Iceberg & Generic Tables -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.8s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/multi-engine.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">06</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Iceberg &amp; Generic Tables</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                A standards-compliant Apache Iceberg REST catalog — and more.
+                Register non-Iceberg tables (Lance, Delta, Parquet) as first-class,
+                governed objects with the same credential vending and access
+                control, so one catalog governs your whole lakehouse.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 06: Soft-delete & Undrop -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.7s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/automatic.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">07</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Soft-delete &amp; Undrop</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Soft-delete with time-bounded undrop and drop-protection across
+                tables, views and generic tables. The catalog runs the cleanup
+                itself, so an accidental drop in a shared environment is
+                recoverable — not fatal.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 07: Normalized DB Model -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.8s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/multi-tenant.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">08</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Normalized Database Model</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Every entity lives in a fully-typed, normalized schema with real
+                referential integrity — no orphaned metadata, ever. That means fast
+                search across tables, users and roles, plus rich statistics served
+                straight from the catalog, with no object-storage scans.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group: Integration & extensibility -->
+        <!-- Feature 08: Change Events -->
         <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.9s">
           <div class="cs_iconbox_inner">
             <div class="cs_iconbox_header">
               <div class="cs_iconbox_icon cs_center">
                 <img src="assets/img/icons/monitoring.png" alt="Icon" />
               </div>
-              <div class="cs_iconbox_index">08</div>
+              <div class="cs_iconbox_index">09</div>
             </div>
             <div class="cs_iconbox_text">
               <h3 class="cs_iconbox_title">Change Events</h3>
@@ -294,55 +347,14 @@
           </div>
         </div>
 
-        <!-- Feature 08: Normalized DB Model -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="0.9s">
-          <div class="cs_iconbox_inner">
-            <div class="cs_iconbox_header">
-              <div class="cs_iconbox_icon cs_center">
-                <img src="assets/img/icons/multi-tenant.png" alt="Icon" />
-              </div>
-              <div class="cs_iconbox_index">09</div>
-            </div>
-            <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">Normalized Database Model</h3>
-              <p class="cs_iconbox_subtitle mb-0">
-                Lakekeeper uses a normalized relational Database model internally.
-                This allows us to add powerful new endpoints and statistics
-                in the future without file-system access!
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Feature 9: Highly Available & Horizontally Scalable -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.1s">
-          <div class="cs_iconbox_inner">
-            <div class="cs_iconbox_header">
-              <div class="cs_iconbox_icon cs_center">
-                <img src="assets/img/icons/scalable.png" alt="Icon" />
-              </div>
-              <div class="cs_iconbox_index">10</div>
-            </div>
-            <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">
-                Highly Available & Horizontally Scalable
-              </h3>
-              <p class="cs_iconbox_subtitle mb-0">
-                There is no local state - the catalog can be scaled horizontally
-                easily. Autoscaling in helm included.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Feature 11: Extensible -->
-        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.2s">
+        <!-- Feature 09: Extensible -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.0s">
           <div class="cs_iconbox_inner">
             <div class="cs_iconbox_header">
               <div class="cs_iconbox_icon cs_center">
                 <img src="assets/img/icons/extensible.png" alt="Icon" />
               </div>
-              <div class="cs_iconbox_index">11</div>
+              <div class="cs_iconbox_index">10</div>
             </div>
             <div class="cs_iconbox_text">
               <h3 class="cs_iconbox_title">Extensible</h3>
@@ -355,19 +367,105 @@
           </div>
         </div>
 
-        <!-- Feature 12: Multi Engine -->
+        <!-- Group: Runtime & operations -->
+        <!-- Feature 11: Rust-Native Performance -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.2s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/scalable.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">11</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Rust-Native Performance</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Built in Rust with no garbage collector — predictable, low memory
+                use and no GC pauses, with fast startup that suits ephemeral and
+                autoscaled deployments.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature 12: Easy to Use -->
         <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.3s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/binary.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">12</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Easy to Use</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Single binary executable for all major platforms; no JVM or
+                Python environment required. Native Kubernetes deployments with Helm
+                chart or k8s operator. UI and batteries included.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature: Production-Ready Operations (merged) -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.4s">
           <div class="cs_iconbox_inner">
             <div class="cs_iconbox_header">
               <div class="cs_iconbox_icon cs_center">
                 <img src="assets/img/icons/multi-engine.png" alt="Icon" />
               </div>
-              <div class="cs_iconbox_index">12</div>
+              <div class="cs_iconbox_index">13</div>
             </div>
             <div class="cs_iconbox_text">
-              <h3 class="cs_iconbox_title">Ecosystem first</h3>
+              <h3 class="cs_iconbox_title">Production-Ready Operations</h3>
               <p class="cs_iconbox_subtitle mb-0">
-                We are not bound to a query engine vendor. We care about the whole ecosystem and interoperability.
+                No local state — scale the catalog horizontally behind a load
+                balancer, with autoscaling included in the Helm chart. Upgrades
+                stay online too: a read-only maintenance mode keeps reads available
+                while database migrations run, so rolling upgrades never take the
+                catalog offline for readers.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group: Lakekeeper Plus & commercial -->
+        <!-- Feature 15: Automatic Table Maintenance -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.6s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/automatic.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">14</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Automatic Table Maintenance <span class="lkp"></span></h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Keep query performance high and storage costs low with automated
+                table maintenance — available with Lakekeeper Plus.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Feature: Enterprise Support & LTS -->
+        <div class="cs_iconbox cs_style_1 cs_radius_20 wow fadeIn" data-wow-duration="1s" data-wow-delay="1.7s">
+          <div class="cs_iconbox_inner">
+            <div class="cs_iconbox_header">
+              <div class="cs_iconbox_icon cs_center">
+                <img src="assets/img/icons/multi-tenant.png" alt="Icon" />
+              </div>
+              <div class="cs_iconbox_index">15</div>
+            </div>
+            <div class="cs_iconbox_text">
+              <h3 class="cs_iconbox_title">Enterprise Support &amp; Long-Term Support</h3>
+              <p class="cs_iconbox_subtitle mb-0">
+                Run Lakekeeper at the heart of your data platform with confidence:
+                commercial enterprise support for self-hosted and managed
+                deployments, plus hardened Long-Term Support release lines
+                available with Lakekeeper Plus.
               </p>
             </div>
           </div>
@@ -408,108 +506,24 @@
   </section>
   <!-- End About Section -->
 
-  <!-- Start Roadmap Section -->
-  <section class="cs_shape_wrap cs_timeline_shapes_1 position-relative" id="roadmap">
-    <div class="cs_height_100 cs_height_lg_70"></div>
-    <div class="container">
-      <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
-        <h2 class="cs_section_title mb-0">Lakekeeper Announcements</h2>
-      </div>
-      <div class="cs_height_50 cs_height_lg_50"></div>
-      <div class="cs_timeline_wrapper position-relative">
-        <ul class="cs_timeline_list cs_mp0">
-          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
-            <h3 class="cs_timeline_heading">APR 2025</h3>
-            <div class="cs_iconbox cs_style_2">
-              <div class="cs_iconbox_index cs_center">Meet</div>
-              <div class="cs_iconbox_header">
-                <h3 class="cs_iconbox_title mb-0">
-                  Iceberg Meetups are coming to Europe!
-                </h3>
-              </div>
-              <hr />
-              <p class="cs_iconbox_subtitle">
-                The first meetup will be
-                on April 2nd in Amsterdam at 17:00. Sign up and find more
-                details on the <a href="https://lu.ma/ewx2kuis">event page</a>.
-              </p>
-            </div>
-          </li>
-          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
-            <h3 class="cs_timeline_heading">MAR 2025</h3>
-            <div class="cs_iconbox cs_style_2">
-              <div class="cs_iconbox_index cs_center">Trino</div>
-              <div class="cs_iconbox_header">
-                <h3 class="cs_iconbox_title mb-0">
-                  Trino announces compatibility
-                </h3>
-              </div>
-              <hr />
-              <p class="cs_iconbox_subtitle">
-                Join us on the trino community broadcast at on Thursday March 13th, where we demonstrate
-                Lakekeeper's OPA integration with Trino.
-              </p>
-            </div>
-          </li>
-          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
-            <h3 class="cs_timeline_heading">FEB 2025</h3>
-            <div class="cs_iconbox cs_style_2">
-              <div class="cs_iconbox_index cs_center">0.7.0</div>
-              <div class="cs_iconbox_header">
-                <h3 class="cs_iconbox_title mb-0">Release 0.7.0</h3>
-              </div>
-              <hr />
-              <p class="cs_iconbox_subtitle">
-                Release 0.7.0 adds support for s3a and s3n Filesystems, improves reverse-proxy support and
-                introduces table and view statistics!
-              </p>
-            </div>
-          </li>
-          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
-            <h3 class="cs_timeline_heading">JAN 2025</h3>
-            <div class="cs_iconbox cs_style_2">
-              <div class="cs_iconbox_index cs_center">0.6.0</div>
-              <div class="cs_iconbox_header">
-                <h3 class="cs_iconbox_title mb-0">Release 0.6.0</h3>
-              </div>
-              <hr />
-              <p class="cs_iconbox_subtitle">
-                Release 0.6.0 focuses on security, introducing Lakekeeper's OPA
-                bridge for Trino integration, with a new "check" endpoint for
-                simpler permission queries. It also supports Iceberg versions
-                1.5 to 1.7, adds automatic file cleanup for managed tables, and
-                fixes ADLS cleanup issues.
-              </p>
-            </div>
-          </li>
-          <li class="cs_timeline_item wow fadeIn" data-wow-duration="1s" data-wow-delay="0.35s">
-            <h3 class="cs_timeline_heading">DEC 2024</h3>
-            <div class="cs_iconbox cs_style_2">
-              <div class="cs_iconbox_index cs_center">0.5.0</div>
-              <div class="cs_iconbox_header">
-                <h3 class="cs_iconbox_title mb-0">Release 0.5.0</h3>
-              </div>
-              <hr />
-              <p class="cs_iconbox_subtitle">
-                Release 0.5.0 is the biggest yet, featuring a new UI, detailed
-                docs, and table-level access controls. It adds native support
-                for Kubernetes Service Accounts and improves integration with
-                external IdPs like EntraID and Keycloak.
-              </p>
-            </div>
-          </li>
-        </ul>
-      </div>
-    </div>
-  </section>
-  <!-- End Roadmap Section -->
 
   <!-- Start Blog Section -->
   <section class="cs_shape_wrap cs_blog_shapes_1 position-relative">
     <div class="cs_height_120 cs_height_lg_80"></div>
     <div class="container">
       <div class="cs_section_heading cs_style_1 text-center wow fadeInUp" data-wow-duration="1s" data-wow-delay="0.2s">
-        <h2 id="learn" class="cs_section_title mb-0">Learn More: Talks & Demos</h2>
+        <h2 id="learn" class="cs_section_title mb-0">Learn More</h2>
+      </div>
+      <div class="cs_height_20 cs_height_lg_20"></div>
+      <div class="row justify-content-center wow fadeIn" data-wow-duration="1s" data-wow-delay="0.25s">
+        <div class="col-lg-8 text-center">
+          <p class="mb-0">
+            New to Lakekeeper? Start with the
+            <a href="/getting-started/">Getting Started guide</a>, spin up a
+            <a href="https://github.com/lakekeeper/lakekeeper/tree/main/examples">ready-to-run example</a>,
+            or watch the talks &amp; demos below.
+          </p>
+        </div>
       </div>
       <div class="cs_height_50 cs_height_lg_50"></div>
       <div class="container">
@@ -724,4 +738,14 @@
 </div>
 
 
+{% endblock %}
+
+<!-- Home-page-only scripts. Loaded in order: jQuery, then the libraries
+     main.js depends on (WOW, odometer), then main.js itself. -->
+{% block scripts %}
+  {{ super() }}
+  <script src="{{ 'assets/js/jquery-3.6.0.min.js' | url }}"></script>
+  <script src="{{ 'assets/js/wow.min.js' | url }}"></script>
+  <script src="{{ 'assets/js/odometer.js' | url }}"></script>
+  <script src="{{ 'assets/js/main.js' | url }}"></script>
 {% endblock %}

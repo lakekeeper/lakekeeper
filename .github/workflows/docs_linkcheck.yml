@@ -1,0 +1,34 @@
+name: Docs Link Check
+
+on:
+  push:
+    branches:
+      - main
+      - "manual-release-*"
+      - "rel-*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read # Needed to checkout code
+
+jobs:
+  linkcheck:
+    name: Link Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: 3.x
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: 1.x
+      - uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2
+        with:
+          tool: lychee
+      - name: Link check (nightly anchors + assembled-site files)
+        run: just linkcheck
+        working-directory: ./site

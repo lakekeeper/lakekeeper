@@ -296,9 +296,15 @@ impl Authorizer for OpenFGAAuthorizer {
         let mut batch_indices = Vec::new();
 
         for (idx, (user_id, action)) in users_with_actions.iter().enumerate() {
-            // 1. Users can perform all actions on themselves
+            // 1. The inspected subject can perform all actions on themselves. The
+            //    subject is `for_user` when inspecting another principal's access,
+            //    or the actor otherwise.
             // 2. Every authenticated user can read user metadata given the user id
-            let is_same_user = for_user.is_none() && (actor_principal == Some(*user_id));
+            let is_same_user = match for_user {
+                None => actor_principal == Some(*user_id),
+                Some(UserOrRole::User(subject)) => subject == *user_id,
+                Some(UserOrRole::Role(_)) => false,
+            };
             if is_same_user || *action == CatalogUserAction::Read {
                 results.push((idx, true));
             } else {
@@ -327,18 +333,31 @@ impl Authorizer for OpenFGAAuthorizer {
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
-                        user,
+                        user: user.clone(),
                         relation: ServerRelation::CanDeleteUsers.to_string(),
+                        object: server_id.clone(),
+                    },
+                    // The inspected subject's own `CanListUsers` — distinct from
+                    // the actor's (`batch_results[0]`). `ReadRoleAssignments`
+                    // reflects whether *the subject* may know about users, not the
+                    // caller. When `for_user` is None, `user` is the actor, so this
+                    // coincides with `batch_results[0]`.
+                    CheckRequestTupleKey {
+                        user,
+                        relation: ServerRelation::CanListUsers.to_string(),
                         object: server_id.clone(),
                     },
                 ])
                 .await?;
 
-            let is_allowed_to_know = batch_results[0];
+            // `batch_results[0]` is the *actor's* permission to know about users —
+            // it gates whether the caller may inspect another principal's access.
+            let actor_can_inspect = batch_results[0];
             let can_update = batch_results[1];
             let can_delete = batch_results[2];
+            let subject_can_list_users = batch_results[3];
 
-            if for_user.is_some() && !is_allowed_to_know {
+            if for_user.is_some() && !actor_can_inspect {
                 return Err(CannotInspectPermissions::new(&server_id).into());
             }
 
@@ -347,6 +366,11 @@ impl Authorizer for OpenFGAAuthorizer {
                     CatalogUserAction::Read => true,
                     CatalogUserAction::Update => can_update,
                     CatalogUserAction::Delete => can_delete,
+                    // List the roles assigned to this user: gated on whether the
+                    // inspected subject may know about users (`CanListUsers`). A
+                    // subject reading their own assignments is already
+                    // short-circuited above via `is_same_user`.
+                    CatalogUserAction::ReadRoleAssignments => subject_can_list_users,
                 };
                 results.push((idx, allowed));
             }
@@ -2033,6 +2057,93 @@ pub(crate) mod tests {
                 .into_inner();
 
             assert_eq!(results, vec![true, false]);
+        }
+
+        /// `ReadRoleAssignments` must reflect the *inspected subject's* permission
+        /// to know about users, not the caller's. Regression for the bug where the
+        /// `for_user` path returned the actor's `CanListUsers` result.
+        #[tokio::test]
+        async fn test_are_allowed_user_actions_read_role_assignments_uses_inspected_subject() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let server = authorizer.openfga_server();
+
+            // Actor (caller) — granted server Admin so it MAY inspect others
+            // (`CanListUsers` ⇒ passes the inspection guard).
+            let actor_id = UserId::new_unchecked("oidc", "actor_admin");
+            // Inspected subject — initially has NO server grant, so it cannot list users.
+            let subject_id = UserId::new_unchecked("oidc", "inspected_subject");
+            let subject = UserOrRole::User(subject_id.clone());
+            // The user whose assignments are being asked about.
+            let target_id = UserId::new_unchecked("oidc", "target_user");
+
+            let metadata = RequestMetadata::test_user(actor_id.clone());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: actor_id.to_openfga(),
+                        relation: ServerRelation::Admin.to_string(),
+                        object: server.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Subject lacks `CanListUsers`: the actor can inspect (no error), but
+            // the result reflects the SUBJECT — false. (The old code returned the
+            // actor's permission here, which would be `true`.)
+            let results = authorizer
+                .are_allowed_user_actions_impl(
+                    &metadata,
+                    Some(&subject),
+                    &[(&target_id, CatalogUserAction::ReadRoleAssignments)],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false]);
+
+            // Grant the subject server Admin (⇒ `CanListUsers`); now the same query
+            // reflects the subject's permission — true.
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: subject_id.to_openfga(),
+                        relation: ServerRelation::Admin.to_string(),
+                        object: server.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let results = authorizer
+                .are_allowed_user_actions_impl(
+                    &metadata,
+                    Some(&subject),
+                    &[(&target_id, CatalogUserAction::ReadRoleAssignments)],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true]);
+
+            // Self fast-path: inspecting a subject's permission on *itself* is
+            // allowed without any grant and without the inspection guard firing.
+            // `loner` has no server grants, so a `true` here can only come from the
+            // `is_same_user` short-circuit, not from a `CanListUsers` check.
+            let loner_id = UserId::new_unchecked("oidc", "loner");
+            let loner = UserOrRole::User(loner_id.clone());
+            let results = authorizer
+                .are_allowed_user_actions_impl(
+                    &metadata,
+                    Some(&loner),
+                    &[(&loner_id, CatalogUserAction::ReadRoleAssignments)],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true]);
         }
 
         #[tokio::test]

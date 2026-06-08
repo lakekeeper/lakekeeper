@@ -6,21 +6,28 @@ use std::{
 use lakekeeper::{
     ProjectId,
     service::{
-        AddRoleMembersError, AddRoleMembersResult, ArcProjectId, ArcRoleIdent, AssignedRole,
-        AssignedUser, CatalogBackendError, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
-        DatabaseIntegrityError, ListRoleMembersResult, ListUserRoleAssignmentsResult,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RoleId, RoleIdNotFoundInProject,
-        RoleIdent, RoleMembershipCycle, RoleMembershipDepthExceeded, RoleMembershipDirection,
-        RoleMembershipEntry, RoleMembershipLockTimeout, RoleNameAlreadyExists,
-        RoleNotManuallyAssignable, RoleProviderId, SyncRoleMembersError, SyncRoleMembersResult,
+        AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
+        AddUserRoleAssignmentsResult, ArcProjectId, ArcRoleIdent, AssignedRole, AssignedUser,
+        CatalogBackendError, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
+        DatabaseIntegrityError, ErrorModel, InvalidPaginationToken, LAKEKEEPER_ROLE_PROVIDER_NAME,
+        ListRoleMembersResult, ListRolesPage, ListUserRoleAssignmentsResult,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
+        RemoveUserRoleAssignmentsResult, RoleAssignmentUserNotFound, RoleId,
+        RoleIdNotFoundInProject, RoleIdent, RoleMemberKind, RoleMembershipCycle,
+        RoleMembershipDepthExceeded, RoleMembershipDirection, RoleMembershipEntry,
+        RoleMembershipLockTimeout, RoleNameAlreadyExists, RoleNotManuallyAssignable,
+        RoleProviderId, SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError, SyncRoleMembersResult,
         SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles,
-        UserProviderSyncInfo, authn::UserId,
+        UserProviderSyncInfo,
+        authn::UserId,
+        authz::{ListRoleAssignmentsResultPage, RoleAssignmentRow, UserOrRoleId},
     },
 };
 use uuid::Uuid;
 
 use super::{
     dbutils::DBErrorHandler,
+    pagination::{PaginateToken, V1PaginateToken},
     user::{DbUserLastUpdatedWith, DbUserType},
 };
 
@@ -910,6 +917,154 @@ pub(crate) async fn remove_role_members(
     Ok(RemoveRoleMembersResult { removed, members })
 }
 
+// ─── add_user_role_assignments ────────────────────────────────────────────────
+//
+// Additive user→role assignment (the catalog persistence path for the management
+// API's user members). Bipartite, so — unlike `add_role_members` — no cycle is
+// possible and no advisory lock is taken. `ON CONFLICT DO NOTHING` makes the
+// insert idempotent at the row level, so concurrent identical adds are safe.
+
+pub(crate) async fn add_user_role_assignments(
+    project_id: &ArcProjectId,
+    role_id: RoleId,
+    user_ids: &[UserId],
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<AddUserRoleAssignmentsResult, AddUserRoleAssignmentsError> {
+    // `user_ids` is already deduplicated by the `*Ops` layer (backend-independent),
+    // so `added` below never double-counts. We do NOT short-circuit on empty input:
+    // the role must still be validated (exists in project + catalog-managed) so an
+    // add to an unknown/unmanaged role fails identically regardless of member count
+    // — mirroring `add_role_members`, which validates the parent before its
+    // empty-input return.
+    let user_id_strings: Vec<String> = user_ids.iter().map(ToString::to_string).collect();
+
+    // Validate AND insert in a single round-trip. The FK on `role_assignment`
+    // cannot carry any of the three checks below: `role_id → role(id)` is global
+    // (not project-scoped, so a role in another project would satisfy it),
+    // catalog-managedness is a column value (not a constraint), and the user FK
+    // is satisfied by a soft-deleted row. So we validate explicitly — but in one
+    // statement, which keeps the timing uniform across rejection reasons and
+    // avoids extra round-trips.
+    //
+    // The `inserted` CTE is gated on full validity (role present, managed, and
+    // every user existing & not soft-deleted), so nothing is written on any
+    // error path — the SELECT then returns the state needed to raise the precise
+    // typed error. `managed_providers` ($4) is the allowlist, passed from the
+    // Rust constants so there is no SQL/Rust drift. `ON CONFLICT DO NOTHING` +
+    // `RETURNING` makes the add idempotent and reports exactly the new rows.
+    //
+    // The role/user CTEs lock their rows `FOR UPDATE` so a concurrent role-delete
+    // or `delete_user` soft-delete can't race the INSERT: the user FK passes
+    // against a soft-deleted row, so without the lock we'd leave a dangling
+    // assignment instead of the typed not-found.
+    let managed_providers: [&str; 2] = [LAKEKEEPER_ROLE_PROVIDER_NAME, SYSTEM_ROLE_PROVIDER_NAME];
+    let result = sqlx::query!(
+        r#"
+        WITH
+        target_role AS (
+            SELECT provider_id FROM "role" WHERE id = $1 AND project_id = $2 FOR UPDATE
+        ),
+        existing_users AS (
+            SELECT id FROM users WHERE id = ANY($3::text[]) AND deleted_at IS NULL FOR UPDATE
+        ),
+        inserted AS (
+            INSERT INTO role_assignment (user_id, role_id)
+            SELECT u, $1 FROM unnest($3::text[]) AS u
+            WHERE EXISTS (SELECT 1 FROM target_role WHERE provider_id = ANY($4::text[]))
+              AND NOT EXISTS (
+                  SELECT 1 FROM unnest($3::text[]) AS u2
+                  WHERE u2 NOT IN (SELECT id FROM existing_users)
+              )
+            ON CONFLICT (user_id, role_id) DO NOTHING
+            RETURNING user_id
+        )
+        SELECT
+            (SELECT provider_id FROM target_role) AS "role_provider?",
+            COALESCE((SELECT array_agg(id) FROM existing_users), ARRAY[]::text[])
+                AS "existing_users!: Vec<String>",
+            COALESCE((SELECT array_agg(user_id) FROM inserted), ARRAY[]::text[])
+                AS "inserted_users!: Vec<String>"
+        "#,
+        *role_id,
+        project_id.as_str(),
+        &user_id_strings,
+        &managed_providers as &[&str],
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
+    // Decode the validation state into the precise typed error (nothing was
+    // inserted unless every check passed, so these early returns leave no write).
+    let Some(role_provider) = result.role_provider else {
+        return Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into());
+    };
+    let provider = RoleProviderId::new_unchecked(role_provider);
+    if !(provider.is_lakekeeper() || provider.is_system()) {
+        return Err(RoleNotManuallyAssignable::new(role_id, provider).into());
+    }
+    // Reuse the already-computed `user_id_strings` (same order as `user_ids`)
+    // rather than re-`to_string()`ing each id; the lookup sets borrow `&str`.
+    let existing: HashSet<&str> = result.existing_users.iter().map(String::as_str).collect();
+    if let Some((missing, _)) = user_ids
+        .iter()
+        .zip(&user_id_strings)
+        .find(|(_, s)| !existing.contains(s.as_str()))
+    {
+        return Err(RoleAssignmentUserNotFound::new(missing.clone()).into());
+    }
+
+    let inserted: HashSet<&str> = result.inserted_users.iter().map(String::as_str).collect();
+    let added: Vec<UserId> = user_ids
+        .iter()
+        .zip(&user_id_strings)
+        .filter(|(_, s)| inserted.contains(s.as_str()))
+        .map(|(u, _)| u.clone())
+        .collect();
+    Ok(AddUserRoleAssignmentsResult { added })
+}
+
+// ─── remove_user_role_assignments ─────────────────────────────────────────────
+
+/// `user_ids` is assumed unique (the `*Ops` layer deduplicates before calling):
+/// `removed` is rebuilt from the input matched against `RETURNING`, so a duplicate
+/// would otherwise be reported twice — same contract as `add_user_role_assignments`.
+pub(crate) async fn remove_user_role_assignments(
+    role_id: RoleId,
+    user_ids: &[UserId],
+    transaction: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+) -> Result<RemoveUserRoleAssignmentsResult, RemoveUserRoleAssignmentsError> {
+    if user_ids.is_empty() {
+        return Ok(RemoveUserRoleAssignmentsResult {
+            removed: Vec::new(),
+        });
+    }
+    let user_id_strings: Vec<String> = user_ids.iter().map(ToString::to_string).collect();
+    // `RETURNING` yields exactly the assignments that existed and were deleted.
+    let returned_rows = sqlx::query_scalar!(
+        r#"
+        DELETE FROM role_assignment
+        WHERE role_id = $1 AND user_id = ANY($2::text[])
+        RETURNING user_id
+        "#,
+        *role_id,
+        &user_id_strings,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    // `RETURNING` yields exactly the assignments that existed and were deleted.
+    let returned: HashSet<&str> = returned_rows.iter().map(String::as_str).collect();
+
+    let removed: Vec<UserId> = user_ids
+        .iter()
+        .zip(&user_id_strings)
+        .filter(|(_, s)| returned.contains(s.as_str()))
+        .map(|(u, _)| u.clone())
+        .collect();
+    Ok(RemoveUserRoleAssignmentsResult { removed })
+}
+
 // ─── affected_users_for_membership_edge ───────────────────────────────────────
 //
 // After a `role_membership` edge `(parent, member)` is added or removed, the set
@@ -1016,18 +1171,300 @@ pub(crate) async fn list_role_memberships<
     Ok(entries)
 }
 
+// ─── list_direct_role_members_page ───────────────────────────────────────────────────
+
+/// Direct (depth-1) members of `role_id`, in `project_id`: user members (from
+/// `role_assignment`) and member roles (from `role_membership`) merged into one
+/// listing under a single opaque cursor. `type_filter` optionally restricts to
+/// one kind. Ordered/keyset on `(created_at, member_type, member_id)` — a stable
+/// total order across the two heterogeneous sources, so a cursor minted on a
+/// `user` row resumes correctly into the `role` rows and vice versa.
+pub(crate) async fn list_direct_role_members_page<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    role_id: RoleId,
+    type_filter: Option<RoleMemberKind>,
+    pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
+    connection: E,
+) -> lakekeeper::service::Result<ListRoleAssignmentsResultPage> {
+    let lakekeeper::api::iceberg::v1::PaginationQuery {
+        page_token,
+        page_size,
+    } = pagination;
+    let page_size = lakekeeper::CONFIG.page_size_or_pagination_default(page_size);
+
+    let (want_users, want_roles) = match type_filter {
+        None => (true, true),
+        Some(RoleMemberKind::User) => (true, false),
+        Some(RoleMemberKind::Role) => (false, true),
+    };
+
+    // The opaque cursor is `(created_at, "<member_type>:<member_id>")`. The id half
+    // carries a type discriminator so a token minted on a `user` row keyset-resumes
+    // correctly into the `role` rows under the `(created_at, member_type, member_id)`
+    // ordering. `splitn(3, '&')` in the token codec keeps the ':' intact.
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<String>::try_from)
+        .transpose()?;
+    let (token_ts, token_type, token_id): (Option<&chrono::DateTime<chrono::Utc>>, _, _) =
+        match token.as_ref() {
+            Some(PaginateToken::V1(V1PaginateToken { created_at, id })) => {
+                let (member_type, member_id) = id.split_once(':').ok_or_else(|| {
+                    InvalidPaginationToken::new("Invalid role-members page token payload", id)
+                })?;
+                (Some(created_at), Some(member_type), Some(member_id))
+            }
+            None => (None, None, None),
+        };
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT
+            m.created_at  AS "created_at!",
+            m.member_type AS "member_type!",
+            m.member_id   AS "member_id!"
+        FROM (
+            SELECT ra.created_at, 'user'::text AS member_type, ra.user_id AS member_id
+            FROM role_assignment ra
+            JOIN "role" r ON r.id = ra.role_id
+            WHERE ra.role_id = $1 AND r.project_id = $2 AND $3
+          UNION ALL
+            SELECT rm.created_at, 'role'::text AS member_type, rm.member_role_id::text AS member_id
+            FROM role_membership rm
+            JOIN "role" r ON r.id = rm.member_role_id
+            WHERE rm.parent_role_id = $1 AND r.project_id = $2 AND $4
+        ) m
+        WHERE ($5::timestamptz IS NULL)
+           OR (m.created_at, m.member_type, m.member_id) > ($5, $6, $7)
+        ORDER BY m.created_at, m.member_type, m.member_id
+        LIMIT $8
+        "#,
+        *role_id,
+        project_id.as_str(),
+        want_users,
+        want_roles,
+        token_ts,
+        token_type,
+        token_id,
+        page_size,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error listing the members of a role".to_string()))?;
+
+    let mut assignments: Vec<RoleAssignmentRow> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let subject = match row.member_type.as_str() {
+            "user" => UserOrRoleId::User(user_id_from_db(&row.member_id).map_err(|e| {
+                ErrorModel::internal(
+                    "Stored role member has an unparseable user id",
+                    "RoleMemberUserIdInvalid",
+                    Some(Box::new(e)),
+                )
+            })?),
+            "role" => {
+                let id = Uuid::parse_str(&row.member_id).map_err(|e| {
+                    ErrorModel::internal(
+                        "Stored role member has an unparseable role id",
+                        "RoleMemberRoleIdInvalid",
+                        Some(Box::new(e)),
+                    )
+                })?;
+                UserOrRoleId::Role(RoleId::new(id))
+            }
+            other => {
+                return Err(ErrorModel::internal(
+                    format!("Unexpected role member type '{other}'"),
+                    "RoleMemberTypeInvalid",
+                    None,
+                )
+                .into());
+            }
+        };
+        assignments.push(RoleAssignmentRow {
+            subject,
+            role_id,
+            created_at: Some(row.created_at),
+        });
+    }
+
+    let next_page_token = rows.last().map(|row| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: row.created_at,
+            id: format!("{}:{}", row.member_type, row.member_id),
+        })
+        .to_string()
+    });
+
+    Ok(ListRoleAssignmentsResultPage {
+        assignments,
+        next_page_token,
+    })
+}
+
+// ─── list_direct_user_roles_page ─────────────────────────────────────────────────────
+
+/// Direct (depth-1) roles a user is assigned to, in `project_id`, keyset-paginated
+/// by `(role_assignment.created_at, role_id)`. Project-scoped via a JOIN on `role`
+/// so a `role_assignment` row whose role lives in another project is excluded.
+/// A malformed `page_token` surfaces as a 400 (`InvalidPaginationToken`).
+pub(crate) async fn list_direct_user_roles_page<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    user_id: &UserId,
+    pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
+    connection: E,
+) -> lakekeeper::service::Result<ListRolesPage> {
+    let lakekeeper::api::iceberg::v1::PaginationQuery {
+        page_token,
+        page_size,
+    } = pagination;
+    let page_size = lakekeeper::CONFIG.page_size_or_pagination_default(page_size);
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<Uuid>::try_from)
+        .transpose()?;
+    let (token_ts, token_id): (_, Option<&Uuid>) = token
+        .as_ref()
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
+    let entries: Vec<RoleMembershipEntry> = sqlx::query!(
+        r#"
+        SELECT r.id, r.source_id, r.provider_id, ra.created_at
+        FROM role_assignment ra
+        JOIN "role" r ON r.id = ra.role_id
+        WHERE ra.user_id = $1
+          AND r.project_id = $2
+          AND ((ra.created_at > $3 OR $3 IS NULL) OR (ra.created_at = $3 AND r.id > $4))
+        ORDER BY ra.created_at, r.id ASC
+        LIMIT $5
+        "#,
+        user_id.to_string(),
+        project_id.as_str(),
+        token_ts,
+        token_id,
+        page_size,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error listing the roles a user is assigned to".to_string()))?
+    .into_iter()
+    .map(|row| RoleMembershipEntry {
+        role_id: RoleId::new(row.id),
+        role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+        created_at: row.created_at,
+    })
+    .collect();
+
+    let next_page_token = entries.last().map(|e| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: e.created_at,
+            id: *e.role_id,
+        })
+        .to_string()
+    });
+
+    Ok(ListRolesPage {
+        entries,
+        next_page_token,
+    })
+}
+
+// ─── list_direct_role_parents_page ───────────────────────────────────────────────────
+
+/// Direct (depth-1) parent roles of `role_id`, in `project_id`, keyset-paginated
+/// by `(role_membership.created_at, parent_role_id)`.
+pub(crate) async fn list_direct_role_parents_page<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    role_id: RoleId,
+    pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
+    connection: E,
+) -> lakekeeper::service::Result<ListRolesPage> {
+    let lakekeeper::api::iceberg::v1::PaginationQuery {
+        page_token,
+        page_size,
+    } = pagination;
+    let page_size = lakekeeper::CONFIG.page_size_or_pagination_default(page_size);
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<Uuid>::try_from)
+        .transpose()?;
+    let (token_ts, token_id): (_, Option<&Uuid>) = token
+        .as_ref()
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
+    let entries: Vec<RoleMembershipEntry> = sqlx::query!(
+        r#"
+        SELECT r.id, r.source_id, r.provider_id, rm.created_at
+        FROM role_membership rm
+        JOIN "role" r ON r.id = rm.parent_role_id
+        WHERE rm.member_role_id = $1
+          AND r.project_id = $2
+          AND ((rm.created_at > $3 OR $3 IS NULL) OR (rm.created_at = $3 AND r.id > $4))
+        ORDER BY rm.created_at, r.id ASC
+        LIMIT $5
+        "#,
+        *role_id,
+        project_id.as_str(),
+        token_ts,
+        token_id,
+        page_size,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error listing the parents of a role".to_string()))?
+    .into_iter()
+    .map(|row| RoleMembershipEntry {
+        role_id: RoleId::new(row.id),
+        role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+        created_at: row.created_at,
+    })
+    .collect();
+
+    let next_page_token = entries.last().map(|e| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: e.created_at,
+            id: *e.role_id,
+        })
+        .to_string()
+    });
+
+    Ok(ListRolesPage {
+        entries,
+        next_page_token,
+    })
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use lakekeeper::{
         ProjectId,
-        api::management::v1::user::{UserLastUpdatedWith, UserType},
+        api::{
+            iceberg::{types::PageToken, v1::PaginationQuery},
+            management::v1::user::{UserLastUpdatedWith, UserType},
+        },
         service::{
             AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
             CatalogRoleForAssignment, CatalogRoleOps, CatalogStore, CatalogUserRoleAssignmentUser,
-            RoleId, RoleIdent, RoleProviderId, RoleSourceId, Transaction, UniqueMembers,
-            UniqueRoles,
+            RoleId, RoleIdent, RoleProviderId, RoleSourceId, SyncRoleMembersError,
+            SyncUserRoleAssignmentsError, Transaction, UniqueMembers, UniqueRoles,
             authn::{UserId, UserIdRef},
         },
     };
@@ -1131,6 +1568,953 @@ mod tests {
             .unwrap();
         t.commit().await.unwrap();
         role.id()
+    }
+
+    /// Provision a user in the `users` table (no role assignment), so it can be
+    /// referenced by the management-API assignment writes (which require the user
+    /// to pre-exist).
+    async fn provision_user(state: &CatalogState, user_id: &UserId, name: &str) {
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::create_or_update_user(
+            user_id,
+            name,
+            None,
+            UserLastUpdatedWith::RoleProvider,
+            UserType::Human,
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+    }
+
+    // ── user→role assignment writes (management API) ───────────────────────
+
+    /// Adding then removing a user assignment is idempotent: the first add reports
+    /// the user, a repeat add reports nothing; the first remove reports the user,
+    /// a repeat remove reports nothing. The assignment is visible in the merged
+    /// members listing in between.
+    #[sqlx::test]
+    async fn user_role_assignments_add_remove_idempotent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &user_id, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let added = add_user_role_assignments(
+            &arc_project,
+            role,
+            std::slice::from_ref(&user_id),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(added.added, vec![user_id.clone()]);
+
+        // Visible as a member.
+        let page = list_direct_role_members_page(
+            &project_id,
+            role,
+            Some(RoleMemberKind::User),
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.assignments.len(), 1);
+        assert_eq!(
+            page.assignments[0].subject,
+            UserOrRoleId::User(user_id.clone())
+        );
+
+        // Repeat add is idempotent.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let again = add_user_role_assignments(
+            &arc_project,
+            role,
+            std::slice::from_ref(&user_id),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(again.added, Vec::<UserId>::new());
+
+        // Remove, then repeat-remove is idempotent.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let removed =
+            remove_user_role_assignments(role, std::slice::from_ref(&user_id), t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(removed.removed, vec![user_id.clone()]);
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let removed_again =
+            remove_user_role_assignments(role, std::slice::from_ref(&user_id), t.transaction())
+                .await
+                .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(removed_again.removed, Vec::<UserId>::new());
+    }
+
+    /// Provision-then-assign: assigning an unknown user is rejected with
+    /// `RoleAssignmentUserNotFound` (→404) as a typed error.
+    #[sqlx::test]
+    async fn user_role_assignments_add_unknown_user_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let ghost = UserId::new_unchecked("oidc", "ghost");
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_user_role_assignments(
+            &arc_project,
+            role,
+            std::slice::from_ref(&ghost),
+            t.transaction(),
+        )
+        .await
+        .unwrap_err();
+        let AddUserRoleAssignmentsError::RoleAssignmentUserNotFound(e) = err else {
+            panic!("expected RoleAssignmentUserNotFound, got {err:?}");
+        };
+        assert_eq!(e.user_id, ghost);
+    }
+
+    /// All-or-nothing: a batch mixing a valid and an unknown user is rejected,
+    /// and the valid user is NOT partially assigned (the single-statement insert
+    /// is gated on the whole batch being valid, so nothing is written on the
+    /// error path).
+    #[sqlx::test]
+    async fn user_role_assignments_add_partial_invalid_writes_nothing(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let alice = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &alice, "Alice").await;
+        let ghost = UserId::new_unchecked("oidc", "ghost");
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_user_role_assignments(
+            &arc_project,
+            role,
+            &[alice.clone(), ghost.clone()],
+            t.transaction(),
+        )
+        .await
+        .unwrap_err();
+        t.commit().await.unwrap();
+        assert!(
+            matches!(
+                err,
+                AddUserRoleAssignmentsError::RoleAssignmentUserNotFound(_)
+            ),
+            "got {err:?}"
+        );
+
+        // Alice must NOT have been assigned despite being valid — the whole batch
+        // was rejected.
+        let page = list_direct_role_members_page(
+            &project_id,
+            role,
+            Some(RoleMemberKind::User),
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.assignments.len(), 0, "no partial write");
+    }
+
+    /// Assigning to a role that does not exist in the project is rejected with
+    /// `RoleIdNotFoundInProject` (→404).
+    #[sqlx::test]
+    async fn user_role_assignments_add_unknown_role_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &user_id, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+        let bogus_role = RoleId::new_random();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_user_role_assignments(&arc_project, bogus_role, &[user_id], t.transaction())
+            .await
+            .unwrap_err();
+        let AddUserRoleAssignmentsError::RoleIdNotFoundInProject(e) = err else {
+            panic!("expected RoleIdNotFoundInProject, got {err:?}");
+        };
+        assert_eq!(e.role_id, bogus_role);
+    }
+
+    /// A user cannot be manually assigned to an externally-provided (e.g. LDAP)
+    /// role — its membership is provider-driven. Rejected with
+    /// `RoleNotManuallyAssignable`.
+    #[sqlx::test]
+    async fn user_role_assignments_add_external_role_rejected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let ext_role = create_external_role(&state, &project_id, "ldap", "group-x").await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &user_id, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_user_role_assignments(&arc_project, ext_role, &[user_id], t.transaction())
+            .await
+            .unwrap_err();
+        let AddUserRoleAssignmentsError::RoleNotManuallyAssignable(e) = err else {
+            panic!("expected RoleNotManuallyAssignable, got {err:?}");
+        };
+        assert_eq!(e.role_id, ext_role);
+    }
+
+    /// Empty input still validates the role (consistent with `add_role_members`):
+    /// adding to an unknown role with no members is a 404, not a silent success.
+    #[sqlx::test]
+    async fn user_role_assignments_add_empty_still_validates_role(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        // Empty input + unknown role → still 404, not Ok.
+        let bogus_role = RoleId::new_random();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let err = add_user_role_assignments(&arc_project, bogus_role, &[], t.transaction())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AddUserRoleAssignmentsError::RoleIdNotFoundInProject(_)),
+            "expected RoleIdNotFoundInProject, got {err:?}"
+        );
+
+        // Empty input + valid role → no members added, no error.
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let res = add_user_role_assignments(&arc_project, role, &[], t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert!(res.added.is_empty());
+    }
+
+    /// Duplicate user ids in one request insert one row and are reported once.
+    /// Dedup lives in the backend-independent `*Ops` layer, so this goes through
+    /// the `*Ops` method (not the storage free fn, which trusts a unique set).
+    #[sqlx::test]
+    async fn user_role_assignments_add_deduplicates(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let alice = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &alice, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let res = PostgresBackend::add_user_role_assignments(
+            &arc_project,
+            role,
+            &[alice.clone(), alice.clone()],
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(res.added, vec![alice], "duplicate input reported once");
+    }
+
+    /// Duplicate user ids in one remove request delete the row once and are
+    /// reported once. Dedup lives in the `*Ops` layer (like the add path), so this
+    /// goes through the `*Ops` method, not the storage free fn.
+    #[sqlx::test]
+    async fn user_role_assignments_remove_deduplicates(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let alice = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &alice, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::add_user_role_assignments(
+            &arc_project,
+            role,
+            std::slice::from_ref(&alice),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let res = PostgresBackend::remove_user_role_assignments(
+            role,
+            &[alice.clone(), alice.clone()],
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(res.removed, vec![alice], "duplicate input reported once");
+    }
+
+    /// Deleting a user removes their role assignments (matching the OpenFGA
+    /// authorizer): `delete_user` returns the affected roles, and the user no
+    /// longer appears as a member.
+    #[sqlx::test]
+    async fn delete_user_removes_role_assignments(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let user_id = UserId::new_unchecked("oidc", "alice");
+        provision_user(&state, &user_id, "Alice").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_user_role_assignments(
+            &arc_project,
+            role,
+            std::slice::from_ref(&user_id),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // Sanity: the user is a member before deletion.
+        let members_query = |kind| {
+            list_direct_role_members_page(
+                &project_id,
+                role,
+                kind,
+                PaginationQuery {
+                    page_token: PageToken::NotSpecified,
+                    page_size: Some(50),
+                },
+                &pool,
+            )
+        };
+        assert_eq!(
+            members_query(Some(RoleMemberKind::User))
+                .await
+                .unwrap()
+                .assignments
+                .len(),
+            1
+        );
+
+        // Delete the user — the affected role is reported.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let affected = PostgresBackend::delete_user(user_id.clone(), t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+        assert_eq!(affected, Some(vec![role]));
+
+        // The assignment is gone — the user is no longer a member.
+        assert_eq!(
+            members_query(Some(RoleMemberKind::User))
+                .await
+                .unwrap()
+                .assignments
+                .len(),
+            0,
+            "deleted user is no longer a role member"
+        );
+    }
+
+    /// `remove_user_role_assignments_and_invalidate` evicts the user's cached
+    /// effective-roles entry, so a subsequent read on THIS replica reflects the
+    /// change immediately. (The cache is per-process moka; other replicas converge
+    /// only within the cache TTL — which is exactly why management read endpoints
+    /// bypass the cache and query the DB directly.)
+    #[sqlx::test]
+    async fn user_role_assignments_and_invalidate_evicts_cache(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let role = create_managed_role(&state, &project_id, "R").await;
+        let user_id = UserId::new_unchecked("oidc", "cache-user");
+        provision_user(&state, &user_id, "Cache User").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        PostgresBackend::add_user_role_assignments_and_invalidate(
+            &arc_project,
+            role,
+            std::slice::from_ref(&user_id),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+
+        // Warm the per-user effective-roles cache: U → {R}.
+        let warmed = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            warmed
+                .roles
+                .iter()
+                .map(|r| r.role_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([role])
+        );
+
+        // Remove + invalidate: the cache entry must be evicted, and U has no roles.
+        PostgresBackend::remove_user_role_assignments_and_invalidate(
+            role,
+            std::slice::from_ref(&user_id),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        let after = PostgresBackend::list_role_assignments_for_user(&user_id, state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&warmed, &after),
+            "cache must be invalidated on assignment removal"
+        );
+        assert!(after.roles.is_empty(), "U has no roles after removal");
+    }
+
+    /// External provider sync must refuse the reserved `system`/`lakekeeper`
+    /// providers (they are catalog-managed). Enforced in the backend-independent
+    /// `*Ops` layer, so it holds for every sync entry point.
+    #[sqlx::test]
+    async fn sync_rejects_reserved_providers(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+
+        for reserved in ["system", "lakekeeper"] {
+            let ident = Arc::new(RoleIdent::new_unchecked(reserved, "group"));
+
+            // Role-members sync: the role's ident is a reserved provider.
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let err = PostgresBackend::sync_role_members_by_ident(
+                &project_id,
+                &make_role(&ident, "Group"),
+                &[make_user(&user_id, "Alice")],
+                t.transaction(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, SyncRoleMembersError::ReservedRoleProvider(_)),
+                "members sync for '{reserved}': {err:?}"
+            );
+
+            // User-assignment sync: the provider scope is reserved.
+            let provider = RoleProviderId::new_unchecked(reserved);
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let err = PostgresBackend::sync_user_role_assignments_by_provider(
+                make_user(&user_id, "Alice"),
+                &project_id,
+                &provider,
+                &[make_role(&ident, "Group")],
+                t.transaction(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, SyncUserRoleAssignmentsError::ReservedRoleProvider(_)),
+                "user sync for '{reserved}': {err:?}"
+            );
+        }
+    }
+
+    // ── paginated cold reads (management API) ──────────────────────────────
+
+    /// `list_direct_user_roles_page` keyset-paginates a user's direct role assignments:
+    /// each assigned role appears exactly once across pages, page sizes are exact,
+    /// and the final page carries no continuation token.
+    #[sqlx::test]
+    async fn list_direct_user_roles_page_paginates(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let user = make_user(&user_id, "Alice");
+
+        // Assign the user to three roles in the project.
+        let idents = [
+            Arc::new(RoleIdent::new_unchecked("ldap", "group-1")),
+            Arc::new(RoleIdent::new_unchecked("ldap", "group-2")),
+            Arc::new(RoleIdent::new_unchecked("ldap", "group-3")),
+        ];
+        let roles: Vec<_> = idents
+            .iter()
+            .enumerate()
+            .map(|(n, i)| make_role(i, ["Group 1", "Group 2", "Group 3"][n]))
+            .collect();
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_user_role_assignments_by_provider(
+            &user,
+            &project_id,
+            &provider,
+            ur(&roles),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        // Ground truth: the full set of assigned role ids (the cached reader is
+        // transitive, but here every assignment is direct so the sets coincide).
+        let ground_truth: std::collections::HashSet<Uuid> =
+            list_role_assignments_for_user(&user_id, &pool)
+                .await
+                .unwrap()
+                .roles
+                .into_iter()
+                .map(|r| *r.role_id)
+                .collect();
+        assert_eq!(ground_truth.len(), 3);
+
+        // Page 1: two entries + a continuation token.
+        let page1 = list_direct_user_roles_page(
+            &project_id,
+            &user_id,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(2),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page1.entries.len(), 2);
+        let token = page1.next_page_token.clone().expect("page 1 has a token");
+
+        // Page 2: the remaining entry. Per the house keyset convention
+        // (`list_users`), a non-empty page always carries a token — the client
+        // pages until it receives an EMPTY page, not until the token is absent
+        // on a partial page.
+        let page2 = list_direct_user_roles_page(
+            &project_id,
+            &user_id,
+            PaginationQuery {
+                page_token: PageToken::Present(token),
+                page_size: Some(2),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page2.entries.len(), 1);
+        let token = page2
+            .next_page_token
+            .clone()
+            .expect("page 2 still has a token");
+
+        // Page 3: empty, and now the token is absent — pagination is drained.
+        let page3 = list_direct_user_roles_page(
+            &project_id,
+            &user_id,
+            PaginationQuery {
+                page_token: PageToken::Present(token),
+                page_size: Some(2),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page3.entries.len(), 0);
+        assert_eq!(page3.next_page_token, None);
+
+        // Union across the non-empty pages == ground truth, with no duplicates.
+        let union: std::collections::HashSet<Uuid> = page1
+            .entries
+            .iter()
+            .chain(&page2.entries)
+            .map(|e| *e.role_id)
+            .collect();
+        assert_eq!(union.len(), 3, "no role appears on two pages");
+        assert_eq!(union, ground_truth);
+    }
+
+    /// `list_direct_role_members_page` merges user members (`role_assignment`) and role
+    /// members (`role_membership`) into one keyset-paginated listing: every member
+    /// of either kind appears exactly once across pages — including across the
+    /// user/role type boundary mid-pagination — and the union equals the inserted
+    /// set.
+    #[sqlx::test]
+    async fn list_direct_role_members_page_merges_users_and_roles(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "R").await;
+        let ma = create_managed_role(&state, &project_id, "ma").await;
+        let mb = create_managed_role(&state, &project_id, "mb").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        // Two role members of R.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&arc_project, parent, &[ma, mb], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Two user members of R (matched to the existing managed role by ident).
+        let r_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "R"));
+        let u1 = Arc::new(UserId::new_unchecked("oidc", "u1"));
+        let u2 = Arc::new(UserId::new_unchecked("oidc", "u2"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_role_members_by_ident(
+            &project_id,
+            &make_role(&r_ident, "R"),
+            um(&[make_user(&u1, "U1"), make_user(&u2, "U2")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let expected: std::collections::HashSet<UserOrRoleId> = [
+            UserOrRoleId::User((*u1).clone()),
+            UserOrRoleId::User((*u2).clone()),
+            UserOrRoleId::Role(ma),
+            UserOrRoleId::Role(mb),
+        ]
+        .into_iter()
+        .collect();
+
+        // Drain all pages at page_size 2 (4 members → 2 full pages + 1 empty).
+        let mut got: Vec<UserOrRoleId> = Vec::new();
+        let mut token = PageToken::NotSpecified;
+        let mut pages = 0;
+        loop {
+            let page = list_direct_role_members_page(
+                &project_id,
+                parent,
+                None,
+                PaginationQuery {
+                    page_token: token,
+                    page_size: Some(2),
+                },
+                &pool,
+            )
+            .await
+            .unwrap();
+            pages += 1;
+            if page.assignments.is_empty() {
+                assert_eq!(page.next_page_token, None, "drained page has no token");
+                break;
+            }
+            for row in &page.assignments {
+                assert_eq!(
+                    row.role_id, parent,
+                    "every row is scoped to the parent role"
+                );
+                assert!(row.created_at.is_some(), "catalog path sets created_at");
+                got.push(row.subject.clone());
+            }
+            token = PageToken::Present(page.next_page_token.expect("non-empty page has a token"));
+        }
+
+        assert_eq!(pages, 3, "two full pages of 2 then one empty page");
+        assert_eq!(got.len(), 4, "no member appears on two pages");
+        let union: std::collections::HashSet<UserOrRoleId> = got.into_iter().collect();
+        assert_eq!(union, expected);
+    }
+
+    /// `?type=` restricts the merged listing to one member kind: `User` returns
+    /// only user members, `Role` only member roles.
+    #[sqlx::test]
+    async fn list_direct_role_members_page_type_filter(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_id, "R").await;
+        let ma = create_managed_role(&state, &project_id, "ma").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&arc_project, parent, &[ma], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        let r_ident = Arc::new(RoleIdent::new_unchecked("lakekeeper", "R"));
+        let u1 = Arc::new(UserId::new_unchecked("oidc", "u1"));
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        sync_role_members_by_ident(
+            &project_id,
+            &make_role(&r_ident, "R"),
+            um(&[make_user(&u1, "U1")]),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let users_only = list_direct_role_members_page(
+            &project_id,
+            parent,
+            Some(RoleMemberKind::User),
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(users_only.assignments.len(), 1);
+        assert_eq!(
+            users_only.assignments[0].subject,
+            UserOrRoleId::User((*u1).clone())
+        );
+
+        let roles_only = list_direct_role_members_page(
+            &project_id,
+            parent,
+            Some(RoleMemberKind::Role),
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(roles_only.assignments.len(), 1);
+        assert_eq!(roles_only.assignments[0].subject, UserOrRoleId::Role(ma));
+    }
+
+    /// Project scoping: listing members of a role while passing a different
+    /// project's id returns nothing — the role does not belong to that project.
+    #[sqlx::test]
+    async fn list_direct_role_members_page_scoped_to_project(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_a = make_project(&state).await;
+        let project_b = make_project(&state).await;
+        let parent = create_managed_role(&state, &project_a, "R").await;
+        let ma = create_managed_role(&state, &project_a, "ma").await;
+        let arc_a: ArcProjectId = Arc::new(project_a.clone());
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        add_role_members(&arc_a, parent, &[ma], usize::MAX, t.transaction())
+            .await
+            .unwrap();
+        t.commit().await.unwrap();
+
+        // Correct project: the member is visible.
+        let in_a = list_direct_role_members_page(
+            &project_a,
+            parent,
+            None,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(in_a.assignments.len(), 1);
+
+        // Wrong project: the role is not in B, so the listing is empty.
+        let in_b = list_direct_role_members_page(
+            &project_b,
+            parent,
+            None,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(in_b.assignments.len(), 0);
+        assert_eq!(in_b.next_page_token, None);
+    }
+
+    /// `list_direct_user_roles_page` is project-scoped: a user assigned to roles in two
+    /// projects sees only the roles of the requested project.
+    #[sqlx::test]
+    async fn list_direct_user_roles_page_scoped_to_project(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_a = make_project(&state).await;
+        let project_b = make_project(&state).await;
+        let provider = RoleProviderId::new_unchecked("ldap");
+        let user_id = Arc::new(UserId::new_unchecked("oidc", "alice"));
+        let user = make_user(&user_id, "Alice");
+        let a_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-a"));
+        let b_ident = Arc::new(RoleIdent::new_unchecked("ldap", "group-b"));
+
+        for (proj, ident, name) in [
+            (&project_a, &a_ident, "Group A"),
+            (&project_b, &b_ident, "Group B"),
+        ] {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            sync_user_role_assignments_by_provider(
+                &user,
+                proj,
+                &provider,
+                ur(&[make_role(ident, name)]),
+                t.transaction(),
+            )
+            .await
+            .unwrap();
+            t.commit().await.unwrap();
+        }
+
+        let in_a = list_direct_user_roles_page(
+            &project_a,
+            &user_id,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(50),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(in_a.entries.len(), 1, "only the project-A role is returned");
+    }
+
+    /// `list_direct_role_parents_page` keyset-paginates the direct parents of a role:
+    /// each parent appears once across pages, the final non-empty page still
+    /// carries a token, and the drained page is empty with no token.
+    #[sqlx::test]
+    async fn list_direct_role_parents_page_paginates(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = make_project(&state).await;
+        let child = create_managed_role(&state, &project_id, "child").await;
+        let p1 = create_managed_role(&state, &project_id, "p1").await;
+        let p2 = create_managed_role(&state, &project_id, "p2").await;
+        let p3 = create_managed_role(&state, &project_id, "p3").await;
+        let arc_project: ArcProjectId = Arc::new(project_id.clone());
+
+        // child becomes a member of all three parents → child has 3 parents.
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        for p in [p1, p2, p3] {
+            add_role_members(&arc_project, p, &[child], usize::MAX, t.transaction())
+                .await
+                .unwrap();
+        }
+        t.commit().await.unwrap();
+
+        let expected: std::collections::HashSet<Uuid> = [p1, p2, p3].iter().map(|r| **r).collect();
+
+        let page1 = list_direct_role_parents_page(
+            &project_id,
+            child,
+            PaginationQuery {
+                page_token: PageToken::NotSpecified,
+                page_size: Some(2),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page1.entries.len(), 2);
+        let token = page1.next_page_token.clone().expect("page 1 has a token");
+
+        let page2 = list_direct_role_parents_page(
+            &project_id,
+            child,
+            PaginationQuery {
+                page_token: PageToken::Present(token),
+                page_size: Some(2),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page2.entries.len(), 1);
+        let token = page2
+            .next_page_token
+            .clone()
+            .expect("page 2 still has a token");
+
+        let page3 = list_direct_role_parents_page(
+            &project_id,
+            child,
+            PaginationQuery {
+                page_token: PageToken::Present(token),
+                page_size: Some(2),
+            },
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page3.entries.len(), 0);
+        assert_eq!(page3.next_page_token, None);
+
+        let union: std::collections::HashSet<Uuid> = page1
+            .entries
+            .iter()
+            .chain(&page2.entries)
+            .map(|e| *e.role_id)
+            .collect();
+        assert_eq!(union.len(), 3, "no parent appears on two pages");
+        assert_eq!(union, expected);
     }
 
     // ── role_membership graph ──────────────────────────────────────────────
