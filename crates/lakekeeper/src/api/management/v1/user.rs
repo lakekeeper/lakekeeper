@@ -79,7 +79,7 @@ pub struct User {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Response of the `whoami` endpoint: the catalog [`User`] for the current token,
+/// Response of the `whoami` endpoint: the catalog user for the current token,
 /// plus request-scoped privilege not stored on the user record.
 #[derive(Debug, Serialize, Clone)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]

@@ -170,7 +170,7 @@ pub struct CatalogCreateRoleRequest<'a> {
 /// (all versions allowed; self-managed) so most callers omit them.
 #[derive(Debug, typed_builder::TypedBuilder)]
 pub struct CatalogCreateWarehouseRequest {
-    pub name: String,
+    pub warehouse_name: String,
     pub storage_profile: StorageProfile,
     #[builder(default)]
     pub storage_secret_id: Option<SecretId>,

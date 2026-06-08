@@ -149,7 +149,7 @@ mod test {
         let warehouse = create_warehouse(
             project_id,
             CatalogCreateWarehouseRequest::builder()
-                .name("My Warehouse".to_string())
+                .warehouse_name("My Warehouse".to_string())
                 .storage_profile(storage_profile)
                 .delete_profile(TabularDeleteProfile::default())
                 .build(),

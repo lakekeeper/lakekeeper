@@ -46,7 +46,7 @@ async fn test_create_warehouse(pool: PgPool) {
     let warehouse = PostgresBackend::create_warehouse(
         &project_id,
         CatalogCreateWarehouseRequest::builder()
-            .name(format!("test-warehouse-{}", Uuid::now_v7()))
+            .warehouse_name(format!("test-warehouse-{}", Uuid::now_v7()))
             .storage_profile(storage_profile.clone())
             .delete_profile(TabularDeleteProfile::Hard {})
             .build(),
@@ -92,7 +92,7 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
     let warehouse = PostgresBackend::create_warehouse(
         &project_id,
         CatalogCreateWarehouseRequest::builder()
-            .name(format!("test-warehouse-secret-{}", Uuid::now_v7()))
+            .warehouse_name(format!("test-warehouse-secret-{}", Uuid::now_v7()))
             .storage_profile(storage_profile.clone())
             .storage_secret_id(Some(secret_id))
             .delete_profile(TabularDeleteProfile::Soft {
@@ -136,7 +136,7 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
     let result = PostgresBackend::create_warehouse(
         &project_id,
         CatalogCreateWarehouseRequest::builder()
-            .name(warehouse_resp.warehouse_name.clone())
+            .warehouse_name(warehouse_resp.warehouse_name.clone())
             .storage_profile(storage_profile.clone())
             .delete_profile(TabularDeleteProfile::Hard {})
             .build(),

@@ -336,7 +336,7 @@ pub mod v1 {
         tag = "user",
         path = ManagementV1Endpoint::Whoami.path(),
         responses(
-            (status = 200, description = "User details", body = WhoamiResponse),
+            (status = 200, description = "Current user and instance-admin status", body = WhoamiResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]

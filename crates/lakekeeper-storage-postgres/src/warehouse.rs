@@ -92,7 +92,7 @@ pub(crate) async fn create_warehouse(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
     let CatalogCreateWarehouseRequest {
-        name: warehouse_name,
+        warehouse_name,
         storage_profile,
         storage_secret_id,
         delete_profile: tabular_delete_profile,
@@ -1073,7 +1073,7 @@ pub mod test {
         let warehouse = PostgresBackend::create_warehouse(
             &project_id,
             CatalogCreateWarehouseRequest::builder()
-                .name("test_warehouse".to_string())
+                .warehouse_name("test_warehouse".to_string())
                 .storage_profile(storage_profile)
                 .storage_secret_id(secret_id)
                 .delete_profile(TabularDeleteProfile::Soft {

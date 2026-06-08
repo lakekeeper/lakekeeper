@@ -54,19 +54,15 @@ pub enum WarehouseStatus {
     Inactive,
 }
 
-/// Records which control plane, if any, exclusively manages a warehouse's spec
-/// (storage profile, credentials, delete profile, rename, status, protection,
-/// format-version policy, deletion, and the marker itself).
+/// Which control plane, if any, exclusively manages a warehouse's spec.
 ///
-/// When set to anything other than [`ManagedBy::SelfManaged`], those spec mutations
-/// are rejected for normal callers — even ones holding OpenFGA grants — and
-/// succeed only for the managing control plane. Child resources (namespaces,
-/// tables, grants), task-queue config, and data-plane operations are never
-/// affected. The authoritative locked set is
-/// [`CatalogWarehouseAction::is_spec_mutation`](crate::service::authz::CatalogWarehouseAction::is_spec_mutation),
-/// which deliberately excludes `ModifyTaskQueueConfig`.
-///
-/// Default `SelfManaged` => no behavior change for existing warehouses.
+/// `self-managed` (the default) leaves the spec mutable by the warehouse's own
+/// owners through the usual grants. When set to `instance-admin`, spec changes —
+/// storage profile, credentials, delete profile, rename, status, protection,
+/// format-version policy, and deletion — are accepted only from instance
+/// administrators; other callers are rejected even when their grants would
+/// otherwise allow it. Child resources (namespaces, tables, grants), task-queue
+/// configuration, and data access are unaffected.
 #[derive(
     Debug,
     Clone,
@@ -100,7 +96,11 @@ pub enum ManagedBy {
 
 impl ManagedBy {
     /// Whether an external control plane manages the spec, locking it against the
-    /// warehouse's own grant-holders. False for [`ManagedBy::SelfManaged`].
+    /// warehouse's own grant-holders. `false` for [`ManagedBy::SelfManaged`].
+    ///
+    /// The exact set of locked actions is defined by
+    /// [`CatalogWarehouseAction::is_spec_mutation`]; notably `ModifyTaskQueueConfig`
+    /// is excluded.
     #[must_use]
     pub fn is_externally_managed(self) -> bool {
         !matches!(self, ManagedBy::SelfManaged)

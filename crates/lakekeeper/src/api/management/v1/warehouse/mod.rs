@@ -495,7 +495,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let resolved_warehouse = C::create_warehouse(
             project_id,
             CatalogCreateWarehouseRequest::builder()
-                .name(warehouse_name)
+                .warehouse_name(warehouse_name)
                 .storage_profile(storage_profile)
                 .storage_secret_id(secret_id)
                 .delete_profile(delete_profile)
