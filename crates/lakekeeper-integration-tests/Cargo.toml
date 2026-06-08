@@ -9,12 +9,12 @@ license = { workspace = true }
 description = "Integration tests for Lakekeeper exercising the service layer against a concrete storage backend (today: Postgres; future: SQLite, FoundationDB, ...)."
 publish = false
 
+[lib]
+
 [features]
 # Forwards lakekeeper's `open-api` to compile `utoipa::ToSchema` derives that
 # the `QueueConfig` trait bound requires when the upstream feature is on.
 open-api = ["lakekeeper/open-api", "dep:utoipa"]
-
-[lib]
 
 [dependencies]
 anyhow = { workspace = true }
