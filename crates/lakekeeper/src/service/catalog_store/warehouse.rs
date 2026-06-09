@@ -14,7 +14,8 @@ use crate::{
             CatalogBackendError, define_transparent_error, impl_error_stack_methods,
             impl_from_with_detail,
             warehouse_cache::{
-                warehouse_cache_get_by_id, warehouse_cache_get_by_name, warehouse_cache_insert,
+                warehouse_cache_get_by_id, warehouse_cache_get_by_name,
+                warehouse_cache_get_or_load, warehouse_cache_insert,
             },
         },
         define_simple_error, define_version_newtype,
@@ -692,23 +693,20 @@ where
         status_filter: &[WarehouseStatus],
         state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByIdError> {
-        let cached_warehouse = warehouse_cache_get_by_id(warehouse_id).await;
-        if let Some(warehouse) = cached_warehouse {
-            let warehouse = Some(warehouse).filter(|w| status_filter.contains(&w.status));
-            return Ok(warehouse);
-        }
+        // Single-flight read-through: concurrent misses for the same warehouse
+        // coalesce onto one load (see `warehouse_cache_get_or_load`). The helper
+        // owns the version-gated insert + secondary-index population. `status_filter`
+        // is applied to the result, never to what is cached.
+        let warehouse = warehouse_cache_get_or_load(warehouse_id, async move {
+            Ok::<_, CatalogGetWarehouseByIdError>(
+                Self::get_warehouse_by_id_impl(warehouse_id, state)
+                    .await?
+                    .map(Arc::new),
+            )
+        })
+        .await?;
 
-        let warehouse = Self::get_warehouse_by_id_impl(warehouse_id, state)
-            .await?
-            .map(Arc::new);
-
-        if let Some(warehouse) = warehouse.clone() {
-            warehouse_cache_insert(warehouse).await;
-        }
-
-        let warehouse = warehouse.filter(|w| status_filter.contains(&w.status));
-
-        Ok(warehouse)
+        Ok(warehouse.filter(|w| status_filter.contains(&w.status)))
     }
 
     async fn get_active_warehouse_by_id(

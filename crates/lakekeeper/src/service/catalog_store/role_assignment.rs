@@ -1292,13 +1292,15 @@ where
         user_id: &UserId,
         catalog_state: Self::State,
     ) -> Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError> {
-        if let Some(cached) = role_assignments_cache::user_assignments_cache_get(user_id).await {
-            return Ok(cached);
-        }
-        let result =
-            Arc::new(Self::list_role_assignments_for_user_impl(user_id, catalog_state).await?);
-        role_assignments_cache::user_assignments_cache_insert(user_id, Arc::clone(&result)).await;
-        Ok(result)
+        // Single-flight read-through: concurrent misses for the same user coalesce
+        // onto one loader run (see `user_assignments_cache_get_or_load`).
+        let owned_user_id = user_id.clone();
+        role_assignments_cache::user_assignments_cache_get_or_load(user_id, async move {
+            Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state)
+                .await
+                .map(Arc::new)
+        })
+        .await
     }
 
     /// Return all members of the given role, together with the last sync
@@ -1310,22 +1312,26 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
-        if let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await {
-            return Ok(Some(cached));
-        }
-        let result = match Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
-        {
-            Some(r) => Arc::new(r),
-            None => return Ok(None),
-        };
-        role_assignments_cache::role_members_cache_insert(role_id, Arc::clone(&result)).await;
-        role_cache::role_ident_insert(
-            result.project_id.clone(),
-            result.role_ident.clone(),
-            role_id,
-        )
-        .await;
-        Ok(Some(result))
+        // Single-flight read-through: concurrent misses for the same role coalesce
+        // onto one loader run (see `role_members_cache_get_or_load`). The helper
+        // owns the `ROLE_MEMBERS_CACHE` insert; the loader populates the secondary
+        // ident→id index on that single load.
+        role_assignments_cache::role_members_cache_get_or_load(role_id, async move {
+            let Some(result) =
+                Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
+            else {
+                return Ok(None);
+            };
+            let result = Arc::new(result);
+            role_cache::role_ident_insert(
+                result.project_id.clone(),
+                result.role_ident.clone(),
+                role_id,
+            )
+            .await;
+            Ok(Some(result))
+        })
+        .await
     }
 
     /// Return all members of a role identified by its project-scoped ident,

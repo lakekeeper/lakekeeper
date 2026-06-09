@@ -4,7 +4,11 @@ use std::{
 };
 
 use axum_prometheus::metrics;
-use moka::{future::Cache, notification::RemovalCause};
+use moka::{
+    future::Cache,
+    notification::RemovalCause,
+    ops::compute::{CompResult, Op},
+};
 use unicase::UniCase;
 
 #[cfg(feature = "router")]
@@ -132,6 +136,90 @@ pub(super) async fn warehouse_cache_insert(warehouse: Arc<ResolvedWarehouse>) {
         );
         update_cache_size_metric();
     }
+}
+
+/// Single-flight read-through for the warehouse cache.
+///
+/// Coalesces concurrent misses for the same `warehouse_id`: moka serializes the
+/// per-key compute, so the loader runs once and later callers observe the
+/// just-inserted entry. Returns `Option` — a non-existent warehouse is **not**
+/// negative-cached.
+///
+/// The version-gate is preserved without reworking the writer: before inserting
+/// the loaded value we re-read the current entry and skip if a concurrent
+/// `warehouse_cache_insert` already cached a newer/equal version. (moka's compute
+/// lock does not serialize against the plain `insert()` that writer uses, so the
+/// re-check is required — it carries the same sub-`await` residual the existing
+/// get-then-insert gate already has, i.e. no regression.) The `(project, name) →
+/// id` index is populated alongside, mirroring `warehouse_cache_insert`. The
+/// `enabled` flag and hit/miss metrics are preserved; the loader error is
+/// returned by value (no `Arc`-sharing).
+pub(super) async fn warehouse_cache_get_or_load<Fut, E>(
+    warehouse_id: WarehouseId,
+    load: Fut,
+) -> Result<Option<Arc<ResolvedWarehouse>>, E>
+where
+    Fut: std::future::Future<Output = Result<Option<Arc<ResolvedWarehouse>>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    if !CONFIG.cache.warehouse.enabled {
+        return load.await;
+    }
+
+    if let Some(warehouse) = warehouse_cache_get_by_id(warehouse_id).await {
+        return Ok(Some(warehouse));
+    }
+
+    let outcome = WAREHOUSE_CACHE
+        .entry(warehouse_id)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Populated by another caller while we waited on the key lock.
+                return Ok::<_, E>(Op::Nop);
+            }
+            let Some(warehouse) = load.await? else {
+                // Missing warehouse — never negative-cached. Coalescing therefore
+                // applies only to a found warehouse; concurrent lookups of a
+                // missing one each re-run the loader (rare, no worse than before).
+                return Ok(Op::Nop);
+            };
+            // Preserve the version-gate against a writer that cached a newer
+            // version via plain `insert()` during our load.
+            if let Some(current) = WAREHOUSE_CACHE.get(&warehouse_id).await
+                && current.warehouse.version >= warehouse.version
+            {
+                return Ok(Op::Nop);
+            }
+            NAME_TO_ID_CACHE
+                .insert(
+                    (
+                        warehouse.project_id.clone(),
+                        UniCase::new(warehouse.name.clone()),
+                    ),
+                    warehouse_id,
+                )
+                .await;
+            Ok(Op::Put(CachedWarehouse { warehouse }))
+        })
+        .await?;
+    update_cache_size_metric();
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => Some(entry.into_value().warehouse),
+        // `StillNone` means either the loader returned `None` (genuine not-found,
+        // never negative-cached) or the version-gate fired because a concurrent
+        // writer cached a newer version during our load. moka derives the
+        // `Op::Nop` result from the closure's entry snapshot, so it cannot surface
+        // that concurrent `insert()` (a different lock domain) — a final raw read
+        // does, returning the newer value if present and `None` otherwise.
+        // `Removed` is unreachable (the closure only returns `Nop`/`Put`).
+        CompResult::StillNone(_) | CompResult::Removed(_) => WAREHOUSE_CACHE
+            .get(&warehouse_id)
+            .await
+            .map(|c| c.warehouse),
+    })
 }
 
 /// Update the cache size metric with the current number of entries
@@ -755,6 +843,110 @@ mod tests {
         let cached2 = warehouse_cache_get_by_name(&name, &project_id2).await;
         assert!(cached2.is_some());
         assert_eq!(cached2.unwrap().warehouse_id, warehouse2_id);
+    }
+
+    /// `warehouse_cache_get_or_load` must coalesce concurrent misses for the same
+    /// id into ONE loader run, with every caller observing the cached entry.
+    #[tokio::test]
+    async fn warehouse_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let warehouse_id = WarehouseId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        warehouse_cache_invalidate(warehouse_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let warehouse = test_warehouse(
+            warehouse_id,
+            "wh-coalesce".to_string(),
+            project_id,
+            Some(Utc::now()),
+            0,
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let warehouse = warehouse.clone();
+            handles.push(tokio::spawn(async move {
+                warehouse_cache_get_or_load(warehouse_id, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    // Widen the load window so all callers queue on the key lock
+                    // before the first load completes.
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(Some(warehouse))
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().unwrap().expect("warehouse exists"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent misses must coalesce to a single loader run"
+        );
+        for r in &results[1..] {
+            assert_eq!(r.warehouse_id, warehouse_id);
+        }
+
+        warehouse_cache_invalidate(warehouse_id).await;
+    }
+
+    /// The in-closure version-gate must not let a slow loader overwrite a newer
+    /// value cached concurrently. We model the race by having the loader itself
+    /// insert a newer version (as a concurrent `warehouse_cache_insert` would)
+    /// before returning a stale older one — the helper must keep the newer entry
+    /// and return it, never the stale load.
+    #[tokio::test]
+    async fn warehouse_get_or_load_version_gate_keeps_newer_concurrent_insert() {
+        let warehouse_id = WarehouseId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        warehouse_cache_invalidate(warehouse_id).await;
+
+        let name = "wh-version-gate".to_string();
+        let newer = test_warehouse(
+            warehouse_id,
+            name.clone(),
+            project_id.clone(),
+            Some(Utc::now()),
+            5,
+        );
+        let older = test_warehouse(warehouse_id, name, project_id, Some(Utc::now()), 3);
+
+        let returned = warehouse_cache_get_or_load(warehouse_id, {
+            let newer = newer.clone();
+            let older = older.clone();
+            async move {
+                // A concurrent writer caches a newer version while we "load".
+                warehouse_cache_insert(newer).await;
+                Ok::<_, std::convert::Infallible>(Some(older))
+            }
+        })
+        .await
+        .unwrap()
+        .expect("warehouse exists");
+
+        assert_eq!(
+            *returned.version, 5,
+            "helper must return the newer concurrently-cached value, not the stale load"
+        );
+        assert_eq!(
+            *warehouse_cache_get_by_id(warehouse_id)
+                .await
+                .unwrap()
+                .version,
+            5,
+            "stale older load must be version-gated out of the cache"
+        );
+
+        warehouse_cache_invalidate(warehouse_id).await;
     }
 
     #[tokio::test]

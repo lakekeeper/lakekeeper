@@ -16,7 +16,10 @@ use crate::{
         Transaction,
         catalog_store::{
             define_version_newtype,
-            role_cache::{role_cache_get_by_id, role_cache_get_by_ident, role_cache_insert},
+            role_cache::{
+                role_cache_get_by_id, role_cache_get_by_ident, role_cache_get_or_load,
+                role_cache_insert,
+            },
         },
         define_transparent_error,
         identifier::role::ArcRoleIdent,
@@ -751,25 +754,24 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
-        if let Some(role) = role_cache_get_by_id(role_id).await {
-            return Ok(role);
-        }
-        let roles = Self::list_roles_impl(
-            None,
-            CatalogListRolesByIdFilter::builder()
-                .role_ids(Some(&[role_id]))
-                .build(),
-            PaginationQuery::new_with_page_size(1),
-            catalog_state,
-        )
+        // Single-flight read-through: concurrent misses for the same role coalesce
+        // onto one load (see `role_cache_get_or_load`); the helper owns the
+        // version-gated insert + ident-index population.
+        let role = role_cache_get_or_load(role_id, async move {
+            let ids = [role_id];
+            let roles = Self::list_roles_impl(
+                None,
+                CatalogListRolesByIdFilter::builder()
+                    .role_ids(Some(&ids))
+                    .build(),
+                PaginationQuery::new_with_page_size(1),
+                catalog_state,
+            )
+            .await?;
+            Ok::<_, GetRoleAcrossProjectsError>(roles.roles.into_iter().next())
+        })
         .await?;
-        let role = roles
-            .roles
-            .into_iter()
-            .next()
-            .ok_or_else(|| RoleIdNotFound::new(role_id))?;
-        role_cache_insert(role.clone()).await;
-        Ok(role)
+        role.ok_or_else(|| RoleIdNotFound::new(role_id).into())
     }
 
     async fn get_role_by_id(
@@ -777,29 +779,30 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleInProjectError> {
-        if let Some(role) = role_cache_get_by_id(role_id).await {
-            // Verify the cached role belongs to the requested project
-            if role.project_id.as_ref() == &**project_id {
-                return Ok(role);
-            }
-            // Cache hit for wrong project - treat as cache miss
-        }
-        let roles = Self::list_roles_impl(
-            Some(project_id),
-            CatalogListRolesByIdFilter::builder()
-                .role_ids(Some(&[role_id]))
-                .build(),
-            PaginationQuery::new_with_page_size(1),
-            catalog_state,
-        )
+        // Single-flight read-through: load by id (across projects) coalesced via
+        // `role_cache_get_or_load` (which owns the cache fast-path + hit/miss
+        // metrics), then re-check the project. Resolving across projects +
+        // re-checking is equivalent to the old project-scoped query (role ids are
+        // globally unique) and lets project-scoped and across-project reads of the
+        // same role share one cached entry and one load.
+        let role = role_cache_get_or_load(role_id, async move {
+            let ids = [role_id];
+            let roles = Self::list_roles_impl(
+                None,
+                CatalogListRolesByIdFilter::builder()
+                    .role_ids(Some(&ids))
+                    .build(),
+                PaginationQuery::new_with_page_size(1),
+                catalog_state,
+            )
+            .await?;
+            Ok::<_, GetRoleInProjectError>(roles.roles.into_iter().next())
+        })
         .await?;
-        let role = roles
-            .roles
-            .into_iter()
-            .next()
-            .ok_or_else(|| RoleIdNotFoundInProject::new(role_id, project_id.clone()))?;
-        role_cache_insert(role.clone()).await;
-        Ok(role)
+        match role {
+            Some(role) if role.project_id.as_ref() == &**project_id => Ok(role),
+            _ => Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into()),
+        }
     }
 
     async fn search_role(
