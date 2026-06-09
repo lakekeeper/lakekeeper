@@ -6890,6 +6890,12 @@ components:
           type:
             - string
             - 'null'
+          description: |-
+            Token for the next page, or `null`/absent once the listing is exhausted.
+            House convention (note for SDK authors): a non-empty page always carries a
+            token — including the final full page — so the empty page is what signals
+            the end. This intentionally differs from AIP-158 (empty token = end) and
+            costs one trailing request; loop until you receive a page with no token.
     ListRoleMembershipsResponse:
       type: object
       description: One page of roles (the `member-of` set, or a user's directly-assigned roles).
@@ -6900,6 +6906,12 @@ components:
           type:
             - string
             - 'null'
+          description: |-
+            Token for the next page, or `null`/absent once the listing is exhausted.
+            House convention (note for SDK authors): a non-empty page always carries a
+            token — including the final full page — so the empty page is what signals
+            the end. This intentionally differs from AIP-158 (empty token = end) and
+            costs one trailing request; loop until you receive a page with no token.
         roles:
           type: array
           items:
