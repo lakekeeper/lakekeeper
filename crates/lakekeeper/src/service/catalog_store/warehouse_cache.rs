@@ -1072,4 +1072,55 @@ mod tests {
 
         warehouse_cache_invalidate(warehouse_id).await;
     }
+
+    /// A `None` result (warehouse not found) must NOT be negative-cached or
+    /// coalesced: concurrent missing-lookups each re-run the loader, and the entry
+    /// stays absent so a later real insert is visible immediately.
+    #[tokio::test]
+    async fn warehouse_get_or_load_does_not_negative_cache() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let warehouse_id = WarehouseId::new_random();
+        warehouse_cache_invalidate(warehouse_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let calls = 4;
+
+        let mut handles = Vec::new();
+        for _ in 0..calls {
+            let loads = Arc::clone(&loads);
+            handles.push(tokio::spawn(async move {
+                warehouse_cache_get_or_load(warehouse_id, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    // Widen the window so callers contend; a missing entry must
+                    // still not coalesce (nothing is cached to coalesce onto).
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(None)
+                })
+                .await
+            }));
+        }
+
+        for h in handles {
+            assert!(
+                h.await.unwrap().unwrap().is_none(),
+                "a missing warehouse resolves to None"
+            );
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            calls,
+            "a missing warehouse is not negative-cached, so each concurrent caller \
+             re-runs the loader"
+        );
+        assert!(
+            warehouse_cache_get_by_id(warehouse_id).await.is_none(),
+            "None must not be cached"
+        );
+
+        warehouse_cache_invalidate(warehouse_id).await;
+    }
 }

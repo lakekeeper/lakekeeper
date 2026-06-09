@@ -509,6 +509,72 @@ mod tests {
         user_assignments_cache_invalidate(&user_id).await;
     }
 
+    /// A failed load (`Err`) coalesces like a success but **must not poison** the
+    /// entry: concurrent callers share one failing load and all observe an error,
+    /// and a subsequent successful load still populates the cache (errors are
+    /// never cached).
+    #[tokio::test]
+    async fn user_assignments_get_or_load_does_not_cache_errors() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let user_id = test_user_id("single-flight-error");
+        user_assignments_cache_invalidate(&user_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        // Concurrent callers whose loader fails — coalesced onto one failing load.
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let loads = Arc::clone(&loads);
+            let uid = user_id.clone();
+            handles.push(tokio::spawn(async move {
+                user_assignments_cache_get_or_load(&uid, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Err::<Arc<ListUserRoleAssignmentsResult>, _>(
+                        CatalogBackendError::new_unexpected(std::io::Error::other("boom")),
+                    )
+                })
+                .await
+            }));
+        }
+
+        for h in handles {
+            assert!(
+                h.await.unwrap().is_err(),
+                "every coalesced caller observes the failure"
+            );
+        }
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent callers coalesce onto a single failing load"
+        );
+        assert!(
+            user_assignments_cache_get(&user_id).await.is_none(),
+            "a failed load must not poison the entry"
+        );
+
+        // A subsequent successful load populates the cache as usual.
+        let value = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "after-error"),
+        );
+        let loaded = user_assignments_cache_get_or_load(&user_id, {
+            let value = Arc::clone(&value);
+            async move { Ok::<_, CatalogBackendError>(value) }
+        })
+        .await
+        .expect("loader succeeds after a prior failure");
+        assert!(Arc::ptr_eq(&loaded, &value));
+        assert!(user_assignments_cache_get(&user_id).await.is_some());
+
+        user_assignments_cache_invalidate(&user_id).await;
+    }
+
     /// `role_members_cache_get_or_load` must coalesce concurrent misses for the
     /// same role into ONE loader run, with every caller receiving the same `Arc`.
     /// Mirrors the user-assignments single-flight guard, but this read-through
