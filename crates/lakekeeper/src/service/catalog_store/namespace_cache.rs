@@ -319,20 +319,29 @@ where
                 return Ok::<_, E>(Op::Nop);
             }
             let chain = load.await?;
-            let Some(leaf) = chain
-                .iter()
-                .find(|n| n.namespace_id() == namespace_id)
-                .cloned()
-            else {
+            if !chain.iter().any(|n| n.namespace_id() == namespace_id) {
+                // Namespace not found — never negative-cached.
                 return Ok(Op::Nop);
-            };
+            }
+            // `namespace_cache_insert_multiple` is the authoritative write: it is
+            // version-gated (keeps a concurrently-cached newer version) and stores
+            // *canonical* entries (the invariant `build_hierarchy_from_cache` relies
+            // on). We deliberately return `Op::Nop` rather than `Op::Put(leaf)` — a
+            // raw, possibly-stale, non-canonical leaf — which would clobber a newer
+            // concurrent insert and break the canonical invariant. `found` is
+            // resolved by the re-read below.
             namespace_cache_insert_multiple(chain).await;
-            Ok(Op::Put(leaf))
+            Ok(Op::Nop)
         })
         .await?;
 
     Ok(match outcome {
+        // `maybe_entry` was already populated (a concurrent caller won the race).
         CompResult::Inserted(_) | CompResult::ReplacedWith(_) | CompResult::Unchanged(_) => true,
+        // We always return `Op::Nop`, so a found namespace lands here: our gated
+        // `insert_multiple` wrote it via a different lock domain that moka's
+        // snapshot-based `Op::Nop` result cannot surface. Re-read to decide `found`
+        // (also covers the genuine not-found case → `false`).
         CompResult::StillNone(_) | CompResult::Removed(_) => {
             NAMESPACE_CACHE.get(&namespace_id).await.is_some()
         }
@@ -926,6 +935,57 @@ mod tests {
         assert!(
             found_all,
             "every caller must observe the namespace as found"
+        );
+    }
+
+    /// The by-id loader must not clobber a concurrently-cached newer version with
+    /// its (possibly stale) just-loaded leaf — mirrors the warehouse/role version
+    /// gate. `namespace_cache_insert_multiple` is the authoritative gated write;
+    /// the compute returns `Op::Nop`, so a concurrent newer insert survives.
+    // The combined namespace cache machinery (insert_multiple + eviction listeners)
+    // makes this test's future exceed the lint threshold; it's test-only.
+    #[allow(clippy::large_futures)]
+    #[tokio::test]
+    async fn namespace_id_get_or_load_version_gate_keeps_newer_concurrent_insert() {
+        let warehouse_id = WarehouseId::new_random();
+        let namespace_id = NamespaceId::new_random();
+        let ident = NamespaceIdent::from_vec(vec!["ns-id-version-gate".to_string()]).unwrap();
+
+        let newer = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                5,
+            ),
+            None,
+        );
+        let older_chain = vec![test_namespace_with_parent(
+            test_namespace(namespace_id, ident, warehouse_id, Some(Utc::now()), 3),
+            None,
+        )];
+
+        let found = namespace_id_get_or_load(namespace_id, {
+            let newer = newer.clone();
+            async move {
+                // A concurrent writer caches a newer version (e.g. the event
+                // listener after a metadata update) while we "load" a stale one.
+                namespace_cache_insert(newer).await;
+                Ok::<_, std::convert::Infallible>(older_chain)
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(found, "namespace exists");
+        let cached = namespace_cache_get_by_id(namespace_id)
+            .await
+            .expect("namespace is cached");
+        assert_eq!(
+            *cached.namespace.version(),
+            5,
+            "the stale v3 load must not clobber the concurrently-cached v5"
         );
     }
 }

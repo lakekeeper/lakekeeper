@@ -288,7 +288,7 @@ impl AdlsProfile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one SAS-token generation (the most expensive miss in the system) per key.
         // The typed cache returns the `(sas, expiration)` pair directly.
-        let (sas, expiration) = get_or_load_stc(&ADLS_STC_CACHE, cache_key, async {
+        let (sas, expiration) = get_or_load_stc(&ADLS_STC_CACHE, cache_key, || async {
             let (sas_token_start, requested_sas_token_end) = self.sas_token_validity_period();
             tracing::debug!(
                 "Generating SAS token with requested validity - start: {}, end: {}",

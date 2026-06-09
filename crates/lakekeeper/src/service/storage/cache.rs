@@ -113,8 +113,10 @@ fn build_stc_cache<V: Clone + Send + Sync + 'static>() -> Cache<STCCacheKey, Cac
 
 // Per-provider STC caches. Each stores a concrete credential type, so the
 // read-through hands back the right credential without a runtime variant check.
-// `max_capacity` is a ceiling, not a reservation — idle caches hold ~no entries —
-// so three caches cost no more than one did in practice.
+// Each cache gets the full `CONFIG.cache.stc.capacity` ceiling: a single-cloud
+// deployment (the norm) is unaffected, but a multi-cloud server can hold up to 3×
+// the configured entries. `max_capacity` is a ceiling, not a reservation, so idle
+// providers' caches stay near-empty.
 pub(super) static S3_STC_CACHE: LazyLock<
     Cache<STCCacheKey, CachedStc<aws_sdk_sts::types::Credentials>>,
 > = LazyLock::new(build_stc_cache::<aws_sdk_sts::types::Credentials>);
@@ -150,18 +152,26 @@ fn update_cache_size_metric() {
 /// Generic over the cached value type `V` (each provider's concrete credential),
 /// so each provider caches and returns its own type — no shared enum, no runtime
 /// variant check.
-pub(super) async fn get_or_load_stc<V, Fut, E>(
+pub(super) async fn get_or_load_stc<V, F, Fut, E>(
     cache: &Cache<STCCacheKey, CachedStc<V>>,
     key: STCCacheKey,
-    load: Fut,
+    load: F,
 ) -> Result<V, E>
 where
     V: Clone + Send + Sync + 'static,
+    F: FnOnce() -> Fut + Send,
     Fut: std::future::Future<Output = Result<CachedStc<V>, E>> + Send,
     E: Send + Sync + 'static,
 {
+    // The provider loaders embed large cloud-SDK STS/SAS futures (~26 KB). Take the
+    // loader lazily (`FnOnce() -> Fut`) and build + `Box::pin` it only on a miss:
+    // a cache hit (the common case on this hot credential-vending path) constructs
+    // no future at all — no per-hit heap allocation. Boxing also keeps the large
+    // future off the frame, so the whole call chain (`generate_table_config` and
+    // its callers) stays under `clippy::large_futures`; on a miss the one
+    // allocation is negligible against the STS/SAS network round-trip.
     if !CONFIG.cache.stc.enabled {
-        return Ok(load.await?.value);
+        return Ok(Box::pin(load()).await?.value);
     }
 
     // Fast path records a hit/miss. Under contention a coalesced waiter records a
@@ -182,7 +192,7 @@ where
                 // Fetched by another caller while we waited on the key lock.
                 return Ok::<_, E>(Op::Nop);
             }
-            Ok(Op::Put(load.await?))
+            Ok(Op::Put(Box::pin(load()).await?))
         })
         .await?;
     update_cache_size_metric();
@@ -248,7 +258,7 @@ mod tests {
             let loads = Arc::clone(&loads);
             let key = key.clone();
             handles.push(tokio::spawn(async move {
-                get_or_load_stc(&ADLS_STC_CACHE, key, async {
+                get_or_load_stc(&ADLS_STC_CACHE, key, || async {
                     loads.fetch_add(1, Ordering::SeqCst);
                     // Widen the load window so all callers queue on the key lock
                     // before the first fetch completes.

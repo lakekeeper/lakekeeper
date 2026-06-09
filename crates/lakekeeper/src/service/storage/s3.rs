@@ -580,7 +580,7 @@ impl S3Profile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one STS fetch (the most expensive miss in the system) per cache key. The
         // typed cache returns the S3 credential directly — no variant check.
-        get_or_load_stc(&S3_STC_CACHE, cache_key, async {
+        get_or_load_stc(&S3_STC_CACHE, cache_key, || async {
             tracing::debug!("Fetching new STS credentials for request: {sts_request}");
             let temporary_credential = self
                 .get_temporary_credentials(sts_request, s3_credential)

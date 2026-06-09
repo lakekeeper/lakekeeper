@@ -372,7 +372,7 @@ impl GcsProfile {
         // Single-flight read-through: concurrent identical requests coalesce onto
         // one STS downscope (the most expensive miss in the system) per cache key.
         // The typed cache returns the `CachedSTSResponse` directly — no variant check.
-        let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, async {
+        let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, || async {
             let (source, project_id) = self.get_token_source(credential).await?;
             let token = sts::downscope(source, &self.bucket, stc_request).await?;
 
