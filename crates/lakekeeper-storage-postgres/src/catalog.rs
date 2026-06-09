@@ -581,6 +581,53 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    async fn list_transitive_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRoleAssignmentsResultPage> {
+        super::role_assignment::list_transitive_role_members_page(
+            project_id,
+            role_id,
+            type_filter,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_transitive_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>> {
+        super::role_assignment::list_transitive_user_roles_page(
+            project_id,
+            user_id,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_transitive_role_member_of_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage> {
+        super::role_assignment::list_transitive_role_member_of_page(
+            project_id,
+            role_id,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
         user_id: &UserId,

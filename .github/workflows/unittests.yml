@@ -360,6 +360,11 @@ jobs:
           LAKEKEEPER_TEST__ENABLE_GCP_SYSTEM_CREDENTIALS: true
 
           LAKEKEEPER_TEST__OPENFGA__ENDPOINT: http://localhost:35081
+          # The lakekeeper-integration-tests OpenFGA e2e harness links authz-openfga
+          # as a NON-test dependency, so it reads the `LAKEKEEPER__` config prefix
+          # (not `LAKEKEEPER_TEST__`, which only applies to authz-openfga's own
+          # cfg(test) builds). Point both at the same store.
+          LAKEKEEPER__OPENFGA__ENDPOINT: http://localhost:35081
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcs.json
 
           LAKEKEEPER_TEST__AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}

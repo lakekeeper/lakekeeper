@@ -763,6 +763,41 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<ListRolesPage>>;
 
+    /// Transitive members of `role_id` — every user assigned to the role or any
+    /// role in its downward membership closure, plus every role in that closure
+    /// (root excluded) — merged into one keyset-paginated, project-scoped listing.
+    /// `type_filter` optionally restricts to one member kind. Rows carry
+    /// `created_at = None` (a transitive member has no single defining edge).
+    async fn list_transitive_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRoleAssignmentsResultPage>;
+
+    /// The full effective (transitive) role set a user holds — direct assignments
+    /// plus every role reachable upward through membership — keyset-paginated and
+    /// project-scoped. `Ok(None)` signals the user does not exist (handler → 404);
+    /// `Ok(Some(page))` is an existing user, whose page may be empty.
+    async fn list_transitive_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>>;
+
+    /// The full transitive member-of set of `role_id` — every role it effectively
+    /// belongs to, reachable upward through membership (root excluded) — keyset-
+    /// paginated and project-scoped. Rows carry `created_at = None` (a transitive
+    /// ancestor has no single defining edge).
+    async fn list_transitive_role_member_of_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage>;
+
     // ---------------- User Management API ----------------
     /// Insert or update a user. `mode` controls whether an existing row is
     /// overwritten unconditionally ([`UserUpsertMode::Overwrite`], the explicit

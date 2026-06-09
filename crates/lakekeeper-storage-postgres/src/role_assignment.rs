@@ -1308,6 +1308,153 @@ pub(crate) async fn list_direct_role_members_page<
     })
 }
 
+// ─── list_transitive_role_members_page ──────────────────────────────────────────
+//
+// Transitive members of `role_id`: every user assigned to the role OR any role in
+// its downward `role_membership` closure, plus every role in that closure (the
+// root excluded). The recursive CTE uses UNION — it dedups roles and is cycle-safe
+// (write paths already reject cycles and bound depth to `max_nesting_depth`).
+// A member reachable by several paths appears once (`GROUP BY`); `MIN(created_at)`
+// is a stable keyset key reusing the direct reader's `(created_at, member_type,
+// member_id)` contract. The returned rows carry `created_at = None` — a transitive
+// member has no single defining edge — but the page token keeps the real key so
+// pagination resumes correctly.
+pub(crate) async fn list_transitive_role_members_page<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    role_id: RoleId,
+    type_filter: Option<RoleMemberKind>,
+    pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
+    connection: E,
+) -> lakekeeper::service::Result<ListRoleAssignmentsResultPage> {
+    let lakekeeper::api::iceberg::v1::PaginationQuery {
+        page_token,
+        page_size,
+    } = pagination;
+    let page_size = lakekeeper::CONFIG.page_size_or_pagination_default(page_size);
+
+    let (want_users, want_roles) = match type_filter {
+        None => (true, true),
+        Some(RoleMemberKind::User) => (true, false),
+        Some(RoleMemberKind::Role) => (false, true),
+    };
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<String>::try_from)
+        .transpose()?;
+    let (token_ts, token_type, token_id): (Option<&chrono::DateTime<chrono::Utc>>, _, _) =
+        match token.as_ref() {
+            Some(PaginateToken::V1(V1PaginateToken { created_at, id })) => {
+                let (member_type, member_id) = id.split_once(':').ok_or_else(|| {
+                    InvalidPaginationToken::new("Invalid role-members page token payload", id)
+                })?;
+                (Some(created_at), Some(member_type), Some(member_id))
+            }
+            None => (None, None, None),
+        };
+
+    let rows = sqlx::query!(
+        r#"
+        WITH RECURSIVE descendants(role_id) AS (
+            SELECT $1::uuid
+          UNION
+            SELECT rm.member_role_id
+            FROM role_membership rm
+            JOIN descendants d ON rm.parent_role_id = d.role_id
+        )
+        SELECT
+            m.created_at  AS "created_at!",
+            m.member_type AS "member_type!",
+            m.member_id   AS "member_id!"
+        FROM (
+            SELECT 'user'::text AS member_type, ra.user_id AS member_id, MIN(ra.created_at) AS created_at
+            FROM role_assignment ra
+            JOIN "role" r ON r.id = ra.role_id
+            WHERE ra.role_id IN (SELECT role_id FROM descendants) AND r.project_id = $2 AND $3
+            GROUP BY ra.user_id
+          UNION ALL
+            SELECT 'role'::text AS member_type, d.role_id::text AS member_id, MIN(rm.created_at) AS created_at
+            FROM descendants d
+            JOIN role_membership rm ON rm.member_role_id = d.role_id
+            JOIN "role" r ON r.id = d.role_id
+            WHERE d.role_id <> $1 AND r.project_id = $2 AND $4
+            GROUP BY d.role_id
+        ) m
+        WHERE ($5::timestamptz IS NULL)
+           OR (m.created_at, m.member_type, m.member_id) > ($5, $6, $7)
+        ORDER BY m.created_at, m.member_type, m.member_id
+        LIMIT $8
+        "#,
+        *role_id,
+        project_id.as_str(),
+        want_users,
+        want_roles,
+        token_ts,
+        token_type,
+        token_id,
+        page_size,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| {
+        e.into_error_model("Error listing the transitive members of a role".to_string())
+    })?;
+
+    let mut assignments: Vec<RoleAssignmentRow> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let subject = match row.member_type.as_str() {
+            "user" => UserOrRoleId::User(user_id_from_db(&row.member_id).map_err(|e| {
+                ErrorModel::internal(
+                    "Stored role member has an unparseable user id",
+                    "RoleMemberUserIdInvalid",
+                    Some(Box::new(e)),
+                )
+            })?),
+            "role" => {
+                let id = Uuid::parse_str(&row.member_id).map_err(|e| {
+                    ErrorModel::internal(
+                        "Stored role member has an unparseable role id",
+                        "RoleMemberRoleIdInvalid",
+                        Some(Box::new(e)),
+                    )
+                })?;
+                UserOrRoleId::Role(RoleId::new(id))
+            }
+            other => {
+                return Err(ErrorModel::internal(
+                    format!("Unexpected role member type '{other}'"),
+                    "RoleMemberTypeInvalid",
+                    None,
+                )
+                .into());
+            }
+        };
+        assignments.push(RoleAssignmentRow {
+            subject,
+            role_id,
+            // A transitive member has no single defining edge.
+            created_at: None,
+        });
+    }
+
+    let next_page_token = rows.last().map(|row| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: row.created_at,
+            id: format!("{}:{}", row.member_type, row.member_id),
+        })
+        .to_string()
+    });
+
+    Ok(ListRoleAssignmentsResultPage {
+        assignments,
+        next_page_token,
+    })
+}
+
 // ─── list_direct_user_roles_page ─────────────────────────────────────────────────────
 
 /// Direct (depth-1) roles a user is assigned to, in `project_id`, keyset-paginated
@@ -1405,6 +1552,109 @@ pub(crate) async fn list_direct_user_roles_page<
     }))
 }
 
+// ─── list_transitive_user_roles_page ────────────────────────────────────────────────
+//
+// The full effective (transitive) role set a user holds — direct assignments plus
+// every role reachable upward through `role_membership` — in `project_id`. The
+// recursive `effective_roles` CTE mirrors the cached hot-path reader
+// (`list_role_assignments_for_user`) but joins `role` for ident+name and
+// keyset-paginates. UNION is cycle-safe. Keyset is `(role.created_at, role.id)` —
+// the role's own creation time, a stable non-null key (a transitive role has no
+// single membership edge); the service surfaces the row's `created_at` as None.
+// Returns `None` if the user has no catalog row (→ 404), like the direct reader.
+pub(crate) async fn list_transitive_user_roles_page<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres> + Copy,
+>(
+    project_id: &ProjectId,
+    user_id: &UserId,
+    pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
+    connection: E,
+) -> lakekeeper::service::Result<Option<ListRolesPage>> {
+    let lakekeeper::api::iceberg::v1::PaginationQuery {
+        page_token,
+        page_size,
+    } = pagination;
+    let page_size = lakekeeper::CONFIG.page_size_or_pagination_default(page_size);
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<Uuid>::try_from)
+        .transpose()?;
+    let (token_ts, token_id): (_, Option<&Uuid>) = token
+        .as_ref()
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
+    let entries: Vec<RoleMembershipEntry> = sqlx::query!(
+        r#"
+        WITH RECURSIVE effective_roles(role_id) AS (
+            SELECT ra.role_id FROM role_assignment ra WHERE ra.user_id = $1
+          UNION
+            SELECT rm.parent_role_id
+            FROM role_membership rm
+            JOIN effective_roles er ON rm.member_role_id = er.role_id
+        )
+        SELECT r.id, r.source_id, r.provider_id, r.name, r.created_at
+        FROM effective_roles er
+        JOIN "role" r ON r.id = er.role_id
+        WHERE r.project_id = $2
+          AND ((r.created_at > $3 OR $3 IS NULL) OR (r.created_at = $3 AND r.id > $4))
+        ORDER BY r.created_at, r.id ASC
+        LIMIT $5
+        "#,
+        user_id.to_string(),
+        project_id.as_str(),
+        token_ts,
+        token_id,
+        page_size,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error listing the transitive roles of a user".to_string()))?
+    .into_iter()
+    .map(|row| RoleMembershipEntry {
+        role_id: RoleId::new(row.id),
+        role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+        name: row.name,
+        // Keyset key only — the role's creation time, not a membership edge. The
+        // service surfaces a transitive row's `created_at` as None.
+        created_at: row.created_at,
+    })
+    .collect();
+
+    let next_page_token = entries.last().map(|e| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: e.created_at,
+            id: *e.role_id,
+        })
+        .to_string()
+    });
+
+    // Same unknown-user disambiguation as the direct reader: a non-empty page proves
+    // the user exists; an empty page needs the existence check (a page token does not
+    // prove existence — the user may be gone since page 1).
+    if !entries.is_empty() {
+        return Ok(Some(ListRolesPage {
+            entries,
+            next_page_token,
+        }));
+    }
+    let user_exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL) AS "exists!""#,
+        user_id.to_string(),
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error checking whether the user exists".to_string()))?;
+
+    Ok(user_exists.then_some(ListRolesPage {
+        entries,
+        next_page_token,
+    }))
+}
+
 // ─── list_direct_role_member_of_page ───────────────────────────────────────────────────
 
 /// Direct (depth-1) roles `role_id` is a member of, in `project_id`, keyset-paginated
@@ -1459,6 +1709,93 @@ pub(crate) async fn list_direct_role_member_of_page<
         role_id: RoleId::new(row.id),
         role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
         name: row.name,
+        created_at: row.created_at,
+    })
+    .collect();
+
+    let next_page_token = entries.last().map(|e| {
+        PaginateToken::V1(V1PaginateToken {
+            created_at: e.created_at,
+            id: *e.role_id,
+        })
+        .to_string()
+    });
+
+    Ok(ListRolesPage {
+        entries,
+        next_page_token,
+    })
+}
+
+// ─── list_transitive_role_member_of_page ────────────────────────────────────────
+//
+// The full transitive member-of set of `role_id`: every role it effectively
+// belongs to — reachable upward through `role_membership` — in `project_id`, the
+// root excluded. The recursive `ancestors` CTE walks parent edges; UNION dedups
+// and is cycle-safe (write paths reject cycles and bound depth to
+// `max_nesting_depth`). Keyset is `(role.created_at, role.id)` — the ancestor
+// role's own creation time, a stable non-null key (a transitive ancestor has no
+// single membership edge); the service surfaces the row's `created_at` as None.
+pub(crate) async fn list_transitive_role_member_of_page<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    project_id: &ProjectId,
+    role_id: RoleId,
+    pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
+    connection: E,
+) -> lakekeeper::service::Result<ListRolesPage> {
+    let lakekeeper::api::iceberg::v1::PaginationQuery {
+        page_token,
+        page_size,
+    } = pagination;
+    let page_size = lakekeeper::CONFIG.page_size_or_pagination_default(page_size);
+
+    let token = page_token
+        .as_option()
+        .map(PaginateToken::<Uuid>::try_from)
+        .transpose()?;
+    let (token_ts, token_id): (_, Option<&Uuid>) = token
+        .as_ref()
+        .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
+        .unzip();
+
+    let entries: Vec<RoleMembershipEntry> = sqlx::query!(
+        r#"
+        WITH RECURSIVE ancestors(role_id) AS (
+            SELECT $1::uuid
+          UNION
+            SELECT rm.parent_role_id
+            FROM role_membership rm
+            JOIN ancestors a ON rm.member_role_id = a.role_id
+        )
+        SELECT r.id, r.source_id, r.provider_id, r.name, r.created_at
+        FROM ancestors a
+        JOIN "role" r ON r.id = a.role_id
+        WHERE a.role_id <> $1 AND r.project_id = $2
+          AND ((r.created_at > $3 OR $3 IS NULL) OR (r.created_at = $3 AND r.id > $4))
+        ORDER BY r.created_at, r.id ASC
+        LIMIT $5
+        "#,
+        *role_id,
+        project_id.as_str(),
+        token_ts,
+        token_id,
+        page_size,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| {
+        e.into_error_model("Error listing the transitive roles a role belongs to".to_string())
+    })?
+    .into_iter()
+    .map(|row| RoleMembershipEntry {
+        role_id: RoleId::new(row.id),
+        role_ident: Arc::new(RoleIdent::from_db_unchecked(row.provider_id, row.source_id)),
+        name: row.name,
+        // Keyset key only — the ancestor role's creation time, not a membership
+        // edge. The service surfaces a transitive row's `created_at` as None.
         created_at: row.created_at,
     })
     .collect();

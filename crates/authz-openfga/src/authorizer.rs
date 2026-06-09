@@ -1020,8 +1020,14 @@ impl ManagesRoleAssignments for OpenFGAAuthorizer {
             .unwrap_or(MAX_TUPLES_PER_WRITE)
             .min(MAX_TUPLES_PER_WRITE);
 
+        // Listings use higher consistency, not the default cache-friendly read:
+        // a management caller that just wrote an assignment expects to see it
+        // (read-after-write), and the service-layer transitive walkers issue many
+        // sequential reads — a stale cache could yield a torn closure that never
+        // existed atomically. This is a cold path, so the extra latency is fine;
+        // the hot `Check`/`ListObjects` authz path is unaffected.
         let response = self
-            .read(
+            .read_higher_consistency(
                 page_size,
                 tuple_key,
                 pagination.page_token.as_option().map(ToString::to_string),

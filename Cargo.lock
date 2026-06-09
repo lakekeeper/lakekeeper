@@ -3876,6 +3876,7 @@ dependencies = [
  "iceberg-ext",
  "itertools 0.14.0",
  "lakekeeper",
+ "lakekeeper-authz-openfga",
  "lakekeeper-io",
  "lakekeeper-storage-postgres",
  "maplit",

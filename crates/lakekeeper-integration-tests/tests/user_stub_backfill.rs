@@ -174,6 +174,32 @@ async fn first_login_does_not_overwrite_real_name(pool: PgPool) {
     assert_eq!(row.last_updated_with, UserLastUpdatedWith::CreateEndpoint);
 }
 
+/// The `token_provides_name` gate: a nameless token must NOT backfill a NULL
+/// stub, because doing so would flip the row to `ConfigCallCreation` with a
+/// still-placeholder name and lock out a later name-bearing login or SCIM
+/// full-sync. The stub must survive unchanged (still `RoleProvider`, still
+/// NULL → placeholder render).
+#[sqlx::test]
+async fn nameless_token_does_not_backfill_stub(pool: PgPool) {
+    let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
+    let dave = UserId::new_unchecked("oidc", "dave");
+
+    seed_null_stub(&ctx, &project_id, &dave).await;
+
+    // First login with a token that carries no name claim.
+    CatalogServer::get_config(
+        config_query(&project_id, &warehouse_name),
+        ctx.clone(),
+        RequestMetadata::test_user_without_name(dave.clone()),
+    )
+    .await
+    .unwrap();
+
+    let row = get_user_row(&ctx, &dave).await;
+    assert_eq!(row.name, format!("Nameless User with id {dave}"));
+    assert_eq!(row.last_updated_with, UserLastUpdatedWith::RoleProvider);
+}
+
 /// A `RoleProvider` row with a real (non-placeholder) name — e.g. a SCIM-synced
 /// "Alice Smith" — is NOT a stub and must be left untouched by login.
 #[sqlx::test]

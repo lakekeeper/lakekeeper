@@ -2177,6 +2177,61 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/member-of/transitive:
+    get:
+      tags:
+        - role
+      summary: List Transitive Role Member-Of
+      description: |-
+        Lists the full transitive member-of set of a role — every role it
+        effectively belongs to, reachable upward through membership — keyset-
+        paginated. Transitive rows carry no `created-at` (no single defining edge).
+      operationId: list_role_transitive_member_of
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive roles the role belongs to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role/{role_id}/members:
     get:
       tags:
@@ -2284,6 +2339,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AddRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members/transitive:
+    get:
+      tags:
+        - role
+      summary: List Transitive Role Members
+      description: |-
+        Lists the role's transitive members — users assigned to the role or any role
+        in its downward membership closure, plus every role in that closure — as one
+        keyset-paginated page, optionally filtered to one kind. Transitive rows carry
+        no `created-at` (no single defining membership edge).
+      operationId: list_role_transitive_members
+      parameters:
+        - name: type
+          in: query
+          description: Restrict to one member kind (`user` or `role`). Both kinds when omitted.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RoleMemberType'
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive members of the role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembersResponse'
         4XX:
           description: ''
           content:
@@ -2748,6 +2867,60 @@ paths:
       responses:
         '200':
           description: Roles the user is assigned to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/roles/transitive:
+    get:
+      tags:
+        - user
+      summary: List Transitive User Roles
+      description: |-
+        Lists the full effective (transitive) role set a user holds — direct
+        assignments plus every role reachable upward through membership — keyset-
+        paginated. Transitive rows carry no `created-at` (no single defining edge).
+      operationId: list_user_transitive_roles
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: user_id
+          in: path
+          description: User ID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive roles the user holds
           content:
             application/json:
               schema:
@@ -7361,6 +7534,12 @@ components:
         (which only confirms membership) and under authorizer backends that do not
         record an edge timestamp; it is populated by the `GET /role/{id}/members`
         listing.
+
+        `name` carries the role's display name for **role** members and is `None` for
+        **user** members (a user has no role-name; users are IdP-owned and not resolved
+        here). On the listing endpoints a role member always has a name (an unresolvable
+        role is dropped, not surfaced); it is `None` on the add response (confirmation
+        only, no hydration).
       required:
         - type
         - id
@@ -7372,6 +7551,11 @@ components:
           format: date-time
         id:
           type: string
+        name:
+          type:
+            - string
+            - 'null'
+          description: Display name for a role member; `None` for a user member or where unresolved.
         type:
           $ref: '#/components/schemas/RoleMemberType'
     RoleMemberRef:

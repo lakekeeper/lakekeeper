@@ -3,6 +3,9 @@ ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-add-role-members
 ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-remove-role-member';
 ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-list-role-member-of';
 ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-list-user-roles';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-list-role-transitive-members';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-list-user-transitive-roles';
+ALTER TYPE api_endpoints ADD VALUE IF NOT EXISTS 'management-v1-list-role-transitive-member-of';
 
 -- A role-provider stub (pre-created for an unknown user) has no name yet.
 -- Represent that as NULL instead of a sentinel string; the placeholder is

@@ -374,6 +374,26 @@ impl RequestMetadata {
         }
     }
 
+    /// Like [`Self::test_user`] but the token carries no `name` claim — exercises
+    /// the nameless-token path (e.g. the role-provider stub backfill gate, which
+    /// must NOT downgrade a row from a token that provides no name).
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_user_without_name(user_id: crate::service::UserId) -> Self {
+        let mut md = Self::test_user(user_id.clone());
+        md.authentication = Some(
+            Authentication::builder()
+                .token_header(None)
+                .claims(serde_json::json!({}))
+                .subject(user_id.into())
+                .name(None)
+                .email(None)
+                .principal_type(None)
+                .build(),
+        );
+        md
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn test_instance_admin(user_id: crate::service::UserId) -> Self {

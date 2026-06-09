@@ -797,6 +797,94 @@ pub mod v1 {
         ApiServer::<C, A, S>::list_user_roles(api_context, metadata, user_id, query).await
     }
 
+    /// List Transitive Role Members
+    ///
+    /// Lists the role's transitive members — users assigned to the role or any role
+    /// in its downward membership closure, plus every role in that closure — as one
+    /// keyset-paginated page, optionally filtered to one kind. Transitive rows carry
+    /// no `created-at` (no single defining membership edge).
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleTransitiveMembers.path(),
+        params(
+            ListMembersQuery,
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Transitive members of the role", body = ListRoleMembersResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_transitive_members<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListMembersQuery>,
+    ) -> Result<ListRoleMembersResponse> {
+        ApiServer::<C, A, S>::list_role_transitive_members(api_context, metadata, role_id, query)
+            .await
+    }
+
+    /// List Transitive User Roles
+    ///
+    /// Lists the full effective (transitive) role set a user holds — direct
+    /// assignments plus every role reachable upward through membership — keyset-
+    /// paginated. Transitive rows carry no `created-at` (no single defining edge).
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "user",
+        path = ManagementV1Endpoint::ListUserTransitiveRoles.path(),
+        params(
+            ListRolesPageQuery,
+            ("user_id" = String, Path, description = "User ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Transitive roles the user holds", body = ListRoleMembershipsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_user_transitive_roles<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(user_id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListRolesPageQuery>,
+    ) -> Result<ListRoleMembershipsResponse> {
+        ApiServer::<C, A, S>::list_user_transitive_roles(api_context, metadata, user_id, query)
+            .await
+    }
+
+    /// List Transitive Role Member-Of
+    ///
+    /// Lists the full transitive member-of set of a role — every role it
+    /// effectively belongs to, reachable upward through membership — keyset-
+    /// paginated. Transitive rows carry no `created-at` (no single defining edge).
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleTransitiveMemberOf.path(),
+        params(
+            ListRolesPageQuery,
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Transitive roles the role belongs to", body = ListRoleMembershipsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_transitive_member_of<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListRolesPageQuery>,
+    ) -> Result<ListRoleMembershipsResponse> {
+        ApiServer::<C, A, S>::list_role_transitive_member_of(api_context, metadata, role_id, query)
+            .await
+    }
+
     /// Create Warehouse
     ///
     /// Creates a new warehouse in the specified project with the provided configuration.
@@ -2395,6 +2483,18 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ListUserRoles.path_in_management_v1(),
                     get(list_user_roles),
+                )
+                .route(
+                    ManagementV1Endpoint::ListRoleTransitiveMembers.path_in_management_v1(),
+                    get(list_role_transitive_members),
+                )
+                .route(
+                    ManagementV1Endpoint::ListUserTransitiveRoles.path_in_management_v1(),
+                    get(list_user_transitive_roles),
+                )
+                .route(
+                    ManagementV1Endpoint::ListRoleTransitiveMemberOf.path_in_management_v1(),
+                    get(list_role_transitive_member_of),
                 )
                 // User management
                 .route("/whoami", get(whoami))

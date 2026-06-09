@@ -144,6 +144,8 @@ async fn add_and_list_user_member(pool: PgPool) {
     assert_eq!(page.members.len(), 1);
     assert!(same(&page.members[0], &user_member(&alice)));
     assert!(page.members[0].created_at.is_some());
+    // A user member carries no role name (name applies only to role members).
+    assert_eq!(page.members[0].name, None);
     // Note: a non-empty keyset page always carries a token; emptiness signals the
     // end (see `list_members_pagination`). So we don't assert `None` here.
 }
@@ -175,6 +177,8 @@ async fn add_role_member_and_member_of(pool: PgPool) {
             .unwrap();
     assert_eq!(members.members.len(), 1);
     assert!(same(&members.members[0], &role_member(child)));
+    // A role member carries its hydrated catalog name (users carry none).
+    assert_eq!(members.members[0].name.as_deref(), Some("child"));
 
     // The parent appears in the child's member-of listing, with the edge timestamp.
     let parents =
@@ -649,4 +653,243 @@ fn page_query() -> lakekeeper::api::management::v1::role_membership::ListRolesPa
         page_token: None,
         page_size: None,
     }
+}
+
+// ==================== transitive ====================
+
+/// Nested fixture A ⊃ B ⊃ user U, plus user V direct on A. Transitive members of
+/// A are the role B, the direct user V, and the via-B user U; direct members are
+/// only B and V. Transitive rows carry no `created_at`.
+#[sqlx::test]
+async fn transitive_role_members(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let a = make_role(&ctx, &project_id, "A", "a-src").await;
+    let b = make_role(&ctx, &project_id, "B", "b-src").await;
+    let u = UserId::new_unchecked("oidc", "u");
+    let v = UserId::new_unchecked("oidc", "v");
+    provision_user(&ctx, &u, "U").await;
+    provision_user(&ctx, &v, "V").await;
+
+    // B ∈ A and V ∈ A (direct); U ∈ B.
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        a,
+        AddRoleMembersRequest {
+            members: vec![role_member(b), user_member(&v)],
+        },
+    )
+    .await
+    .unwrap();
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        b,
+        AddRoleMembersRequest {
+            members: vec![user_member(&u)],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Direct members of A: B and V only (U is not direct).
+    let direct =
+        ApiServer::list_role_members(ctx.clone(), metadata(&project_id), a, list_query(None))
+            .await
+            .unwrap();
+    assert_eq!(direct.members.len(), 2);
+
+    // Transitive members of A: role B, user V (direct), user U (via B).
+    let page = ApiServer::list_role_transitive_members(
+        ctx.clone(),
+        metadata(&project_id),
+        a,
+        list_query(None),
+    )
+    .await
+    .unwrap();
+    let roles: std::collections::HashSet<String> = page
+        .members
+        .iter()
+        .filter(|m| m.r#type == RoleMemberType::Role)
+        .map(|m| m.id.clone())
+        .collect();
+    let users: std::collections::HashSet<String> = page
+        .members
+        .iter()
+        .filter(|m| m.r#type == RoleMemberType::User)
+        .map(|m| m.id.clone())
+        .collect();
+    assert_eq!(roles, [b.to_string()].into_iter().collect());
+    assert_eq!(users, [u.to_string(), v.to_string()].into_iter().collect());
+    // A transitive member has no single defining edge → created_at is None.
+    assert!(page.members.iter().all(|m| m.created_at.is_none()));
+
+    // The `?type=` filter composes on the transitive endpoint.
+    let only_users = ApiServer::list_role_transitive_members(
+        ctx.clone(),
+        metadata(&project_id),
+        a,
+        list_query(Some(RoleMemberType::User)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        only_users
+            .members
+            .iter()
+            .all(|m| m.r#type == RoleMemberType::User)
+    );
+    let only_user_ids: std::collections::HashSet<String> =
+        only_users.members.iter().map(|m| m.id.clone()).collect();
+    assert_eq!(
+        only_user_ids,
+        [u.to_string(), v.to_string()].into_iter().collect()
+    );
+}
+
+/// Same fixture from the user's side: U is directly assigned only to B, but its
+/// effective (transitive) roles are B and A. Names are embedded; transitive rows
+/// carry no `created_at`.
+#[sqlx::test]
+async fn transitive_user_roles(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let a = make_role(&ctx, &project_id, "A", "a-src").await;
+    let b = make_role(&ctx, &project_id, "B", "b-src").await;
+    let u = UserId::new_unchecked("oidc", "u");
+    provision_user(&ctx, &u, "U").await;
+
+    // B ∈ A ; U ∈ B.
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        a,
+        AddRoleMembersRequest {
+            members: vec![role_member(b)],
+        },
+    )
+    .await
+    .unwrap();
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        b,
+        AddRoleMembersRequest {
+            members: vec![user_member(&u)],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Direct: U is only in B.
+    let direct =
+        ApiServer::list_user_roles(ctx.clone(), metadata(&project_id), u.clone(), page_query())
+            .await
+            .unwrap();
+    let direct_ids: Vec<RoleId> = direct.roles.iter().map(|r| r.id).collect();
+    assert_eq!(direct_ids, vec![b]);
+
+    // Transitive: U effectively holds B and A.
+    let page = ApiServer::list_user_transitive_roles(
+        ctx.clone(),
+        metadata(&project_id),
+        u.clone(),
+        page_query(),
+    )
+    .await
+    .unwrap();
+    let mut ids: Vec<RoleId> = page.roles.iter().map(|r| r.id).collect();
+    ids.sort();
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(ids, expected);
+    let names: std::collections::HashSet<String> =
+        page.roles.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(
+        names,
+        ["A".to_string(), "B".to_string()].into_iter().collect()
+    );
+    assert!(page.roles.iter().all(|r| r.created_at.is_none()));
+}
+
+/// The transitive user-roles reader keeps the direct reader's unknown-user
+/// contract: a never-provisioned user → 404 (catalog reader returns `None`).
+#[sqlx::test]
+async fn transitive_user_roles_unknown_user_404(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let ghost = UserId::new_unchecked("oidc", "ghost");
+
+    let err = ApiServer::list_user_transitive_roles(
+        ctx.clone(),
+        metadata(&project_id),
+        ghost,
+        page_query(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "UserNotFound");
+    assert_eq!(err.error.code, http::StatusCode::NOT_FOUND.as_u16());
+}
+
+/// Ancestor walk: C ∈ B ∈ A. C is directly a member only of B, but its transitive
+/// member-of set (the roles it effectively belongs to) is B and A. Names are
+/// embedded; transitive rows carry no `created_at`.
+#[sqlx::test]
+async fn transitive_role_member_of(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    let a = make_role(&ctx, &project_id, "A", "a-src").await;
+    let b = make_role(&ctx, &project_id, "B", "b-src").await;
+    let c = make_role(&ctx, &project_id, "C", "c-src").await;
+
+    // B ∈ A ; C ∈ B.
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        a,
+        AddRoleMembersRequest {
+            members: vec![role_member(b)],
+        },
+    )
+    .await
+    .unwrap();
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        b,
+        AddRoleMembersRequest {
+            members: vec![role_member(c)],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Direct: C is a member only of B.
+    let direct =
+        ApiServer::list_role_member_of(ctx.clone(), metadata(&project_id), c, page_query())
+            .await
+            .unwrap();
+    let direct_ids: Vec<RoleId> = direct.roles.iter().map(|r| r.id).collect();
+    assert_eq!(direct_ids, vec![b]);
+
+    // Transitive: C effectively belongs to B and A.
+    let page = ApiServer::list_role_transitive_member_of(
+        ctx.clone(),
+        metadata(&project_id),
+        c,
+        page_query(),
+    )
+    .await
+    .unwrap();
+    let mut ids: Vec<RoleId> = page.roles.iter().map(|r| r.id).collect();
+    ids.sort();
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(ids, expected);
+    let names: std::collections::HashSet<String> =
+        page.roles.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(
+        names,
+        ["A".to_string(), "B".to_string()].into_iter().collect()
+    );
+    assert!(page.roles.iter().all(|r| r.created_at.is_none()));
 }
