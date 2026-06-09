@@ -7,6 +7,7 @@ use moka::{
     ops::compute::{CompResult, Op},
 };
 
+use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
@@ -134,6 +135,9 @@ where
         return load.await;
     }
 
+    // Fast path records a hit/miss. Note: under contention each coalesced waiter
+    // records a miss here but then hits `Op::Nop` below without loading, so the
+    // miss counter is *cache misses*, not *DB loads* (the two diverge under a herd).
     if let Some(role) = role_cache_get_by_id(role_id).await {
         return Ok(Some(role));
     }
@@ -259,6 +263,34 @@ pub(super) async fn role_cache_get_by_ident(
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         None
     }
+}
+
+/// Single-flight read-through for the `(project, ident) → id` resolution.
+///
+/// Coalesces concurrent **by-ident** misses (clients usually address roles by
+/// ident, so this is the hot cold-start path): the by-ident DB query runs once per
+/// `(project, ident)`, the loaded role primes the by-id cache + ident index, and
+/// every coalesced caller resolves the full role by id. Returns the resolved
+/// `RoleId`, or `None` if no role matches (**not** negative-cached). Thin wrapper
+/// over [`secondary_index_get_or_load`](super::secondary_index_get_or_load).
+pub(super) async fn role_ident_to_id_get_or_load<Fut, E>(
+    project_id: ArcProjectId,
+    ident: ArcRoleIdent,
+    load: Fut,
+) -> Result<Option<RoleId>, E>
+where
+    Fut: std::future::Future<Output = Result<Option<ArcRole>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    secondary_index_get_or_load(
+        CONFIG.cache.role.enabled,
+        &IDENT_TO_ID_CACHE,
+        (project_id, ident),
+        load,
+        |role: &ArcRole| role.id(),
+        role_cache_insert,
+    )
+    .await
 }
 
 #[cfg(feature = "router")]
@@ -579,6 +611,63 @@ mod tests {
             5,
             "stale older load must be version-gated out of the cache"
         );
+
+        role_cache_invalidate(role_id).await;
+    }
+
+    /// `role_ident_to_id_get_or_load` must coalesce concurrent by-ident misses
+    /// into ONE loader run, with every caller resolving the same id. Runs on a
+    /// multi-threaded runtime so coalescing is exercised under true parallelism,
+    /// not just cooperative `yield_now` interleaving.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn role_ident_to_id_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let role_id = RoleId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        role_cache_invalidate(role_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let role = test_role(
+            role_id,
+            project_id.clone(),
+            "lakekeeper",
+            "ident-coalesce",
+            0,
+        );
+        let ident = role.ident_arc();
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let role = role.clone();
+            let project_id = project_id.clone();
+            let ident = ident.clone();
+            handles.push(tokio::spawn(async move {
+                role_ident_to_id_get_or_load(project_id, ident, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(Some(role))
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().unwrap().expect("role exists"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent by-ident misses must coalesce to a single loader run"
+        );
+        for id in &results {
+            assert_eq!(*id, role_id);
+        }
 
         role_cache_invalidate(role_id).await;
     }

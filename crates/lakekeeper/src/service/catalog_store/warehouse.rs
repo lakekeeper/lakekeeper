@@ -16,6 +16,7 @@ use crate::{
             warehouse_cache::{
                 warehouse_cache_get_by_id, warehouse_cache_get_by_name,
                 warehouse_cache_get_or_load, warehouse_cache_insert,
+                warehouse_name_to_id_get_or_load,
             },
         },
         define_simple_error, define_version_newtype,
@@ -791,12 +792,41 @@ where
         status_filter: &[WarehouseStatus],
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ResolvedWarehouse>>, CatalogGetWarehouseByNameError> {
+        // Fast path: name → id → warehouse (records hit/miss metrics).
         let cached_warehouse = warehouse_cache_get_by_name(warehouse_name, project_id).await;
         if let Some(warehouse) = cached_warehouse {
             let warehouse = Some(warehouse).filter(|w| status_filter.contains(&w.status));
             return Ok(warehouse);
         }
 
+        // Single-flight the cold name→id resolution: concurrent misses for the same
+        // (project, name) coalesce onto one by-name DB query, which also primes the
+        // by-id cache. Clients usually address warehouses by name, so this is the
+        // burst this cache is meant to absorb.
+        let loader_state = catalog_state.clone();
+        let loader_name = warehouse_name.to_string();
+        let loader_project = project_id.clone();
+        let warehouse_id =
+            warehouse_name_to_id_get_or_load(project_id.clone(), warehouse_name, async move {
+                Ok::<_, CatalogGetWarehouseByNameError>(
+                    Self::get_warehouse_by_name_impl(&loader_name, &loader_project, loader_state)
+                        .await?
+                        .map(Arc::new),
+                )
+            })
+            .await?;
+
+        let Some(warehouse_id) = warehouse_id else {
+            return Ok(None);
+        };
+
+        // Common case: the loader primed the by-id cache → hit.
+        if let Some(warehouse) = warehouse_cache_get_by_id(warehouse_id).await {
+            return Ok(Some(warehouse).filter(|w| status_filter.contains(&w.status)));
+        }
+
+        // Rare: evicted between prime and read. Re-load by name (same error domain)
+        // rather than return a spurious not-found for a warehouse that exists.
         let warehouse = Self::get_warehouse_by_name_impl(warehouse_name, project_id, catalog_state)
             .await?
             .map(Arc::new);
@@ -804,9 +834,7 @@ where
             warehouse_cache_insert(warehouse).await;
         }
 
-        let warehouse = warehouse.filter(|w| status_filter.contains(&w.status));
-
-        Ok(warehouse)
+        Ok(warehouse.filter(|w| status_filter.contains(&w.status)))
     }
 
     // /// Wrapper around `get_warehouse_by_name` that returns

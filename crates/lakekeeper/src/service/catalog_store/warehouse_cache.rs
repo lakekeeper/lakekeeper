@@ -11,6 +11,7 @@ use moka::{
 };
 use unicase::UniCase;
 
+use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
@@ -166,6 +167,9 @@ where
         return load.await;
     }
 
+    // Fast path records a hit/miss. Note: under contention each coalesced waiter
+    // records a miss here but then hits `Op::Nop` below without loading, so the
+    // miss counter is *cache misses*, not *DB loads* (the two diverge under a herd).
     if let Some(warehouse) = warehouse_cache_get_by_id(warehouse_id).await {
         return Ok(Some(warehouse));
     }
@@ -184,7 +188,10 @@ where
                 return Ok(Op::Nop);
             };
             // Preserve the version-gate against a writer that cached a newer
-            // version via plain `insert()` during our load.
+            // version via plain `insert()` during our load. Skips on `>=` (newer
+            // *or equal*), mirroring `warehouse_cache_insert`'s reluctance to churn
+            // an equal entry. (The role helper skips only on strictly-newer `<`;
+            // both are safe — re-putting an equal value is harmless either way.)
             if let Some(current) = WAREHOUSE_CACHE.get(&warehouse_id).await
                 && current.warehouse.version >= warehouse.version
             {
@@ -274,6 +281,34 @@ pub(super) async fn warehouse_cache_get_by_name(
         metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
         None
     }
+}
+
+/// Single-flight read-through for the `(project, name) → id` resolution.
+///
+/// Coalesces concurrent **by-name** misses (clients usually address warehouses by
+/// name, so this is the hot cold-start path): the by-name DB query runs once per
+/// `(project, name)`, the loaded warehouse primes the by-id cache + name index, and
+/// every coalesced caller resolves the full warehouse by id. Returns the resolved
+/// `WarehouseId`, or `None` if it does not exist (**not** negative-cached). Thin
+/// wrapper over [`secondary_index_get_or_load`](super::secondary_index_get_or_load).
+pub(super) async fn warehouse_name_to_id_get_or_load<Fut, E>(
+    project_id: ArcProjectId,
+    name: &str,
+    load: Fut,
+) -> Result<Option<WarehouseId>, E>
+where
+    Fut: std::future::Future<Output = Result<Option<Arc<ResolvedWarehouse>>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    secondary_index_get_or_load(
+        CONFIG.cache.warehouse.enabled,
+        &NAME_TO_ID_CACHE,
+        (project_id, UniCase::new(name.to_string())),
+        load,
+        |warehouse: &Arc<ResolvedWarehouse>| warehouse.warehouse_id,
+        warehouse_cache_insert,
+    )
+    .await
 }
 
 #[cfg(feature = "router")]
@@ -981,5 +1016,60 @@ mod tests {
         let cached_exact = warehouse_cache_get_by_name(&name, &project_id).await;
         assert!(cached_exact.is_some());
         assert_eq!(cached_exact.unwrap().warehouse_id, warehouse_id);
+    }
+
+    /// `warehouse_name_to_id_get_or_load` must coalesce concurrent by-name misses
+    /// into ONE loader run, with every caller resolving the same id.
+    #[tokio::test]
+    async fn warehouse_name_to_id_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let warehouse_id = WarehouseId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        let name = "wh-name-coalesce".to_string();
+        warehouse_cache_invalidate(warehouse_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let warehouse = test_warehouse(
+            warehouse_id,
+            name.clone(),
+            project_id.clone(),
+            Some(Utc::now()),
+            0,
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let warehouse = warehouse.clone();
+            let project_id = project_id.clone();
+            let name = name.clone();
+            handles.push(tokio::spawn(async move {
+                warehouse_name_to_id_get_or_load(project_id, &name, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(Some(warehouse))
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().unwrap().expect("warehouse exists"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent by-name misses must coalesce to a single loader run"
+        );
+        for id in &results {
+            assert_eq!(*id, warehouse_id);
+        }
+
+        warehouse_cache_invalidate(warehouse_id).await;
     }
 }

@@ -5,6 +5,10 @@ use iceberg::spec::ViewMetadata;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
+use moka::{
+    future::Cache,
+    ops::compute::{CompResult, Op},
+};
 
 use super::{
     GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
@@ -105,6 +109,83 @@ macro_rules! define_version_newtype {
 }
 
 pub(crate) use define_version_newtype;
+
+/// Single-flight read-through for a secondary-index cache `Cache<IdxKey, Id>` that
+/// maps a lookup key (name / ident) to a primary-cache id.
+///
+/// Coalesces concurrent misses for the same `key`: moka serializes the per-key
+/// compute, so the loader runs once; the loaded value is primed into the primary
+/// cache (`prime`), and every coalesced caller resolves the same `Id`. Returns
+/// `None` if the entity does not exist (**not** negative-cached). The loader error
+/// is returned by value.
+///
+/// This is the by-name/by-ident analog of the STC `get_or_load_stc` win: the
+/// per-cache differences collapse to the `Loaded` type plus the `id_of`/`prime`
+/// closures, so warehouse-by-name, role-by-ident, and namespace-by-ident all share
+/// this one implementation. The `StillNone` arm does a final read because moka's
+/// snapshot-based `Op::Nop` result cannot surface a concurrent insert (a different
+/// lock domain than the compute).
+pub(super) async fn secondary_index_get_or_load<IdxKey, Id, Loaded, Fut, E, PrimeFut>(
+    enabled: bool,
+    index: &Cache<IdxKey, Id>,
+    key: IdxKey,
+    load: Fut,
+    id_of: impl FnOnce(&Loaded) -> Id + Send,
+    prime: impl FnOnce(Loaded) -> PrimeFut + Send,
+) -> Result<Option<Id>, E>
+where
+    IdxKey: std::hash::Hash + Eq + Clone + Send + Sync + 'static,
+    Id: Clone + Send + Sync + 'static,
+    Loaded: Send,
+    Fut: std::future::Future<Output = Result<Option<Loaded>, E>> + Send,
+    PrimeFut: std::future::Future<Output = ()> + Send,
+    E: Send + Sync + 'static,
+{
+    if !enabled {
+        let Some(loaded) = load.await? else {
+            return Ok(None);
+        };
+        let id = id_of(&loaded);
+        prime(loaded).await;
+        return Ok(Some(id));
+    }
+
+    if let Some(id) = index.get(&key).await {
+        return Ok(Some(id));
+    }
+
+    let lookup_key = key.clone();
+    let outcome = index
+        .entry(key)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Resolved by another caller while we waited on the key lock.
+                return Ok::<_, E>(Op::Nop);
+            }
+            let Some(loaded) = load.await? else {
+                // Not found — never negative-cached. Coalescing applies only to a
+                // found entity; concurrent lookups of a missing one each re-run the
+                // loader (rare, no worse than before).
+                return Ok(Op::Nop);
+            };
+            let id = id_of(&loaded);
+            // Prime the primary cache (+ this index) so coalesced callers resolve
+            // the full entity without another backend round-trip.
+            prime(loaded).await;
+            Ok(Op::Put(id))
+        })
+        .await?;
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => Some(entry.into_value()),
+        // `StillNone` = not found, or a concurrent insert moka's snapshot-based
+        // `Op::Nop` cannot surface — a final read disambiguates. `Removed` is
+        // unreachable (the closure only returns `Nop`/`Put`).
+        CompResult::StillNone(_) | CompResult::Removed(_) => index.get(&lookup_key).await,
+    })
+}
 
 /// Enum to represent either a State or a Transaction reference
 /// This allows functions to accept either for database operations
