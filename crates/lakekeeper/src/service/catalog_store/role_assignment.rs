@@ -1287,16 +1287,23 @@ where
         let user_ids = dedup_user_ids(user_ids);
         let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
 
-        let user_result = if user_ids.is_empty() {
-            AddUserRoleAssignmentsResult::default()
-        } else {
-            Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
-                .await?
-        };
+        // Lock ordering matters here. `add_role_members_impl` takes the per-project
+        // membership advisory lock as its FIRST action; `add_user_role_assignments_impl`
+        // takes `FOR UPDATE` on the parent role row and no advisory lock. Running the
+        // role-edge write FIRST keeps this mixed batch advisory-first, matching the
+        // standalone `add_role_members` path — otherwise the two would acquire the
+        // advisory lock and the parent-row lock in opposite orders and could deadlock
+        // under concurrency. Each empty arm still skips its write.
         let role_result = if member_role_ids.is_empty() {
             AddRoleMembersResult::default()
         } else {
             Self::add_role_members_impl(project_id, role_id, member_role_ids, t.transaction())
+                .await?
+        };
+        let user_result = if user_ids.is_empty() {
+            AddUserRoleAssignmentsResult::default()
+        } else {
+            Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
                 .await?
         };
 

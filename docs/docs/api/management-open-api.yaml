@@ -6891,11 +6891,11 @@ components:
             - string
             - 'null'
           description: |-
-            Token for the next page, or `null`/absent once the listing is exhausted.
-            House convention (note for SDK authors): a non-empty page always carries a
-            token — including the final full page — so the empty page is what signals
-            the end. This intentionally differs from AIP-158 (empty token = end) and
-            costs one trailing request; loop until you receive a page with no token.
+            Token for the next page; `null`/absent once the listing is exhausted.
+            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            final page of results may itself return a null token, so don't rely on
+            receiving a separate trailing empty page — keep requesting until the token
+            is null.
     ListRoleMembershipsResponse:
       type: object
       description: One page of roles (the `member-of` set, or a user's directly-assigned roles).
@@ -6907,11 +6907,11 @@ components:
             - string
             - 'null'
           description: |-
-            Token for the next page, or `null`/absent once the listing is exhausted.
-            House convention (note for SDK authors): a non-empty page always carries a
-            token — including the final full page — so the empty page is what signals
-            the end. This intentionally differs from AIP-158 (empty token = end) and
-            costs one trailing request; loop until you receive a page with no token.
+            Token for the next page; `null`/absent once the listing is exhausted.
+            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            final page of results may itself return a null token, so don't rely on
+            receiving a separate trailing empty page — keep requesting until the token
+            is null.
         roles:
           type: array
           items:

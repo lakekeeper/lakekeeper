@@ -609,14 +609,20 @@ pub(crate) async fn list_role_assignments_for_role_by_ident<
 /// false-sharing negligible. (`rolembrs` in ASCII.)
 const ROLE_MEMBERSHIP_LOCK_SEED: i64 = 0x726F_6C65_6D62_7273;
 
-/// Map a Postgres error to [`AddRoleMembersError`]: a `lock_timeout` expiry
-/// (SQLSTATE `55P03`) becomes the retriable [`RoleMembershipLockTimeout`], anything
-/// else a backend error. Used for the lock-bounded statements (advisory lock, `FOR SHARE`).
+/// Map a Postgres error to [`AddRoleMembersError`]: a contended-lock outcome
+/// becomes the retriable [`RoleMembershipLockTimeout`], anything else a backend
+/// error. Used for the lock-bounded statements (advisory lock, `FOR SHARE`).
 fn map_lock_timeout(project_id: &ArcProjectId) -> impl FnOnce(sqlx::Error) -> AddRoleMembersError {
     let project_id = project_id.clone();
     move |e| match e.as_database_error().and_then(|db| db.code()) {
         // 55P03 = lock_not_available: the `lock_timeout` elapsed waiting on a lock.
-        Some(code) if code.as_ref() == "55P03" => RoleMembershipLockTimeout::new(project_id).into(),
+        // 40P01 = deadlock_detected: the deadlock detector chose this txn as victim.
+        // The advisory-lock ordering should prevent membership-write deadlocks, but
+        // map it defensively to the same retriable error rather than a 5xx if one
+        // ever surfaces (e.g. an interaction with an unrelated lock holder).
+        Some(code) if code.as_ref() == "55P03" || code.as_ref() == "40P01" => {
+            RoleMembershipLockTimeout::new(project_id).into()
+        }
         _ => super::dbutils::DBErrorHandler::into_catalog_backend_error(e).into(),
     }
 }
@@ -1314,11 +1320,16 @@ pub(crate) async fn list_direct_role_members_page<
 // its downward `role_membership` closure, plus every role in that closure (the
 // root excluded). The recursive CTE uses UNION — it dedups roles and is cycle-safe
 // (write paths already reject cycles and bound depth to `max_nesting_depth`).
-// A member reachable by several paths appears once (`GROUP BY`); `MIN(created_at)`
-// is a stable keyset key reusing the direct reader's `(created_at, member_type,
-// member_id)` contract. The returned rows carry `created_at = None` — a transitive
-// member has no single defining edge — but the page token keeps the real key so
-// pagination resumes correctly.
+// A member reachable by several paths appears once (`GROUP BY`). The keyset key is
+// the member ENTITY's own immutable creation time — `users.created_at` for a user,
+// `role.created_at` for a role member — reusing the direct reader's `(created_at,
+// member_type, member_id)` contract (and matching the sibling member-of/user-roles
+// readers, which key on `role.created_at`). Keying on the entity rather than
+// `MIN(edge.created_at)` keeps the key stable if the specific edge holding the
+// minimum is removed mid-pagination — otherwise that key would jump forward and an
+// already-returned member would re-appear on a later page. The returned rows carry
+// `created_at = None` (a transitive member has no single defining edge); the page
+// token keeps the real key so pagination resumes correctly.
 pub(crate) async fn list_transitive_role_members_page<
     'c,
     'e: 'c,
@@ -1371,13 +1382,18 @@ pub(crate) async fn list_transitive_role_members_page<
             m.member_type AS "member_type!",
             m.member_id   AS "member_id!"
         FROM (
-            SELECT 'user'::text AS member_type, ra.user_id AS member_id, MIN(ra.created_at) AS created_at
+            -- Keyset key is the member entity's own immutable created_at
+            -- (users.created_at / role.created_at), constant per group, so a
+            -- mid-pagination edge deletion can't shift it. MIN() over a constant
+            -- is that constant; it just satisfies the GROUP BY aggregate.
+            SELECT 'user'::text AS member_type, ra.user_id AS member_id, MIN(u.created_at) AS created_at
             FROM role_assignment ra
             JOIN "role" r ON r.id = ra.role_id
+            JOIN users u ON u.id = ra.user_id
             WHERE ra.role_id IN (SELECT role_id FROM descendants) AND r.project_id = $2 AND $3
             GROUP BY ra.user_id
           UNION ALL
-            SELECT 'role'::text AS member_type, d.role_id::text AS member_id, MIN(rm.created_at) AS created_at
+            SELECT 'role'::text AS member_type, d.role_id::text AS member_id, MIN(r.created_at) AS created_at
             FROM descendants d
             JOIN role_membership rm ON rm.member_role_id = d.role_id
             JOIN "role" r ON r.id = d.role_id

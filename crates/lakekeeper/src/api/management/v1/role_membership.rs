@@ -117,18 +117,6 @@ impl From<UserOrRoleId> for RoleMember {
     }
 }
 
-impl From<RoleAssignmentRow> for RoleMember {
-    fn from(row: RoleAssignmentRow) -> Self {
-        // Identity from the subject; overlay the membership-edge timestamp the
-        // catalog listing carries (`None` under a timestamp-less authorizer). Name
-        // is hydrated separately by the listing (see `hydrate_member_names`).
-        RoleMember {
-            created_at: row.created_at,
-            ..RoleMember::from(row.subject)
-        }
-    }
-}
-
 /// A member to add: a user or another role, by identity (`type` + opaque `id`).
 /// The request twin of [`RoleMember`] — no timestamp, since the membership edge's
 /// `created_at` is server-assigned and read-only, so it lives only on responses.
@@ -166,11 +154,11 @@ pub struct AddRoleMembersResponse {
 #[serde(rename_all = "kebab-case")]
 pub struct ListRoleMembersResponse {
     pub members: Vec<RoleMember>,
-    /// Token for the next page, or `null`/absent once the listing is exhausted.
-    /// House convention (note for SDK authors): a non-empty page always carries a
-    /// token — including the final full page — so the empty page is what signals
-    /// the end. This intentionally differs from AIP-158 (empty token = end) and
-    /// costs one trailing request; loop until you receive a page with no token.
+    /// Token for the next page; `null`/absent once the listing is exhausted.
+    /// Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+    /// final page of results may itself return a null token, so don't rely on
+    /// receiving a separate trailing empty page — keep requesting until the token
+    /// is null.
     #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
 }
@@ -216,11 +204,11 @@ impl From<RoleMembershipEntry> for RoleMembership {
 #[serde(rename_all = "kebab-case")]
 pub struct ListRoleMembershipsResponse {
     pub roles: Vec<RoleMembership>,
-    /// Token for the next page, or `null`/absent once the listing is exhausted.
-    /// House convention (note for SDK authors): a non-empty page always carries a
-    /// token — including the final full page — so the empty page is what signals
-    /// the end. This intentionally differs from AIP-158 (empty token = end) and
-    /// costs one trailing request; loop until you receive a page with no token.
+    /// Token for the next page; `null`/absent once the listing is exhausted.
+    /// Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+    /// final page of results may itself return a null token, so don't rely on
+    /// receiving a separate trailing empty page — keep requesting until the token
+    /// is null.
     #[serde(alias = "next_page_token")]
     pub next_page_token: Option<String>,
 }
@@ -375,7 +363,8 @@ async fn catalog_members_with_names<C: CatalogStore>(
             };
             RoleMember {
                 name,
-                ..RoleMember::from(row)
+                created_at: row.created_at,
+                ..RoleMember::from(row.subject)
             }
         })
         .collect())
@@ -950,11 +939,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             role_id,
             query.r#type.map(RoleMemberKind::from),
             query.pagination_query(),
-            context.v1_state.catalog,
+            context.v1_state.catalog.clone(),
         )
         .await?;
+        // Hydrate role-member display names (users carry none), exactly as the
+        // direct `/members` listing does — a transitive role member always resolves
+        // in the catalog, so its name is always present.
         Ok(ListRoleMembersResponse {
-            members: page.assignments.into_iter().map(RoleMember::from).collect(),
+            members: catalog_members_with_names::<C>(page.assignments, context.v1_state.catalog)
+                .await?,
             next_page_token: page.next_page_token,
         })
     }

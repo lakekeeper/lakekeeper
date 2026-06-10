@@ -132,6 +132,12 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
         .unzip();
 
+    // The name filter matches the *rendered* display name, not the raw column: a
+    // nameless role-provider stub (`name IS NULL`) must stay findable by its
+    // placeholder ("Nameless User with id <id>", see `display_user_name`) and by id,
+    // rather than being silently excluded -- `NULL ILIKE ...` is NULL, so the
+    // unfiltered list would return the stub but a name filter never would.
+    // The trailing `(u.created_at, u.id)` predicate is the keyset pagination cursor.
     let users: Vec<User> = sqlx::query_as!(
         UserRow,
         r#"
@@ -145,9 +151,8 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             updated_at
         FROM users u
         where (deleted_at is null)
-            AND ($1 OR name ILIKE ('%' || $2 || '%'))
+            AND ($1 OR COALESCE(name, 'Nameless User with id ' || id) ILIKE ('%' || $2 || '%'))
             AND ($3 OR id = any($4))
-            --- PAGINATION
             AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))
         ORDER BY u.created_at, u.id ASC
         LIMIT $7

@@ -725,6 +725,21 @@ async fn transitive_role_members(pool: PgPool) {
     // A transitive member has no single defining edge → created_at is None.
     assert!(page.members.iter().all(|m| m.created_at.is_none()));
 
+    // Role members carry their display name (the direct listing's name contract
+    // holds on the transitive listing too); user members carry none.
+    let b_member = page
+        .members
+        .iter()
+        .find(|m| m.r#type == RoleMemberType::Role && m.id == b.to_string())
+        .expect("role B present among transitive members");
+    assert_eq!(b_member.name.as_deref(), Some("B"));
+    assert!(
+        page.members
+            .iter()
+            .filter(|m| m.r#type == RoleMemberType::User)
+            .all(|m| m.name.is_none())
+    );
+
     // The `?type=` filter composes on the transitive endpoint.
     let only_users = ApiServer::list_role_transitive_members(
         ctx.clone(),
@@ -746,6 +761,89 @@ async fn transitive_role_members(pool: PgPool) {
         only_user_ids,
         [u.to_string(), v.to_string()].into_iter().collect()
     );
+}
+
+/// Regression for transitive-member keyset stability under edge churn. A role's
+/// page key is its own immutable `created_at`, NOT the minimum incoming-edge
+/// timestamp — so deleting the edge that *held* the minimum mid-pagination must not
+/// shift the role's key forward and re-emit it on a later page.
+///
+/// Fixture: R ⊃ C, R ⊃ D, C ⊃ D — D is reachable via two parents (C and R). Edges
+/// are added C→D, R→C, R→D, so the C→D edge is the earliest of all; pre-fix that
+/// made D's key the smallest, sorting D first. We drain R's transitive ROLE members
+/// one per page and remove C→D after the first page (D stays reachable via R→D).
+/// Pre-fix, D's key jumps from the C→D edge time to the R→D edge time and D is
+/// returned a second time; with the immutable key each member appears exactly once.
+#[sqlx::test]
+async fn transitive_role_members_keyset_stable_under_edge_removal(pool: PgPool) {
+    let (ctx, project_id) = setup(pool).await;
+    // Roles created in order, so role.created_at is R < C < D (the immutable keys).
+    let r = make_role(&ctx, &project_id, "R", "r-src").await;
+    let c = make_role(&ctx, &project_id, "C", "c-src").await;
+    let d = make_role(&ctx, &project_id, "D", "d-src").await;
+
+    // Edge order sets the pre-fix MIN(edge.created_at): C→D earliest, then R→C, R→D.
+    for (parent, member) in [(c, d), (r, c), (r, d)] {
+        ApiServer::add_role_members(
+            ctx.clone(),
+            metadata(&project_id),
+            parent,
+            AddRoleMembersRequest {
+                members: vec![role_member(member)],
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // Drain R's transitive role members one page at a time; after the first page,
+    // remove C→D (the edge holding D's pre-fix minimum key).
+    let mut seen: Vec<String> = Vec::new();
+    let mut token: Option<String> = None;
+    let mut removed_edge = false;
+    loop {
+        let page = ApiServer::list_role_transitive_members(
+            ctx.clone(),
+            metadata(&project_id),
+            r,
+            lakekeeper::api::management::v1::role_membership::ListMembersQuery {
+                r#type: Some(RoleMemberType::Role),
+                page_token: token.clone(),
+                page_size: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+        seen.extend(page.members.iter().map(|m| m.id.clone()));
+        match page.next_page_token {
+            Some(next) => {
+                token = Some(next);
+                if !removed_edge {
+                    ApiServer::remove_role_member(
+                        ctx.clone(),
+                        metadata(&project_id),
+                        c,
+                        RoleMemberType::Role,
+                        d.to_string(),
+                    )
+                    .await
+                    .unwrap();
+                    removed_edge = true;
+                }
+            }
+            None => break,
+        }
+    }
+
+    // Each transitive role member is returned exactly once; the set is exactly {C, D}.
+    let mut unique: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in &seen {
+        assert!(
+            unique.insert(id.clone()),
+            "member {id} was returned more than once: {seen:?}"
+        );
+    }
+    assert_eq!(unique, [c.to_string(), d.to_string()].into_iter().collect());
 }
 
 /// Same fixture from the user's side: U is directly assigned only to B, but its
