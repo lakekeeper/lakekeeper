@@ -45,7 +45,7 @@ mod test {
         WarehouseId,
         api::management::v1::{tasks::ListTasksRequest, warehouse::TabularDeleteProfile},
         service::{
-            ArcProjectId, CatalogTaskOps, WarehouseFormatVersionPolicy,
+            ArcProjectId, CatalogCreateWarehouseRequest, CatalogTaskOps,
             storage::{MemoryProfile, StorageProfile},
             tasks::{
                 ScheduleTaskMetadata, SpecializedTask, TaskConfig, TaskData, TaskEntity,
@@ -146,14 +146,13 @@ mod test {
         let mut tx = pool.begin().await.unwrap();
 
         let storage_profile = StorageProfile::Memory(MemoryProfile::default());
-        let tabular_delete_profile = TabularDeleteProfile::default();
         let warehouse = create_warehouse(
-            "My Warehouse".to_string(),
             project_id,
-            storage_profile,
-            tabular_delete_profile,
-            None,
-            WarehouseFormatVersionPolicy::default(),
+            CatalogCreateWarehouseRequest::builder()
+                .warehouse_name("My Warehouse".to_string())
+                .storage_profile(storage_profile)
+                .delete_profile(TabularDeleteProfile::default())
+                .build(),
             &mut tx,
         )
         .await

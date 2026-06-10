@@ -24,7 +24,7 @@ use crate::{CONFIG, api, service::ArcRole};
 use crate::{
     XXHashSet,
     request_metadata::{RequestMetadata, TokenRoles},
-    service::{RoleIdent, events::EventDispatcher},
+    service::{RoleIdent, authz::InstanceAdminMembership, events::EventDispatcher},
 };
 
 pub const IDP_SEPARATOR: char = '~';
@@ -59,6 +59,10 @@ pub(crate) struct AuthMiddlewareState<
     pub authorizer: A,
     pub events: EventDispatcher,
     pub catalog_state: C::State,
+    /// Source of instance-admin membership, resolved once per request into the
+    /// binary `RequestMetadata::is_instance_admin` flag. Defaults to
+    /// [`ConfiguredInstanceAdmins`](super::authz::ConfiguredInstanceAdmins).
+    pub instance_admin_membership: Arc<dyn InstanceAdminMembership>,
 }
 
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
@@ -459,7 +463,17 @@ pub(crate) async fn auth_middleware_fn<
 
         request_metadata.set_authentication(actor.clone(), authentication.clone());
 
-        if is_configured_instance_admin(&actor, &CONFIG.instance_admins) {
+        // Instance-admin membership is only ever consulted for an authenticated
+        // principal. Assumed-roles (`Actor::Role`) and anonymous callers never
+        // inherit instance-admin — role assumption is an explicit opt-in to a
+        // narrower scope — so we extract the `UserId` here and never reach the
+        // membership source for non-principal actors.
+        if let Actor::Principal(user_id) = &actor
+            && state
+                .instance_admin_membership
+                .is_instance_admin(user_id)
+                .await
+        {
             request_metadata.set_instance_admin(true);
         }
 
@@ -537,17 +551,6 @@ pub(crate) async fn auth_middleware_fn<
     }
 
     next.run(request).await
-}
-
-/// An actor qualifies as an instance admin only when it is a bare `Actor::Principal`
-/// whose `UserId` is in the configured set. Role-assumed actors deliberately do not
-/// inherit the bypass — role assumption is an explicit opt-in to a narrower scope.
-#[cfg(feature = "router")]
-fn is_configured_instance_admin(actor: &Actor, admins: &std::collections::HashSet<UserId>) -> bool {
-    match actor {
-        Actor::Principal(uid) => admins.contains(uid),
-        Actor::Anonymous | Actor::Role { .. } => false,
-    }
 }
 
 #[cfg(feature = "router")]
@@ -1289,43 +1292,6 @@ mod tests {
                 "foo~bar@lakekeeper.io".to_string()
             ))
         );
-    }
-
-    #[test]
-    fn test_is_configured_instance_admin() {
-        use std::{collections::HashSet, sync::Arc};
-
-        use crate::service::Role;
-
-        let alice = UserId::try_from("oidc~alice").unwrap();
-        let bob = UserId::try_from("oidc~bob").unwrap();
-        let admins: HashSet<UserId> = [alice.clone()].into_iter().collect();
-
-        assert!(is_configured_instance_admin(
-            &Actor::Principal(alice.clone()),
-            &admins,
-        ));
-        assert!(!is_configured_instance_admin(
-            &Actor::Principal(bob.clone()),
-            &admins,
-        ));
-        assert!(!is_configured_instance_admin(&Actor::Anonymous, &admins));
-
-        // Role-assumed: even when the principal is an admin, the actor does NOT
-        // qualify. Role assumption is an explicit opt-in to a narrower scope.
-        let role = Arc::new(Role::new_random_with_id(RoleId::new(Uuid::now_v7())));
-        assert!(!is_configured_instance_admin(
-            &Actor::Role {
-                principal: alice,
-                assumed_role: role,
-            },
-            &admins,
-        ));
-
-        assert!(!is_configured_instance_admin(
-            &Actor::Principal(bob),
-            &HashSet::new(),
-        ));
     }
 
     #[test]

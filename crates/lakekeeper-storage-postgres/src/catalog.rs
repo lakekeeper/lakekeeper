@@ -24,28 +24,29 @@ use lakekeeper::{
         AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
         AddUserRoleAssignmentsResult, ArcProjectId, CatalogBackendError,
         CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError,
-        CatalogDeleteWarehouseError, CatalogGetNamespaceError, CatalogGetWarehouseByIdError,
-        CatalogGetWarehouseByNameError, CatalogListNamespaceError, CatalogListNamespacesResponse,
-        CatalogListRolesByIdFilter, CatalogListWarehousesError, CatalogNamespaceDropError,
-        CatalogRenameWarehouseError, CatalogRoleForAssignment, CatalogSearchTabularResponse,
-        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
-        CatalogUserRoleAssignmentUser, CatalogView, ClearTabularDeletedAtError,
-        CommitTableTransactionError, CommitViewError, CreateGenericTableError,
-        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
-        CreateViewError, DropGenericTableError, DropTabularError, GenericTableCreation,
-        GenericTableId, GenericTableInfo, GenericTableListEntry, GetProjectResponse,
-        GetTabularInfoByLocationError, GetTabularInfoError, GetTaskDetailsError,
-        ListCatalogRoleMembersPage, ListGenericTablesError, ListNamespacesQuery,
-        ListRoleMembersResult, ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
-        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
-        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
-        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
-        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
+        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
+        CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
+        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
+        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
+        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
+        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
+        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
+        DropTabularError, EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId,
+        GenericTableInfo, GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
+        ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
+        ListRolesPage, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
+        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
+        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
         StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
         SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
         TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
@@ -96,7 +97,8 @@ use crate::{
     },
     user::{create_or_update_user, delete_user, list_users, search_user},
     warehouse::{
-        get_warehouse_stats, set_warehouse_format_version_policy, set_warehouse_protection,
+        ensure_warehouse_spec_mutable, get_warehouse_stats, set_warehouse_format_version_policy,
+        set_warehouse_managed_by, set_warehouse_protection,
     },
 };
 
@@ -688,24 +690,11 @@ impl CatalogStore for super::PostgresBackend {
     }
 
     async fn create_warehouse_impl<'a>(
-        warehouse_name: String,
         project_id: &ProjectId,
-        storage_profile: StorageProfile,
-        tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretId>,
-        format_version_policy: WarehouseFormatVersionPolicy,
+        request: CatalogCreateWarehouseRequest,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
-        create_warehouse(
-            warehouse_name,
-            project_id,
-            storage_profile,
-            tabular_delete_profile,
-            storage_secret_id,
-            format_version_policy,
-            transaction,
-        )
-        .await
+        create_warehouse(project_id, request, transaction).await
     }
 
     // ---------------- Management API ----------------
@@ -942,6 +931,22 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError> {
         set_warehouse_format_version_policy(warehouse_id, policy, transaction).await
+    }
+
+    async fn set_warehouse_managed_by_impl<'a>(
+        warehouse_id: WarehouseId,
+        managed_by: ManagedBy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseManagedByError> {
+        set_warehouse_managed_by(warehouse_id, managed_by, transaction).await
+    }
+
+    async fn ensure_warehouse_spec_mutable_impl<'a>(
+        warehouse_id: WarehouseId,
+        bypass: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), EnsureWarehouseSpecMutableError> {
+        ensure_warehouse_spec_mutable(warehouse_id, bypass, transaction).await
     }
 
     async fn pick_new_task_impl(

@@ -263,10 +263,12 @@ where
     Self: std::hash::Hash + CatalogAction + Clone + PartialEq + Eq + From<CatalogTableAction>,
 {
     /// Whether this action reads or writes table row data (as opposed to metadata
-    /// or catalog operations). Used by the [`InstanceAdminAuthorizer`] wrapper to
-    /// exclude data-plane actions from the instance-admin bypass.
+    /// or catalog operations). The instance-admin bypass
+    /// ([`InstanceAdminAuthorizer::has_bypass`]) covers control-plane actions
+    /// only; this flag lets the `are_allowed_table_actions_vec` bypass exclude
+    /// data-plane actions so they still route through the resource authorizer.
     ///
-    /// [`InstanceAdminAuthorizer`]: crate::service::authz::instance_admin::InstanceAdminAuthorizer
+    /// [`InstanceAdminAuthorizer::has_bypass`]: crate::service::authz::instance_admin::InstanceAdminAuthorizer::has_bypass
     fn is_data_plane(&self) -> bool;
 }
 

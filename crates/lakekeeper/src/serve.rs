@@ -17,7 +17,7 @@ use crate::{
     },
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
-        authz::{AllowAllAuthorizer, Authorizer},
+        authz::{AllowAllAuthorizer, Authorizer, ConfiguredInstanceAdmins},
         contract_verification::ContractVerifiers,
         endpoint_statistics::{
             EndpointStatisticsMessage, EndpointStatisticsSink, EndpointStatisticsTracker, FlushMode,
@@ -499,6 +499,7 @@ async fn serve_inner<
         cors_origins: CONFIG.allow_origin.as_deref(),
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
+        instance_admin_membership: Arc::new(ConfiguredInstanceAdmins::from_config()),
     })
     .await?;
 

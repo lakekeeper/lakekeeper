@@ -31,10 +31,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             ShortTermCredentialsRequest, TableConfig,
-            cache::{
-                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-                insert_stc_into_cache,
-            },
+            cache::{CachedStc, GCS_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
@@ -371,11 +368,11 @@ impl GcsProfile {
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
-        let cached_sts_token = self.load_sts_response_token_from_cache(&cache_key).await;
 
-        let response = if let Some(token) = cached_sts_token {
-            token
-        } else {
+        // Single-flight read-through: concurrent identical requests coalesce onto
+        // one STS downscope (the most expensive miss in the system) per cache key.
+        // The typed cache returns the `CachedSTSResponse` directly — no variant check.
+        let response = get_or_load_stc(&GCS_STC_CACHE, cache_key, || async {
             let (source, project_id) = self.get_token_source(credential).await?;
             let token = sts::downscope(source, &self.bucket, stc_request).await?;
 
@@ -395,17 +392,12 @@ impl GcsProfile {
                 project_id,
                 expires_at_system_time,
             };
-
-            if CONFIG.cache.stc.enabled {
-                let cache_value = STCCacheValue::new(
-                    ShortTermCredential::Gcs(token.clone()),
-                    Instant::now().checked_add(sts_validity_duration),
-                );
-                insert_stc_into_cache(cache_key, cache_value).await;
-            }
-
-            token
-        };
+            Ok::<_, TableConfigError>(CachedStc::new(
+                token,
+                Instant::now().checked_add(sts_validity_duration),
+            ))
+        })
+        .await?;
 
         table_properties.insert(&gcs::Token(response.token.access_token));
         if let Some(project_id) = response.project_id {
@@ -449,32 +441,6 @@ impl GcsProfile {
             config: table_properties.clone(),
             creds: table_properties,
         })
-    }
-
-    async fn load_sts_response_token_from_cache(
-        &self,
-        cache_key: &STCCacheKey,
-    ) -> Option<CachedSTSResponse> {
-        let stc_request = &cache_key.request;
-        if CONFIG.cache.stc.enabled {
-            if let Some(STCCacheValue {
-                credentials: ShortTermCredential::Gcs(sts_response),
-                ..
-            }) = get_stc_from_cache(cache_key).await
-            {
-                tracing::debug!("Using cached short term credentials for request: {stc_request}");
-                return Some(sts_response);
-            }
-            tracing::debug!(
-                "No cached STS token found for request: {stc_request}, fetching new credentials"
-            );
-        } else {
-            tracing::debug!(
-                "STC caching disabled, fetching new STS token for request: {stc_request}"
-            );
-        }
-
-        None
     }
 
     fn normalize_key_prefix(&mut self) -> Result<(), ValidationError> {

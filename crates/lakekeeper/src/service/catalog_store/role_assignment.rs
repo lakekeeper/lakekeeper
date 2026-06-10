@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
+use axum_prometheus::metrics;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 
@@ -10,7 +11,7 @@ use crate::{
         ArcProjectId, CatalogBackendError, CatalogStore, DatabaseIntegrityError, RoleId,
         RoleIdNotFoundInProject, RoleIdent, RoleNameAlreadyExists, RoleProviderId, Transaction,
         authn::{UserId, UserIdRef},
-        define_transparent_error,
+        cache_metrics, define_transparent_error,
         events::{EventDispatcher, RoleMembersSyncedEvent, UserRoleAssignmentsSyncedEvent},
         identifier::role::ArcRoleIdent,
         impl_error_stack_methods, impl_from_with_detail, role_assignments_cache, role_cache,
@@ -1203,6 +1204,7 @@ where
         // commit→evict window leaves affected entries stale until the
         // `USER_ASSIGNMENTS_CACHE` TTL — stale-permissive for removes, but bounded
         // and acceptable for this cache.
+        record_membership_edge_fanout("add", parent_role_id, &affected);
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
         Ok(result)
     }
@@ -1227,6 +1229,7 @@ where
         t.commit().await?;
 
         // Infallible post-commit eviction; see `add_role_members_and_invalidate`.
+        record_membership_edge_fanout("remove", parent_role_id, &affected);
         role_assignments_cache::user_assignments_cache_invalidate_many(&affected).await;
         Ok(result)
     }
@@ -1393,13 +1396,15 @@ where
         user_id: &UserId,
         catalog_state: Self::State,
     ) -> Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError> {
-        if let Some(cached) = role_assignments_cache::user_assignments_cache_get(user_id).await {
-            return Ok(cached);
-        }
-        let result =
-            Arc::new(Self::list_role_assignments_for_user_impl(user_id, catalog_state).await?);
-        role_assignments_cache::user_assignments_cache_insert(user_id, Arc::clone(&result)).await;
-        Ok(result)
+        // Single-flight read-through: concurrent misses for the same user coalesce
+        // onto one loader run (see `user_assignments_cache_get_or_load`).
+        let owned_user_id = user_id.clone();
+        role_assignments_cache::user_assignments_cache_get_or_load(user_id, async move {
+            Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state)
+                .await
+                .map(Arc::new)
+        })
+        .await
     }
 
     /// Return all members of the given role, together with the last sync
@@ -1411,22 +1416,26 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError> {
-        if let Some(cached) = role_assignments_cache::role_members_cache_get(role_id).await {
-            return Ok(Some(cached));
-        }
-        let result = match Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
-        {
-            Some(r) => Arc::new(r),
-            None => return Ok(None),
-        };
-        role_assignments_cache::role_members_cache_insert(role_id, Arc::clone(&result)).await;
-        role_cache::role_ident_insert(
-            result.project_id.clone(),
-            result.role_ident.clone(),
-            role_id,
-        )
-        .await;
-        Ok(Some(result))
+        // Single-flight read-through: concurrent misses for the same role coalesce
+        // onto one loader run (see `role_members_cache_get_or_load`). The helper
+        // owns the `ROLE_MEMBERS_CACHE` insert; the loader populates the secondary
+        // ident→id index on that single load.
+        role_assignments_cache::role_members_cache_get_or_load(role_id, async move {
+            let Some(result) =
+                Self::list_role_assignments_for_role_impl(role_id, catalog_state).await?
+            else {
+                return Ok(None);
+            };
+            let result = Arc::new(result);
+            role_cache::role_ident_insert(
+                result.project_id.clone(),
+                result.role_ident.clone(),
+                role_id,
+            )
+            .await;
+            Ok(Some(result))
+        })
+        .await
     }
 
     /// Return all members of a role identified by its project-scoped ident,
@@ -1482,6 +1491,39 @@ where
 
 impl<T> CatalogRoleAssignmentOps for T where T: CatalogStore {}
 
+/// Above this many users invalidated by one role-membership edge change, emit a
+/// `warn`: the materialized per-user closure fanned out unusually wide, which may
+/// signal a pathological role graph. Operational signal only — not an error.
+const ROLE_MEMBERSHIP_FANOUT_WARN_THRESHOLD: usize = 1000;
+
+/// Record the role-membership edge fan-out histogram for one edge mutation and
+/// `warn` when the fan-out is large. Called at the edge-mutation sites (where the
+/// `add`/`remove` op label is known), never inside the shared
+/// `user_assignments_cache_invalidate_many` — that helper is also used by direct
+/// user deletion, which is not an edge fan-out and would conflate the two events.
+#[allow(clippy::cast_precision_loss)]
+fn record_membership_edge_fanout(
+    operation: &'static str,
+    parent_role_id: RoleId,
+    affected: &[UserId],
+) {
+    let () = &*cache_metrics::METRICS_INITIALIZED;
+    let count = affected.len();
+    metrics::histogram!(
+        cache_metrics::METRIC_ROLE_MEMBERSHIP_EDGE_FANOUT_USERS,
+        "operation" => operation
+    )
+    .record(count as f64);
+    if count > ROLE_MEMBERSHIP_FANOUT_WARN_THRESHOLD {
+        tracing::warn!(
+            count,
+            %parent_role_id,
+            operation,
+            "large role-membership edge fan-out invalidated many user-assignment caches"
+        );
+    }
+}
+
 /// Users whose effective roles a `role_membership` edge change on `member_role_ids`
 /// makes stale: those assigned to a member or any role in its descendant closure.
 ///
@@ -1499,4 +1541,44 @@ async fn membership_edge_affected_users<S: CatalogStore>(
         affected.extend(users);
     }
     Ok(affected.into_iter().collect())
+}
+
+#[cfg(test)]
+mod fanout_metric_tests {
+    use super::*;
+
+    fn users(n: usize) -> Vec<UserId> {
+        (0..n)
+            .map(|i| UserId::new_unchecked("test", &format!("u{i}")))
+            .collect()
+    }
+
+    /// A fan-out above the warn threshold logs the operational `warn`. The
+    /// histogram `.record()` also runs (with no recorder installed in the test it
+    /// is a no-op), so this guards the threshold/warn logic — the part worth
+    /// asserting. Capturing the exact recorded histogram value would require a
+    /// metrics test recorder, which is not worth a new dev-dependency for one
+    /// `.record()` call.
+    #[test]
+    #[tracing_test::traced_test]
+    fn warns_above_threshold() {
+        let many = users(ROLE_MEMBERSHIP_FANOUT_WARN_THRESHOLD + 1);
+        record_membership_edge_fanout("add", RoleId::new_random(), &many);
+        assert!(logs_contain(
+            "large role-membership edge fan-out invalidated many user-assignment caches"
+        ));
+    }
+
+    /// At the threshold, and for a zero fan-out, no `warn` is emitted.
+    #[test]
+    #[tracing_test::traced_test]
+    fn silent_at_or_below_threshold() {
+        record_membership_edge_fanout(
+            "remove",
+            RoleId::new_random(),
+            &users(ROLE_MEMBERSHIP_FANOUT_WARN_THRESHOLD),
+        );
+        record_membership_edge_fanout("add", RoleId::new_random(), &[]);
+        assert!(!logs_contain("large role-membership edge fan-out"));
+    }
 }

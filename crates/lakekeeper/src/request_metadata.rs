@@ -21,7 +21,7 @@ use crate::{
     service::{
         ArcProjectId, RoleIdent, TabularId,
         authn::{Actor, InternalActor},
-        authz::UserOrRole,
+        authz::{InstanceAdminAuthorizer, UserOrRole},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
         idempotency::IdempotencyKey,
     },
@@ -304,7 +304,7 @@ impl RequestMetadata {
     #[must_use]
     #[inline]
     pub fn bypasses_control_plane_authz(&self, for_user: Option<&UserOrRole>) -> bool {
-        for_user.is_none() && (self.is_lakekeeper_internal() || self.is_instance_admin)
+        for_user.is_none() && InstanceAdminAuthorizer::has_bypass(self)
     }
 
     #[cfg(any(test, feature = "test-utils"))]

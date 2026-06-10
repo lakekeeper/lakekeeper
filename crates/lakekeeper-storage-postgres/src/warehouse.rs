@@ -12,14 +12,16 @@ use lakekeeper::{
         },
     },
     service::{
-        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogDeleteWarehouseError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListWarehousesError,
-        CatalogRenameWarehouseError, CatalogRoleOps, DatabaseIntegrityError, GetProjectResponse,
+        AllowedFormatVersions, CatalogCreateWarehouseError, CatalogCreateWarehouseRequest,
+        CatalogDeleteWarehouseError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
+        CatalogListWarehousesError, CatalogRenameWarehouseError, CatalogRoleOps,
+        DatabaseIntegrityError, EnsureWarehouseSpecMutableError, GetProjectResponse, ManagedBy,
         ProjectIdNotFoundError, ResolvedWarehouse, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StorageProfileSerializationError, SystemRoleSeederCap, UpdateWarehouseStorageProfileError,
-        WarehouseAlreadyExists, WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks,
-        WarehouseIdNotFound, WarehouseNotEmpty, WarehouseProtected, WarehouseStatus,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StorageProfileSerializationError,
+        SystemRoleSeederCap, UpdateWarehouseStorageProfileError, WarehouseAlreadyExists,
+        WarehouseFormatVersionPolicy, WarehouseHasUnfinishedTasks, WarehouseIdNotFound,
+        WarehouseNotEmpty, WarehouseProtected, WarehouseSpecLocked, WarehouseStatus,
         WarehouseVersion, registered_system_roles, storage::StorageProfile,
     },
 };
@@ -65,6 +67,7 @@ pub(super) async fn set_warehouse_deletion_profile<
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
             "#,
@@ -84,14 +87,18 @@ pub(super) async fn set_warehouse_deletion_profile<
 }
 
 pub(crate) async fn create_warehouse(
-    warehouse_name: String,
     project_id: &ProjectId,
-    storage_profile: StorageProfile,
-    tabular_delete_profile: TabularDeleteProfile,
-    storage_secret_id: Option<SecretId>,
-    format_version_policy: WarehouseFormatVersionPolicy,
+    request: CatalogCreateWarehouseRequest,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<ResolvedWarehouse, CatalogCreateWarehouseError> {
+    let CatalogCreateWarehouseRequest {
+        warehouse_name,
+        storage_profile,
+        storage_secret_id,
+        delete_profile: tabular_delete_profile,
+        format_version_policy,
+        managed_by,
+    } = request;
     let storage_profile_ser =
         serde_json::to_value(storage_profile).map_err(StorageProfileSerializationError::from)?;
 
@@ -118,8 +125,9 @@ pub(crate) async fn create_warehouse(
                                    tabular_expiration_seconds,
                                    tabular_delete_mode,
                                    allowed_format_versions,
-                                   default_format_version)
-                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
+                                   default_format_version,
+                                   managed_by)
+                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)
                                 RETURNING
                                     project_id,
                                     warehouse_id,
@@ -132,6 +140,7 @@ pub(crate) async fn create_warehouse(
                                     protected,
                                     allowed_format_versions,
                                     default_format_version,
+                                    managed_by as "managed_by: ManagedBy",
                                     updated_at,
                                     version),
             whs AS (INSERT INTO warehouse_statistics (number_of_views,
@@ -148,7 +157,8 @@ pub(crate) async fn create_warehouse(
         num_secs,
         prof as _,
         &allowed_format_versions_db,
-        default_format_version_db
+        default_format_version_db,
+        managed_by as ManagedBy
     )
     .fetch_one(&mut **transaction)
     .await
@@ -323,6 +333,7 @@ struct WarehouseRecord {
     tabular_delete_mode: DbTabularDeleteProfile,
     tabular_expiration_seconds: Option<i64>,
     protected: bool,
+    managed_by: ManagedBy,
     allowed_format_versions: Vec<i16>,
     default_format_version: Option<i16>,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -353,6 +364,7 @@ impl TryFrom<WarehouseRecord> for ResolvedWarehouse {
             status: value.status,
             tabular_delete_profile,
             protected: value.protected,
+            managed_by: value.managed_by,
             allowed_format_versions,
             default_format_version,
             updated_at: value.updated_at,
@@ -386,6 +398,7 @@ pub(crate) async fn list_warehouses<
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
             FROM warehouse
@@ -425,6 +438,7 @@ pub(super) async fn get_warehouse_by_name(
             protected,
             allowed_format_versions,
             default_format_version,
+            managed_by as "managed_by: ManagedBy",
             updated_at,
             version
         FROM warehouse
@@ -467,6 +481,7 @@ pub(crate) async fn get_warehouse_by_id<
             protected,
             allowed_format_versions,
             default_format_version,
+            managed_by as "managed_by: ManagedBy",
             updated_at,
             version
         FROM warehouse
@@ -590,6 +605,7 @@ pub(crate) async fn rename_warehouse(
             protected,
             allowed_format_versions,
             default_format_version,
+            managed_by as "managed_by: ManagedBy",
             updated_at,
             version
         "#,
@@ -629,6 +645,7 @@ pub(crate) async fn set_warehouse_status(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
         "#,
@@ -668,6 +685,7 @@ pub(crate) async fn set_warehouse_protection(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
             "#,
@@ -683,6 +701,81 @@ pub(crate) async fn set_warehouse_protection(
     };
 
     Ok(warehouse.try_into()?)
+}
+
+pub(crate) async fn set_warehouse_managed_by(
+    warehouse_id: WarehouseId,
+    managed_by: ManagedBy,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<ResolvedWarehouse, SetWarehouseManagedByError> {
+    let warehouse = sqlx::query_as!(
+        WarehouseRecord,
+        r#"UPDATE warehouse
+            SET managed_by = $1
+            WHERE warehouse_id = $2
+            RETURNING
+                project_id,
+                warehouse_id,
+                warehouse_name,
+                storage_profile as "storage_profile: Json<StorageProfile>",
+                storage_secret_id,
+                status AS "status: WarehouseStatus",
+                tabular_delete_mode as "tabular_delete_mode: DbTabularDeleteProfile",
+                tabular_expiration_seconds,
+                protected,
+                allowed_format_versions,
+                default_format_version,
+                managed_by as "managed_by: ManagedBy",
+                updated_at,
+                version
+            "#,
+        managed_by as ManagedBy,
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    let Some(warehouse) = warehouse else {
+        return Err(WarehouseIdNotFound::new(warehouse_id).into());
+    };
+
+    Ok(warehouse.try_into()?)
+}
+
+/// Re-read the `managed_by` marker `FOR UPDATE` within the active transaction and
+/// reject the in-flight spec mutation when the warehouse is managed and the caller
+/// does not hold bypass privileges (instance admin / in-process). Reading inside
+/// the write transaction with a row lock makes the lock an enforced invariant,
+/// immune to stale caches and concurrent marker changes (TOCTOU-safe).
+///
+/// A missing warehouse is not an error here — the subsequent mutation reports
+/// not-found through its own path.
+pub(crate) async fn ensure_warehouse_spec_mutable(
+    warehouse_id: WarehouseId,
+    bypass: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<(), EnsureWarehouseSpecMutableError> {
+    if bypass {
+        return Ok(());
+    }
+
+    let managed_by = sqlx::query_scalar!(
+        r#"SELECT managed_by as "managed_by: ManagedBy"
+           FROM warehouse WHERE warehouse_id = $1 FOR UPDATE"#,
+        *warehouse_id
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    if let Some(managed_by) = managed_by
+        && managed_by.is_externally_managed()
+    {
+        return Err(WarehouseSpecLocked::new(managed_by).into());
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn set_warehouse_format_version_policy(
@@ -710,6 +803,7 @@ pub(crate) async fn set_warehouse_format_version_policy(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
             "#,
@@ -756,6 +850,7 @@ pub(crate) async fn update_storage_profile(
                 protected,
                 allowed_format_versions,
                 default_format_version,
+                managed_by as "managed_by: ManagedBy",
                 updated_at,
                 version
         "#,
@@ -934,6 +1029,7 @@ pub mod test {
         api::iceberg::types::PageToken,
         service::{
             CatalogStore as _, CatalogWarehouseOps as _, Transaction,
+            authz::CatalogWarehouseAction,
             storage::{S3Flavor, S3Profile},
         },
     };
@@ -975,14 +1071,15 @@ pub mod test {
         ));
 
         let warehouse = PostgresBackend::create_warehouse(
-            "test_warehouse".to_string(),
             &project_id,
-            storage_profile,
-            TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(5),
-            },
-            secret_id,
-            WarehouseFormatVersionPolicy::default(),
+            CatalogCreateWarehouseRequest::builder()
+                .warehouse_name("test_warehouse".to_string())
+                .storage_profile(storage_profile)
+                .storage_secret_id(secret_id)
+                .delete_profile(TabularDeleteProfile::Soft {
+                    expiration_seconds: chrono::Duration::seconds(5),
+                })
+                .build(),
             t.transaction(),
         )
         .await
@@ -1010,6 +1107,137 @@ pub mod test {
             Some(warehouse_id),
             fetched_warehouse.map(|w| w.warehouse_id)
         );
+    }
+
+    #[sqlx::test]
+    async fn test_managed_by_locks_spec(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // Default is self-managed: the guard allows mutation even without bypass.
+        {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            PostgresBackend::ensure_warehouse_spec_mutable(
+                warehouse_id,
+                &CatalogWarehouseAction::Delete,
+                false,
+                t.transaction(),
+            )
+            .await
+            .expect("self-managed warehouse spec is mutable by anyone");
+            t.commit().await.unwrap();
+        }
+
+        // Mark the warehouse as managed by the instance.
+        {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let wh = PostgresBackend::set_warehouse_managed_by(
+                warehouse_id,
+                ManagedBy::InstanceAdmin,
+                t.transaction(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(wh.managed_by, ManagedBy::InstanceAdmin);
+            t.commit().await.unwrap();
+        }
+
+        // The marker persists (fresh read, cache skipped).
+        let fetched = PostgresBackend::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            lakekeeper::service::CachePolicy::Skip,
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(fetched.managed_by, ManagedBy::InstanceAdmin);
+
+        // A non-bypass caller is blocked with a 403 `WarehouseManaged`.
+        {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let err = PostgresBackend::ensure_warehouse_spec_mutable(
+                warehouse_id,
+                &CatalogWarehouseAction::Delete,
+                false,
+                t.transaction(),
+            )
+            .await
+            .expect_err("managed warehouse blocks non-bypass spec mutation");
+            let model = ErrorModel::from(err);
+            assert_eq!(model.code, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(model.r#type, "WarehouseManaged");
+            t.commit().await.unwrap();
+        }
+
+        // A bypass caller (instance admin / in-process) passes.
+        {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            PostgresBackend::ensure_warehouse_spec_mutable(
+                warehouse_id,
+                &CatalogWarehouseAction::Delete,
+                true,
+                t.transaction(),
+            )
+            .await
+            .expect("instance-admin bypass may mutate a managed warehouse");
+            t.commit().await.unwrap();
+
+            // A non-spec action (e.g. a read) is never locked, even on a managed
+            // warehouse without bypass — the gate short-circuits on
+            // `is_spec_mutation`.
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            PostgresBackend::ensure_warehouse_spec_mutable(
+                warehouse_id,
+                &CatalogWarehouseAction::GetMetadata,
+                false,
+                t.transaction(),
+            )
+            .await
+            .expect("non-spec actions are not subject to the managed-by lock");
+            t.commit().await.unwrap();
+        }
+
+        // Clearing the marker restores normal mutability (recovery path).
+        {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            let wh = PostgresBackend::set_warehouse_managed_by(
+                warehouse_id,
+                ManagedBy::SelfManaged,
+                t.transaction(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(wh.managed_by, ManagedBy::SelfManaged);
+            t.commit().await.unwrap();
+        }
+        {
+            let mut t = PostgresTransaction::begin_write(state.clone())
+                .await
+                .unwrap();
+            PostgresBackend::ensure_warehouse_spec_mutable(
+                warehouse_id,
+                &CatalogWarehouseAction::Delete,
+                false,
+                t.transaction(),
+            )
+            .await
+            .expect("cleared warehouse is mutable again");
+            t.commit().await.unwrap();
+        }
     }
 
     #[sqlx::test]

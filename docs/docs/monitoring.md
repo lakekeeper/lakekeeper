@@ -33,6 +33,14 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 
 `cache_type` values: `stc`, `warehouse`, `namespace`, `secrets`, `role`, `user_assignments`, `role_members`. A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
 
+Role-membership cache invalidation emits one additional metric:
+
+| Metric                                                                                | Type      | Labels      | Description |
+|---------------------------------------------------------------------------------------|-----------|-------------|-----|
+| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Users whose cached role assignments were invalidated by a single role-to-role membership edge change (`operation`: `add` / `remove`) |
+
+The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
+
 ### Role Provider Metrics <span class="lkp"></span>
 
 When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:

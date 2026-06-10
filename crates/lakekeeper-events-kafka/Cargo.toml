@@ -15,10 +15,6 @@ ignored = ["cloudevents-sdk"]
 
 [lib]
 
-[dev-dependencies]
-figment = { workspace = true, features = ["test"] }
-tempfile = { workspace = true }
-
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -31,3 +27,7 @@ serde = { workspace = true }
 tracing = { workspace = true }
 typed-builder = { workspace = true }
 veil = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+tempfile = { workspace = true }

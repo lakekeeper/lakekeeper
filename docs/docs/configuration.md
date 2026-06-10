@@ -348,6 +348,8 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 ### Caching
 Lakekeeper uses in-memory caches to speed up certain operations.
 
+Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across replicas that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
+
 **Short-Term Credentials (STC) Cache**
 
 When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
@@ -355,7 +357,7 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 | Variable                                        | Example | Description      |
 |-------------------------------------------------|---------|------------------|
 | <nobr>`LAKEKEEPER__CACHE__STC__ENABLED`</nobr>  | `true`  | Enable or disable the short-term credentials cache. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache. Default: `10000` |
+| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. Default: `10000` |
 
 *Expiry Mechanism*: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
@@ -450,6 +452,22 @@ Caches the set of roles assigned to each user (`UserId → role assignments`). T
 - `lakekeeper_cache_size{cache_type="user_assignments"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="user_assignments"}`: Total number of cache hits
 - `lakekeeper_cache_misses_total{cache_type="user_assignments"}`: Total number of cache misses
+
+**Role Members Cache**
+
+Caches the members of each role (`RoleId → role members`). This is a cold-path cache populated only by admin/provider queries that list a role's members. Each entry holds a role's full member list, so the default capacity is deliberately low.
+
+| Configuration Key                                                | Type    | Default | Description |
+|------------------------------------------------------------------|---------|---------|-----|
+| <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__ENABLED`<nobr>           | boolean | `true`  | Enable/disable role-members caching. Default: `true` |
+| <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of roles whose member lists are held in memory. Default: `1000` |
+| <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
+
+*Metrics*: The Role Members cache exposes Prometheus metrics for monitoring:
+
+- `lakekeeper_cache_size{cache_type="role_members"}`: Current number of entries in the cache
+- `lakekeeper_cache_hits_total{cache_type="role_members"}`: Total number of cache hits
+- `lakekeeper_cache_misses_total{cache_type="role_members"}`: Total number of cache misses
 
 ### Endpoint Statistics
 

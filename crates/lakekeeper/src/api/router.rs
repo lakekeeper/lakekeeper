@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 use axum::{Json, Router, extract::DefaultBodyLimit, response::IntoResponse, routing::get};
 use axum_extra::{either::Either, middleware::option_layer};
@@ -36,7 +36,7 @@ use crate::{
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
         authn::{AuthMiddlewareState, auth_middleware_fn},
-        authz::Authorizer,
+        authz::{Authorizer, InstanceAdminMembership},
         health::{HealthState, HealthStatus, ServiceHealthProvider},
         tasks::QueueApiConfig,
     },
@@ -60,6 +60,13 @@ pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N:
     pub cors_origins: Option<&'static [HeaderValue]>,
     pub metrics_layer: Option<PrometheusMetricLayer<'static>>,
     pub endpoint_statistics_tracker_tx: EndpointStatisticsTrackerTx,
+    /// Source of instance-admin membership. Use
+    /// `Arc::new(`[`ConfiguredInstanceAdmins`]`)` for the static
+    /// `LAKEKEEPER__INSTANCE_ADMINS` default, or inject a custom (e.g.
+    /// database-backed) implementation to manage instance admins at runtime.
+    ///
+    /// [`ConfiguredInstanceAdmins`]: crate::service::authz::ConfiguredInstanceAdmins
+    pub instance_admin_membership: Arc<dyn InstanceAdminMembership>,
 }
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -80,6 +87,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
                 "endpoint_statistics_tracker_tx",
                 &self.endpoint_statistics_tracker_tx,
             )
+            .field("instance_admin_membership", &self.instance_admin_membership)
             .finish()
     }
 }
@@ -101,6 +109,7 @@ pub async fn new_full_router<
         cors_origins,
         metrics_layer,
         endpoint_statistics_tracker_tx,
+        instance_admin_membership,
         // registered_task_queues,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
@@ -122,6 +131,7 @@ pub async fn new_full_router<
                 authorizer: state.v1_state.authz.clone(),
                 events: state.v1_state.events.clone(),
                 catalog_state: state.v1_state.catalog.clone(),
+                instance_admin_membership,
             },
             auth_middleware_fn::<C, _, _>,
         )))
