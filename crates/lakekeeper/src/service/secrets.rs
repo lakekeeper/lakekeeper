@@ -22,6 +22,7 @@ use crate::{
             METRIC_CACHE_MISSES_TOTAL as METRIC_SECRETS_CACHE_MISSES,
             METRIC_CACHE_SIZE as METRIC_SECRETS_CACHE_SIZE, METRICS_INITIALIZED,
         },
+        cache_ttl::JitteredTtl,
         health::HealthExt,
         storage::StorageCredential,
     },
@@ -32,6 +33,9 @@ pub(crate) static SECRETS_CACHE: LazyLock<Cache<SecretId, CachedSecret>> = LazyL
         .max_capacity(CONFIG.cache.secrets.capacity)
         .initial_capacity(50)
         .time_to_live(Duration::from_secs(CONFIG.cache.secrets.time_to_live_secs))
+        .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+            CONFIG.cache.secrets.time_to_live_secs,
+        )))
         .build()
 });
 

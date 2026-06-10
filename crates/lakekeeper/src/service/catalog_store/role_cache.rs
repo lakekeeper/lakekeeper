@@ -19,6 +19,7 @@ use crate::{
             METRIC_CACHE_MISSES_TOTAL as METRIC_ROLE_CACHE_MISSES,
             METRIC_CACHE_SIZE as METRIC_ROLE_CACHE_SIZE, METRICS_INITIALIZED,
         },
+        cache_ttl::JitteredTtl,
     },
 };
 
@@ -27,6 +28,14 @@ pub static ROLE_CACHE: LazyLock<Cache<RoleId, ArcRole>> = LazyLock::new(|| {
     Cache::builder()
         .max_capacity(CONFIG.cache.role.capacity)
         .initial_capacity(100)
+        // Deliberately NOT jittered (unlike the other caches). `USER_ASSIGNMENTS_CACHE`
+        // entries reference roles resolved through this cache, and the startup
+        // invariant `user_assignments.ttl <= role.ttl` (see `config.rs`) requires a
+        // UA entry to never outlive its role entry. Holding this cache at its exact
+        // base TTL keeps that invariant airtight: a UA entry lives `<= ua_base <=
+        // role_base` = this entry's life. Downward jitter here could let a co-warmed
+        // UA entry outlive the role entry by up to the jitter fraction. See
+        // `crate::service::cache_ttl`.
         .time_to_live(Duration::from_secs(CONFIG.cache.role.time_to_live_secs))
         .async_eviction_listener(|key, value: ArcRole, cause| {
             Box::pin(async move {
@@ -70,6 +79,9 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
             .max_capacity(CONFIG.cache.role.capacity)
             .initial_capacity(100)
             .time_to_live(Duration::from_secs(CONFIG.cache.role.time_to_live_secs))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.role.time_to_live_secs,
+            )))
             .build()
     });
 
