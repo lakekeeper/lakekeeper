@@ -642,7 +642,6 @@ impl From<StoragePermissions> for BlobSasPermissions {
             StoragePermissions::ReadWrite => BlobSasPermissions {
                 read: true,
                 write: true,
-                tags: true,
                 add: true,
                 list: true,
                 ..Default::default()
@@ -650,12 +649,9 @@ impl From<StoragePermissions> for BlobSasPermissions {
             StoragePermissions::ReadWriteDelete => BlobSasPermissions {
                 read: true,
                 write: true,
-                tags: true,
                 add: true,
                 delete: true,
                 list: true,
-                delete_version: true,
-                permanent_delete: true,
                 ..Default::default()
             },
         }
