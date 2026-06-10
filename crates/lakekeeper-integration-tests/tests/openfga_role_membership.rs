@@ -30,8 +30,8 @@ mod role_membership {
                     ApiServer,
                     role::{CreateRoleRequest, Service as _},
                     role_membership::{
-                        AddRoleMembersRequest, ListMembersQuery, ListRolesPageQuery, RoleMemberRef,
-                        RoleMemberType, Service as _,
+                        AddRoleMembersRequest, ListMembersQuery, ListRolesPageQuery, RoleMember,
+                        RoleMemberRef, RoleMemberType, Service as _,
                     },
                 },
             },
@@ -91,16 +91,28 @@ mod role_membership {
         }
 
         fn user_member(user_id: &UserId) -> RoleMemberRef {
-            RoleMemberRef {
-                r#type: RoleMemberType::User,
-                id: user_id.to_string(),
+            RoleMemberRef::User {
+                id: user_id.clone(),
             }
         }
 
         fn role_member(role_id: RoleId) -> RoleMemberRef {
-            RoleMemberRef {
-                r#type: RoleMemberType::Role,
-                id: role_id.to_string(),
+            RoleMemberRef::Role { id: role_id }
+        }
+
+        /// The kind of a response member, for `?type=`-style assertions.
+        fn kind(m: &RoleMember) -> RoleMemberType {
+            match m {
+                RoleMember::User(_) => RoleMemberType::User,
+                RoleMember::Role(_) => RoleMemberType::Role,
+            }
+        }
+
+        /// The member's principal id rendered as a string.
+        fn member_id_string(m: &RoleMember) -> String {
+            match m {
+                RoleMember::User(u) => u.id.to_string(),
+                RoleMember::Role(rm) => rm.id.to_string(),
             }
         }
 
@@ -147,24 +159,17 @@ mod role_membership {
             let users: HashSet<String> = page
                 .members
                 .iter()
-                .filter(|m| m.r#type == RoleMemberType::User)
-                .map(|m| m.id.clone())
+                .filter(|m| kind(m) == RoleMemberType::User)
+                .map(member_id_string)
                 .collect();
             let roles: HashSet<String> = page
                 .members
                 .iter()
-                .filter(|m| m.r#type == RoleMemberType::Role)
-                .map(|m| m.id.clone())
+                .filter(|m| kind(m) == RoleMemberType::Role)
+                .map(member_id_string)
                 .collect();
             assert_eq!(users, [u.to_string()].into_iter().collect());
             assert_eq!(roles, [b.to_string()].into_iter().collect());
-            // OpenFGA records a real tuple write timestamp; the listing surfaces it.
-            assert!(page.members.iter().all(|m| {
-                m.created_at
-                    .expect("openfga records a tuple timestamp")
-                    .timestamp()
-                    > 1_700_000_000
-            }));
 
             // The `?type=` filter composes on the authorizer arm.
             let only_roles = ApiServer::list_role_members(
@@ -176,22 +181,32 @@ mod role_membership {
             .await
             .unwrap();
             assert_eq!(only_roles.members.len(), 1);
-            assert_eq!(only_roles.members[0].r#type, RoleMemberType::Role);
-            assert_eq!(only_roles.members[0].id, b.to_string());
+            assert_eq!(kind(&only_roles.members[0]), RoleMemberType::Role);
+            assert_eq!(member_id_string(&only_roles.members[0]), b.to_string());
 
-            // Role members carry the hydrated catalog name; user members carry none.
-            let role_member = page
+            // The role member B is hydrated from the catalog (id-only in OpenFGA).
+            let b_member = page
                 .members
                 .iter()
-                .find(|m| m.r#type == RoleMemberType::Role)
-                .unwrap();
-            assert_eq!(role_member.name.as_deref(), Some("B"));
-            let user_member = page
+                .find_map(|m| match m {
+                    RoleMember::Role(rm) if rm.id == b => Some(rm),
+                    _ => None,
+                })
+                .expect("role member B present");
+            assert_eq!(b_member.name, "B");
+            // User `u` was assigned via OpenFGA but never provisioned in the catalog,
+            // so it has no catalog row: every identity field beyond the id is null.
+            let u_member = page
                 .members
                 .iter()
-                .find(|m| m.r#type == RoleMemberType::User)
-                .unwrap();
-            assert_eq!(user_member.name, None);
+                .find_map(|m| match m {
+                    RoleMember::User(uu) if uu.id == u => Some(uu),
+                    _ => None,
+                })
+                .expect("user member u present");
+            assert_eq!(u_member.name, None);
+            assert_eq!(u_member.email, None);
+            assert_eq!(u_member.user_type, None);
         }
 
         /// A child role's direct `member-of` listing names its parent, with identity
@@ -221,13 +236,6 @@ mod role_membership {
             assert_eq!(page.roles[0].id, parent);
             // Identity is hydrated from the catalog (the authorizer only stores ids).
             assert_eq!(page.roles[0].name, "P");
-            assert!(
-                page.roles[0]
-                    .created_at
-                    .expect("openfga records a tuple timestamp")
-                    .timestamp()
-                    > 1_700_000_000
-            );
         }
 
         /// A user's directly-assigned roles are hydrated from the catalog. An unknown
@@ -257,13 +265,6 @@ mod role_membership {
             assert_eq!(page.roles.len(), 1);
             assert_eq!(page.roles[0].id, r);
             assert_eq!(page.roles[0].name, "R");
-            assert!(
-                page.roles[0]
-                    .created_at
-                    .expect("openfga records a tuple timestamp")
-                    .timestamp()
-                    > 1_700_000_000
-            );
 
             // Unknown user → empty page, NOT a 404 (authorizer-arm divergence).
             let ghost = UserId::new_unchecked("oidc", "ghost");
@@ -392,8 +393,8 @@ mod role_membership {
                 .unwrap();
             // The ghost role is dropped; only the real user member remains.
             assert_eq!(page.members.len(), 1);
-            assert_eq!(page.members[0].r#type, RoleMemberType::User);
-            assert_eq!(page.members[0].id, u.to_string());
+            assert_eq!(kind(&page.members[0]), RoleMemberType::User);
+            assert_eq!(member_id_string(&page.members[0]), u.to_string());
         }
 
         /// Direct members paginate via OpenFGA's continuation token: a page_size=1
@@ -432,7 +433,7 @@ mod role_membership {
                     .await
                     .unwrap();
                 assert!(page.members.len() <= 1);
-                seen.extend(page.members.iter().map(|m| m.id.clone()));
+                seen.extend(page.members.iter().map(member_id_string));
                 match page.next_page_token {
                     Some(t) => token = Some(t),
                     None => break,

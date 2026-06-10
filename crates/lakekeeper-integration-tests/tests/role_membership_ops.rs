@@ -87,23 +87,41 @@ async fn provision_user(ctx: &Ctx, user_id: &UserId, name: &str) {
 }
 
 fn user_member(user_id: &UserId) -> RoleMemberRef {
-    RoleMemberRef {
-        r#type: RoleMemberType::User,
-        id: user_id.to_string(),
+    RoleMemberRef::User {
+        id: user_id.clone(),
     }
 }
 
 fn role_member(role_id: RoleId) -> RoleMemberRef {
-    RoleMemberRef {
-        r#type: RoleMemberType::Role,
-        id: role_id.to_string(),
+    RoleMemberRef::Role { id: role_id }
+}
+
+/// True if a response member ([`RoleMember`]) names the same principal as the
+/// given request identity ([`RoleMemberRef`]) — identity only, ignoring the
+/// hydrated display fields asserted separately where they matter.
+fn same(m: &RoleMember, r: &RoleMemberRef) -> bool {
+    match (m, r) {
+        (RoleMember::User(u), RoleMemberRef::User { id }) => &u.id == id,
+        (RoleMember::Role(rm), RoleMemberRef::Role { id }) => &rm.id == id,
+        _ => false,
     }
 }
 
-/// True if a response member matches the given request identity (ignores the
-/// read-only `created_at`, which is asserted separately where it matters).
-fn same(m: &RoleMember, r: &RoleMemberRef) -> bool {
-    m.r#type == r.r#type && m.id == r.id
+/// The kind of a response member, for `?type=`-style assertions.
+fn kind(m: &RoleMember) -> RoleMemberType {
+    match m {
+        RoleMember::User(_) => RoleMemberType::User,
+        RoleMember::Role(_) => RoleMemberType::Role,
+    }
+}
+
+/// The member's principal id rendered as a string (`UserId`/`RoleId` `Display`),
+/// for set comparisons that only care about identity.
+fn member_id_string(m: &RoleMember) -> String {
+    match m {
+        RoleMember::User(u) => u.id.to_string(),
+        RoleMember::Role(rm) => rm.id.to_string(),
+    }
 }
 
 // ==================== add + list ====================
@@ -125,21 +143,24 @@ async fn add_and_list_user_member(pool: PgPool) {
     )
     .await
     .unwrap();
-    // Returns new state: the requested member, confirmed. The add response omits
-    // timestamps (membership confirmation only); GET supplies them (asserted below).
-    assert_eq!(resp.members.len(), 1);
-    assert!(same(&resp.members[0], &user_member(&alice)));
-    assert!(resp.members[0].created_at.is_none());
+    // Returns new state: the requested member, confirmed (an un-hydrated
+    // identity reference — no display fields, no timestamps).
+    assert_eq!(resp.members, vec![user_member(&alice)]);
 
     let page =
         ApiServer::list_role_members(ctx.clone(), metadata(&project_id), role, list_query(None))
             .await
             .unwrap();
     assert_eq!(page.members.len(), 1);
-    assert!(same(&page.members[0], &user_member(&alice)));
-    assert!(page.members[0].created_at.is_some());
-    // A user member carries no role name (name applies only to role members).
-    assert_eq!(page.members[0].name, None);
+    // The catalog arm hydrates the user's display identity in one JOIN: Alice's
+    // name, no email, type Human.
+    let RoleMember::User(u) = &page.members[0] else {
+        panic!("expected a user member, got {:?}", page.members[0]);
+    };
+    assert_eq!(u.id, alice);
+    assert_eq!(u.name.as_deref(), Some("Alice"));
+    assert_eq!(u.email, None);
+    assert_eq!(u.user_type, Some(UserType::Human));
     // Note: a non-empty keyset page always carries a token; emptiness signals the
     // end (see `list_members_pagination`). So we don't assert `None` here.
 }
@@ -160,21 +181,22 @@ async fn add_role_member_and_member_of(pool: PgPool) {
     )
     .await
     .unwrap();
-    // The add response echoes the role member.
-    assert_eq!(resp.members.len(), 1);
-    assert!(same(&resp.members[0], &role_member(child)));
+    // The add response echoes the role member identity.
+    assert_eq!(resp.members, vec![role_member(child)]);
 
-    // The child appears as a member of the parent.
+    // The child appears as a member of the parent, hydrated with its catalog name.
     let members =
         ApiServer::list_role_members(ctx.clone(), metadata(&project_id), parent, list_query(None))
             .await
             .unwrap();
     assert_eq!(members.members.len(), 1);
-    assert!(same(&members.members[0], &role_member(child)));
-    // A role member carries its hydrated catalog name (users carry none).
-    assert_eq!(members.members[0].name.as_deref(), Some("child"));
+    let RoleMember::Role(rm) = &members.members[0] else {
+        panic!("expected a role member, got {:?}", members.members[0]);
+    };
+    assert_eq!(rm.id, child);
+    assert_eq!(rm.name, "child");
 
-    // The parent appears in the child's member-of listing, with the edge timestamp.
+    // The parent appears in the child's member-of listing, hydrated by name.
     let parents =
         ApiServer::list_role_member_of(ctx.clone(), metadata(&project_id), child, page_query())
             .await
@@ -183,15 +205,6 @@ async fn add_role_member_and_member_of(pool: PgPool) {
     assert_eq!(parents.roles[0].id, parent);
     // The catalog reader embeds the parent role's display name.
     assert_eq!(parents.roles[0].name, "parent");
-    // created_at is Option (None under an authorizer with no edge timestamp); the
-    // catalog reader always populates it — assert a real, recently-set value.
-    assert!(
-        parents.roles[0]
-            .created_at
-            .expect("catalog reader populates created_at")
-            .timestamp()
-            > 1_700_000_000
-    );
 }
 
 #[sqlx::test]
@@ -219,7 +232,7 @@ async fn batch_add_mixed(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(page.members.len(), 2);
-    let kinds: Vec<RoleMemberType> = page.members.iter().map(|m| m.r#type).collect();
+    let kinds: Vec<RoleMemberType> = page.members.iter().map(kind).collect();
     assert!(kinds.contains(&RoleMemberType::User));
     assert!(kinds.contains(&RoleMemberType::Role));
 }
@@ -465,7 +478,7 @@ async fn list_members_pagination(pool: PgPool) {
             break;
         }
         assert_eq!(page.members.len(), 1);
-        seen.push(page.members[0].id.clone());
+        seen.push(member_id_string(&page.members[0]));
         token = page.next_page_token;
         assert!(token.is_some());
     }
@@ -517,14 +530,6 @@ async fn list_user_roles(pool: PgPool) {
         names,
         ["R1".to_string(), "R2".to_string()].into_iter().collect()
     );
-    // created_at is Option (None under an authorizer with no edge timestamp); the
-    // catalog reader always populates it — assert real, recently-set values.
-    assert!(page.roles.iter().all(|r| {
-        r.created_at
-            .expect("catalog reader populates created_at")
-            .timestamp()
-            > 1_700_000_000
-    }));
 }
 
 /// A user that was never provisioned → 404 (the catalog reader returns `None`).
@@ -620,8 +625,7 @@ async fn add_dedups_repeated_member(pool: PgPool) {
     )
     .await
     .unwrap();
-    assert_eq!(resp.members.len(), 1);
-    assert!(same(&resp.members[0], &role_member(member_role)));
+    assert_eq!(resp.members, vec![role_member(member_role)]);
 
     let page =
         ApiServer::list_role_members(ctx.clone(), metadata(&project_id), role, list_query(None))
@@ -653,7 +657,7 @@ fn page_query() -> lakekeeper::api::management::v1::role_membership::ListRolesPa
 
 /// Nested fixture A ⊃ B ⊃ user U, plus user V direct on A. Transitive members of
 /// A are the role B, the direct user V, and the via-B user U; direct members are
-/// only B and V. Transitive rows carry no `created_at`.
+/// only B and V.
 #[sqlx::test]
 async fn transitive_role_members(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
@@ -705,33 +709,44 @@ async fn transitive_role_members(pool: PgPool) {
     let roles: std::collections::HashSet<String> = page
         .members
         .iter()
-        .filter(|m| m.r#type == RoleMemberType::Role)
-        .map(|m| m.id.clone())
+        .filter(|m| kind(m) == RoleMemberType::Role)
+        .map(member_id_string)
         .collect();
     let users: std::collections::HashSet<String> = page
         .members
         .iter()
-        .filter(|m| m.r#type == RoleMemberType::User)
-        .map(|m| m.id.clone())
+        .filter(|m| kind(m) == RoleMemberType::User)
+        .map(member_id_string)
         .collect();
     assert_eq!(roles, [b.to_string()].into_iter().collect());
     assert_eq!(users, [u.to_string(), v.to_string()].into_iter().collect());
-    // A transitive member has no single defining edge → created_at is None.
-    assert!(page.members.iter().all(|m| m.created_at.is_none()));
 
-    // Role members carry their display name (the direct listing's name contract
-    // holds on the transitive listing too); user members carry none.
-    let b_member = page
+    // Role member B carries its display name (the direct listing's name contract
+    // holds on the transitive listing too).
+    let b_name = page
         .members
         .iter()
-        .find(|m| m.r#type == RoleMemberType::Role && m.id == b.to_string())
+        .find_map(|m| match m {
+            RoleMember::Role(rm) if rm.id == b => Some(rm.name.clone()),
+            _ => None,
+        })
         .expect("role B present among transitive members");
-    assert_eq!(b_member.name.as_deref(), Some("B"));
-    assert!(
-        page.members
-            .iter()
-            .filter(|m| m.r#type == RoleMemberType::User)
-            .all(|m| m.name.is_none())
+    assert_eq!(b_name, "B");
+    // User members are hydrated with their catalog names (U/V) on the transitive
+    // listing too — the catalog JOIN hydrates user members in one query.
+    let user_names: std::collections::HashSet<Option<String>> = page
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            RoleMember::User(uu) => Some(uu.name.clone()),
+            RoleMember::Role(_) => None,
+        })
+        .collect();
+    assert_eq!(
+        user_names,
+        [Some("U".to_string()), Some("V".to_string())]
+            .into_iter()
+            .collect()
     );
 
     // The `?type=` filter composes on the transitive endpoint.
@@ -747,10 +762,10 @@ async fn transitive_role_members(pool: PgPool) {
         only_users
             .members
             .iter()
-            .all(|m| m.r#type == RoleMemberType::User)
+            .all(|m| kind(m) == RoleMemberType::User)
     );
     let only_user_ids: std::collections::HashSet<String> =
-        only_users.members.iter().map(|m| m.id.clone()).collect();
+        only_users.members.iter().map(member_id_string).collect();
     assert_eq!(
         only_user_ids,
         [u.to_string(), v.to_string()].into_iter().collect()
@@ -808,7 +823,7 @@ async fn transitive_role_members_keyset_stable_under_edge_removal(pool: PgPool) 
         )
         .await
         .unwrap();
-        seen.extend(page.members.iter().map(|m| m.id.clone()));
+        seen.extend(page.members.iter().map(member_id_string));
         match page.next_page_token {
             Some(next) => {
                 token = Some(next);
@@ -841,8 +856,7 @@ async fn transitive_role_members_keyset_stable_under_edge_removal(pool: PgPool) 
 }
 
 /// Same fixture from the user's side: U is directly assigned only to B, but its
-/// effective (transitive) roles are B and A. Names are embedded; transitive rows
-/// carry no `created_at`.
+/// effective (transitive) roles are B and A. Names are embedded.
 #[sqlx::test]
 async fn transitive_user_roles(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
@@ -901,7 +915,6 @@ async fn transitive_user_roles(pool: PgPool) {
         names,
         ["A".to_string(), "B".to_string()].into_iter().collect()
     );
-    assert!(page.roles.iter().all(|r| r.created_at.is_none()));
 }
 
 /// The transitive user-roles reader keeps the direct reader's unknown-user
@@ -925,7 +938,7 @@ async fn transitive_user_roles_unknown_user_404(pool: PgPool) {
 
 /// Ancestor walk: C ∈ B ∈ A. C is directly a member only of B, but its transitive
 /// member-of set (the roles it effectively belongs to) is B and A. Names are
-/// embedded; transitive rows carry no `created_at`.
+/// embedded.
 #[sqlx::test]
 async fn transitive_role_member_of(pool: PgPool) {
     let (ctx, project_id) = setup(pool).await;
@@ -983,5 +996,4 @@ async fn transitive_role_member_of(pool: PgPool) {
         names,
         ["A".to_string(), "B".to_string()].into_iter().collect()
     );
-    assert!(page.roles.iter().all(|r| r.created_at.is_none()));
 }

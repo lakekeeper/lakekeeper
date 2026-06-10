@@ -3,7 +3,8 @@
 //!
 //! A role's members are **polymorphic** — a member is either a user (a direct
 //! user→role assignment) or another role (a role→role membership edge). Both are
-//! surfaced through one `/members` collection discriminated by [`RoleMemberType`].
+//! surfaced through one `/members` collection, each entry tagged by a `type`
+//! discriminator (see [`RoleMember`]).
 //!
 //! Read & write dispatch is **mutually exclusive / single-source-of-truth**: when
 //! the authorizer manages assignments (e.g. OpenFGA, via
@@ -55,6 +56,7 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
+use super::user::UserType;
 use crate::{
     api::{
         ApiContext,
@@ -64,8 +66,8 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogListRolesByIdFilter,
-        CatalogRoleAssignmentOps, CatalogRoleOps, CatalogStore, Result, RoleId, RoleMemberKind,
-        RoleMembershipEntry, SecretStore, State, UserId,
+        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore, Result, RoleId,
+        RoleMemberKind, RoleMembershipEntry, SecretStore, State, UserId, UserMembershipEntry,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, AuthZUserOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, CatalogUserAction, ManagesRoleAssignments,
@@ -95,55 +97,106 @@ impl From<RoleMemberType> for RoleMemberKind {
     }
 }
 
-/// A member of a role on responses: a user or another role (`type` + opaque `id`),
-/// with the membership-edge timestamp. The request twin is [`RoleMemberRef`].
-///
-/// `created_at` is `None` when no timestamp is available — on the add response
-/// (which only confirms membership) and under authorizer backends that do not
-/// record an edge timestamp; it is populated by the `GET /role/{id}/members`
-/// listing.
-///
-/// `name` carries the role's display name for **role** members and is `None` for
-/// **user** members (a user has no role-name; users are IdP-owned and not resolved
-/// here). On the listing endpoints a role member always has a name (an unresolvable
-/// role is dropped, not surfaced); it is `None` on the add response (confirmation
-/// only, no hydration).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+/// A member of a role, returned by `GET /role/{id}/members`. Discriminated by
+/// `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
+/// Identity is hydrated; for requests and add/remove confirmations use the
+/// un-hydrated [`RoleMemberRef`] instead.
+#[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct RoleMember {
-    pub r#type: RoleMemberType,
-    pub id: String,
-    /// Display name for a role member; `None` for a user member or where unresolved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RoleMember {
+    /// A user assigned to the role.
+    User(UserMembership),
+    /// Another role that is a member of the role.
+    Role(RoleMembership),
 }
 
-impl From<UserOrRoleId> for RoleMember {
-    fn from(subject: UserOrRoleId) -> Self {
-        let (r#type, id) = match subject {
-            UserOrRoleId::User(user_id) => (RoleMemberType::User, user_id.to_string()),
-            UserOrRoleId::Role(role_id) => (RoleMemberType::Role, role_id.to_string()),
-        };
-        RoleMember {
-            r#type,
-            id,
-            name: None,
-            created_at: None,
+/// A user's identity in a membership listing (the `user` variant of
+/// [`RoleMember`]). All identity fields are nullable: under an assignment-managing
+/// authorizer (e.g. OpenFGA) a member may be assigned but not yet provisioned in
+/// the catalog, so only the `id` is known. `name`/`email` are also `null` for a
+/// provisioned-but-nameless user.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct UserMembership {
+    /// `IdP` subject id of the user.
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub id: UserId,
+    /// Display name; `null` when the user has no name.
+    pub name: Option<String>,
+    /// Email; `null` if unknown.
+    pub email: Option<String>,
+    /// Whether the principal is a human or an application; `null` when the user
+    /// is assigned but not provisioned in the catalog (the id is all that's known).
+    pub user_type: Option<UserType>,
+}
+
+impl From<UserMembershipEntry> for UserMembership {
+    fn from(entry: UserMembershipEntry) -> Self {
+        UserMembership {
+            id: entry.user_id,
+            name: entry.name,
+            email: entry.email,
+            user_type: Some(entry.user_type),
         }
     }
 }
 
-/// A member to add: a user or another role, by identity (`type` + opaque `id`).
-/// The request twin of [`RoleMember`] — no timestamp, since the membership edge's
-/// `created_at` is server-assigned and read-only, so it lives only on responses.
-#[derive(Debug, Clone, Deserialize)]
+impl From<CatalogRoleMember> for RoleMember {
+    fn from(member: CatalogRoleMember) -> Self {
+        match member {
+            CatalogRoleMember::User(user) => RoleMember::User(user.into()),
+            CatalogRoleMember::Role(role) => RoleMember::Role(role.into()),
+        }
+    }
+}
+
+/// An identity reference to a role member — a `user` or a `role`, by typed id.
+/// Sent in `POST /role/{id}/members` requests and echoed by the add/remove
+/// confirmations. Unlike [`RoleMember`] it is never hydrated (no name/timestamp):
+/// it names *which* principal, not its display identity.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-#[serde(rename_all = "kebab-case")]
-pub struct RoleMemberRef {
-    pub r#type: RoleMemberType,
-    pub id: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RoleMemberRef {
+    /// A user, by `IdP` subject id.
+    User {
+        #[cfg_attr(feature = "open-api", schema(value_type = String))]
+        id: UserId,
+    },
+    /// A role, by id.
+    Role {
+        #[serde(deserialize_with = "deserialize_role_id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        id: RoleId,
+    },
+}
+
+/// Deserialize a [`RoleId`] from its UUID string (`RoleId` has no `Deserialize`).
+fn deserialize_role_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<RoleId, D::Error> {
+    Ok(RoleId::new(uuid::Uuid::deserialize(deserializer)?))
+}
+
+impl From<UserOrRoleId> for RoleMemberRef {
+    fn from(subject: UserOrRoleId) -> Self {
+        match subject {
+            UserOrRoleId::User(id) => RoleMemberRef::User { id },
+            UserOrRoleId::Role(id) => RoleMemberRef::Role { id },
+        }
+    }
+}
+
+impl RoleMemberRef {
+    /// The referenced principal as a [`UserOrRoleId`].
+    fn subject(&self) -> UserOrRoleId {
+        match self {
+            RoleMemberRef::User { id } => UserOrRoleId::User(id.clone()),
+            RoleMemberRef::Role { id } => UserOrRoleId::Role(*id),
+        }
+    }
 }
 
 /// Request body for `POST /role/{id}/members`. Batch: adds every listed member to
@@ -155,15 +208,15 @@ pub struct AddRoleMembersRequest {
     pub members: Vec<RoleMemberRef>,
 }
 
-/// Response for `POST /role/{id}/members`: the requested members, confirmed
-/// present after the add (idempotent — already-present members are included).
-/// Each member's `created_at` is `None` (membership confirmation only) — use
-/// `GET /role/{id}/members` to retrieve membership timestamps.
+/// Response for `POST /role/{id}/members`: the requested members confirmed present
+/// (idempotent — already-present members are included). Echoes identity
+/// [`RoleMemberRef`]s, not hydrated [`RoleMember`]s — use `GET /role/{id}/members`
+/// for display names and membership timestamps.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct AddRoleMembersResponse {
-    pub members: Vec<RoleMember>,
+    pub members: Vec<RoleMemberRef>,
 }
 
 /// One page of a role's direct members (users ∪ member roles).
@@ -181,17 +234,12 @@ pub struct ListRoleMembersResponse {
     pub next_page_token: Option<String>,
 }
 
-/// A role reached through a membership edge — used by `member-of` and
-/// `user/{id}/roles`. `id`, `ident`, and `name` are always present; `created_at`
-/// (the membership-edge timestamp) is `None` under authorizer backends that do not
-/// record one.
-//
-// Internal rationale (not part of the API contract): identity is always present
-// because a reader that walks an authorizer's membership graph must drop entries
-// whose role id no longer resolves in the catalog (an orphaned/dangling edge) and
-// log it, rather than surface a null identity — see `read_assignee_roles_hydrated`.
-// Contrast a user member, where an id absent from the catalog is a
-// legitimately-unprovisioned user and is tolerated.
+/// A role's display identity in a membership listing: the role-member variant of
+/// [`RoleMember`], and the item type of `/member-of` and `/user/{id}/roles`.
+/// `ident` (`provider/source-id`) is the stable external handle a client references
+/// the role by; `id` is the internal UUID. All fields are always present — a role
+/// whose id no longer resolves in the catalog (a dangling authorizer edge) is
+/// dropped from the listing and logged, never surfaced with a null identity.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -201,7 +249,6 @@ pub struct RoleMembership {
     #[cfg_attr(feature = "open-api", schema(value_type = String))]
     pub ident: ArcRoleIdent,
     pub name: String,
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl From<RoleMembershipEntry> for RoleMembership {
@@ -210,8 +257,6 @@ impl From<RoleMembershipEntry> for RoleMembership {
             id: entry.role_id,
             ident: entry.role_ident,
             name: entry.name,
-            // The catalog reader always has the edge timestamp; see field docs.
-            created_at: Some(entry.created_at),
         }
     }
 }
@@ -356,47 +401,35 @@ async fn fetch_roles_by_ids<C: CatalogStore>(
     }
 }
 
-/// Map id-only catalog member rows to `RoleMember`s, attaching each role member's
-/// display name (users carry none). A role member always resolves on the catalog
-/// arm (the FK guarantees it), so its name is always present — consistent with the
-/// authorizer arm's drop-or-name rule.
-async fn catalog_members_with_names<C: CatalogStore>(
-    assignments: Vec<RoleAssignmentRow>,
+/// Resolve `user_ids` to raw membership identity (nullable name/email + type),
+/// keyed by id. An id absent from the result is an assigned-but-unprovisioned
+/// user (no catalog row); the caller surfaces it as id-only. The id set is one
+/// authorizer page, so a single bounded catalog lookup suffices.
+async fn fetch_users_by_ids<C: CatalogStore>(
+    user_ids: &[UserId],
     catalog: C::State,
-) -> Result<Vec<RoleMember>> {
-    let role_member_ids: Vec<RoleId> = assignments
-        .iter()
-        .filter_map(|r| match r.subject {
-            UserOrRoleId::Role(role_id) => Some(role_id),
-            UserOrRoleId::User(_) => None,
-        })
-        .collect();
-    let names = fetch_roles_by_ids::<C>(&role_member_ids, catalog).await?;
-    Ok(assignments
+) -> Result<HashMap<UserId, UserMembershipEntry>> {
+    if user_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let entries = C::list_user_membership_entries(user_ids, catalog).await?;
+    Ok(entries
         .into_iter()
-        .map(|row| {
-            let name = match &row.subject {
-                UserOrRoleId::Role(role_id) => names.get(role_id).map(|r| r.name.clone()),
-                UserOrRoleId::User(_) => None,
-            };
-            RoleMember {
-                name,
-                created_at: row.created_at,
-                ..RoleMember::from(row.subject)
-            }
-        })
+        .map(|entry| (entry.user_id.clone(), entry))
         .collect())
 }
 
 /// Read one hydrated page from an assignment-managing authorizer (e.g. OpenFGA).
 ///
-/// The authorizer returns id-only rows. `collect_role_ids` names the role ids on
-/// a page that need a catalog row; they are resolved via [`fetch_roles_by_ids`],
-/// and `build` turns the raw rows + resolved roles into output items — dropping
-/// any role with no catalog row anywhere (a dangling tuple) and keeping IdP-owned
-/// user subjects. If dropping orphans empties an otherwise non-final
-/// page, the next authorizer page is pulled, so a returned empty page always
-/// means the listing is exhausted (the house convention treats empty as end).
+/// The authorizer returns id-only rows. `collect_role_ids` / `collect_user_ids`
+/// name the role / user ids on a page that need catalog identity; both are
+/// resolved **concurrently** ([`fetch_roles_by_ids`] across projects,
+/// [`fetch_users_by_ids`] by id), and `build` turns the raw rows + resolved maps
+/// into output items. A role with no catalog row anywhere (a dangling tuple) is
+/// dropped; a user with no catalog row is kept id-only (legitimately
+/// unprovisioned). If dropping orphan roles empties an otherwise non-final page,
+/// the next authorizer page is pulled, so a returned empty page always means the
+/// listing is exhausted (the house convention treats empty as end).
 #[allow(clippy::too_many_arguments)]
 async fn read_hydrated_assignments_page<C, T>(
     assignments: &dyn ManagesRoleAssignments,
@@ -406,7 +439,12 @@ async fn read_hydrated_assignments_page<C, T>(
     mut pagination: PaginationQuery,
     catalog: C::State,
     collect_role_ids: impl Fn(&[RoleAssignmentRow]) -> Vec<RoleId>,
-    build: impl Fn(&[RoleAssignmentRow], &HashMap<RoleId, ArcRole>) -> Vec<T>,
+    collect_user_ids: impl Fn(&[RoleAssignmentRow]) -> Vec<UserId>,
+    build: impl Fn(
+        &[RoleAssignmentRow],
+        &HashMap<RoleId, ArcRole>,
+        &HashMap<UserId, UserMembershipEntry>,
+    ) -> Vec<T>,
 ) -> Result<(Vec<T>, Option<String>)>
 where
     C: CatalogStore,
@@ -422,12 +460,22 @@ where
             .await
             .map_err(ErrorModel::from)?;
 
-        let mut ids = collect_role_ids(&page.assignments);
-        ids.sort_unstable();
-        ids.dedup();
-        let roles = fetch_roles_by_ids::<C>(&ids, catalog.clone()).await?;
+        let mut role_ids = collect_role_ids(&page.assignments);
+        role_ids.sort_unstable();
+        role_ids.dedup();
+        // User ids on one page are unique (a user is a member at most once), so no
+        // dedup is needed before the bounded `id = ANY(...)` lookup.
+        let user_ids = collect_user_ids(&page.assignments);
 
-        let items = build(&page.assignments, &roles);
+        // Roles and users hydrate from independent catalog reads — run them
+        // concurrently rather than serializing two round-trips.
+        let (roles, users) = tokio::join!(
+            fetch_roles_by_ids::<C>(&role_ids, catalog.clone()),
+            fetch_users_by_ids::<C>(&user_ids, catalog.clone()),
+        );
+        let (roles, users) = (roles?, users?);
+
+        let items = build(&page.assignments, &roles, &users);
         match page.next_page_token {
             // The whole page was orphan role tuples but more pages remain; pull the
             // next so an empty page never masquerades as end-of-listing.
@@ -445,7 +493,7 @@ where
 /// Read the roles a `subject` is directly assigned to from an assignment-managing
 /// authorizer (the `member-of` and `user-roles` listings), hydrating each target
 /// role's identity from the catalog and dropping any with no catalog row in the
-/// project. Returns `RoleMembership` rows carrying the tuple's write timestamp.
+/// project. The targets are always roles, so no user hydration is needed.
 async fn read_assignee_roles_hydrated<C: CatalogStore>(
     assignments: &dyn ManagesRoleAssignments,
     metadata: &RequestMetadata,
@@ -462,7 +510,8 @@ async fn read_assignee_roles_hydrated<C: CatalogStore>(
         pagination,
         catalog,
         |rows| rows.iter().map(|r| r.role_id).collect(),
-        |rows, roles| {
+        |_rows| Vec::new(),
+        |rows, roles, _users| {
             rows.iter()
                 .filter_map(|r| {
                     let Some(role) = roles.get(&r.role_id) else {
@@ -476,13 +525,62 @@ async fn read_assignee_roles_hydrated<C: CatalogStore>(
                         id: role.id,
                         ident: role.ident_arc(),
                         name: role.name.clone(),
-                        created_at: r.created_at,
                     })
                 })
                 .collect()
         },
     )
     .await
+}
+
+/// Build the API [`RoleMember`]s for one authorizer-arm `/members` page from the
+/// id-only rows plus the catalog-resolved role/user maps, honoring the `?type=`
+/// filter. A user subject hydrates to [`UserMembership`] — id-only (all other
+/// fields `None`) when assigned but unprovisioned; a role subject hydrates to
+/// [`RoleMembership`], dropped (with a warn) when the catalog has no row anywhere
+/// (a dangling tuple).
+fn build_role_members(
+    rows: &[RoleAssignmentRow],
+    roles: &HashMap<RoleId, ArcRole>,
+    users: &HashMap<UserId, UserMembershipEntry>,
+    want_users: bool,
+    want_roles: bool,
+) -> Vec<RoleMember> {
+    rows.iter()
+        .filter_map(|r| match &r.subject {
+            UserOrRoleId::User(uid) => {
+                if !want_users {
+                    return None;
+                }
+                Some(RoleMember::User(match users.get(uid) {
+                    Some(entry) => entry.clone().into(),
+                    None => UserMembership {
+                        id: uid.clone(),
+                        name: None,
+                        email: None,
+                        user_type: None,
+                    },
+                }))
+            }
+            UserOrRoleId::Role(rid) => {
+                if !want_roles {
+                    return None;
+                }
+                let Some(role) = roles.get(rid) else {
+                    tracing::warn!(
+                        role_id = %rid,
+                        "Dropping role member with no catalog row (dangling assignment tuple)."
+                    );
+                    return None;
+                };
+                Some(RoleMember::Role(RoleMembership {
+                    id: role.id,
+                    ident: role.ident_arc(),
+                    name: role.name.clone(),
+                }))
+            }
+        })
+        .collect()
 }
 
 /// The **transitive** listings (`…/members/transitive`, `…/roles/transitive`,
@@ -545,9 +643,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
 
         // Authorizer arm (OpenFGA): members live as `assignee` tuples; read them
-        // id-only and hydrate role identity from the catalog. Users are kept
-        // verbatim (IdP-owned); role members with no catalog row are dropped. The
-        // `?type=` filter is applied here since the authorizer read is unfiltered.
+        // id-only and hydrate identity from the catalog. User members are hydrated
+        // to name/email/type (id-only if unprovisioned); role members with no
+        // catalog row are dropped. The `?type=` filter is applied here since the
+        // authorizer read is unfiltered.
         if let Some(assignments) = authorizer.role_assignments() {
             let want_users = query.r#type != Some(RoleMemberType::Role);
             let want_roles = query.r#type != Some(RoleMemberType::User);
@@ -570,37 +669,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                         Vec::new()
                     }
                 },
-                |rows, roles| {
-                    rows.iter()
-                        .filter_map(|r| match &r.subject {
-                            UserOrRoleId::User(uid) => want_users.then(|| RoleMember {
-                                r#type: RoleMemberType::User,
-                                id: uid.to_string(),
-                                name: None,
-                                created_at: r.created_at,
-                            }),
-                            UserOrRoleId::Role(rid) => {
-                                if !want_roles {
-                                    return None;
-                                }
-                                let Some(role) = roles.get(rid) else {
-                                    tracing::warn!(
-                                        role_id = %rid,
-                                        "Dropping role member with no catalog row \
-                                         (dangling assignment tuple)."
-                                    );
-                                    return None;
-                                };
-                                Some(RoleMember {
-                                    r#type: RoleMemberType::Role,
-                                    id: rid.to_string(),
-                                    name: Some(role.name.clone()),
-                                    created_at: r.created_at,
-                                })
-                            }
-                        })
-                        .collect()
+                |rows| {
+                    if want_users {
+                        rows.iter()
+                            .filter_map(|r| match &r.subject {
+                                UserOrRoleId::User(uid) => Some(uid.clone()),
+                                UserOrRoleId::Role(_) => None,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
                 },
+                |rows, roles, users| build_role_members(rows, roles, users, want_users, want_roles),
             )
             .await?;
             return Ok(ListRoleMembersResponse {
@@ -608,17 +689,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 next_page_token,
             });
         }
-        let catalog = context.v1_state.catalog;
+        // Catalog arm: one JOIN-hydrated page, mapped straight to the API DTO.
         let page = C::list_direct_role_members_page(
             &project_id,
             role_id,
             query.r#type.map(RoleMemberKind::from),
             query.pagination_query(),
-            catalog.clone(),
+            context.v1_state.catalog,
         )
         .await?;
         Ok(ListRoleMembersResponse {
-            members: catalog_members_with_names::<C>(page.assignments, catalog).await?,
+            members: page.members.into_iter().map(RoleMember::from).collect(),
             next_page_token: page.next_page_token,
         })
     }
@@ -658,13 +739,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .await;
         let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
 
-        // Parse each requested member to its canonical id and dedup on THAT (not the
-        // raw string): two case spellings of a role UUID collapse to one, so the
-        // echoed response carries no duplicate rows. Order preserved.
+        // Dedup on the typed identifier so a member named twice (the request is
+        // already typed, so no string-spelling ambiguity remains) collapses to one
+        // echoed row. Order preserved.
         let mut seen = std::collections::HashSet::new();
         let mut subjects: Vec<UserOrRoleId> = Vec::new();
-        for member in request.members {
-            let subject = parse_member(member.r#type, &member.id)?;
+        for member in &request.members {
+            let subject = member.subject();
             if seen.insert(subject.clone()) {
                 subjects.push(subject);
             }
@@ -707,7 +788,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
 
         Ok(AddRoleMembersResponse {
-            members: subjects.into_iter().map(RoleMember::from).collect(),
+            members: subjects.into_iter().map(RoleMemberRef::from).collect(),
         })
     }
 
@@ -915,7 +996,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     /// `GET /role/{id}/members/transitive` — the role's transitive members: users
     /// assigned to the role or any role in its downward membership closure, plus
     /// every role in that closure. One keyset-paginated page, optionally filtered
-    /// to one kind. Transitive rows carry no `created_at` (no single edge).
+    /// to one kind.
     async fn list_role_transitive_members(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -971,21 +1052,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             role_id,
             query.r#type.map(RoleMemberKind::from),
             query.pagination_query(),
-            catalog.clone(),
+            catalog,
         )
         .await?;
-        // Hydrate role-member display names (users carry none), exactly as the
-        // direct `/members` listing does — a transitive role member always resolves
-        // in the catalog, so its name is always present.
+        // The page is already JOIN-hydrated with display identity, exactly as the
+        // direct `/members` listing.
         Ok(ListRoleMembersResponse {
-            members: catalog_members_with_names::<C>(page.assignments, catalog).await?,
+            members: page.members.into_iter().map(RoleMember::from).collect(),
             next_page_token: page.next_page_token,
         })
     }
 
     /// `GET /user/{id}/roles/transitive` — the full effective (transitive) role
     /// set a user holds (direct assignments plus every role reachable upward
-    /// through membership). Transitive rows carry no `created_at` (no single edge).
+    /// through membership).
     async fn list_user_transitive_roles(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -1030,26 +1110,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
         })?;
         Ok(ListRoleMembershipsResponse {
-            // Transitive: a role reached through the closure has no single defining
-            // membership edge, so `created_at` is None (not the `From` impl, which
-            // would surface the keyset key — the role's own creation time).
-            roles: page
-                .entries
-                .into_iter()
-                .map(|e| RoleMembership {
-                    id: e.role_id,
-                    ident: e.role_ident,
-                    name: e.name,
-                    created_at: None,
-                })
-                .collect(),
+            roles: page.entries.into_iter().map(RoleMembership::from).collect(),
             next_page_token: page.next_page_token,
         })
     }
 
     /// `GET /role/{id}/member-of/transitive` — the full transitive member-of set
     /// of a role: every role it effectively belongs to, reachable upward through
-    /// membership. Transitive rows carry no `created_at` (no single defining edge).
+    /// membership.
     async fn list_role_transitive_member_of(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -1105,19 +1173,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         Ok(ListRoleMembershipsResponse {
-            // Transitive: an ancestor role reached through the closure has no
-            // single defining membership edge, so `created_at` is None (not the
-            // `From` impl, which would surface the role's own creation time).
-            roles: page
-                .entries
-                .into_iter()
-                .map(|e| RoleMembership {
-                    id: e.role_id,
-                    ident: e.role_ident,
-                    name: e.name,
-                    created_at: None,
-                })
-                .collect(),
+            roles: page.entries.into_iter().map(RoleMembership::from).collect(),
             next_page_token: page.next_page_token,
         })
     }

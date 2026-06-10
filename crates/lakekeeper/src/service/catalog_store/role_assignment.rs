@@ -735,6 +735,43 @@ impl RoleMembershipEntry {
     }
 }
 
+/// A user's identity for a membership listing, read raw from the catalog: the
+/// nullable `name`/`email` exactly as stored — NO `display_user_name` placeholder
+/// (a nameless user surfaces as `None`). The user-side counterpart of
+/// [`RoleMembershipEntry`]; the API layer maps it to the `user` member variant.
+/// (`PartialEq` only — `UserType` is not `Eq`.)
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserMembershipEntry {
+    pub user_id: UserId,
+    /// Display name, raw from the column — `None` for a nameless user (no
+    /// placeholder is applied here, unlike the user-management `User` DTO).
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub user_type: UserType,
+}
+
+/// One enriched, display-ready member of a role read directly from the catalog
+/// (JOIN-hydrated). The catalog arm of the members listing produces these so the
+/// page needs no second round-trip; an assignment-managing authorizer (OpenFGA)
+/// instead returns id-only assignment rows that the API layer hydrates. The
+/// `role_membership.created_at` carried by the `Role` variant's
+/// [`RoleMembershipEntry`] is the edge timestamp (vestigial for the listing — the
+/// API drops it; for transitive listings it is the role's own creation time, used
+/// only as the keyset key).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CatalogRoleMember {
+    User(UserMembershipEntry),
+    Role(RoleMembershipEntry),
+}
+
+/// One page of a role's direct or transitive members (users ∪ member roles),
+/// each enriched with display identity, under one opaque continuation token.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListCatalogRoleMembersPage {
+    pub members: Vec<CatalogRoleMember>,
+    pub next_page_token: Option<String>,
+}
+
 /// Filter for the merged role-members listing: restrict to user members, role
 /// members, or (when `None` at the call site) return both. The API surfaces this
 /// as an optional `?type=user|role` query parameter.

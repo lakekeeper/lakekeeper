@@ -140,7 +140,8 @@
                       "management-v1-list-role-member-of",
                       "management-v1-list-user-roles",
                       "management-v1-list-role-transitive-members",
-                      "management-v1-list-user-transitive-roles"
+                      "management-v1-list-user-transitive-roles",
+                      "management-v1-list-role-transitive-member-of"
                     ]
                   }
                 }

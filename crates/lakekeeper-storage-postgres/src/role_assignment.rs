@@ -8,19 +8,17 @@ use lakekeeper::{
     service::{
         AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
         AddUserRoleAssignmentsResult, ArcProjectId, ArcRoleIdent, AssignedRole, AssignedUser,
-        CatalogBackendError, CatalogRoleForAssignment, CatalogUserRoleAssignmentUser,
-        DatabaseIntegrityError, ErrorModel, InvalidPaginationToken, LAKEKEEPER_ROLE_PROVIDER_NAME,
-        ListRoleMembersResult, ListRolesPage, ListUserRoleAssignmentsResult,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RoleAssignmentUserNotFound, RoleId,
-        RoleIdNotFoundInProject, RoleIdent, RoleMemberKind, RoleMembershipCycle,
-        RoleMembershipDepthExceeded, RoleMembershipDirection, RoleMembershipEntry,
-        RoleMembershipLockTimeout, RoleNameAlreadyExists, RoleNotManuallyAssignable,
-        RoleProviderId, SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError, SyncRoleMembersResult,
-        SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult, UniqueMembers, UniqueRoles,
-        UserProviderSyncInfo,
-        authn::UserId,
-        authz::{ListRoleAssignmentsResultPage, RoleAssignmentRow, UserOrRoleId},
+        CatalogBackendError, CatalogRoleForAssignment, CatalogRoleMember,
+        CatalogUserRoleAssignmentUser, DatabaseIntegrityError, ErrorModel, InvalidPaginationToken,
+        LAKEKEEPER_ROLE_PROVIDER_NAME, ListCatalogRoleMembersPage, ListRoleMembersResult,
+        ListRolesPage, ListUserRoleAssignmentsResult, RemoveRoleMembersError,
+        RemoveRoleMembersResult, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RoleAssignmentUserNotFound, RoleId, RoleIdNotFoundInProject, RoleIdent, RoleMemberKind,
+        RoleMembershipCycle, RoleMembershipDepthExceeded, RoleMembershipDirection,
+        RoleMembershipEntry, RoleMembershipLockTimeout, RoleNameAlreadyExists,
+        RoleNotManuallyAssignable, RoleProviderId, SYSTEM_ROLE_PROVIDER_NAME, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        UniqueMembers, UniqueRoles, UserMembershipEntry, UserProviderSyncInfo, authn::UserId,
     },
 };
 use uuid::Uuid;
@@ -1181,12 +1179,83 @@ pub(crate) async fn list_role_memberships<
 
 // ─── list_direct_role_members_page ───────────────────────────────────────────────────
 
+/// Build a user-member [`CatalogRoleMember`] from the JOIN-hydrated columns.
+/// `name`/`email` stay raw nullable (no `display_user_name` placeholder); errors
+/// (500) on an unparseable user id or a NULL `user_type` (`NOT NULL` on `users`,
+/// so a NULL signals catalog corruption).
+fn catalog_role_member_user(
+    member_id: &str,
+    name: Option<String>,
+    email: Option<String>,
+    user_type: Option<DbUserType>,
+) -> lakekeeper::service::Result<CatalogRoleMember> {
+    Ok(CatalogRoleMember::User(UserMembershipEntry {
+        user_id: user_id_from_db(member_id).map_err(|e| {
+            ErrorModel::internal(
+                "Stored role member has an unparseable user id",
+                "RoleMemberUserIdInvalid",
+                Some(Box::new(e)),
+            )
+        })?,
+        name,
+        email,
+        user_type: user_type
+            .ok_or_else(|| {
+                ErrorModel::internal(
+                    "Stored user role member is missing its user_type",
+                    "RoleMemberUserTypeMissing",
+                    None,
+                )
+            })?
+            .into(),
+    }))
+}
+
+/// Build a role-member [`CatalogRoleMember`] from the JOIN-hydrated columns.
+/// Errors (500) on an unparseable role id or any NULL identity column
+/// (`provider_id`/`source_id`/`name` are `NOT NULL` on `role`, so a NULL signals
+/// catalog corruption). `created_at` is the edge time for direct listings and the
+/// role's own creation time for transitive ones — the API drops it either way.
+fn catalog_role_member_role(
+    member_id: &str,
+    provider_id: Option<String>,
+    source_id: Option<String>,
+    name: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> lakekeeper::service::Result<CatalogRoleMember> {
+    let id = Uuid::parse_str(member_id).map_err(|e| {
+        ErrorModel::internal(
+            "Stored role member has an unparseable role id",
+            "RoleMemberRoleIdInvalid",
+            Some(Box::new(e)),
+        )
+    })?;
+    let missing = |field: &str| {
+        ErrorModel::internal(
+            format!("Stored role member is missing its {field}"),
+            "RoleMemberIdentityMissing",
+            None,
+        )
+    };
+    Ok(CatalogRoleMember::Role(RoleMembershipEntry {
+        role_id: RoleId::new(id),
+        role_ident: Arc::new(RoleIdent::from_db_unchecked(
+            provider_id.ok_or_else(|| missing("provider_id"))?,
+            source_id.ok_or_else(|| missing("source_id"))?,
+        )),
+        name: name.ok_or_else(|| missing("name"))?,
+        created_at,
+    }))
+}
+
 /// Direct (depth-1) members of `role_id`, in `project_id`: user members (from
 /// `role_assignment`) and member roles (from `role_membership`) merged into one
 /// listing under a single opaque cursor. `type_filter` optionally restricts to
 /// one kind. Ordered/keyset on `(created_at, member_type, member_id)` — a stable
 /// total order across the two heterogeneous sources, so a cursor minted on a
-/// `user` row resumes correctly into the `role` rows and vice versa.
+/// `user` row resumes correctly into the `role` rows and vice versa. Each row is
+/// JOIN-hydrated with display identity (user name/email/type, role ident/name) so
+/// the caller needs no second round-trip.
 pub(crate) async fn list_direct_role_members_page<
     'c,
     'e: 'c,
@@ -1197,7 +1266,7 @@ pub(crate) async fn list_direct_role_members_page<
     type_filter: Option<RoleMemberKind>,
     pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
     connection: E,
-) -> lakekeeper::service::Result<ListRoleAssignmentsResultPage> {
+) -> lakekeeper::service::Result<ListCatalogRoleMembersPage> {
     let lakekeeper::api::iceberg::v1::PaginationQuery {
         page_token,
         page_size,
@@ -1232,16 +1301,29 @@ pub(crate) async fn list_direct_role_members_page<
     let rows = sqlx::query!(
         r#"
         SELECT
-            m.created_at  AS "created_at!",
-            m.member_type AS "member_type!",
-            m.member_id   AS "member_id!"
+            m.created_at        AS "created_at!",
+            m.member_type       AS "member_type!",
+            m.member_id         AS "member_id!",
+            m.user_name         AS "user_name?",
+            m.user_email        AS "user_email?",
+            m.user_type         AS "user_type?: DbUserType",
+            m.role_provider_id  AS "role_provider_id?",
+            m.role_source_id    AS "role_source_id?",
+            m.role_name         AS "role_name?"
         FROM (
-            SELECT ra.created_at, 'user'::text AS member_type, ra.user_id AS member_id
+            SELECT ra.created_at, 'user'::text AS member_type, ra.user_id AS member_id,
+                   u.name AS user_name, u.email AS user_email, u.user_type AS user_type,
+                   NULL::text AS role_provider_id, NULL::text AS role_source_id,
+                   NULL::text AS role_name
             FROM role_assignment ra
             JOIN "role" r ON r.id = ra.role_id
+            JOIN users u ON u.id = ra.user_id
             WHERE ra.role_id = $1 AND r.project_id = $2 AND $3
           UNION ALL
-            SELECT rm.created_at, 'role'::text AS member_type, rm.member_role_id::text AS member_id
+            SELECT rm.created_at, 'role'::text AS member_type, rm.member_role_id::text AS member_id,
+                   NULL::text AS user_name, NULL::text AS user_email, NULL::user_type AS user_type,
+                   r.provider_id AS role_provider_id, r.source_id AS role_source_id,
+                   r.name AS role_name
             FROM role_membership rm
             JOIN "role" r ON r.id = rm.member_role_id
             WHERE rm.parent_role_id = $1 AND r.project_id = $2 AND $4
@@ -1264,26 +1346,22 @@ pub(crate) async fn list_direct_role_members_page<
     .await
     .map_err(|e| e.into_error_model("Error listing the members of a role".to_string()))?;
 
-    let mut assignments: Vec<RoleAssignmentRow> = Vec::with_capacity(rows.len());
+    let mut members: Vec<CatalogRoleMember> = Vec::with_capacity(rows.len());
     for row in &rows {
-        let subject = match row.member_type.as_str() {
-            "user" => UserOrRoleId::User(user_id_from_db(&row.member_id).map_err(|e| {
-                ErrorModel::internal(
-                    "Stored role member has an unparseable user id",
-                    "RoleMemberUserIdInvalid",
-                    Some(Box::new(e)),
-                )
-            })?),
-            "role" => {
-                let id = Uuid::parse_str(&row.member_id).map_err(|e| {
-                    ErrorModel::internal(
-                        "Stored role member has an unparseable role id",
-                        "RoleMemberRoleIdInvalid",
-                        Some(Box::new(e)),
-                    )
-                })?;
-                UserOrRoleId::Role(RoleId::new(id))
-            }
+        let member = match row.member_type.as_str() {
+            "user" => catalog_role_member_user(
+                &row.member_id,
+                row.user_name.clone(),
+                row.user_email.clone(),
+                row.user_type,
+            )?,
+            "role" => catalog_role_member_role(
+                &row.member_id,
+                row.role_provider_id.clone(),
+                row.role_source_id.clone(),
+                row.role_name.clone(),
+                row.created_at,
+            )?,
             other => {
                 return Err(ErrorModel::internal(
                     format!("Unexpected role member type '{other}'"),
@@ -1293,11 +1371,7 @@ pub(crate) async fn list_direct_role_members_page<
                 .into());
             }
         };
-        assignments.push(RoleAssignmentRow {
-            subject,
-            role_id,
-            created_at: Some(row.created_at),
-        });
+        members.push(member);
     }
 
     let next_page_token = rows.last().map(|row| {
@@ -1308,8 +1382,8 @@ pub(crate) async fn list_direct_role_members_page<
         .to_string()
     });
 
-    Ok(ListRoleAssignmentsResultPage {
-        assignments,
+    Ok(ListCatalogRoleMembersPage {
+        members,
         next_page_token,
     })
 }
@@ -1340,7 +1414,7 @@ pub(crate) async fn list_transitive_role_members_page<
     type_filter: Option<RoleMemberKind>,
     pagination: lakekeeper::api::iceberg::v1::PaginationQuery,
     connection: E,
-) -> lakekeeper::service::Result<ListRoleAssignmentsResultPage> {
+) -> lakekeeper::service::Result<ListCatalogRoleMembersPage> {
     let lakekeeper::api::iceberg::v1::PaginationQuery {
         page_token,
         page_size,
@@ -1378,27 +1452,41 @@ pub(crate) async fn list_transitive_role_members_page<
             JOIN descendants d ON rm.parent_role_id = d.role_id
         )
         SELECT
-            m.created_at  AS "created_at!",
-            m.member_type AS "member_type!",
-            m.member_id   AS "member_id!"
+            m.created_at        AS "created_at!",
+            m.member_type       AS "member_type!",
+            m.member_id         AS "member_id!",
+            m.user_name         AS "user_name?",
+            m.user_email        AS "user_email?",
+            m.user_type         AS "user_type?: DbUserType",
+            m.role_provider_id  AS "role_provider_id?",
+            m.role_source_id    AS "role_source_id?",
+            m.role_name         AS "role_name?"
         FROM (
             -- Keyset key is the member entity's own immutable created_at
             -- (users.created_at / role.created_at), constant per group, so a
             -- mid-pagination edge deletion can't shift it. MIN() over a constant
-            -- is that constant; it just satisfies the GROUP BY aggregate.
-            SELECT 'user'::text AS member_type, ra.user_id AS member_id, MIN(u.created_at) AS created_at
+            -- is that constant; it just satisfies the GROUP BY aggregate. The
+            -- identity columns are functionally dependent on the grouped id, so
+            -- adding them to GROUP BY leaves the grouping unchanged.
+            SELECT 'user'::text AS member_type, ra.user_id AS member_id, MIN(u.created_at) AS created_at,
+                   u.name AS user_name, u.email AS user_email, u.user_type AS user_type,
+                   NULL::text AS role_provider_id, NULL::text AS role_source_id,
+                   NULL::text AS role_name
             FROM role_assignment ra
             JOIN "role" r ON r.id = ra.role_id
             JOIN users u ON u.id = ra.user_id
             WHERE ra.role_id IN (SELECT role_id FROM descendants) AND r.project_id = $2 AND $3
-            GROUP BY ra.user_id
+            GROUP BY ra.user_id, u.name, u.email, u.user_type
           UNION ALL
-            SELECT 'role'::text AS member_type, d.role_id::text AS member_id, MIN(r.created_at) AS created_at
+            SELECT 'role'::text AS member_type, d.role_id::text AS member_id, MIN(r.created_at) AS created_at,
+                   NULL::text AS user_name, NULL::text AS user_email, NULL::user_type AS user_type,
+                   r.provider_id AS role_provider_id, r.source_id AS role_source_id,
+                   r.name AS role_name
             FROM descendants d
             JOIN role_membership rm ON rm.member_role_id = d.role_id
             JOIN "role" r ON r.id = d.role_id
             WHERE d.role_id <> $1 AND r.project_id = $2 AND $4
-            GROUP BY d.role_id
+            GROUP BY d.role_id, r.provider_id, r.source_id, r.name
         ) m
         WHERE ($5::timestamptz IS NULL)
            OR (m.created_at, m.member_type, m.member_id) > ($5, $6, $7)
@@ -1420,26 +1508,22 @@ pub(crate) async fn list_transitive_role_members_page<
         e.into_error_model("Error listing the transitive members of a role".to_string())
     })?;
 
-    let mut assignments: Vec<RoleAssignmentRow> = Vec::with_capacity(rows.len());
+    let mut members: Vec<CatalogRoleMember> = Vec::with_capacity(rows.len());
     for row in &rows {
-        let subject = match row.member_type.as_str() {
-            "user" => UserOrRoleId::User(user_id_from_db(&row.member_id).map_err(|e| {
-                ErrorModel::internal(
-                    "Stored role member has an unparseable user id",
-                    "RoleMemberUserIdInvalid",
-                    Some(Box::new(e)),
-                )
-            })?),
-            "role" => {
-                let id = Uuid::parse_str(&row.member_id).map_err(|e| {
-                    ErrorModel::internal(
-                        "Stored role member has an unparseable role id",
-                        "RoleMemberRoleIdInvalid",
-                        Some(Box::new(e)),
-                    )
-                })?;
-                UserOrRoleId::Role(RoleId::new(id))
-            }
+        let member = match row.member_type.as_str() {
+            "user" => catalog_role_member_user(
+                &row.member_id,
+                row.user_name.clone(),
+                row.user_email.clone(),
+                row.user_type,
+            )?,
+            "role" => catalog_role_member_role(
+                &row.member_id,
+                row.role_provider_id.clone(),
+                row.role_source_id.clone(),
+                row.role_name.clone(),
+                row.created_at,
+            )?,
             other => {
                 return Err(ErrorModel::internal(
                     format!("Unexpected role member type '{other}'"),
@@ -1449,12 +1533,7 @@ pub(crate) async fn list_transitive_role_members_page<
                 .into());
             }
         };
-        assignments.push(RoleAssignmentRow {
-            subject,
-            role_id,
-            // A transitive member has no single defining edge.
-            created_at: None,
-        });
+        members.push(member);
     }
 
     let next_page_token = rows.last().map(|row| {
@@ -1465,10 +1544,59 @@ pub(crate) async fn list_transitive_role_members_page<
         .to_string()
     });
 
-    Ok(ListRoleAssignmentsResultPage {
-        assignments,
+    Ok(ListCatalogRoleMembersPage {
+        members,
         next_page_token,
     })
+}
+
+// ─── list_user_membership_entries ────────────────────────────────────────────────────
+
+/// Fetch raw membership identity for `user_ids` (nullable name/email + type), in
+/// any order; unknown / soft-deleted ids are simply absent. Reads the raw
+/// `users.name` (NO `display_user_name` placeholder), so a nameless user yields
+/// `name = None`. The id set is bounded by the caller's page size, so a single
+/// `id = ANY(...)` lookup suffices (no internal pagination).
+pub(crate) async fn list_user_membership_entries<
+    'c,
+    'e: 'c,
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+>(
+    user_ids: &[UserId],
+    connection: E,
+) -> lakekeeper::service::Result<Vec<UserMembershipEntry>> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = user_ids.iter().map(ToString::to_string).collect();
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, name, email, user_type AS "user_type: DbUserType"
+        FROM users
+        WHERE id = ANY($1) AND deleted_at IS NULL
+        "#,
+        &ids as &[String],
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|e| e.into_error_model("Error fetching user membership identities".to_string()))?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(UserMembershipEntry {
+                user_id: user_id_from_db(&row.id).map_err(|e| {
+                    ErrorModel::internal(
+                        "Stored user has an unparseable id",
+                        "UserIdInvalid",
+                        Some(Box::new(e)),
+                    )
+                })?,
+                name: row.name,
+                email: row.email,
+                user_type: row.user_type.into(),
+            })
+        })
+        .collect()
 }
 
 // ─── list_direct_user_roles_page ─────────────────────────────────────────────────────
@@ -1842,15 +1970,26 @@ mod tests {
         },
         service::{
             AddRoleMembersError, ArcProjectId, CatalogCreateRoleRequest, CatalogRoleAssignmentOps,
-            CatalogRoleForAssignment, CatalogRoleOps, CatalogStore, CatalogUserRoleAssignmentUser,
-            RoleId, RoleIdent, RoleProviderId, RoleSourceId, SyncRoleMembersError,
-            SyncUserRoleAssignmentsError, Transaction, UniqueMembers, UniqueRoles, UserUpsertMode,
+            CatalogRoleForAssignment, CatalogRoleMember, CatalogRoleOps, CatalogStore,
+            CatalogUserRoleAssignmentUser, RoleId, RoleIdent, RoleProviderId, RoleSourceId,
+            SyncRoleMembersError, SyncUserRoleAssignmentsError, Transaction, UniqueMembers,
+            UniqueRoles, UserUpsertMode,
             authn::{UserId, UserIdRef},
+            authz::UserOrRoleId,
         },
     };
 
     use super::*;
     use crate::{CatalogState, PostgresBackend, PostgresTransaction};
+
+    /// The id of a catalog member, for assertions that only check membership
+    /// identity (the enriched name/type fields are asserted separately).
+    fn member_subject(m: &CatalogRoleMember) -> UserOrRoleId {
+        match m {
+            CatalogRoleMember::User(u) => UserOrRoleId::User(u.user_id.clone()),
+            CatalogRoleMember::Role(r) => UserOrRoleId::Role(r.role_id),
+        }
+    }
 
     fn um<'s, 'd>(s: &'s [CatalogUserRoleAssignmentUser<'d>]) -> UniqueMembers<'s, 'd> {
         UniqueMembers::from_unchecked(s)
@@ -2013,9 +2152,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(page.assignments.len(), 1);
+        assert_eq!(page.members.len(), 1);
         assert_eq!(
-            page.assignments[0].subject,
+            member_subject(&page.members[0]),
             UserOrRoleId::User(user_id.clone())
         );
 
@@ -2131,7 +2270,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(page.assignments.len(), 0, "no partial write");
+        assert_eq!(page.members.len(), 0, "no partial write");
     }
 
     /// Assigning to a role that does not exist in the project is rejected with
@@ -2322,7 +2461,7 @@ mod tests {
             members_query(Some(RoleMemberKind::User))
                 .await
                 .unwrap()
-                .assignments
+                .members
                 .len(),
             1
         );
@@ -2342,7 +2481,7 @@ mod tests {
             members_query(Some(RoleMemberKind::User))
                 .await
                 .unwrap()
-                .assignments
+                .members
                 .len(),
             0,
             "deleted user is no longer a role member"
@@ -2727,17 +2866,12 @@ mod tests {
             .await
             .unwrap();
             pages += 1;
-            if page.assignments.is_empty() {
+            if page.members.is_empty() {
                 assert_eq!(page.next_page_token, None, "drained page has no token");
                 break;
             }
-            for row in &page.assignments {
-                assert_eq!(
-                    row.role_id, parent,
-                    "every row is scoped to the parent role"
-                );
-                assert!(row.created_at.is_some(), "catalog path sets created_at");
-                got.push(row.subject.clone());
+            for member in &page.members {
+                got.push(member_subject(member));
             }
             token = PageToken::Present(page.next_page_token.expect("non-empty page has a token"));
         }
@@ -2793,10 +2927,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(users_only.assignments.len(), 1);
+        assert_eq!(users_only.members.len(), 1);
+        // The JOIN hydrates the user member's identity in one query (raw nullable
+        // name, here the synced "U1"; no email; type Human).
         assert_eq!(
-            users_only.assignments[0].subject,
-            UserOrRoleId::User((*u1).clone())
+            users_only.members[0],
+            CatalogRoleMember::User(UserMembershipEntry {
+                user_id: (*u1).clone(),
+                name: Some("U1".to_string()),
+                email: None,
+                user_type: UserType::Human,
+            })
         );
 
         let roles_only = list_direct_role_members_page(
@@ -2811,8 +2952,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(roles_only.assignments.len(), 1);
-        assert_eq!(roles_only.assignments[0].subject, UserOrRoleId::Role(ma));
+        assert_eq!(roles_only.members.len(), 1);
+        // The role member is hydrated with its ident (lakekeeper/ma) and name.
+        let CatalogRoleMember::Role(role_member) = &roles_only.members[0] else {
+            panic!("expected a role member, got {:?}", roles_only.members[0]);
+        };
+        assert_eq!(role_member.role_id, ma);
+        assert_eq!(role_member.name, "ma");
+        assert_eq!(
+            role_member.role_ident.as_ref(),
+            &RoleIdent::new_unchecked("lakekeeper", "ma")
+        );
     }
 
     /// Project scoping: listing members of a role while passing a different
@@ -2847,7 +2997,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(in_a.assignments.len(), 1);
+        assert_eq!(in_a.members.len(), 1);
 
         // Wrong project: the role is not in B, so the listing is empty.
         let in_b = list_direct_role_members_page(
@@ -2862,7 +3012,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(in_b.assignments.len(), 0);
+        assert_eq!(in_b.members.len(), 0);
         assert_eq!(in_b.next_page_token, None);
     }
 

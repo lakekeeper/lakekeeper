@@ -34,7 +34,6 @@ use crate::{
     service::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
-        authz::ListRoleAssignmentsResultPage,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -740,7 +739,7 @@ where
         type_filter: Option<RoleMemberKind>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRoleAssignmentsResultPage>;
+    ) -> Result<ListCatalogRoleMembersPage>;
 
     /// Direct roles `role_id` is a member of, keyset-paginated and project-scoped.
     async fn list_direct_role_member_of_page(
@@ -774,7 +773,7 @@ where
         type_filter: Option<RoleMemberKind>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRoleAssignmentsResultPage>;
+    ) -> Result<ListCatalogRoleMembersPage>;
 
     /// The full effective (transitive) role set a user holds — direct assignments
     /// plus every role reachable upward through membership — keyset-paginated and
@@ -797,6 +796,17 @@ where
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesPage>;
+
+    /// Fetch raw membership identity for `user_ids` (nullable name/email + type),
+    /// in any order. Unknown ids are simply absent — an assignment-managing
+    /// authorizer may reference a not-yet-provisioned user, which the API layer
+    /// then hydrates to id-only. Reads the raw `users.name`, NOT the
+    /// `display_user_name` placeholder, so a nameless user surfaces with
+    /// `name = None`. Used to hydrate the authorizer-arm members listing.
+    async fn list_user_membership_entries(
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserMembershipEntry>>;
 
     // ---------------- User Management API ----------------
     /// Insert or update a user. `mode` controls whether an existing row is

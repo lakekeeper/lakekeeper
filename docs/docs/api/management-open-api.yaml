@@ -4269,17 +4269,17 @@ components:
     AddRoleMembersResponse:
       type: object
       description: |-
-        Response for `POST /role/{id}/members`: the requested members, confirmed
-        present after the add (idempotent — already-present members are included).
-        Each member's `created_at` is `None` (membership confirmation only) — use
-        `GET /role/{id}/members` to retrieve membership timestamps.
+        Response for `POST /role/{id}/members`: the requested members confirmed present
+        (idempotent — already-present members are included). Echoes identity
+        [`RoleMemberRef`]s, not hydrated [`RoleMember`]s — use `GET /role/{id}/members`
+        for display names and membership timestamps.
       required:
         - members
       properties:
         members:
           type: array
           items:
-            $ref: '#/components/schemas/RoleMember'
+            $ref: '#/components/schemas/RoleMemberRef'
     AdlsProfile:
       type: object
       required:
@@ -7537,76 +7537,82 @@ components:
                     - ownership
           title: RoleAssignmentOwnership
     RoleMember:
-      type: object
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserMembership'
+              description: A user assigned to the role.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - user
+          description: A user assigned to the role.
+        - allOf:
+            - $ref: '#/components/schemas/RoleMembership'
+              description: Another role that is a member of the role.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - role
+          description: Another role that is a member of the role.
       description: |-
-        A member of a role on responses: a user or another role (`type` + opaque `id`),
-        with the membership-edge timestamp. The request twin is [`RoleMemberRef`].
-
-        `created_at` is `None` when no timestamp is available — on the add response
-        (which only confirms membership) and under authorizer backends that do not
-        record an edge timestamp; it is populated by the `GET /role/{id}/members`
-        listing.
-
-        `name` carries the role's display name for **role** members and is `None` for
-        **user** members (a user has no role-name; users are IdP-owned and not resolved
-        here). On the listing endpoints a role member always has a name (an unresolvable
-        role is dropped, not surfaced); it is `None` on the add response (confirmation
-        only, no hydration).
-      required:
-        - type
-        - id
-      properties:
-        created-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
-        id:
-          type: string
-        name:
-          type:
-            - string
-            - 'null'
-          description: Display name for a role member; `None` for a user member or where unresolved.
-        type:
-          $ref: '#/components/schemas/RoleMemberType'
+        A member of a role, returned by `GET /role/{id}/members`. Discriminated by
+        `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
+        Identity is hydrated; for requests and add/remove confirmations use the
+        un-hydrated [`RoleMemberRef`] instead.
     RoleMemberRef:
-      type: object
+      oneOf:
+        - type: object
+          description: A user, by `IdP` subject id.
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+            type:
+              type: string
+              enum:
+                - user
+        - type: object
+          description: A role, by id.
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - role
       description: |-
-        A member to add: a user or another role, by identity (`type` + opaque `id`).
-        The request twin of [`RoleMember`] — no timestamp, since the membership edge's
-        `created_at` is server-assigned and read-only, so it lives only on responses.
-      required:
-        - type
-        - id
-      properties:
-        id:
-          type: string
-        type:
-          $ref: '#/components/schemas/RoleMemberType'
-    RoleMemberType:
-      type: string
-      description: Kind of a role member. Serializes as `"user"` / `"role"`.
-      enum:
-        - user
-        - role
+        An identity reference to a role member — a `user` or a `role`, by typed id.
+        Sent in `POST /role/{id}/members` requests and echoed by the add/remove
+        confirmations. Unlike [`RoleMember`] it is never hydrated (no name/timestamp):
+        it names *which* principal, not its display identity.
     RoleMembership:
       type: object
       description: |-
-        A role reached through a membership edge — used by `member-of` and
-        `user/{id}/roles`. `id`, `ident`, and `name` are always present; `created_at`
-        (the membership-edge timestamp) is `None` under authorizer backends that do not
-        record one.
+        A role's display identity in a membership listing: the role-member variant of
+        [`RoleMember`], and the item type of `/member-of` and `/user/{id}/roles`.
+        `ident` (`provider/source-id`) is the stable external handle a client references
+        the role by; `id` is the internal UUID. All fields are always present — a role
+        whose id no longer resolves in the catalog (a dangling authorizer edge) is
+        dropped from the listing and logged, never surfaced with a null identity.
       required:
         - id
         - ident
         - name
       properties:
-        created-at:
-          type:
-            - string
-            - 'null'
-          format: date-time
         id:
           type: string
           format: uuid
@@ -9084,6 +9090,37 @@ components:
         - config-call-creation
         - update-endpoint
         - role-provider
+    UserMembership:
+      type: object
+      description: |-
+        A user's identity in a membership listing (the `user` variant of
+        [`RoleMember`]). All identity fields are nullable: under an assignment-managing
+        authorizer (e.g. OpenFGA) a member may be assigned but not yet provisioned in
+        the catalog, so only the `id` is known. `name`/`email` are also `null` for a
+        provisioned-but-nameless user.
+      required:
+        - id
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+          description: Email; `null` if unknown.
+        id:
+          type: string
+          description: '`IdP` subject id of the user.'
+        name:
+          type:
+            - string
+            - 'null'
+          description: Display name; `null` when the user has no name.
+        user-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserType'
+              description: |-
+                Whether the principal is a human or an application; `null` when the user
+                is assigned but not provisioned in the catalog (the id is all that's known).
     UserOrRole:
       oneOf:
         - type: object
