@@ -25,7 +25,7 @@ mod role_membership {
         use lakekeeper::{
             ProjectId,
             api::{
-                ApiContext, RequestMetadata,
+                ApiContext, RequestMetadata, RequestMetadataTestBuilder,
                 management::v1::{
                     ApiServer,
                     role::{CreateRoleRequest, Service as _},
@@ -71,14 +71,10 @@ mod role_membership {
         }
 
         fn metadata(user_id: &UserId, project_id: &ProjectId) -> RequestMetadata {
-            RequestMetadata::new_test(
-                None,
-                None,
-                Actor::Principal(user_id.clone()),
-                Some(project_id.clone().into()),
-                None,
-                http::Method::default(),
-            )
+            RequestMetadataTestBuilder::builder()
+                .actor(Actor::Principal(user_id.clone()))
+                .project_id(Some(project_id.clone().into()))
+                .build()
         }
 
         /// Create a role via the management API (writes the `role#project` +
@@ -335,6 +331,19 @@ mod role_membership {
                 ApiServer::list_role_members(ctx.clone(), nobody_md.clone(), a, list_query(None))
                     .await
                     .unwrap_err();
+            assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
+
+            // Transitive role read is gated by the PROJECT-scoped `ListRoles`
+            // capability, and authz fires BEFORE the catalog-only 501, so an
+            // unprivileged actor is denied (403) rather than handed a 501.
+            let err = ApiServer::list_role_transitive_members(
+                ctx.clone(),
+                nobody_md.clone(),
+                a,
+                list_query(None),
+            )
+            .await
+            .unwrap_err();
             assert_eq!(err.error.code, http::StatusCode::FORBIDDEN.as_u16());
 
             // User-target read of ANOTHER user (require_user_action; same-user would

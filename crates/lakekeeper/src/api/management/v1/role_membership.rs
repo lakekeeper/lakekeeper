@@ -20,6 +20,21 @@
 //! for why OpenFGA's graph-listing APIs make a correct, bounded transitive
 //! listing impractical today.
 //!
+//! **Authorization scope.** The *direct* role reads check the per-role
+//! `ReadRoleAssignments` — they expose only the named role's own edges, which that
+//! check covers. The *transitive* role reads (`/members/transitive`,
+//! `/member-of/transitive`) instead require the PROJECT-scoped `ListRoles`
+//! capability, because they return a whole closure of *other* roles' members /
+//! ancestors. Gating that on one per-role check would, under a per-role authorizer
+//! (Cedar), let a grant on the entry role authorize disclosure of nested/ancestor
+//! roles the caller cannot read individually. `ListRoles` is the right gate: in the
+//! OpenFGA model `role.can_read_assignments` already resolves to
+//! `can_list_roles from project`, so reading role assignments is project-uniform by
+//! design (no per-role read grant exists) — see `authz/openfga/.../role.fga`. The
+//! `/user/{id}/roles/transitive` read stays on the per-user `ReadRoleAssignments`
+//! (server-level under OpenFGA): its closure is the *user's own* effective roles,
+//! which is exactly the data that check authorizes.
+//!
 //! **Cross-project nesting divergence.** The catalog forbids role-in-role
 //! membership across projects at write time (`add_role_members` →
 //! `RoleIdNotFoundInProject`) and its readers are project-scoped. An
@@ -32,6 +47,8 @@
 //!
 //! Error/emit shape follows `user.rs::get_user`: emit the authorization decision,
 //! then run business logic with `?`.
+
+use std::collections::HashMap;
 
 use axum::{Json, response::IntoResponse};
 use http::StatusCode;
@@ -50,8 +67,9 @@ use crate::{
         CatalogRoleAssignmentOps, CatalogRoleOps, CatalogStore, Result, RoleId, RoleMemberKind,
         RoleMembershipEntry, SecretStore, State, UserId,
         authz::{
-            AuthZRoleOps, AuthZUserOps, Authorizer, CatalogRoleAction, CatalogUserAction,
-            ManagesRoleAssignments, RoleAssignmentFilter, RoleAssignmentRow, UserOrRoleId,
+            AuthZError, AuthZProjectOps, AuthZRoleOps, AuthZUserOps, Authorizer,
+            CatalogProjectAction, CatalogRoleAction, CatalogUserAction, ManagesRoleAssignments,
+            RoleAssignmentFilter, RoleAssignmentRow, UserOrRoleId,
         },
         events::{APIEventContext, AuthorizationFailureSource},
     },
@@ -309,8 +327,8 @@ fn parse_member(r#type: RoleMemberType, id: &str) -> Result<UserOrRoleId> {
 async fn fetch_roles_by_ids<C: CatalogStore>(
     role_ids: &[RoleId],
     catalog: C::State,
-) -> Result<std::collections::HashMap<RoleId, ArcRole>> {
-    let mut roles = std::collections::HashMap::with_capacity(role_ids.len());
+) -> Result<HashMap<RoleId, ArcRole>> {
+    let mut roles = HashMap::with_capacity(role_ids.len());
     if role_ids.is_empty() {
         return Ok(roles);
     }
@@ -388,7 +406,7 @@ async fn read_hydrated_assignments_page<C, T>(
     mut pagination: PaginationQuery,
     catalog: C::State,
     collect_role_ids: impl Fn(&[RoleAssignmentRow]) -> Vec<RoleId>,
-    build: impl Fn(&[RoleAssignmentRow], &std::collections::HashMap<RoleId, ArcRole>) -> Vec<T>,
+    build: impl Fn(&[RoleAssignmentRow], &HashMap<RoleId, ArcRole>) -> Vec<T>,
 ) -> Result<(Vec<T>, Option<String>)>
 where
     C: CatalogStore,
@@ -907,26 +925,40 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(None)?;
         let authorizer = context.v1_state.authz;
 
-        let event_ctx = APIEventContext::for_role(
+        let catalog = context.v1_state.catalog;
+
+        // Transitive listings traverse a CLOSURE of roles, so they are authorized by
+        // the PROJECT-scoped `ListRoles` capability, not per-role `ReadRoleAssignments`.
+        // Under OpenFGA the two coincide (`can_read_assignments` resolves to
+        // `can_list_roles from project`); under a per-role authorizer (Cedar) the
+        // project gate is what stops one role's read grant from authorizing disclosure
+        // of nested roles in the closure. The named role must still exist (404),
+        // checked AFTER the capability so a forbidden caller can't probe existence.
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.into(),
             context.v1_state.events.clone(),
-            role_id,
-            CatalogRoleAction::ReadRoleAssignments,
+            project_id.clone(),
+            std::sync::Arc::new(CatalogProjectAction::ListRoles),
         );
-        let role = C::get_role_by_id_cache_aware(
-            &project_id,
-            role_id,
-            CachePolicy::Skip,
-            context.v1_state.catalog.clone(),
-        )
-        .await;
-        let authz_result = authorizer
-            .require_role_action(
-                event_ctx.request_metadata(),
-                role,
-                CatalogRoleAction::ReadRoleAssignments,
+        let authz_result: std::result::Result<(), AuthZError> = async {
+            authorizer
+                .require_project_action(
+                    event_ctx.request_metadata(),
+                    event_ctx.user_provided_entity_arc_ref(),
+                    event_ctx.action().clone(),
+                )
+                .await?;
+            let role = C::get_role_by_id_cache_aware(
+                &project_id,
+                role_id,
+                CachePolicy::Skip,
+                catalog.clone(),
             )
             .await;
+            authorizer.require_role_presence(role)?;
+            Ok(())
+        }
+        .await;
         event_ctx.emit_authz(authz_result)?;
 
         // Transitive listing is catalog-only; see the helper for why OpenFGA is
@@ -939,15 +971,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             role_id,
             query.r#type.map(RoleMemberKind::from),
             query.pagination_query(),
-            context.v1_state.catalog.clone(),
+            catalog.clone(),
         )
         .await?;
         // Hydrate role-member display names (users carry none), exactly as the
         // direct `/members` listing does — a transitive role member always resolves
         // in the catalog, so its name is always present.
         Ok(ListRoleMembersResponse {
-            members: catalog_members_with_names::<C>(page.assignments, context.v1_state.catalog)
-                .await?,
+            members: catalog_members_with_names::<C>(page.assignments, catalog).await?,
             next_page_token: page.next_page_token,
         })
     }
@@ -1028,26 +1059,37 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let project_id = request_metadata.require_project_id(None)?;
         let authorizer = context.v1_state.authz;
 
-        let event_ctx = APIEventContext::for_role(
+        let catalog = context.v1_state.catalog;
+
+        // Transitive listings traverse a CLOSURE of roles, so they are authorized by
+        // the PROJECT-scoped `ListRoles` capability, not per-role `ReadRoleAssignments`
+        // (see `list_role_transitive_members` for the full rationale). The named role
+        // must still exist (404), checked AFTER the capability.
+        let event_ctx = APIEventContext::for_project_arc(
             request_metadata.into(),
             context.v1_state.events.clone(),
-            role_id,
-            CatalogRoleAction::ReadRoleAssignments,
+            project_id.clone(),
+            std::sync::Arc::new(CatalogProjectAction::ListRoles),
         );
-        let role = C::get_role_by_id_cache_aware(
-            &project_id,
-            role_id,
-            CachePolicy::Skip,
-            context.v1_state.catalog.clone(),
-        )
-        .await;
-        let authz_result = authorizer
-            .require_role_action(
-                event_ctx.request_metadata(),
-                role,
-                CatalogRoleAction::ReadRoleAssignments,
+        let authz_result: std::result::Result<(), AuthZError> = async {
+            authorizer
+                .require_project_action(
+                    event_ctx.request_metadata(),
+                    event_ctx.user_provided_entity_arc_ref(),
+                    event_ctx.action().clone(),
+                )
+                .await?;
+            let role = C::get_role_by_id_cache_aware(
+                &project_id,
+                role_id,
+                CachePolicy::Skip,
+                catalog.clone(),
             )
             .await;
+            authorizer.require_role_presence(role)?;
+            Ok(())
+        }
+        .await;
         event_ctx.emit_authz(authz_result)?;
 
         // Transitive listing is catalog-only; see the helper. The direct
@@ -1059,7 +1101,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &project_id,
             role_id,
             query.pagination_query(),
-            context.v1_state.catalog,
+            catalog,
         )
         .await?;
         Ok(ListRoleMembershipsResponse {

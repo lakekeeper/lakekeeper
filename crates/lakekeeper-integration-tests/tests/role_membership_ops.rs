@@ -5,7 +5,7 @@
 use lakekeeper::{
     ProjectId,
     api::{
-        ApiContext, RequestMetadata,
+        ApiContext, RequestMetadata, RequestMetadataTestBuilder,
         management::v1::{
             ApiServer,
             role_membership::{
@@ -16,8 +16,7 @@ use lakekeeper::{
     },
     service::{
         CatalogCreateRoleRequest, CatalogRoleOps, CatalogStore, RoleId, RoleProviderId,
-        RoleSourceId, State, Transaction, UserId, UserUpsertMode, authn::Actor,
-        authz::AllowAllAuthorizer,
+        RoleSourceId, State, Transaction, UserId, UserUpsertMode, authz::AllowAllAuthorizer,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile};
@@ -39,14 +38,9 @@ async fn setup(pool: PgPool) -> (Ctx, std::sync::Arc<ProjectId>) {
 }
 
 fn metadata(project_id: &ProjectId) -> RequestMetadata {
-    RequestMetadata::new_test(
-        None,
-        None,
-        Actor::Anonymous,
-        Some(project_id.clone().into()),
-        None,
-        http::Method::default(),
-    )
+    RequestMetadataTestBuilder::builder()
+        .project_id(Some(project_id.clone().into()))
+        .build()
 }
 
 /// Create a catalog-managed (`lakekeeper` provider) role directly in the DB.

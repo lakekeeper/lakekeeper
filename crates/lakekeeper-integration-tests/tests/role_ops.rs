@@ -1,7 +1,7 @@
 use lakekeeper::{
     ProjectId,
     api::{
-        RequestMetadata,
+        RequestMetadata, RequestMetadataTestBuilder,
         iceberg::v1::PaginationQuery,
         management::v1::{
             ApiServer,
@@ -13,7 +13,7 @@ use lakekeeper::{
     service::{
         ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogListRolesByIdFilter,
         CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId,
-        SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction, authn::Actor,
+        SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
         authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
     },
 };
@@ -22,14 +22,9 @@ use lakekeeper_storage_postgres::PostgresBackend;
 use sqlx::PgPool;
 
 fn request_metadata_with_project(project_id: &ProjectId) -> RequestMetadata {
-    RequestMetadata::new_test(
-        None,
-        None,
-        Actor::Anonymous,
-        Some(project_id.clone().into()),
-        None,
-        http::Method::default(),
-    )
+    RequestMetadataTestBuilder::builder()
+        .project_id(Some(project_id.clone().into()))
+        .build()
 }
 
 fn make_provider() -> RoleProviderId {
