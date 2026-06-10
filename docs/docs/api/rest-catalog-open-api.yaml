@@ -957,7 +957,7 @@ paths:
         - name: purgeRequested
           in: query
           required: false
-          description: Whether the user requested to purge the underlying table's data and metadata
+          description: 'Whether the user requested to purge the underlying table data and metadata. Note: when omitted, Lakekeeper treats the drop as a purge for tables it manages, so the data is removed. This differs from the Iceberg REST default of false. See the Dropping Tables section of the Lakekeeper documentation.'
           schema:
             type: boolean
             default: false
