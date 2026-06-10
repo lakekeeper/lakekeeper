@@ -463,10 +463,16 @@ pub(crate) async fn auth_middleware_fn<
 
         request_metadata.set_authentication(actor.clone(), authentication.clone());
 
-        if state
-            .instance_admin_membership
-            .is_instance_admin(&actor)
-            .await
+        // Instance-admin membership is only ever consulted for an authenticated
+        // principal. Assumed-roles (`Actor::Role`) and anonymous callers never
+        // inherit instance-admin — role assumption is an explicit opt-in to a
+        // narrower scope — so we extract the `UserId` here and never reach the
+        // membership source for non-principal actors.
+        if let Actor::Principal(user_id) = &actor
+            && state
+                .instance_admin_membership
+                .is_instance_admin(user_id)
+                .await
         {
             request_metadata.set_instance_admin(true);
         }

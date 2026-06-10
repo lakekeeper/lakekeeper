@@ -29,7 +29,6 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         UserId,
-        authn::Actor,
         authz::{ActionDescriptor, CatalogAction},
         events::{AuthorizationFailureReason, AuthorizationFailureSource},
     },
@@ -115,9 +114,20 @@ impl InstanceAdminAuthorizer {
 /// non-config source typically performs (cached) I/O.
 #[async_trait::async_trait]
 pub trait InstanceAdminMembership: Send + Sync + std::fmt::Debug {
-    /// Whether `actor` is an instance admin. Assumed-roles and anonymous callers
-    /// are never instance admins, regardless of the source.
-    async fn is_instance_admin(&self, actor: &Actor) -> bool;
+    /// Whether `user_id` is an instance admin.
+    ///
+    /// The boundary deliberately takes a [`UserId`], not an [`Actor`]: callers must
+    /// only invoke this for an authenticated principal ([`Actor::Principal`]), so an
+    /// implementation can never be reached for [`Actor::Role`] or [`Actor::Anonymous`].
+    /// Role assumption is an explicit opt-in to a narrower scope and never inherits
+    /// instance-admin — keeping that exclusion at the caller means no implementation
+    /// can grant it by mistake.
+    ///
+    /// [`Actor`]: crate::service::authn::Actor
+    /// [`Actor::Principal`]: crate::service::authn::Actor::Principal
+    /// [`Actor::Role`]: crate::service::authn::Actor::Role
+    /// [`Actor::Anonymous`]: crate::service::authn::Actor::Anonymous
+    async fn is_instance_admin(&self, user_id: &UserId) -> bool;
 }
 
 /// Default [`InstanceAdminMembership`]: membership is a fixed set of principals,
@@ -141,23 +151,12 @@ impl ConfiguredInstanceAdmins {
     pub fn from_config() -> Self {
         Self::new(CONFIG.instance_admins.clone())
     }
-
-    /// Only an authenticated [`Actor::Principal`] in the set is an admin —
-    /// assumed-roles (`Actor::Role`) deliberately do not inherit the bypass, since
-    /// role assumption is an explicit opt-in to a narrower scope.
-    #[must_use]
-    fn is_member(&self, actor: &Actor) -> bool {
-        match actor {
-            Actor::Principal(user_id) => self.admins.contains(user_id),
-            Actor::Anonymous | Actor::Role { .. } => false,
-        }
-    }
 }
 
 #[async_trait::async_trait]
 impl InstanceAdminMembership for ConfiguredInstanceAdmins {
-    async fn is_instance_admin(&self, actor: &Actor) -> bool {
-        self.is_member(actor)
+    async fn is_instance_admin(&self, user_id: &UserId) -> bool {
+        self.admins.contains(user_id)
     }
 }
 
@@ -229,29 +228,16 @@ mod tests {
         assert_eq!(model.r#type, "InstanceAdminRequired");
     }
 
-    #[test]
-    fn configured_membership_only_matches_principals_in_set() {
-        use std::sync::Arc;
-
-        use crate::service::{Role, RoleId};
-
+    #[tokio::test]
+    async fn configured_admins_match_only_the_configured_user_ids() {
         let alice = UserId::try_from("oidc~alice").unwrap();
         let bob = UserId::try_from("oidc~bob").unwrap();
         let source = ConfiguredInstanceAdmins::new([alice.clone()].into_iter().collect());
 
-        assert!(source.is_member(&Actor::Principal(alice.clone())));
-        assert!(!source.is_member(&Actor::Principal(bob.clone())));
-        assert!(!source.is_member(&Actor::Anonymous));
-
-        // Role-assumed: even when the principal is an admin, the actor does NOT
-        // qualify. Role assumption is an explicit opt-in to a narrower scope.
-        let role = Arc::new(Role::new_random_with_id(RoleId::new(uuid::Uuid::now_v7())));
-        assert!(!source.is_member(&Actor::Role {
-            principal: alice,
-            assumed_role: role,
-        }));
+        assert!(source.is_instance_admin(&alice).await);
+        assert!(!source.is_instance_admin(&bob).await);
 
         let empty = ConfiguredInstanceAdmins::new(HashSet::new());
-        assert!(!empty.is_member(&Actor::Principal(bob)));
+        assert!(!empty.is_instance_admin(&bob).await);
     }
 }
