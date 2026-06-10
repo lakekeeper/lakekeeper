@@ -498,7 +498,6 @@ impl EventListener for NamespaceCacheEventListener {
 
 #[cfg(test)]
 mod tests {
-    use Arc;
     use chrono::Utc;
     use iceberg::NamespaceIdent;
 
