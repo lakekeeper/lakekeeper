@@ -119,7 +119,7 @@ impl LakekeeperStorage for GcsStorage {
         let completed_batches = AtomicU64::new(0);
         let total_batches = delete_futures.len();
 
-        let delete_stream = execute_with_parallelism(delete_futures, 100).map(|result| {
+        let delete_stream = execute_with_parallelism(delete_futures, 16).map(|result| {
             result
                 .map_err(|join_err| {
                     DeleteBatchError::IOError(
