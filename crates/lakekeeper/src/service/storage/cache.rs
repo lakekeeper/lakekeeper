@@ -285,4 +285,81 @@ mod tests {
             "concurrent STC misses must coalesce to a single fetch"
         );
     }
+
+    #[derive(Debug)]
+    struct TestError;
+
+    /// A transient loader failure must be **neither cached nor coalesced**.
+    /// Unlike the happy path (which coalesces concurrent misses onto one fetch),
+    /// `and_try_compute_with` propagates a failed compute out without inserting,
+    /// so each waiter re-runs the loader (serialized by the per-key lock) rather
+    /// than sharing one failure — and a later success populates the cache
+    /// normally. This is the deliberate counterpart to the coalescing test, and
+    /// guards against a transient STS/SAS error poisoning the entry.
+    #[tokio::test]
+    async fn get_or_load_stc_does_not_cache_or_coalesce_errors() {
+        let key = test_key("error-not-cached");
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        // 8 concurrent waiters onto a failing load.
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let loads = Arc::clone(&loads);
+            let key = key.clone();
+            handles.push(tokio::spawn(async move {
+                get_or_load_stc(&ADLS_STC_CACHE, key, || async {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    // Widen the window so all waiters pile onto the key lock.
+                    for _ in 0..50 {
+                        tokio::task::yield_now().await;
+                    }
+                    Err::<CachedStc<(String, time::OffsetDateTime)>, _>(TestError)
+                })
+                .await
+            }));
+        }
+        for h in handles {
+            assert!(
+                h.await.unwrap().is_err(),
+                "a failing load must surface as Err"
+            );
+        }
+
+        // Errors are not coalesced into a shared failure and not cached: every
+        // waiter re-ran the loader.
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            8,
+            "a failed STC load must not be coalesced or cached — each waiter re-runs"
+        );
+
+        // A subsequent success populates the cache (the error left no entry behind).
+        let valid_until = Instant::now().checked_add(Duration::from_hours(1));
+        let ok = get_or_load_stc(&ADLS_STC_CACHE, key.clone(), || async {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, TestError>(CachedStc::new(
+                ("sas-token".to_string(), time::OffsetDateTime::now_utc()),
+                valid_until,
+            ))
+        })
+        .await;
+        assert!(ok.is_ok(), "success after transient failures must populate");
+        assert_eq!(loads.load(Ordering::SeqCst), 9, "exactly one success load");
+
+        // The success is now cached: the next read is a hit, loader not re-run.
+        let cached = get_or_load_stc(&ADLS_STC_CACHE, key, || async {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, TestError>(CachedStc::new(
+                ("unused".to_string(), time::OffsetDateTime::now_utc()),
+                valid_until,
+            ))
+        })
+        .await;
+        assert!(cached.is_ok());
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            9,
+            "a cached success must be served without re-running the loader"
+        );
+    }
 }
