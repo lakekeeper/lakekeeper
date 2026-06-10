@@ -41,10 +41,23 @@ jobs:
   test-example-minimal:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -73,10 +86,23 @@ jobs:
   test-example-access-control-simple:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -105,10 +131,23 @@ jobs:
   test-example-access-control-advanced:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Test Make all
         run: |
@@ -123,10 +162,23 @@ jobs:
   test-example-kafka-connect-iceberg-sink:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -155,10 +207,23 @@ jobs:
   test-docker-compose-with-keycloak:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
