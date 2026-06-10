@@ -116,6 +116,7 @@ limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", 
 ] }
 maplit = "1.0.2"
 md5 = "0.8.0"
+metrics = "0.24"
 middle = { version = "0.4", features = ["tonic"] }
 mockall = "0.14.0"
 moka = { version = "^0.12", features = ["future"] }

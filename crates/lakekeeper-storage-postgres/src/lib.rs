@@ -15,6 +15,7 @@ pub(crate) mod idempotency;
 pub mod migrations;
 pub mod namespace;
 mod pagination;
+pub(crate) mod pool_metrics;
 pub mod role;
 pub(crate) mod role_assignment;
 pub(crate) mod secrets;
@@ -88,21 +89,23 @@ impl Transaction<CatalogState> for PostgresTransaction {
     type Transaction<'a> = PostgresTransactionType<'a>;
 
     async fn begin_write(db_state: CatalogState) -> Result<Self> {
-        let transaction = db_state
-            .write_pool()
-            .begin()
-            .await
-            .map_err(|e| e.into_error_model("Error starting transaction".to_string()))?;
+        let transaction = db_state.write_pool().begin().await.map_err(|e| {
+            if crate::pool_metrics::is_pool_timeout(&e) {
+                crate::pool_metrics::record_acquire_timeout("write");
+            }
+            e.into_error_model("Error starting transaction".to_string())
+        })?;
 
         Ok(Self { transaction })
     }
 
     async fn begin_read(db_state: CatalogState) -> Result<Self> {
-        let mut transaction = db_state
-            .read_pool()
-            .begin()
-            .await
-            .map_err(|e| e.into_error_model("Error starting transaction".to_string()))?;
+        let mut transaction = db_state.read_pool().begin().await.map_err(|e| {
+            if crate::pool_metrics::is_pool_timeout(&e) {
+                crate::pool_metrics::record_acquire_timeout("read");
+            }
+            e.into_error_model("Error starting transaction".to_string())
+        })?;
 
         transaction
             .execute("SET TRANSACTION READ ONLY")
@@ -223,6 +226,24 @@ impl CatalogState {
     #[must_use]
     pub fn write_pool(&self) -> PgPool {
         self.read_write.write_pool.clone()
+    }
+
+    /// Spawn a detached background task that samples both pools' connection
+    /// stats into Prometheus gauges every [`pool_metrics::SAMPLE_INTERVAL`].
+    ///
+    /// Detached on purpose: sampling is stateless and needs no graceful
+    /// shutdown — the task is dropped when the runtime stops. Any ticks before
+    /// the global metrics recorder is installed are harmless no-ops.
+    pub fn spawn_pool_metrics(&self) {
+        let read_pool = self.read_pool();
+        let write_pool = self.write_pool();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(pool_metrics::SAMPLE_INTERVAL);
+            loop {
+                ticker.tick().await;
+                pool_metrics::record(&read_pool, &write_pool);
+            }
+        });
     }
 }
 
