@@ -41,10 +41,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             StoragePermissions, TableConfig,
-            cache::{
-                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-                insert_stc_into_cache,
-            },
+            cache::{CachedStc, S3_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
@@ -580,39 +577,19 @@ impl S3Profile {
         s3_credential: Option<&S3Credential>,
         cache_key: STCCacheKey,
     ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
-        // Try to get from cache if enabled
-        if CONFIG.cache.stc.enabled {
-            if let Some(STCCacheValue {
-                credentials: ShortTermCredential::S3(cached),
-                ..
-            }) = get_stc_from_cache(&cache_key).await
-            {
-                tracing::debug!("Using cached STS credentials for request: {sts_request}");
-                return Ok(cached);
-            }
-            tracing::debug!(
-                "No cached STS credentials found for request: {sts_request}, fetching new credentials"
-            );
-        } else {
-            tracing::debug!(
-                "STS caching disabled, fetching new STS credentials for request: {sts_request}"
-            );
-        }
-
-        // Fetch new credentials
-        let temporary_credential = self
-            .get_temporary_credentials(sts_request, s3_credential)
-            .await?;
-
-        // Cache the new credentials if enabled
-        if CONFIG.cache.stc.enabled {
-            let sts_validity_duration = Duration::from_secs(self.sts_token_validity_seconds);
-            let valid_until = Instant::now().checked_add(sts_validity_duration);
-            let cache_value = STCCacheValue::new(temporary_credential.clone(), valid_until);
-            insert_stc_into_cache(cache_key, cache_value).await;
-        }
-
-        Ok(temporary_credential)
+        // Single-flight read-through: concurrent identical requests coalesce onto
+        // one STS fetch (the most expensive miss in the system) per cache key. The
+        // typed cache returns the S3 credential directly — no variant check.
+        get_or_load_stc(&S3_STC_CACHE, cache_key, || async {
+            tracing::debug!("Fetching new STS credentials for request: {sts_request}");
+            let temporary_credential = self
+                .get_temporary_credentials(sts_request, s3_credential)
+                .await?;
+            let valid_until =
+                Instant::now().checked_add(Duration::from_secs(self.sts_token_validity_seconds));
+            Ok::<_, TableConfigError>(CachedStc::new(temporary_credential, valid_until))
+        })
+        .await
     }
 
     async fn get_temporary_credentials(

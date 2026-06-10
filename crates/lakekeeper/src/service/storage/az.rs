@@ -39,10 +39,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             ShortTermCredentialsRequest, StoragePermissions, TableConfig,
-            cache::{
-                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-                insert_stc_into_cache,
-            },
+            cache::{ADLS_STC_CACHE, CachedStc, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
@@ -287,11 +284,11 @@ impl AdlsProfile {
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
-        let cached_result = self.load_sas_token_from_cache(&cache_key).await;
 
-        let (sas, expiration) = if let Some((sas_token, exp)) = cached_result {
-            (sas_token, exp)
-        } else {
+        // Single-flight read-through: concurrent identical requests coalesce onto
+        // one SAS-token generation (the most expensive miss in the system) per key.
+        // The typed cache returns the `(sas, expiration)` pair directly.
+        let (sas, expiration) = get_or_load_stc(&ADLS_STC_CACHE, cache_key, || async {
             let (sas_token_start, requested_sas_token_end) = self.sas_token_validity_period();
             tracing::debug!(
                 "Generating SAS token with requested validity - start: {}, end: {}",
@@ -335,25 +332,13 @@ impl AdlsProfile {
                     })?
                 }
             };
-
-            if CONFIG.cache.stc.enabled {
-                let sts_validity_duration = Duration::from_secs(
-                    self.sas_token_validity_seconds
-                        .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS),
-                );
-                let valid_until = Instant::now().checked_add(sts_validity_duration);
-                let cache_value = STCCacheValue::new(
-                    ShortTermCredential::Adls {
-                        sas_token: sas.clone(),
-                        expiration,
-                    },
-                    valid_until,
-                );
-                insert_stc_into_cache(cache_key, cache_value).await;
-            }
-
-            (sas, expiration)
-        };
+            let valid_until = Instant::now().checked_add(Duration::from_secs(
+                self.sas_token_validity_seconds
+                    .unwrap_or(SAS_TOKEN_DEFAULT_VALIDITY_SECONDS),
+            ));
+            Ok::<_, TableConfigError>(CachedStc::new((sas, expiration), valid_until))
+        })
+        .await?;
 
         let mut creds = TableProperties::default();
 
@@ -418,36 +403,6 @@ impl AdlsProfile {
         let end = start.saturating_add(time::Duration::seconds(clamped_validity_seconds));
 
         (start, end)
-    }
-
-    async fn load_sas_token_from_cache(
-        &self,
-        cache_key: &STCCacheKey,
-    ) -> Option<(String, OffsetDateTime)> {
-        let stc_request = &cache_key.request;
-        if CONFIG.cache.stc.enabled {
-            if let Some(STCCacheValue {
-                credentials:
-                    ShortTermCredential::Adls {
-                        sas_token,
-                        expiration,
-                    },
-                ..
-            }) = get_stc_from_cache(cache_key).await
-            {
-                tracing::debug!("Using cached short term credentials for request: {stc_request}");
-                return Some((sas_token, expiration));
-            }
-            tracing::debug!(
-                "No cached SAS token found for request: {stc_request}, fetching new credentials"
-            );
-        } else {
-            tracing::debug!(
-                "STC caching disabled, fetching new SAS token for request: {stc_request}"
-            );
-        }
-
-        None
     }
 
     async fn sas_via_delegation_key(

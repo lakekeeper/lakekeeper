@@ -2981,6 +2981,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/managed-by:
+    post:
+      tags:
+        - warehouse
+      summary: Set Warehouse Managed-By
+      description: |-
+        Sets (or clears) the managed-by marker on a warehouse. When set, the
+        warehouse spec becomes mutable only by the managing control plane
+        (instance admins). Requires instance-admin privilege.
+      operationId: set_warehouse_managed_by
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetWarehouseManagedByRequest'
+        required: true
+      responses:
+        '200':
+          description: Warehouse managed-by marker set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/actions:
     get:
       tags:
@@ -3806,11 +3842,11 @@ paths:
       operationId: whoami
       responses:
         '200':
-          description: User details
+          description: Current user and instance-admin status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/WhoamiResponse'
         4XX:
           description: ''
           content:
@@ -4439,6 +4475,12 @@ components:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
           description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
+        managed-by:
+          $ref: '#/components/schemas/ManagedBy'
+          description: |-
+            Which control plane, if any, exclusively manages this warehouse's spec.
+            Defaults to `self-managed`. Creating a managed warehouse (e.g. `instance-admin`)
+            requires instance-admin privilege.
         project-id:
           type:
             - string
@@ -5322,6 +5364,11 @@ components:
           format: uuid
           description: ID of the warehouse.
           deprecated: true
+        managed-by:
+          $ref: '#/components/schemas/ManagedBy'
+          description: |-
+            Which control plane, if any, exclusively manages this warehouse's spec.
+            When not `self-managed`, spec mutations are restricted to that control plane.
         name:
           type: string
           description: Name of the warehouse.
@@ -6518,6 +6565,21 @@ components:
           items:
             $ref: '#/components/schemas/GetWarehouseResponse'
           description: List of warehouses in the project.
+    ManagedBy:
+      type: string
+      description: |-
+        Which control plane, if any, exclusively manages a warehouse's spec.
+
+        `self-managed` (the default) leaves the spec mutable by the warehouse's own
+        owners through the usual grants. When set to `instance-admin`, spec changes —
+        storage profile, credentials, delete profile, rename, status, protection,
+        format-version policy, and deletion — are accepted only from instance
+        administrators; other callers are rejected even when their grants would
+        otherwise allow it. Child resources (namespaces, tables, grants), task-queue
+        configuration, and data access are unaffected.
+      enum:
+        - self-managed
+        - instance-admin
     NamespaceAction:
       type: string
       enum:
@@ -7623,6 +7685,16 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/TaskLogCleanupConfig'
+    SetWarehouseManagedByRequest:
+      type: object
+      required:
+        - managed-by
+      properties:
+        managed-by:
+          $ref: '#/components/schemas/ManagedBy'
+          description: |-
+            New managed-by marker. Use `self-managed` to clear. Setting or clearing the
+            marker requires instance-admin privilege.
     StorageCredential:
       oneOf:
         - allOf:
@@ -9005,6 +9077,23 @@ components:
           type: string
           format: uuid
           description: Warehouse ID associated with the task
+    WhoamiResponse:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          required:
+            - is-instance-admin
+          properties:
+            is-instance-admin:
+              type: boolean
+              description: |-
+                Whether the authenticated principal is an instance admin (configured via
+                `LAKEKEEPER__INSTANCE_ADMINS`). Instance admins may modify the spec of
+                warehouses marked `managed-by: instance-admin`. Only ever `true` for a
+                principal acting directly; role-assumed requests do not inherit it.
+      description: |-
+        Response of the `whoami` endpoint: the catalog user for the current token,
+        plus request-scoped privilege not stored on the user record.
   securitySchemes:
     bearerAuth:
       type: http

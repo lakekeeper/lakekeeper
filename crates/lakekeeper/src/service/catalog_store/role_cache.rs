@@ -1,8 +1,13 @@
 use std::{sync::LazyLock, time::Duration};
 
 use axum_prometheus::metrics;
-use moka::{future::Cache, notification::RemovalCause};
+use moka::{
+    future::Cache,
+    notification::RemovalCause,
+    ops::compute::{CompResult, Op},
+};
 
+use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
@@ -106,6 +111,80 @@ pub(super) async fn role_cache_insert(role: ArcRole) {
     }
 }
 
+/// Single-flight read-through for the role cache (by id).
+///
+/// Coalesces concurrent misses for the same `role_id`: moka serializes the
+/// per-key compute, so the loader runs once and later callers observe the
+/// inserted entry. The loader returns `Option` — `None` (role not found) is
+/// **not** negative-cached; callers map it to their own not-found error. The
+/// version-gate is preserved without reworking the writer: before inserting we
+/// re-read the current entry and skip if a concurrent `role_cache_insert` cached
+/// a strictly newer version (same sub-`await` residual the existing
+/// get-then-insert gate has). The `(project, ident) → id` index is populated
+/// alongside, like `role_cache_insert`. The `enabled` flag and hit/miss metrics
+/// are preserved; the loader error is returned by value.
+pub(super) async fn role_cache_get_or_load<Fut, E>(
+    role_id: RoleId,
+    load: Fut,
+) -> Result<Option<ArcRole>, E>
+where
+    Fut: std::future::Future<Output = Result<Option<ArcRole>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    if !CONFIG.cache.role.enabled {
+        return load.await;
+    }
+
+    // Fast path records a hit/miss. Note: under contention each coalesced waiter
+    // records a miss here but then hits `Op::Nop` below without loading, so the
+    // miss counter is *cache misses*, not *DB loads* (the two diverge under a herd).
+    if let Some(role) = role_cache_get_by_id(role_id).await {
+        return Ok(Some(role));
+    }
+
+    let outcome = ROLE_CACHE
+        .entry(role_id)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Populated by another caller while we waited on the key lock.
+                return Ok::<_, E>(Op::Nop);
+            }
+            let Some(role) = load.await? else {
+                // Role not found — never negative-cached. Coalescing therefore
+                // applies only to a found role; concurrent lookups of a missing
+                // one each re-run the loader (rare, and no worse than before).
+                return Ok(Op::Nop);
+            };
+            // Preserve the version-gate against a writer that cached a newer
+            // version via plain `insert()` during our load.
+            if let Some(existing) = ROLE_CACHE.get(&role_id).await
+                && role.version < existing.version
+            {
+                return Ok(Op::Nop);
+            }
+            IDENT_TO_ID_CACHE
+                .insert((role.project_id_arc(), role.ident_arc()), role_id)
+                .await;
+            Ok(Op::Put(role))
+        })
+        .await?;
+    update_cache_size_metric();
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => Some(entry.into_value()),
+        // `StillNone` means either the loader returned `None` (genuine not-found,
+        // never negative-cached) or the version-gate fired because a concurrent
+        // writer cached a newer version during our load. moka derives the
+        // `Op::Nop` result from the closure's entry snapshot, so it cannot surface
+        // that concurrent `insert()` (a different lock domain) — a final raw read
+        // does, returning the newer value if present and `None` otherwise.
+        // `Removed` is unreachable (the closure only returns `Nop`/`Put`).
+        CompResult::StillNone(_) | CompResult::Removed(_) => ROLE_CACHE.get(&role_id).await,
+    })
+}
+
 /// Update the cache size metric with the current number of entries
 #[inline]
 #[allow(clippy::cast_precision_loss)]
@@ -184,6 +263,34 @@ pub(super) async fn role_cache_get_by_ident(
         metrics::counter!(METRIC_ROLE_CACHE_MISSES, "cache_type" => "role").increment(1);
         None
     }
+}
+
+/// Single-flight read-through for the `(project, ident) → id` resolution.
+///
+/// Coalesces concurrent **by-ident** misses (clients usually address roles by
+/// ident, so this is the hot cold-start path): the by-ident DB query runs once per
+/// `(project, ident)`, the loaded role primes the by-id cache + ident index, and
+/// every coalesced caller resolves the full role by id. Returns the resolved
+/// `RoleId`, or `None` if no role matches (**not** negative-cached). Thin wrapper
+/// over [`secondary_index_get_or_load`](super::secondary_index_get_or_load).
+pub(super) async fn role_ident_to_id_get_or_load<Fut, E>(
+    project_id: ArcProjectId,
+    ident: ArcRoleIdent,
+    load: Fut,
+) -> Result<Option<RoleId>, E>
+where
+    Fut: std::future::Future<Output = Result<Option<ArcRole>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    secondary_index_get_or_load(
+        CONFIG.cache.role.enabled,
+        &IDENT_TO_ID_CACHE,
+        (project_id, ident),
+        load,
+        |role: &ArcRole| role.id(),
+        role_cache_insert,
+    )
+    .await
 }
 
 #[cfg(feature = "router")]
@@ -418,5 +525,150 @@ mod tests {
         // Old ident should miss
         let cached_old = role_cache_get_by_ident(project_id, old_ident).await;
         assert!(cached_old.is_none());
+    }
+
+    /// `role_cache_get_or_load` must coalesce concurrent misses for the same id
+    /// into ONE loader run, with every caller observing the cached entry.
+    #[tokio::test]
+    async fn role_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let role_id = RoleId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        role_cache_invalidate(role_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let role = test_role(role_id, project_id, "lakekeeper", "coalesce-source", 0);
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let role = role.clone();
+            handles.push(tokio::spawn(async move {
+                role_cache_get_or_load(role_id, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    // Widen the load window so all callers queue on the key lock
+                    // before the first load completes.
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(Some(role))
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().unwrap().expect("role exists"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent misses must coalesce to a single loader run"
+        );
+        for r in &results[1..] {
+            assert_eq!(r.id(), role_id);
+        }
+
+        role_cache_invalidate(role_id).await;
+    }
+
+    /// The in-closure version-gate must not let a slow loader overwrite a newer
+    /// value cached concurrently. We model the race by having the loader itself
+    /// insert a newer version (as a concurrent `role_cache_insert` would) before
+    /// returning a stale older one — the helper must keep the newer entry and
+    /// return it, never the stale load.
+    #[tokio::test]
+    async fn role_get_or_load_version_gate_keeps_newer_concurrent_insert() {
+        let role_id = RoleId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        role_cache_invalidate(role_id).await;
+
+        let newer = test_role(role_id, project_id.clone(), "lakekeeper", "vg-source", 5);
+        let older = test_role(role_id, project_id, "lakekeeper", "vg-source", 3);
+
+        let returned = role_cache_get_or_load(role_id, {
+            let newer = newer.clone();
+            let older = older.clone();
+            async move {
+                // A concurrent writer caches a newer version while we "load".
+                role_cache_insert(newer).await;
+                Ok::<_, std::convert::Infallible>(Some(older))
+            }
+        })
+        .await
+        .unwrap()
+        .expect("role exists");
+
+        assert_eq!(
+            *returned.version, 5,
+            "helper must return the newer concurrently-cached value, not the stale load"
+        );
+        assert_eq!(
+            *role_cache_get_by_id(role_id).await.unwrap().version,
+            5,
+            "stale older load must be version-gated out of the cache"
+        );
+
+        role_cache_invalidate(role_id).await;
+    }
+
+    /// `role_ident_to_id_get_or_load` must coalesce concurrent by-ident misses
+    /// into ONE loader run, with every caller resolving the same id. Runs on a
+    /// multi-threaded runtime so coalescing is exercised under true parallelism,
+    /// not just cooperative `yield_now` interleaving.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn role_ident_to_id_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let role_id = RoleId::new_random();
+        let project_id = Arc::new(ProjectId::new_random());
+        role_cache_invalidate(role_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let role = test_role(
+            role_id,
+            project_id.clone(),
+            "lakekeeper",
+            "ident-coalesce",
+            0,
+        );
+        let ident = role.ident_arc();
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let role = role.clone();
+            let project_id = project_id.clone();
+            let ident = ident.clone();
+            handles.push(tokio::spawn(async move {
+                role_ident_to_id_get_or_load(project_id, ident, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(Some(role))
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().unwrap().expect("role exists"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent by-ident misses must coalesce to a single loader run"
+        );
+        for id in &results {
+            assert_eq!(*id, role_id);
+        }
+
+        role_cache_invalidate(role_id).await;
     }
 }

@@ -1,0 +1,215 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            project_id,\n            warehouse_id,\n            warehouse_name,\n            storage_profile as \"storage_profile: Json<StorageProfile>\",\n            storage_secret_id,\n            status AS \"status: WarehouseStatus\",\n            tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n            tabular_expiration_seconds,\n            protected,\n            allowed_format_versions,\n            default_format_version,\n            managed_by as \"managed_by: ManagedBy\",\n            updated_at,\n            version\n        FROM warehouse\n        WHERE warehouse_name = $1 AND project_id = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "warehouse_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "warehouse_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "storage_profile: Json<StorageProfile>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "storage_profile"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "storage_secret_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "storage_secret_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status: WarehouseStatus",
+        "type_info": {
+          "Custom": {
+            "name": "warehouse_status",
+            "kind": {
+              "Enum": [
+                "active",
+                "inactive"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "tabular_delete_mode: DbTabularDeleteProfile",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "tabular_delete_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "tabular_expiration_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "tabular_expiration_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "protected",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "protected"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "allowed_format_versions",
+        "type_info": "Int2Array",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "allowed_format_versions"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "default_format_version",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "default_format_version"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "managed_by: ManagedBy",
+        "type_info": {
+          "Custom": {
+            "name": "managed_by",
+            "kind": {
+              "Enum": [
+                "self-managed",
+                "instance-admin"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "managed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "caee049c81de4ea26069a0b02ebc678b2c78e77e201e16e7879696fcb421a704"
+}

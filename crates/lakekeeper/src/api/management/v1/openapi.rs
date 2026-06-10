@@ -111,6 +111,7 @@ use crate::{
         super::set_task_queue_config,
         super::set_view_protection,
         super::set_warehouse_protection,
+        super::set_warehouse_managed_by,
         super::undrop_tabulars,
         super::update_role_source_system,
         super::update_role,

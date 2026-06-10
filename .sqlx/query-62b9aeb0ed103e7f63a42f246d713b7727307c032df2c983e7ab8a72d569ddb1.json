@@ -143,7 +143,8 @@
                       "management-v1-get-generic-table-actions",
                       "management-v1-get-generic-table-protection",
                       "management-v1-set-generic-table-protection",
-                      "management-v1-update-warehouse-format-version-policy"
+                      "management-v1-update-warehouse-format-version-policy",
+                      "management-v1-set-warehouse-managed-by"
                     ]
                   }
                 }

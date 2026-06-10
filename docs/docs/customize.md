@@ -39,6 +39,16 @@ Reacting to changes has two levels, depending on what you need:
 * Implement an **`EventListener`** when you want to run typed Rust logic in-process on specific events (the default trait methods are no-ops, so you override only what you care about). Register it via the `EventDispatcher`.
 * Provide a **`CloudEventBackend`** when you just want changes shipped out as CloudEvents. The built-in CloudEvents publisher is itself an `EventListener` that fans every event out to all configured `cloud_event_sinks`.
 
+## What the hooks are for
+
+A few common reasons to reach for each one:
+
+* **Custom task queues** run persisted, scheduled background work on Lakekeeper's own task infrastructure — the tasks are stored in the database and picked up by workers across your Lakekeeper instances, so you don't have to stand up a separate scheduler or worry about a single worker dying mid-job. Beyond the built-in soft-delete expiration and purge queues, typical uses include triggering table maintenance/compaction, custom retention and cleanup policies, recomputing statistics, refreshing downstream materialized views, running data-quality or lineage scans, and pushing periodic digests to external systems.
+* **Event listeners / cloud-event sinks** keep external systems in step with the catalog without polling — feeding data-discovery and lineage tools, audit pipelines, cache invalidation, or webhooks.
+* **Contract verification** enforces organisational rules at write time, for example rejecting a schema change that would break a published data contract.
+* **Endpoint-statistics sinks** route usage data into billing/chargeback, per-tenant quotas, or your own dashboards.
+* **Router modifications** expose extra endpoints (custom health/readiness checks, internal admin APIs) or middleware alongside the catalog — this is how the built-in UI is mounted.
+
 ## Adding a custom implementation
 
 Extending Lakekeeper always follows the same shape:
@@ -53,13 +63,3 @@ The best examples are the implementations Lakekeeper ships — they are compiled
 * **Authorizer** — the OpenFGA implementation in [`crates/authz-openfga`](https://github.com/lakekeeper/lakekeeper/tree/main/crates/authz-openfga).
 
 See the [Developer Guide](./developer-guide.md) for building Lakekeeper from sources.
-
-## What the hooks are for
-
-A few common reasons to reach for each one:
-
-* **Custom task queues** run persisted, scheduled background work on Lakekeeper's own task infrastructure — the tasks are stored in the database and picked up by workers across your Lakekeeper instances, so you don't have to stand up a separate scheduler or worry about a single worker dying mid-job. Beyond the built-in soft-delete expiration and purge queues, typical uses include triggering table maintenance/compaction, custom retention and cleanup policies, recomputing statistics, refreshing downstream materialized views, running data-quality or lineage scans, and pushing periodic digests to external systems.
-* **Event listeners / cloud-event sinks** keep external systems in step with the catalog without polling — feeding data-discovery and lineage tools, audit pipelines, cache invalidation, or webhooks.
-* **Contract verification** enforces organisational rules at write time, for example rejecting a schema change that would break a published data contract.
-* **Endpoint-statistics sinks** route usage data into billing/chargeback, per-tenant quotas, or your own dashboards.
-* **Router modifications** expose extra endpoints (custom health/readiness checks, internal admin APIs) or middleware alongside the catalog — this is how the built-in UI is mounted.

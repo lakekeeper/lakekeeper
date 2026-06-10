@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use axum_prometheus::metrics;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
-use moka::future::Cache;
+use moka::{
+    future::Cache,
+    ops::compute::{CompResult, Op},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -48,16 +51,18 @@ where
         &self,
         secret_id: SecretId,
     ) -> Result<Secret<Arc<StorageCredential>>> {
-        // Check cache first
-        if let Some(cached) = secrets_cache_get(secret_id).await {
-            let CachedSecret::StorageCredential(secret) = cached;
-            return Ok(secret);
-        }
+        // Single-flight read-through: concurrent misses for the same secret
+        // coalesce onto one backend fetch+decrypt (see `secrets_cache_get_or_load`).
+        let this = self.clone();
+        let cached = secrets_cache_get_or_load(secret_id, async move {
+            Ok(this
+                .get_secret_by_id_impl::<StorageCredential>(secret_id)
+                .await?
+                .map(|secret| CachedSecret::StorageCredential(secret.map(Arc::new))))
+        })
+        .await?;
 
-        let Some(secret) = self
-            .get_secret_by_id_impl::<StorageCredential>(secret_id)
-            .await?
-        else {
+        let Some(CachedSecret::StorageCredential(secret)) = cached else {
             return Err(ErrorModel::builder()
                 .code(StatusCode::NOT_FOUND.into())
                 .message("Secret not found".to_string())
@@ -67,12 +72,7 @@ where
                 .into());
         };
 
-        // Convert to Arc and insert into cache
-        let arc_secret = secret.map(Arc::new);
-        let cached = CachedSecret::StorageCredential(arc_secret.clone());
-        secrets_cache_insert(secret_id, cached).await;
-
-        Ok(arc_secret)
+        Ok(secret)
     }
 
     /// Create a new secret
@@ -220,4 +220,56 @@ async fn secrets_cache_get(secret_id: SecretId) -> Option<CachedSecret> {
     }
 
     cached
+}
+
+/// Single-flight read-through for the secrets cache.
+///
+/// On a miss, concurrent requests for the same `secret_id` are **coalesced**: the
+/// secret-backend fetch (and decrypt) runs once per key, not once per caller. A
+/// non-existent secret yields `None` and is **not** negative-cached. The
+/// `enabled` flag and hit/miss metrics are preserved; when caching is disabled
+/// the loader runs directly. `and_try_compute_with` returns the loader error by
+/// value (no `Arc`-sharing), so no wrapping or cloning is needed.
+async fn secrets_cache_get_or_load<Fut>(
+    secret_id: SecretId,
+    load: Fut,
+) -> Result<Option<CachedSecret>>
+where
+    Fut: std::future::Future<Output = Result<Option<CachedSecret>>> + Send,
+{
+    if !CONFIG.cache.secrets.enabled {
+        return load.await;
+    }
+
+    if let Some(cached) = secrets_cache_get(secret_id).await {
+        return Ok(Some(cached));
+    }
+
+    let outcome = SECRETS_CACHE
+        .entry(secret_id)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Populated by another caller while we waited on the key lock.
+                return Ok(Op::Nop);
+            }
+            match load.await {
+                Ok(Some(value)) => Ok(Op::Put(value)),
+                // Missing secret — never negative-cached. Coalescing therefore
+                // applies only to a found secret; concurrent lookups of a missing
+                // one each re-run the loader (rare, and no worse than before).
+                Ok(None) => Ok(Op::Nop),
+                Err(e) => Err(e),
+            }
+        })
+        .await?;
+    update_cache_size_metric();
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => Some(entry.into_value()),
+        // `StillNone` = absent (loader returned `None`). `Removed` is unreachable
+        // here — the closure only returns `Nop`/`Put`, never `Remove`.
+        CompResult::StillNone(_) | CompResult::Removed(_) => None,
+    })
 }

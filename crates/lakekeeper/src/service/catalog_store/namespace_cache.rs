@@ -2,8 +2,13 @@ use std::{sync::LazyLock, time::Duration};
 
 use axum_prometheus::metrics;
 use iceberg::NamespaceIdent;
-use moka::{future::Cache, notification::RemovalCause};
+use moka::{
+    future::Cache,
+    notification::RemovalCause,
+    ops::compute::{CompResult, Op},
+};
 
+use super::secondary_index_get_or_load;
 #[cfg(feature = "router")]
 use crate::service::events::{self, EventListener};
 use crate::{
@@ -225,6 +230,122 @@ pub(super) async fn namespace_cache_get_by_ident(
         IDENT_TO_ID_CACHE.invalidate(&ident_key).await;
     }
     result
+}
+
+/// The leaf of a fetched chain: the entry with the longest ident. Mirrors
+/// `build_namespace_hierarchy_from_vec`'s target selection.
+fn leaf_namespace_id(chain: &[NamespaceWithParent]) -> Option<NamespaceId> {
+    chain
+        .iter()
+        .max_by_key(|n| n.namespace_ident().len())
+        .map(NamespaceWithParent::namespace_id)
+}
+
+/// Single-flight read-through for the `(warehouse, namespace_ident) → id`
+/// resolution.
+///
+/// Coalesces concurrent **by-ident** misses: the chain-fetch loader runs once per
+/// `(warehouse, ident)` (clients usually address namespaces by name, so this is
+/// the hot path), the whole hierarchy is cached via
+/// `namespace_cache_insert_multiple`, and every coalesced caller resolves the leaf
+/// id from the index. Returns the leaf `NamespaceId`, or `None` if the namespace
+/// does not exist (**not** negative-cached). Callers rebuild the hierarchy from the
+/// now-cached chain (the normal cache-hit path). The loader error is by value.
+///
+/// **Coalescing is only correct off a transaction** — see the call site in
+/// `get_namespace`, which routes here only when given a pooled `State`.
+pub(super) async fn namespace_ident_get_or_load<Fut, E>(
+    warehouse_id: WarehouseId,
+    namespace_ident: &NamespaceIdent,
+    load: Fut,
+) -> Result<Option<NamespaceId>, E>
+where
+    Fut: std::future::Future<Output = Result<Vec<NamespaceWithParent>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    let key = (warehouse_id, namespace_ident_to_cache_key(namespace_ident));
+    secondary_index_get_or_load(
+        CONFIG.cache.namespace.enabled,
+        &IDENT_TO_ID_CACHE,
+        key,
+        // Adapt the raw chain fetch to `Option<(leaf_id, chain)>`: an empty chain
+        // (no leaf) means "not found".
+        async move {
+            let chain = load.await?;
+            Ok(leaf_namespace_id(&chain).map(|leaf| (leaf, chain)))
+        },
+        |(leaf, _chain): &(NamespaceId, Vec<NamespaceWithParent>)| *leaf,
+        // Cache the whole hierarchy (leaf + parents + ident mappings) so every
+        // coalesced caller rebuilds it without another DB round-trip.
+        |(_leaf, chain): (NamespaceId, Vec<NamespaceWithParent>)| {
+            namespace_cache_insert_multiple(chain)
+        },
+    )
+    .await
+}
+
+/// Single-flight read-through for the by-id namespace path.
+///
+/// Coalesces concurrent misses for the same `namespace_id`: the chain-fetch loader
+/// runs once, the whole hierarchy is cached, and callers rebuild from cache.
+/// Returns `true` if the namespace exists (and is now cached), `false` otherwise
+/// (**not** negative-cached). Like the by-ident variant, coalescing is only correct
+/// off a pooled `State` (see `get_namespace`).
+pub(super) async fn namespace_id_get_or_load<Fut, E>(
+    namespace_id: NamespaceId,
+    load: Fut,
+) -> Result<bool, E>
+where
+    Fut: std::future::Future<Output = Result<Vec<NamespaceWithParent>, E>> + Send,
+    E: Send + Sync + 'static,
+{
+    if !CONFIG.cache.namespace.enabled {
+        let chain = load.await?;
+        let found = chain.iter().any(|n| n.namespace_id() == namespace_id);
+        if found {
+            namespace_cache_insert_multiple(chain).await;
+        }
+        return Ok(found);
+    }
+
+    if NAMESPACE_CACHE.get(&namespace_id).await.is_some() {
+        return Ok(true);
+    }
+
+    let outcome = NAMESPACE_CACHE
+        .entry(namespace_id)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                return Ok::<_, E>(Op::Nop);
+            }
+            let chain = load.await?;
+            if !chain.iter().any(|n| n.namespace_id() == namespace_id) {
+                // Namespace not found — never negative-cached.
+                return Ok(Op::Nop);
+            }
+            // `namespace_cache_insert_multiple` is the authoritative write: it is
+            // version-gated (keeps a concurrently-cached newer version) and stores
+            // *canonical* entries (the invariant `build_hierarchy_from_cache` relies
+            // on). We deliberately return `Op::Nop` rather than `Op::Put(leaf)` — a
+            // raw, possibly-stale, non-canonical leaf — which would clobber a newer
+            // concurrent insert and break the canonical invariant. `found` is
+            // resolved by the re-read below.
+            namespace_cache_insert_multiple(chain).await;
+            Ok(Op::Nop)
+        })
+        .await?;
+
+    Ok(match outcome {
+        // `maybe_entry` was already populated (a concurrent caller won the race).
+        CompResult::Inserted(_) | CompResult::ReplacedWith(_) | CompResult::Unchanged(_) => true,
+        // We always return `Op::Nop`, so a found namespace lands here: our gated
+        // `insert_multiple` wrote it via a different lock domain that moka's
+        // snapshot-based `Op::Nop` result cannot surface. Re-read to decide `found`
+        // (also covers the genuine not-found case → `false`).
+        CompResult::StillNone(_) | CompResult::Removed(_) => {
+            NAMESPACE_CACHE.get(&namespace_id).await.is_some()
+        }
+    })
 }
 
 /// Build a `NamespaceHierarchy` by collecting parents from the cache.
@@ -708,5 +829,163 @@ mod tests {
         )
         .await;
         assert!(cached_by_ident.is_none());
+    }
+
+    /// `namespace_ident_get_or_load` must coalesce concurrent by-ident misses into
+    /// ONE chain-fetch, with every caller resolving the same leaf id.
+    #[tokio::test]
+    async fn namespace_ident_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let warehouse_id = WarehouseId::new_random();
+        let namespace_id = NamespaceId::new_random();
+        let namespace_ident =
+            NamespaceIdent::from_vec(vec!["ns-ident-coalesce".to_string()]).unwrap();
+        let chain = vec![test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                namespace_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                0,
+            ),
+            None,
+        )];
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let chain = chain.clone();
+            let namespace_ident = namespace_ident.clone();
+            handles.push(tokio::spawn(async move {
+                namespace_ident_get_or_load(warehouse_id, &namespace_ident, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(chain)
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().unwrap().expect("namespace exists"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent by-ident misses must coalesce to a single chain-fetch"
+        );
+        for id in &results {
+            assert_eq!(*id, namespace_id);
+        }
+    }
+
+    /// `namespace_id_get_or_load` must coalesce concurrent by-id misses into ONE
+    /// chain-fetch.
+    #[tokio::test]
+    async fn namespace_id_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let warehouse_id = WarehouseId::new_random();
+        let namespace_id = NamespaceId::new_random();
+        let namespace_ident = NamespaceIdent::from_vec(vec!["ns-id-coalesce".to_string()]).unwrap();
+        let chain = vec![test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                namespace_ident,
+                warehouse_id,
+                Some(Utc::now()),
+                0,
+            ),
+            None,
+        )];
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let chain = chain.clone();
+            handles.push(tokio::spawn(async move {
+                namespace_id_get_or_load(namespace_id, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, std::convert::Infallible>(chain)
+                })
+                .await
+            }));
+        }
+
+        let mut found_all = true;
+        for h in handles {
+            found_all &= h.await.unwrap().unwrap();
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent by-id misses must coalesce to a single chain-fetch"
+        );
+        assert!(
+            found_all,
+            "every caller must observe the namespace as found"
+        );
+    }
+
+    /// The by-id loader must not clobber a concurrently-cached newer version with
+    /// its (possibly stale) just-loaded leaf — mirrors the warehouse/role version
+    /// gate. `namespace_cache_insert_multiple` is the authoritative gated write;
+    /// the compute returns `Op::Nop`, so a concurrent newer insert survives.
+    // The combined namespace cache machinery (insert_multiple + eviction listeners)
+    // makes this test's future exceed the lint threshold; it's test-only.
+    #[allow(clippy::large_futures)]
+    #[tokio::test]
+    async fn namespace_id_get_or_load_version_gate_keeps_newer_concurrent_insert() {
+        let warehouse_id = WarehouseId::new_random();
+        let namespace_id = NamespaceId::new_random();
+        let ident = NamespaceIdent::from_vec(vec!["ns-id-version-gate".to_string()]).unwrap();
+
+        let newer = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                5,
+            ),
+            None,
+        );
+        let older_chain = vec![test_namespace_with_parent(
+            test_namespace(namespace_id, ident, warehouse_id, Some(Utc::now()), 3),
+            None,
+        )];
+
+        let found = namespace_id_get_or_load(namespace_id, {
+            let newer = newer.clone();
+            async move {
+                // A concurrent writer caches a newer version (e.g. the event
+                // listener after a metadata update) while we "load" a stale one.
+                namespace_cache_insert(newer).await;
+                Ok::<_, std::convert::Infallible>(older_chain)
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(found, "namespace exists");
+        let cached = namespace_cache_get_by_id(namespace_id)
+            .await
+            .expect("namespace is cached");
+        assert_eq!(
+            *cached.namespace.version(),
+            5,
+            "the stale v3 load must not clobber the concurrently-cached v5"
+        );
     }
 }

@@ -16,7 +16,10 @@ use crate::{
         Transaction,
         catalog_store::{
             define_version_newtype,
-            role_cache::{role_cache_get_by_id, role_cache_get_by_ident, role_cache_insert},
+            role_cache::{
+                role_cache_get_by_id, role_cache_get_by_ident, role_cache_get_or_load,
+                role_cache_insert, role_ident_to_id_get_or_load,
+            },
         },
         define_transparent_error,
         identifier::role::ArcRoleIdent,
@@ -751,25 +754,24 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleAcrossProjectsError> {
-        if let Some(role) = role_cache_get_by_id(role_id).await {
-            return Ok(role);
-        }
-        let roles = Self::list_roles_impl(
-            None,
-            CatalogListRolesByIdFilter::builder()
-                .role_ids(Some(&[role_id]))
-                .build(),
-            PaginationQuery::new_with_page_size(1),
-            catalog_state,
-        )
+        // Single-flight read-through: concurrent misses for the same role coalesce
+        // onto one load (see `role_cache_get_or_load`); the helper owns the
+        // version-gated insert + ident-index population.
+        let role = role_cache_get_or_load(role_id, async move {
+            let ids = [role_id];
+            let roles = Self::list_roles_impl(
+                None,
+                CatalogListRolesByIdFilter::builder()
+                    .role_ids(Some(&ids))
+                    .build(),
+                PaginationQuery::new_with_page_size(1),
+                catalog_state,
+            )
+            .await?;
+            Ok::<_, GetRoleAcrossProjectsError>(roles.roles.into_iter().next())
+        })
         .await?;
-        let role = roles
-            .roles
-            .into_iter()
-            .next()
-            .ok_or_else(|| RoleIdNotFound::new(role_id))?;
-        role_cache_insert(role.clone()).await;
-        Ok(role)
+        role.ok_or_else(|| RoleIdNotFound::new(role_id).into())
     }
 
     async fn get_role_by_id(
@@ -777,29 +779,30 @@ where
         role_id: RoleId,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleInProjectError> {
-        if let Some(role) = role_cache_get_by_id(role_id).await {
-            // Verify the cached role belongs to the requested project
-            if role.project_id.as_ref() == &**project_id {
-                return Ok(role);
-            }
-            // Cache hit for wrong project - treat as cache miss
-        }
-        let roles = Self::list_roles_impl(
-            Some(project_id),
-            CatalogListRolesByIdFilter::builder()
-                .role_ids(Some(&[role_id]))
-                .build(),
-            PaginationQuery::new_with_page_size(1),
-            catalog_state,
-        )
+        // Single-flight read-through: load by id (across projects) coalesced via
+        // `role_cache_get_or_load` (which owns the cache fast-path + hit/miss
+        // metrics), then re-check the project. Resolving across projects +
+        // re-checking is equivalent to the old project-scoped query (role ids are
+        // globally unique) and lets project-scoped and across-project reads of the
+        // same role share one cached entry and one load.
+        let role = role_cache_get_or_load(role_id, async move {
+            let ids = [role_id];
+            let roles = Self::list_roles_impl(
+                None,
+                CatalogListRolesByIdFilter::builder()
+                    .role_ids(Some(&ids))
+                    .build(),
+                PaginationQuery::new_with_page_size(1),
+                catalog_state,
+            )
+            .await?;
+            Ok::<_, GetRoleInProjectError>(roles.roles.into_iter().next())
+        })
         .await?;
-        let role = roles
-            .roles
-            .into_iter()
-            .next()
-            .ok_or_else(|| RoleIdNotFoundInProject::new(role_id, project_id.clone()))?;
-        role_cache_insert(role.clone()).await;
-        Ok(role)
+        match role {
+            Some(role) if role.project_id.as_ref() == &**project_id => Ok(role),
+            _ => Err(RoleIdNotFoundInProject::new(role_id, project_id.clone()).into()),
+        }
     }
 
     async fn search_role(
@@ -832,6 +835,7 @@ where
         arc_ident: ArcRoleIdent,
         catalog_state: Self::State,
     ) -> Result<Arc<Role>, GetRoleByIdentError> {
+        // Fast path: ident → id → role.
         if let Some(role) = role_cache_get_by_ident(arc_project_id.clone(), arc_ident.clone()).await
         {
             // Verify the cached role belongs to the requested project
@@ -840,9 +844,47 @@ where
             }
             // Cache hit for wrong project - treat as cache miss
         }
-        let roles =
-            Self::list_roles_by_idents_impl(&arc_project_id, &[&*arc_ident], catalog_state).await?;
-        let role = roles
+
+        // Single-flight the cold ident→id resolution: concurrent misses for the same
+        // (project, ident) coalesce onto one DB query, which also primes the by-id
+        // cache. Clients usually address roles by ident, so this is the burst this
+        // cache is meant to absorb.
+        let loader_state = catalog_state.clone();
+        let loader_project = arc_project_id.clone();
+        let loader_ident = arc_ident.clone();
+        let role_id =
+            role_ident_to_id_get_or_load(arc_project_id.clone(), arc_ident.clone(), async move {
+                Ok::<_, GetRoleByIdentError>(
+                    Self::list_roles_by_idents_impl(
+                        &loader_project,
+                        &[&*loader_ident],
+                        loader_state,
+                    )
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(Arc::new),
+                )
+            })
+            .await?;
+
+        let Some(role_id) = role_id else {
+            return Err(RoleIdentNotFoundInProject::new(arc_ident, arc_project_id).into());
+        };
+
+        // Common case: the loader primed the by-id cache → hit. Re-verify project as
+        // belt-and-suspenders against a stale ident→id mapping pointing at another
+        // project's role.
+        if let Some(role) = role_cache_get_by_id(role_id).await
+            && role.project_id == arc_project_id
+        {
+            return Ok(role);
+        }
+
+        // Rare: evicted between prime and read (or wrong-project mapping). Re-load by
+        // ident rather than return a spurious not-found for a role that exists.
+        let role = Self::list_roles_by_idents_impl(&arc_project_id, &[&*arc_ident], catalog_state)
+            .await?
             .into_iter()
             .next()
             .map(Arc::new)

@@ -59,15 +59,16 @@ pub mod v1 {
     use typed_builder::TypedBuilder;
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
-        User,
+        User, WhoamiResponse,
     };
     use view::ViewManagementService as _;
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
-        RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
-        UpdateWarehouseStorageRequest, WarehouseStatisticsResponse,
+        RenameWarehouseRequest, Service as _, SetWarehouseManagedByRequest,
+        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+        UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
+        WarehouseStatisticsResponse,
     };
 
     /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
@@ -335,14 +336,14 @@ pub mod v1 {
         tag = "user",
         path = ManagementV1Endpoint::Whoami.path(),
         responses(
-            (status = 200, description = "User details", body = User),
+            (status = 200, description = "Current user and instance-admin status", body = WhoamiResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
     async fn whoami<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<User>)> {
+    ) -> Result<(StatusCode, Json<WhoamiResponse>)> {
         let id = match metadata.actor() {
             Actor::Role { principal, .. } | Actor::Principal(principal) => principal.clone(),
             Actor::Anonymous => {
@@ -355,9 +356,18 @@ pub mod v1 {
             }
         };
 
+        let is_instance_admin = metadata.is_instance_admin();
         ApiServer::<C, A, S>::get_user(api_context, metadata, id)
             .await
-            .map(|user| (StatusCode::OK, Json(user)))
+            .map(|user| {
+                (
+                    StatusCode::OK,
+                    Json(WhoamiResponse {
+                        user,
+                        is_instance_admin,
+                    }),
+                )
+            })
     }
 
     /// Replace User
@@ -1796,6 +1806,37 @@ pub mod v1 {
         .await
     }
 
+    /// Set Warehouse Managed-By
+    ///
+    /// Sets (or clears) the managed-by marker on a warehouse. When set, the
+    /// warehouse spec becomes mutable only by the managing control plane
+    /// (instance admins). Requires instance-admin privilege.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetWarehouseManagedBy.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = SetWarehouseManagedByRequest,
+        responses(
+            (status = 200, body = GetWarehouseResponse, description = "Warehouse managed-by marker set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_warehouse_managed_by<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<SetWarehouseManagedByRequest>,
+    ) -> Result<GetWarehouseResponse> {
+        ApiServer::<C, A, S>::set_warehouse_managed_by(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Set the configuration for a Task Queue.
     ///
     /// These configurations are global per warehouse and shared across all instances of this kind of task.
@@ -2351,6 +2392,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::SetWarehouseProtection.path_in_management_v1(),
                     post(set_warehouse_protection),
+                )
+                .route(
+                    ManagementV1Endpoint::SetWarehouseManagedBy.path_in_management_v1(),
+                    post(set_warehouse_managed_by),
                 )
                 .route(
                     ManagementV1Endpoint::SetTaskQueueConfig.path_in_management_v1(),

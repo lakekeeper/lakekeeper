@@ -1,12 +1,15 @@
 use std::{sync::Arc, time::Duration};
 
 use axum_prometheus::metrics;
-use moka::future::Cache;
+use moka::{
+    future::Cache,
+    ops::compute::{CompResult, Op},
+};
 
 use crate::{
     CONFIG,
     service::{
-        RoleId,
+        CatalogBackendError, RoleId,
         authn::UserId,
         cache_metrics,
         catalog_store::role_assignment::{ListRoleMembersResult, ListUserRoleAssignmentsResult},
@@ -98,6 +101,57 @@ fn update_ua_size_metric() {
         .set(USER_ASSIGNMENTS_CACHE.entry_count() as f64);
 }
 
+/// Single-flight read-through for the user-assignments cache.
+///
+/// On a miss, concurrent requests for the same `user_id` are **coalesced**: the
+/// (relatively expensive) effective-roles loader runs once per key, not once per
+/// caller, and every waiter receives a clone of the same `Arc`. This replaces the
+/// previous get-then-load-then-insert path, where N concurrent misses each ran
+/// the loader (a per-replica thundering herd). Hit/miss metrics and the `enabled`
+/// flag are preserved; when caching is disabled the loader runs directly with no
+/// caching or coalescing. Errors are never cached, so a transient load failure
+/// does not poison the entry.
+///
+/// Uses moka `try_get_with` (hence the `Fut: 'static` bound); the
+/// `and_try_compute_with`-based helpers for the other caches do not require it.
+pub(super) async fn user_assignments_cache_get_or_load<Fut>(
+    user_id: &UserId,
+    load: Fut,
+) -> Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError>
+where
+    Fut: std::future::Future<
+            Output = Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError>,
+        > + Send
+        + 'static,
+{
+    if !CONFIG.cache.user_assignments.enabled {
+        return load.await;
+    }
+
+    // Fast path: a hit returns the stored `Arc`. Reuses `user_assignments_cache_get`
+    // so hit/miss metrics and the size gauge stay in one place.
+    if let Some(cached) = user_assignments_cache_get(user_id).await {
+        return Ok(cached);
+    }
+
+    // Miss (already counted by the get above): coalesce concurrent loaders for this
+    // key (moka shares one in-flight init across all waiters).
+    let result = USER_ASSIGNMENTS_CACHE
+        .try_get_with(user_id.clone(), load)
+        .await
+        .map_err(|e: Arc<CatalogBackendError>| {
+            // Move the original error out when we are the sole owner (the common,
+            // uncontended case). Only when waiters genuinely shared one failed load
+            // can we not move it — and a read-only loader yields `Unexpected`
+            // anyway, so wrapping does not change the surfaced status.
+            Arc::try_unwrap(e).unwrap_or_else(|shared| {
+                CatalogBackendError::new_unexpected(std::io::Error::other(shared.to_string()))
+            })
+        })?;
+    update_ua_size_metric();
+    Ok(result)
+}
+
 // ============================================================================
 // Role members cache  (RoleId → Arc<ListRoleMembersResult>)
 // ============================================================================
@@ -160,6 +214,67 @@ fn update_rm_size_metric() {
     let () = &*cache_metrics::METRICS_INITIALIZED;
     metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_RM)
         .set(ROLE_MEMBERS_CACHE.entry_count() as f64);
+}
+
+/// Single-flight read-through for the role-members cache.
+///
+/// On a miss, concurrent requests for the same `role_id` are **coalesced**: moka
+/// serializes the per-key compute, so the loader runs once and later callers
+/// observe the just-inserted entry instead of re-loading. Unlike the
+/// user-assignments read-through this one returns `Option` — a non-existent role
+/// yields `None` and is **not** negative-cached (the entry stays absent). The
+/// `enabled` flag and hit/miss metrics are preserved; when caching is disabled
+/// the loader runs directly. `and_try_compute_with` returns the loader error by
+/// value (no `Arc`-sharing), so no wrapping or cloning is needed.
+pub(super) async fn role_members_cache_get_or_load<Fut>(
+    role_id: RoleId,
+    load: Fut,
+) -> Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError>
+where
+    Fut: std::future::Future<
+            Output = Result<Option<Arc<ListRoleMembersResult>>, CatalogBackendError>,
+        > + Send,
+{
+    if !CONFIG.cache.role_members.enabled {
+        return load.await;
+    }
+
+    // Fast path: a hit returns the stored `Arc` and keeps the hit/miss metrics in
+    // `role_members_cache_get`.
+    if let Some(cached) = role_members_cache_get(role_id).await {
+        return Ok(Some(cached));
+    }
+
+    // Miss: coalesce concurrent loaders for this key. moka holds a per-key lock
+    // across the compute, so only the first caller runs `load`; the rest see the
+    // entry it inserted and skip straight to it.
+    let outcome = ROLE_MEMBERS_CACHE
+        .entry(role_id)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Populated by another caller while we waited on the key lock.
+                return Ok(Op::Nop);
+            }
+            match load.await {
+                Ok(Some(value)) => Ok(Op::Put(value)),
+                // Absent role — never negative-cached. Coalescing therefore
+                // applies only to a found role; concurrent lookups of a missing
+                // one each re-run the loader (rare, and no worse than before).
+                Ok(None) => Ok(Op::Nop),
+                Err(e) => Err(e),
+            }
+        })
+        .await?;
+    update_rm_size_metric();
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => Some(entry.into_value()),
+        // `StillNone` = absent (loader returned `None`). `Removed` is unreachable
+        // here — the closure only returns `Nop`/`Put`, never `Remove`.
+        CompResult::StillNone(_) | CompResult::Removed(_) => None,
+    })
 }
 
 // ============================================================================
@@ -332,6 +447,220 @@ mod tests {
 
         let cached = user_assignments_cache_get(&user_id).await.unwrap();
         assert_eq!(cached.roles.len(), 1);
+    }
+
+    /// Single-flight: N concurrent misses for the same key run the loader
+    /// **exactly once**, and every caller receives the same `Arc`. Guards against
+    /// regressing to the per-caller get-load-insert path (a per-replica
+    /// thundering herd on hot keys).
+    #[tokio::test]
+    async fn user_assignments_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let user_id = test_user_id("single-flight-coalesce");
+        // Guarantee a cold key (other tests share the process-wide cache).
+        user_assignments_cache_invalidate(&user_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let value = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "single-flight"),
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let uid = user_id.clone();
+            let value = Arc::clone(&value);
+            handles.push(tokio::spawn(async move {
+                user_assignments_cache_get_or_load(&uid, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    // Widen the miss window so every caller races in before the
+                    // first load completes — without coalescing this forces N
+                    // loader runs (the behaviour this guards against).
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, CatalogBackendError>(value)
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap().expect("loader succeeds"));
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent misses must coalesce to a single loader run"
+        );
+        for r in &results[1..] {
+            assert!(
+                Arc::ptr_eq(&results[0], r),
+                "every caller must receive the same coalesced Arc"
+            );
+        }
+
+        // Clean up the shared cache so we don't leak state into other tests.
+        user_assignments_cache_invalidate(&user_id).await;
+    }
+
+    /// A failed load (`Err`) coalesces like a success but **must not poison** the
+    /// entry: concurrent callers share one failing load and all observe an error,
+    /// and a subsequent successful load still populates the cache (errors are
+    /// never cached).
+    #[tokio::test]
+    async fn user_assignments_get_or_load_does_not_cache_errors() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let user_id = test_user_id("single-flight-error");
+        user_assignments_cache_invalidate(&user_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        // Concurrent callers whose loader fails — coalesced onto one failing load.
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let loads = Arc::clone(&loads);
+            let uid = user_id.clone();
+            handles.push(tokio::spawn(async move {
+                user_assignments_cache_get_or_load(&uid, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Err::<Arc<ListUserRoleAssignmentsResult>, _>(
+                        CatalogBackendError::new_unexpected(std::io::Error::other("boom")),
+                    )
+                })
+                .await
+            }));
+        }
+
+        for h in handles {
+            assert!(
+                h.await.unwrap().is_err(),
+                "every coalesced caller observes the failure"
+            );
+        }
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent callers coalesce onto a single failing load"
+        );
+        assert!(
+            user_assignments_cache_get(&user_id).await.is_none(),
+            "a failed load must not poison the entry"
+        );
+
+        // A subsequent successful load populates the cache as usual.
+        let value = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "after-error"),
+        );
+        let loaded = user_assignments_cache_get_or_load(&user_id, {
+            let value = Arc::clone(&value);
+            async move { Ok::<_, CatalogBackendError>(value) }
+        })
+        .await
+        .expect("loader succeeds after a prior failure");
+        assert!(Arc::ptr_eq(&loaded, &value));
+        assert!(user_assignments_cache_get(&user_id).await.is_some());
+
+        user_assignments_cache_invalidate(&user_id).await;
+    }
+
+    /// `role_members_cache_get_or_load` must coalesce concurrent misses for the
+    /// same role into ONE loader run, with every caller receiving the same `Arc`.
+    /// Mirrors the user-assignments single-flight guard, but this read-through
+    /// returns `Option` — a present role coalesces; a non-existent one must not
+    /// be negative-cached (covered separately below).
+    #[tokio::test]
+    async fn role_members_get_or_load_coalesces_concurrent_misses() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let role_id = RoleId::new_random();
+        role_members_cache_invalidate(role_id).await;
+
+        let loads = Arc::new(AtomicUsize::new(0));
+        let value = role_result_with_members(role_id, vec![test_user_id("rm-coalesce")]);
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let loads = Arc::clone(&loads);
+            let value = Arc::clone(&value);
+            handles.push(tokio::spawn(async move {
+                role_members_cache_get_or_load(role_id, async move {
+                    loads.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..100 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, CatalogBackendError>(Some(value))
+                })
+                .await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(
+                h.await
+                    .unwrap()
+                    .expect("loader succeeds")
+                    .expect("role exists"),
+            );
+        }
+
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "concurrent misses must coalesce to a single loader run"
+        );
+        for r in &results[1..] {
+            assert!(
+                Arc::ptr_eq(&results[0], r),
+                "every caller must receive the same coalesced Arc"
+            );
+        }
+
+        role_members_cache_invalidate(role_id).await;
+    }
+
+    /// A non-existent role (loader returns `None`) must NOT be negative-cached:
+    /// after a `None` load the entry stays absent, so a later real insert is
+    /// visible immediately rather than shadowed until TTL.
+    #[tokio::test]
+    async fn role_members_get_or_load_does_not_negative_cache() {
+        let role_id = RoleId::new_random();
+        role_members_cache_invalidate(role_id).await;
+
+        let missing = role_members_cache_get_or_load(role_id, async { Ok(None) })
+            .await
+            .expect("loader succeeds");
+        assert!(missing.is_none(), "non-existent role resolves to None");
+        assert!(
+            role_members_cache_get(role_id).await.is_none(),
+            "None must not be cached"
+        );
+
+        // A subsequent successful load populates the cache as usual.
+        let value = role_result_with_members(role_id, vec![test_user_id("rm-late")]);
+        let loaded = role_members_cache_get_or_load(role_id, {
+            let value = Arc::clone(&value);
+            async move { Ok::<_, CatalogBackendError>(Some(value)) }
+        })
+        .await
+        .expect("loader succeeds")
+        .expect("role now exists");
+        assert!(Arc::ptr_eq(&loaded, &value));
+        assert!(role_members_cache_get(role_id).await.is_some());
+
+        role_members_cache_invalidate(role_id).await;
     }
 
     // ── Role members ──────────────────────────────────────────────────────────

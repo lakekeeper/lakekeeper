@@ -2756,4 +2756,56 @@ pub mod tests {
         .expect("found");
         assert_eq!(third.namespace_ident(), &other);
     }
+
+    /// The transaction path of `get_namespace` must NOT warm the shared
+    /// `NAMESPACE_CACHE`. A transaction can observe its own uncommitted writes, so
+    /// publishing what it reads into the cross-request cache could expose state
+    /// that later rolls back. Cache warming is reserved for the pooled-`State`
+    /// path, which only ever reads committed data. The contrast assertion (State
+    /// path *does* warm) keeps this honest: it proves the cache is enabled, so the
+    /// "not warmed" assertion cannot pass vacuously.
+    #[sqlx::test]
+    async fn get_namespace_transaction_path_does_not_warm_shared_cache(pool: sqlx::PgPool) {
+        use lakekeeper::service::namespace_cache::NAMESPACE_CACHE;
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let namespace = NamespaceIdent::from_vec(vec!["txn_no_warm".to_string()]).unwrap();
+        let ns = initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id = ns.namespace_id();
+
+        // Clean slate: creation may have warmed the cache for this id.
+        NAMESPACE_CACHE.invalidate(&namespace_id).await;
+        assert!(
+            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
+            "precondition: namespace must not be cached"
+        );
+
+        // Transaction path: read through an active (read) transaction.
+        let mut txn = PostgresTransaction::begin_read(state.clone())
+            .await
+            .unwrap();
+        let found = PostgresBackend::get_namespace(warehouse_id, namespace_id, txn.transaction())
+            .await
+            .unwrap();
+        assert!(found.is_some(), "the committed namespace must be returned");
+        txn.rollback().await.unwrap();
+
+        assert!(
+            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
+            "transaction-path get_namespace must NOT warm the shared NAMESPACE_CACHE"
+        );
+
+        // Contrast: the pooled-`State` path DOES warm the cache. This proves the
+        // cache is enabled, so the assertion above is meaningful (not vacuous).
+        let found = PostgresBackend::get_namespace(warehouse_id, namespace_id, state.clone())
+            .await
+            .unwrap();
+        assert!(found.is_some());
+        assert!(
+            NAMESPACE_CACHE.get(&namespace_id).await.is_some(),
+            "State-path get_namespace must warm the shared NAMESPACE_CACHE"
+        );
+    }
 }

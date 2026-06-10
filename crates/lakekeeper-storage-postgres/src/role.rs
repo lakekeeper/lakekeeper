@@ -2190,4 +2190,88 @@ mod test {
         let msg = format!("{err:?}");
         assert!(msg.contains("DeleteRolesNoFilter"), "got: {msg}");
     }
+
+    /// A stale by-id cache entry must not cause `get_role_by_ident` to report a
+    /// spurious not-found for a role that exists. After the by-id entry is evicted
+    /// while the ident→id index still resolves, the lookup must re-load the role
+    /// from the DB and return it (the cache layers self-heal / fall back rather
+    /// than surfacing the stale gap). This guards the multi-cache coordination in
+    /// `get_role_by_ident`.
+    ///
+    /// Note: this exercises the *reachable* stale path (evicted by-id + live
+    /// ident index). The wrong-project variant of the fallback requires a
+    /// corrupted cross-replica ident→id mapping, which cannot be produced through
+    /// public ops or the public `ROLE_CACHE` — it would need seeding the private
+    /// role ident index — so it is not covered here.
+    #[sqlx::test]
+    async fn get_role_by_ident_reloads_on_stale_by_id_cache(pool: sqlx::PgPool) {
+        use std::sync::Arc;
+
+        use lakekeeper::service::{CatalogRoleOps, role_cache::ROLE_CACHE};
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::new_random();
+
+        let mut t = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::create_project(
+            &project_id,
+            format!("Project {project_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
+        t.commit().await.unwrap();
+
+        let role_id = RoleId::new_random();
+        let source_id: RoleSourceId = "stale-cache-source".parse().unwrap();
+        let provider_id = RoleProviderId::lakekeeper();
+        let roles = create_roles(
+            &project_id,
+            vec![
+                CatalogCreateRoleRequest::builder()
+                    .role_id(role_id)
+                    .role_name("Stale Cache Role")
+                    .source_id(&source_id)
+                    .provider_id(&provider_id)
+                    .build(),
+            ],
+            OnRoleConflict::Fail,
+            &state.write_pool(),
+        )
+        .await
+        .unwrap();
+        let arc_project = Arc::new(project_id.clone());
+        let arc_ident = Arc::new(roles[0].ident().clone());
+
+        // Warm both layers (ident→id index and the by-id ROLE_CACHE).
+        let warmed = PostgresBackend::get_role_by_ident(
+            arc_project.clone(),
+            arc_ident.clone(),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(warmed.id(), role_id);
+        assert!(
+            ROLE_CACHE.get(&role_id).await.is_some(),
+            "precondition: warming must populate the by-id cache (role cache enabled)"
+        );
+
+        // Evict ONLY the by-id entry; the ident→id index still resolves to it.
+        ROLE_CACHE.invalidate(&role_id).await;
+        assert!(ROLE_CACHE.get(&role_id).await.is_none());
+
+        // The stale by-id gap must NOT yield a spurious not-found: the role is
+        // re-loaded and returned correctly.
+        let reloaded = PostgresBackend::get_role_by_ident(arc_project, arc_ident, state.clone())
+            .await
+            .expect("stale by-id cache must re-load, not surface not-found");
+        assert_eq!(reloaded.id(), role_id);
+        assert!(
+            ROLE_CACHE.get(&role_id).await.is_some(),
+            "re-load must re-populate the by-id cache"
+        );
+    }
 }

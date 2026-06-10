@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE warehouse\n            SET allowed_format_versions = $1, default_format_version = $2\n            WHERE warehouse_id = $3\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                updated_at,\n                version\n            ",
+  "query": "WITH\n            whi AS (INSERT INTO warehouse (\n                                   warehouse_name,\n                                   project_id,\n                                   storage_profile,\n                                   storage_secret_id,\n                                   status,\n                                   tabular_expiration_seconds,\n                                   tabular_delete_mode,\n                                   allowed_format_versions,\n                                   default_format_version,\n                                   managed_by)\n                                VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9)\n                                RETURNING\n                                    project_id,\n                                    warehouse_id,\n                                    warehouse_name,\n                                    storage_profile as \"storage_profile: Json<StorageProfile>\",\n                                    storage_secret_id,\n                                    status AS \"status: WarehouseStatus\",\n                                    tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                                    tabular_expiration_seconds,\n                                    protected,\n                                    allowed_format_versions,\n                                    default_format_version,\n                                    managed_by as \"managed_by: ManagedBy\",\n                                    updated_at,\n                                    version),\n            whs AS (INSERT INTO warehouse_statistics (number_of_views,\n                                                      number_of_tables,\n                                                      warehouse_id)\n                     VALUES (0, 0, (SELECT warehouse_id FROM whi)))\n            SELECT\n                *\n            FROM whi",
   "describe": {
     "columns": [
       {
@@ -146,6 +146,27 @@
       },
       {
         "ordinal": 11,
+        "name": "managed_by: ManagedBy",
+        "type_info": {
+          "Custom": {
+            "name": "managed_by",
+            "kind": {
+              "Enum": [
+                "self-managed",
+                "instance-admin"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "managed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -156,7 +177,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -169,9 +190,35 @@
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Uuid",
+        "Int8",
+        {
+          "Custom": {
+            "name": "tabular_delete_mode",
+            "kind": {
+              "Enum": [
+                "soft",
+                "hard"
+              ]
+            }
+          }
+        },
         "Int2Array",
         "Int2",
-        "Uuid"
+        {
+          "Custom": {
+            "name": "managed_by",
+            "kind": {
+              "Enum": [
+                "self-managed",
+                "instance-admin"
+              ]
+            }
+          }
+        }
       ]
     },
     "nullable": [
@@ -186,9 +233,10 @@
       false,
       false,
       true,
+      false,
       true,
       false
     ]
   },
-  "hash": "db6577afb97ae72b4f57435efa39b05513553216923d8ba1dc5132ec08fd376e"
+  "hash": "59a05644da791a59cab8e03f95054d8eb770d86ffe89067f1cf080018a82df82"
 }

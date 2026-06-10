@@ -27,6 +27,8 @@ use crate::{
 mod error;
 pub mod implementations;
 pub use error::*;
+mod instance_admin;
+pub use instance_admin::*;
 mod warehouse;
 pub use implementations::allow_all::AllowAllAuthorizer;
 pub use warehouse::*;
@@ -605,6 +607,47 @@ impl CatalogWarehouseAction {
     #[must_use]
     pub fn variants() -> &'static [CatalogWarehouseAction; 22] {
         &WAREHOUSE_ACTION_VARIANTS
+    }
+
+    /// Whether this action mutates the warehouse *spec* and is therefore subject
+    /// to the `managed_by` lock (see [`crate::service::ManagedBy`]). Child-resource,
+    /// read, and data-plane actions are not locked.
+    ///
+    /// This is the single source of truth for what the lock covers:
+    /// `CatalogWarehouseOps::ensure_warehouse_spec_mutable` consults it to decide
+    /// whether to enforce the marker. Exhaustive on purpose — adding a new action
+    /// forces a compile-time decision about whether it is lockable.
+    #[must_use]
+    pub fn is_spec_mutation(&self) -> bool {
+        match self {
+            CatalogWarehouseAction::Delete
+            | CatalogWarehouseAction::UpdateStorage
+            | CatalogWarehouseAction::UpdateStorageCredential
+            | CatalogWarehouseAction::Deactivate
+            | CatalogWarehouseAction::Activate
+            | CatalogWarehouseAction::Rename
+            | CatalogWarehouseAction::ModifySoftDeletion
+            | CatalogWarehouseAction::SetProtection
+            | CatalogWarehouseAction::SetFormatVersionPolicy => true,
+            // `ModifyTaskQueueConfig` is intentionally NOT locked in v1: it is an
+            // operational knob (retention/expiry tuning) rather than part of the
+            // storage/identity spec an operator reconciles, and its write goes
+            // through a helper with its own transaction. Revisit if operators
+            // begin reconciling task-queue config.
+            CatalogWarehouseAction::ModifyTaskQueueConfig
+            | CatalogWarehouseAction::CreateNamespace { .. }
+            | CatalogWarehouseAction::GetMetadata
+            | CatalogWarehouseAction::GetConfig
+            | CatalogWarehouseAction::ListNamespaces
+            | CatalogWarehouseAction::ListEverything
+            | CatalogWarehouseAction::Use
+            | CatalogWarehouseAction::IncludeInList
+            | CatalogWarehouseAction::ListDeletedTabulars
+            | CatalogWarehouseAction::GetTaskQueueConfig
+            | CatalogWarehouseAction::GetAllTasks
+            | CatalogWarehouseAction::ControlAllTasks
+            | CatalogWarehouseAction::GetEndpointStatistics => false,
+        }
     }
 }
 impl CatalogAction for CatalogWarehouseAction {
@@ -1382,6 +1425,46 @@ pub mod tests {
     fn test_server_action_variant_completeness() {
         let variants = CatalogServerAction::variants();
         assert_eq!(variants.len(), CatalogServerAction::COUNT);
+    }
+
+    #[test]
+    fn test_warehouse_spec_mutation_classification() {
+        use CatalogWarehouseAction as A;
+        // Spec mutations: locked by the managed-by marker.
+        for a in [
+            A::Delete,
+            A::UpdateStorage,
+            A::UpdateStorageCredential,
+            A::Deactivate,
+            A::Activate,
+            A::Rename,
+            A::ModifySoftDeletion,
+            A::SetProtection,
+            A::SetFormatVersionPolicy,
+        ] {
+            assert!(a.is_spec_mutation(), "{a:?} should be a spec mutation");
+        }
+        // Reads, child-resource, and task-queue tuning are NOT locked.
+        for a in [
+            A::CreateNamespace {
+                name: None,
+                properties: Arc::new(BTreeMap::new()),
+            },
+            A::GetMetadata,
+            A::GetConfig,
+            A::ListNamespaces,
+            A::ListEverything,
+            A::Use,
+            A::IncludeInList,
+            A::ListDeletedTabulars,
+            A::GetTaskQueueConfig,
+            A::ModifyTaskQueueConfig,
+            A::GetAllTasks,
+            A::ControlAllTasks,
+            A::GetEndpointStatistics,
+        ] {
+            assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");
+        }
     }
 
     #[test]
