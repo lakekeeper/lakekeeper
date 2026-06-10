@@ -954,11 +954,15 @@ where
         };
 
         let Some(state) = pooled_state else {
-            // Transaction path: read through the active transaction, no coalescing.
+            // Transaction path: read through the active transaction, with no
+            // coalescing and no cache warming. A transaction can observe its own
+            // uncommitted writes, so publishing what we read into the shared
+            // (cross-request) `NAMESPACE_CACHE` could expose state that later rolls
+            // back. Cache warming is left to the pooled-`State` path above, which
+            // only ever reads committed data.
             let namespaces =
                 fetch_namespace::<Self, _>(warehouse_id, namespace, &mut state_or_transaction)
                     .await?;
-            namespace_cache_insert_multiple(namespaces.clone()).await;
             return Ok(build_namespace_hierarchy_from_vec(&namespaces));
         };
 
