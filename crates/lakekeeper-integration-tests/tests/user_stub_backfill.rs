@@ -65,11 +65,16 @@ async fn seed_user(
 }
 
 /// Create a role-provider stub the way production does: drive the real
-/// role-provider sync with a nameless user and no role assignments. The sync
-/// upserts the user with a NULL name (`last_updated_with = role-provider`) — no
-/// raw SQL, so the test follows the real write path instead of duplicating the
-/// schema.
-async fn seed_null_stub(ctx: &Ctx, project_id: &lakekeeper::ProjectId, user_id: &UserId) {
+/// role-provider sync with a nameless user (optionally carrying a synced email)
+/// and no role assignments. The sync upserts the user with a NULL name
+/// (`last_updated_with = role-provider`) — no raw SQL, so the test follows the
+/// real write path instead of duplicating the schema.
+async fn seed_null_stub(
+    ctx: &Ctx,
+    project_id: &lakekeeper::ProjectId,
+    user_id: &UserId,
+    email: Option<&str>,
+) {
     let user_id = std::sync::Arc::new(user_id.clone());
     let provider = RoleProviderId::new_unchecked("ldap");
     let mut tx =
@@ -80,7 +85,7 @@ async fn seed_null_stub(ctx: &Ctx, project_id: &lakekeeper::ProjectId, user_id: 
         CatalogUserRoleAssignmentUser {
             user_id: &user_id,
             name: None,
-            email: None,
+            email,
             user_type: None,
             updated_with: UserLastUpdatedWith::RoleProvider,
         },
@@ -119,7 +124,7 @@ async fn null_stub_renders_placeholder_name(pool: PgPool) {
     let (ctx, project_id, _warehouse_name) = setup(pool.clone()).await;
     let alice = UserId::new_unchecked("oidc", "alice");
 
-    seed_null_stub(&ctx, &project_id, &alice).await;
+    seed_null_stub(&ctx, &project_id, &alice, None).await;
 
     let row = get_user_row(&ctx, &alice).await;
     assert_eq!(row.name, format!("Nameless User with id {alice}"));
@@ -133,7 +138,7 @@ async fn first_login_backfills_role_provider_stub(pool: PgPool) {
     let alice = UserId::new_unchecked("oidc", "alice");
 
     // Stub exactly as role-provider sync writes it: NULL name.
-    seed_null_stub(&ctx, &project_id, &alice).await;
+    seed_null_stub(&ctx, &project_id, &alice, None).await;
 
     // First login (the `GET /v1/config` first-touch hook), token name "Test User".
     CatalogServer::get_config(
@@ -184,7 +189,7 @@ async fn nameless_token_does_not_backfill_stub(pool: PgPool) {
     let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
     let dave = UserId::new_unchecked("oidc", "dave");
 
-    seed_null_stub(&ctx, &project_id, &dave).await;
+    seed_null_stub(&ctx, &project_id, &dave, None).await;
 
     // First login with a token that carries no name claim.
     CatalogServer::get_config(
@@ -226,4 +231,29 @@ async fn first_login_does_not_overwrite_real_role_provider_name(pool: PgPool) {
     let row = get_user_row(&ctx, &carol).await;
     assert_eq!(row.name, "Carol Synced");
     assert_eq!(row.last_updated_with, UserLastUpdatedWith::RoleProvider);
+}
+
+/// A role-provider stub that already carries a synced email must keep it when
+/// first login backfills the name from a token with no email claim — the backfill
+/// adds the name, it must not clear the email.
+#[sqlx::test]
+async fn first_login_keeps_existing_provider_email(pool: PgPool) {
+    let (ctx, project_id, warehouse_name) = setup(pool.clone()).await;
+    let erin = UserId::new_unchecked("oidc", "erin");
+
+    // Stub with a provider-synced email but no name yet.
+    seed_null_stub(&ctx, &project_id, &erin, Some("erin@example.com")).await;
+
+    // First login: the token has a name ("Test User") but no email claim.
+    CatalogServer::get_config(
+        config_query(&project_id, &warehouse_name),
+        ctx.clone(),
+        RequestMetadata::test_user(erin.clone()),
+    )
+    .await
+    .unwrap();
+
+    let row = get_user_row(&ctx, &erin).await;
+    assert_eq!(row.name, "Test User");
+    assert_eq!(row.email.as_deref(), Some("erin@example.com"));
 }

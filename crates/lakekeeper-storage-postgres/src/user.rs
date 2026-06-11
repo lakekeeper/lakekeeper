@@ -262,9 +262,11 @@ pub(crate) async fn create_or_update_user<
     // One statement covers both modes. The `DO UPDATE` fires unconditionally for
     // `Overwrite` (`NOT $6`), but for `BackfillUnnamedStub` only when the row is
     // still an un-named role-provider stub — so a real name is never clobbered,
-    // atomically against a concurrent sync. The `UNION ALL` fallback returns the
-    // unchanged row when the guard skips the update, so a no-op still yields a
-    // row (and `fetch_one` holds).
+    // atomically against a concurrent sync. In backfill a NULL incoming email keeps
+    // the stub's existing (provider-synced) email rather than clearing it; Overwrite
+    // stays an unconditional replace. The `UNION ALL` fallback returns the unchanged
+    // row when the guard skips the update, so a no-op still yields a row (and
+    // `fetch_one` holds).
     //
     // query_as doesn't respect FromRow: https://github.com/launchbadge/sqlx/issues/2584
     let user = sqlx::query!(
@@ -273,7 +275,9 @@ pub(crate) async fn create_or_update_user<
             INSERT INTO users (id, name, email, last_updated_with, user_type)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (id) DO UPDATE
-                SET name = $2, email = $3, last_updated_with = $4, user_type = $5, deleted_at = null
+                SET name = $2,
+                    email = CASE WHEN $6 THEN COALESCE($3, users.email) ELSE $3 END,
+                    last_updated_with = $4, user_type = $5, deleted_at = null
                 WHERE NOT $6
                    OR (users.name IS NULL
                        AND users.last_updated_with = 'role-provider'::user_last_updated_with)
