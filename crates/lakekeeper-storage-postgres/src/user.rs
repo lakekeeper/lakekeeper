@@ -334,16 +334,26 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     search_term: &str,
     connection: E,
 ) -> Result<SearchUserResponse> {
+    // Split into two legs so the fuzzy leg's ORDER BY is the bare KNN distance — that
+    // lets it use the `users_name_email_coalesce_gist_idx` GiST index instead of
+    // scanning + sorting every row (a leading `CASE` in the ORDER BY defeats KNN). The
+    // exact-id match is unioned in so it still ranks first.
     let users = sqlx::query!(
         r#"
-        SELECT id, name, email, (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist, user_type as "user_type: DbUserType"
-        FROM users
-        ORDER BY 
-            CASE 
-                WHEN id = $1 THEN 1
-                ELSE 2
-            END,
-            dist ASC
+        SELECT id AS "id!", name, email, user_type AS "user_type!: DbUserType"
+        FROM (
+            ( SELECT id, name, email, user_type, 0 AS rank, 0::real AS dist
+              FROM users
+              WHERE id = $1 )
+          UNION ALL
+            ( SELECT id, name, email, user_type, 1 AS rank,
+                     (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist
+              FROM users
+              WHERE id <> $1
+              ORDER BY (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1
+              LIMIT 10 )
+        ) ranked
+        ORDER BY rank, dist
         LIMIT 10
         "#,
         search_term,
