@@ -40,6 +40,9 @@ Individual tables can override warehouse settings using these Iceberg table prop
 !!! note
     Tables with `gc.enabled=false` are excluded from automatic expiration regardless of other settings.
 
+!!! note
+    Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Expiration must read manifest lists and manifests to determine which files to remove, and Lakekeeper cannot decrypt them. Skipped tables are recorded as a successful (skipped) run, not a failure.
+
 ### Production Deployment
 
 For production workloads, we recommend running expire snapshots workers in dedicated pods to avoid impacting REST API performance. This can be achieved by:
@@ -94,6 +97,7 @@ Individual tables can override warehouse settings using these Iceberg table prop
 ### Safety Mechanisms
 
 - **`gc.enabled` check**: Tables with `gc.enabled=false` are excluded. Attempting to remove orphan files on such a table returns an error immediately.
+- **Encrypted tables skipped**: Tables using Iceberg native encryption (`encryption.key-id` set) are skipped. Identifying the referenced-file set requires reading manifests, which Lakekeeper cannot decrypt; running anyway risks deleting live data. Skipped tables are recorded as a successful (skipped) run; manually scheduling one returns an error immediately.
 - **24h safety floor on `default-older-than-ms`**: At task pickup, the worker refuses to run with a queue-config retention shorter than 24 hours, returning `RemoveOrphanFilesRetentionTooShort`. A typo like `default-older-than-ms: 6000` (six seconds) would otherwise delete in-flight writer uploads. Mirrors Spark/Iceberg's `retentionDurationCheck.enabled=false` escape — set `disable-min-older-than-check=true` to override.
 - **Unknown age preservation**: Files where the storage backend does not report a last-modified timestamp are skipped (counted as `skipped_unknown_age_count` in the result).
 

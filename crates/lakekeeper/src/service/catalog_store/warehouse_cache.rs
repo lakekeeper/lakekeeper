@@ -23,6 +23,7 @@ use crate::{
             METRIC_CACHE_MISSES_TOTAL as METRIC_WAREHOUSE_CACHE_MISSES,
             METRIC_CACHE_SIZE as METRIC_WAREHOUSE_CACHE_SIZE, METRICS_INITIALIZED,
         },
+        cache_ttl::JitteredTtl,
     },
 };
 
@@ -34,6 +35,9 @@ pub static WAREHOUSE_CACHE: LazyLock<Cache<WarehouseId, CachedWarehouse>> = Lazy
         .time_to_live(Duration::from_secs(
             CONFIG.cache.warehouse.time_to_live_secs,
         ))
+        .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+            CONFIG.cache.warehouse.time_to_live_secs,
+        )))
         .async_eviction_listener(|key, value: CachedWarehouse, cause| {
             Box::pin(async move {
                 // On Replaced: invalidate the old secondary index mapping immediately,
@@ -90,6 +94,9 @@ static NAME_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, UniCase<String>), Warehou
             .time_to_live(Duration::from_secs(
                 CONFIG.cache.warehouse.time_to_live_secs,
             ))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.warehouse.time_to_live_secs,
+            )))
             .build()
     });
 

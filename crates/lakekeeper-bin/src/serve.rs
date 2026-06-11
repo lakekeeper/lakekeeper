@@ -152,6 +152,7 @@ async fn get_default_catalog_from_config() -> anyhow::Result<(
     .await?;
 
     let catalog_state = CatalogState::from_pools(read_pool.clone(), write_pool.clone());
+    catalog_state.spawn_pool_metrics();
 
     let secrets_state: SecretsEnum = match lakekeeper::CONFIG.secret_backend {
         SecretBackend::KV2 => lakekeeper_secrets_kv2::SecretsState::from_config(

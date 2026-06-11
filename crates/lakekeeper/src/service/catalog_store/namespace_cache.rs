@@ -1,4 +1,7 @@
-use std::{sync::LazyLock, time::Duration};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use axum_prometheus::metrics;
 use iceberg::NamespaceIdent;
@@ -20,6 +23,7 @@ use crate::{
             METRIC_CACHE_MISSES_TOTAL as METRIC_NAMESPACE_CACHE_MISSES,
             METRIC_CACHE_SIZE as METRIC_NAMESPACE_CACHE_SIZE, METRICS_INITIALIZED,
         },
+        cache_ttl::JitteredTtl,
         catalog_store::namespace::NamespaceHierarchy,
     },
 };
@@ -33,6 +37,9 @@ pub static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =
             .time_to_live(Duration::from_secs(
                 CONFIG.cache.namespace.time_to_live_secs,
             ))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.namespace.time_to_live_secs,
+            )))
             .async_eviction_listener(|key, value: NamespaceWithParent, cause| {
                 Box::pin(async move {
                     // On Replaced: invalidate the old secondary index mapping immediately,
@@ -95,6 +102,9 @@ pub static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> =
             .time_to_live(Duration::from_secs(
                 CONFIG.cache.namespace.time_to_live_secs,
             ))
+            .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+                CONFIG.cache.namespace.time_to_live_secs,
+            )))
             .build()
     });
 
@@ -312,6 +322,14 @@ where
         return Ok(true);
     }
 
+    // The compute always returns `Op::Nop` (the authoritative write is the
+    // version-gated `insert_multiple`, not a raw `Op::Put`), so existence is
+    // normally surfaced by re-reading the cache below. That re-read alone can
+    // race a (microsecond, capacity-driven) eviction of the just-primed entry and
+    // spuriously report not-found, so we also record whether the load itself found
+    // the namespace — making `found` independent of the entry still being resident.
+    let found_in_load = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let found_signal = Arc::clone(&found_in_load);
     let outcome = NAMESPACE_CACHE
         .entry(namespace_id)
         .and_try_compute_with(|maybe_entry| async move {
@@ -323,13 +341,13 @@ where
                 // Namespace not found — never negative-cached.
                 return Ok(Op::Nop);
             }
+            found_signal.store(true, std::sync::atomic::Ordering::Relaxed);
             // `namespace_cache_insert_multiple` is the authoritative write: it is
             // version-gated (keeps a concurrently-cached newer version) and stores
             // *canonical* entries (the invariant `build_hierarchy_from_cache` relies
             // on). We deliberately return `Op::Nop` rather than `Op::Put(leaf)` — a
             // raw, possibly-stale, non-canonical leaf — which would clobber a newer
-            // concurrent insert and break the canonical invariant. `found` is
-            // resolved by the re-read below.
+            // concurrent insert and break the canonical invariant.
             namespace_cache_insert_multiple(chain).await;
             Ok(Op::Nop)
         })
@@ -340,10 +358,14 @@ where
         CompResult::Inserted(_) | CompResult::ReplacedWith(_) | CompResult::Unchanged(_) => true,
         // We always return `Op::Nop`, so a found namespace lands here: our gated
         // `insert_multiple` wrote it via a different lock domain that moka's
-        // snapshot-based `Op::Nop` result cannot surface. Re-read to decide `found`
-        // (also covers the genuine not-found case → `false`).
+        // snapshot-based `Op::Nop` result cannot surface. The load's own result is
+        // authoritative for existence; the cache re-read additionally covers the
+        // case where a concurrent caller populated the entry. Without the
+        // `found_in_load` term, an eviction between our insert and this read would
+        // spuriously report not-found for a namespace that exists.
         CompResult::StillNone(_) | CompResult::Removed(_) => {
-            NAMESPACE_CACHE.get(&namespace_id).await.is_some()
+            found_in_load.load(std::sync::atomic::Ordering::Relaxed)
+                || NAMESPACE_CACHE.get(&namespace_id).await.is_some()
         }
     })
 }
@@ -476,8 +498,6 @@ impl EventListener for NamespaceCacheEventListener {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use chrono::Utc;
     use iceberg::NamespaceIdent;
 

@@ -12,6 +12,7 @@ use crate::{
         CatalogBackendError, RoleId,
         authn::UserId,
         cache_metrics,
+        cache_ttl::JitteredTtl,
         catalog_store::role_assignment::{ListRoleMembersResult, ListUserRoleAssignmentsResult},
     },
 };
@@ -35,6 +36,9 @@ pub(crate) static USER_ASSIGNMENTS_CACHE: std::sync::LazyLock<
         .time_to_live(Duration::from_secs(
             CONFIG.cache.user_assignments.time_to_live_secs,
         ))
+        .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+            CONFIG.cache.user_assignments.time_to_live_secs,
+        )))
         .build()
 });
 
@@ -171,6 +175,9 @@ pub(crate) static ROLE_MEMBERS_CACHE: std::sync::LazyLock<
         .time_to_live(Duration::from_secs(
             CONFIG.cache.role_members.time_to_live_secs,
         ))
+        .expire_after(JitteredTtl::with_default_jitter(Duration::from_secs(
+            CONFIG.cache.role_members.time_to_live_secs,
+        )))
         .build()
 });
 

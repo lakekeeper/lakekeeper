@@ -33,6 +33,14 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 
 `cache_type` values: `stc`, `warehouse`, `namespace`, `secrets`, `role`, `user_assignments`, `role_members`. A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
 
+Role-membership cache invalidation emits one additional metric:
+
+| Metric                                                                                | Type      | Labels      | Description |
+|---------------------------------------------------------------------------------------|-----------|-------------|-----|
+| <code class="selectable">lakekeeper_role_<wbr>membership_edge_<wbr>fanout_users</code> | Histogram | `operation` | Users whose cached role assignments were invalidated by a single role-to-role membership edge change (`operation`: `add` / `remove`) |
+
+The user-assignments cache stores a fully-expanded transitive closure, so one role-membership edge change can invalidate many users at once. A high p99 means a single edit fans out widely; Lakekeeper also logs a `warn` when one change invalidates more than 1000 users.
+
 ### Role Provider Metrics <span class="lkp"></span>
 
 When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following metrics, each labelled by `provider_id`:
@@ -90,6 +98,19 @@ Postgres is Lakekeeper's primary backend. Use [postgres_exporter](https://github
 | Pod restarts, deployment health       | kube-state-metrics                   |
 
 If you run Postgres via the [CloudNativePG](https://cloudnative-pg.io/) operator, its built-in per-instance exporter (port `9187`, metrics prefixed `cnpg_collector_*`) covers WAL file counts and size, archive status, sync replica state, and basic liveness — complementing `postgres_exporter` for those signals. Connection pool slots, query latency, and replication lag are available as [user-defined custom queries](https://cloudnative-pg.io/documentation/current/monitoring/#user-defined-metrics) in CloudNativePG; disk and IOPS still require `node_exporter` or cloud provider metrics.
+
+### Connection Pool (client-side)
+
+`postgres_exporter` reports the Postgres *server's* connection slots. Lakekeeper additionally exposes its own *client-side* pools — the separate read and write pools each replica holds, sized by `LAKEKEEPER__PG_READ_POOL_CONNECTIONS` and `LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS`. A client pool can saturate even when the server has free slots, so monitor both. The read and write pools are reported separately via the `pool` label.
+
+| Metric                                                                          | Type    | Labels                                            | Description |
+|---------------------------------------------------------------------------------|---------|---------------------------------------------------|-----|
+| <code class="selectable">lakekeeper_catalog_pg_<wbr>pool_connections</code>             | Gauge   | `pool` (`read`/`write`), `state` (`in_use`/`idle`) | Live connections held by the pool |
+| <code class="selectable">lakekeeper_catalog_pg_<wbr>pool_max_connections</code>         | Gauge   | `pool`                                            | Configured pool ceiling |
+| <code class="selectable">lakekeeper_catalog_pg_<wbr>pool_acquire_timeouts_total</code>  | Counter | `pool`                                            | Connection acquisitions that timed out — direct evidence of pool exhaustion |
+
+!!! tip "Alerting on pool saturation"
+    Utilization `lakekeeper_catalog_pg_pool_connections{state="in_use"} / lakekeeper_catalog_pg_pool_max_connections` approaching `1` is the leading edge of exhaustion. Any nonzero rate on `lakekeeper_catalog_pg_pool_acquire_timeouts_total` means requests are already being delayed or failing — alert on it. The gauges are sampled every 15s, so brief spikes may be smoothed; the timeout counter captures every occurrence. The counter covers transaction acquisition (the path catalog reads and writes use), not ad-hoc direct-pool queries.
 
 !!! warning
     Lakekeeper's `/health` endpoint checks the database connection. If Postgres becomes unreachable or runs out of connections, `/health` returns `503 Service Unavailable`, so standard Kubernetes HTTP probes fail and the pod is marked unhealthy or unready.

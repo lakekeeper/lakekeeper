@@ -1,6 +1,7 @@
 pub mod authn;
 pub mod authz;
 pub(crate) mod cache_metrics;
+pub(crate) mod cache_ttl;
 mod catalog_store;
 pub mod contract_verification;
 pub mod endpoint_statistics;

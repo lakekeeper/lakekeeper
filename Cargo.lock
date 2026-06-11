@@ -4022,6 +4022,7 @@ dependencies = [
  "lakekeeper",
  "lakekeeper-io",
  "lakekeeper-storage-postgres",
+ "metrics",
  "pretty_assertions",
  "serde",
  "serde_json",

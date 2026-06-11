@@ -348,6 +348,8 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 ### Caching
 Lakekeeper uses in-memory caches to speed up certain operations.
 
+Most cache entries' time-to-live is jittered downward by a small random fraction (up to 10%), so an entry lives 90–100% of the configured TTL. This desynchronizes expiry across replicas that warmed the same key at the same time, preventing a fleet-wide refresh stampede on the TTL boundary. The configured `..._TIME_TO_LIVE_SECS` remains the upper bound — jitter only ever shortens an entry's life, never extends it.
+
 **Short-Term Credentials (STC) Cache**
 
 When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, Azure SAS tokens, or GCP access tokens), these credentials can be cached to reduce load on cloud identity services and improve response times.
