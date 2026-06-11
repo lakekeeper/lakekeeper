@@ -166,6 +166,7 @@ checksum = "36fa98bc79671c7981272d91a8753a928ff6a1cd8e4f20a44c45bd5d313840bf"
 dependencies = [
  "bigdecimal",
  "bon",
+ "crc32fast",
  "digest 0.10.7",
  "log",
  "miniz_oxide",
@@ -176,6 +177,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "snap",
  "strum",
  "strum_macros",
  "thiserror 2.0.18",
@@ -3160,7 +3162,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.9.0"
-source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=488accddc17ac722ce49a3b2412a0a9f563b4593#488accddc17ac722ce49a3b2412a0a9f563b4593"
+source = "git+https://github.com/lakekeeper/iceberg-rust.git?rev=e617df5a1a08161ec65cfedf67d5d7b95fbc26b5#e617df5a1a08161ec65cfedf67d5d7b95fbc26b5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3204,6 +3206,7 @@ dependencies = [
  "serde_with",
  "strum",
  "tokio",
+ "tracing",
  "typed-builder 0.20.1",
  "typetag",
  "url",
