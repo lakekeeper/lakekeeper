@@ -344,12 +344,12 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
         FROM (
             ( SELECT id, name, email, user_type, 0 AS rank, 0::real AS dist
               FROM users
-              WHERE id = $1 )
+              WHERE id = $1 AND deleted_at IS NULL )
           UNION ALL
             ( SELECT id, name, email, user_type, 1 AS rank,
                      (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist
               FROM users
-              WHERE id <> $1
+              WHERE id <> $1 AND deleted_at IS NULL
               ORDER BY (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1
               LIMIT 10 )
         ) ranked
@@ -362,13 +362,14 @@ pub(crate) async fn search_user<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sql
     .await
     .map_err(|e| e.into_error_model("Error searching user".to_string()))?
     .into_iter()
-    .map(|row|  Ok(
-        SearchUser {
-        name: display_user_name(&row.id, row.name),
-        id: row.id.try_into()?,
-        user_type: row.user_type.into(),
-        email: row.email,
-    }))
+    .map(|row| {
+        Ok(SearchUser {
+            name: display_user_name(&row.id, row.name),
+            id: row.id.try_into()?,
+            user_type: row.user_type.into(),
+            email: row.email,
+        })
+    })
     .collect::<Result<_>>()?;
 
     Ok(SearchUserResponse { users })
@@ -476,6 +477,29 @@ mod test {
         assert_eq!(search_result.users[0].id, user_id);
         assert_eq!(search_result.users[0].name, user_name);
         assert_eq!(search_result.users[0].user_type, UserType::Application);
+
+        // A soft-deleted user must not surface in search. delete_user tombstones the
+        // row (deleted_at set, name -> 'Deleted User'); search must exclude it both by
+        // its former name and by the 'Deleted User' tombstone name.
+        delete_user(user_id.clone(), &state.read_write.write_pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            search_user("Test", &state.read_write.read_pool)
+                .await
+                .unwrap()
+                .users
+                .len(),
+            0
+        );
+        assert_eq!(
+            search_user("Deleted User", &state.read_write.read_pool)
+                .await
+                .unwrap()
+                .users
+                .len(),
+            0
+        );
     }
 
     #[sqlx::test]

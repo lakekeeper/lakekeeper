@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id AS \"id!\", name, email, user_type AS \"user_type!: DbUserType\"\n        FROM (\n            ( SELECT id, name, email, user_type, 0 AS rank, 0::real AS dist\n              FROM users\n              WHERE id = $1 )\n          UNION ALL\n            ( SELECT id, name, email, user_type, 1 AS rank,\n                     (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist\n              FROM users\n              WHERE id <> $1\n              ORDER BY (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1\n              LIMIT 10 )\n        ) ranked\n        ORDER BY rank, dist\n        LIMIT 10\n        ",
+  "query": "\n        SELECT id AS \"id!\", name, email, user_type AS \"user_type!: DbUserType\"\n        FROM (\n            ( SELECT id, name, email, user_type, 0 AS rank, 0::real AS dist\n              FROM users\n              WHERE id = $1 AND deleted_at IS NULL )\n          UNION ALL\n            ( SELECT id, name, email, user_type, 1 AS rank,\n                     (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist\n              FROM users\n              WHERE id <> $1 AND deleted_at IS NULL\n              ORDER BY (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1\n              LIMIT 10 )\n        ) ranked\n        ORDER BY rank, dist\n        LIMIT 10\n        ",
   "describe": {
     "columns": [
       {
@@ -50,5 +50,5 @@
       null
     ]
   },
-  "hash": "ef22d925f36b461267ad5816f1eb6453f74538a4812c8d260c0cafb6555e39c8"
+  "hash": "0771aaacf89cdd2ace45710c9d8440b16fbec77192196812fa6bb3cd2ae223fb"
 }
