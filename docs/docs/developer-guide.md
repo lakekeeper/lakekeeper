@@ -21,10 +21,10 @@ echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@
 echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
 source .env
 
-# Migrate db (make sure you have sqlx installed `cargo install sqlx-cli`)
-cd crates/lakekeeper
-sqlx database create && sqlx migrate run
-cd ../..
+# Migrate db (make sure you have sqlx installed `cargo install sqlx-cli`).
+# sqlx-cli auto-loads `.env` from the workspace root, so DATABASE_URL is picked up.
+sqlx database create
+sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
 
 # Run tests (make sure you have cargo nextest installed, `cargo install cargo-nextest`)
 cargo nextest run --all-features
@@ -38,6 +38,26 @@ just fix-format
 Keep in mind that some tests are excluded by the `default-filter` in `.config/nextest.toml`. You can find a list of them in the [Testing section](#test-cloud-storage-profiles) below or by searching for modules whose name contains `_integration_tests` within files ending with `.rs`.
 There are a few cargo commands we run on CI. You may install [just](https://crates.io/crates/just) to run them conveniently.
 If you made any changes to SQL queries, please follow [Working with SQLx](#working-with-sqlx) before submitting your PR.
+
+### Required tools for OpenAPI regeneration
+
+The `just update-management-openapi` and `just update-generic-table-openapi` recipes — plus several `add-*-to-rest-openapi` recipes — require **Go yq** ([mikefarah/yq](https://github.com/mikefarah/yq)).
+
+The Python `yq` (kislyuk) shipped via `pip install yq` is **not compatible**: it uses different flags (`-y -i` instead of `-i`) and its YAML emitter formats lists differently, which produces large whitespace-only diffs.
+
+Install Go yq:
+
+```bash
+# macOS
+brew install yq
+
+# Linux (download the static binary)
+curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
+  -o ~/.local/bin/yq && chmod +x ~/.local/bin/yq
+
+# Verify (must say "mikefarah" in the version output)
+yq --version
+```
 
 ## Code structure
 
@@ -82,11 +102,10 @@ If your database credentials used differ, please modify the `.env` accordingly a
 Run:
 ```sh
 # Migrate db. Make sure you have sqlx-cli install with `cargo install sqlx-cli`
-# Run this locally if you change the db schema via `crates/lakekeeper/migrations`,
+# Run this locally if you change the db schema via `crates/lakekeeper-storage-postgres/migrations`,
 # e.g. after adding a table or dropping a column.
-cd crates/lakekeeper
-sqlx database create && sqlx migrate run
-cd ../..
+sqlx database create
+sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations
 
 # If you changed any of the SQL statements embedded in Rust code, run this before pushing to GitHub.
 just sqlx-prepare
@@ -169,7 +188,7 @@ transaction** as core migrations — either every migration commits or the
 entire upgrade rolls back. Partial state is impossible.
 
 ```rust
-use lakekeeper::implementations::postgres::migrations::{ExtensionMigrations, migrate};
+use lakekeeper_storage_postgres::migrations::{ExtensionMigrations, migrate};
 
 // `name` must be 1–40 chars: first [a-z_], remaining [a-z0-9_]; rejected at
 // the start of `migrate()` otherwise. Derives `ext_my_extension_sqlx_migrations`.

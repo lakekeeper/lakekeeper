@@ -332,6 +332,15 @@ impl RequestMetadata {
         self
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_idempotency_key(
+        &mut self,
+        key: crate::service::idempotency::IdempotencyKey,
+    ) -> &mut Self {
+        self.idempotency_key = Some(key);
+        self
+    }
+
     #[must_use]
     pub fn preferred_project_id(&self) -> Option<ArcProjectId> {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())

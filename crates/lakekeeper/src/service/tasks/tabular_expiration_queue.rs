@@ -20,7 +20,7 @@ use crate::{
 };
 
 const QN_STR: &str = "tabular_expiration";
-pub(crate) static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
     LazyLock::new(|| super::QueueApiConfig {
@@ -28,6 +28,7 @@ pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
         utoipa_type_name: TabularExpirationQueueConfig::name(),
         utoipa_schema: TabularExpirationQueueConfig::schema(),
         scope: super::QueueScope::Warehouse,
+        user_scheduling: super::UserScheduling::Disabled,
     });
 
 pub type TabularExpirationTask = SpecializedTask<
@@ -244,6 +245,40 @@ where
                 .ok();
             location
         }
+        WarehouseTaskEntityId::GenericTable { generic_table_id } => {
+            let location = match C::drop_tabular(
+                warehouse_id,
+                generic_table_id,
+                true,
+                trx.transaction(),
+            )
+            .await
+            {
+                Err(DropTabularError::TabularNotFound(..)) => {
+                    tracing::warn!(
+                        "Generic table with id `{generic_table_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
+                    );
+                    None
+                }
+                Err(e) => return Err(e
+                    .append_detail(format!(
+                        "Failed to drop generic table with id `{generic_table_id}` from catalog for `{QN_STR}` task."
+                    ))
+                    .into()),
+                Ok(loc) => Some(loc),
+            };
+
+            authorizer
+                .delete_generic_table(warehouse_id, generic_table_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::error!(
+                        "Failed to delete generic table from authorizer in `{QN_STR}` task. {e}"
+                    );
+                })
+                .ok();
+            location
+        }
     };
 
     if let Some(tabular_location) = tabular_location
@@ -278,203 +313,4 @@ where
     })?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod test {
-
-    use std::time::Duration;
-
-    use sqlx::PgPool;
-    use tracing_test::traced_test;
-
-    use super::*;
-    use crate::{
-        api::{iceberg::v1::PaginationQuery, management::v1::DeleteKind},
-        implementations::postgres::{
-            CatalogState, PostgresBackend, PostgresTransaction, SecretsState,
-            tabular::table::tests::initialize_table, warehouse::test::initialize_warehouse,
-        },
-        service::{
-            CatalogStore, CatalogTabularOps, NamedEntity, TabularListFlags, Transaction,
-            authz::AllowAllAuthorizer, storage::MemoryProfile,
-        },
-    };
-
-    #[sqlx::test]
-    #[traced_test]
-    async fn test_queue_expiration_queue_task(pool: PgPool) {
-        let catalog_state = CatalogState::from_pools(pool.clone(), pool.clone());
-
-        let queues = crate::service::tasks::TaskQueueRegistry::new();
-
-        let secrets =
-            crate::implementations::postgres::SecretsState::from_pools(pool.clone(), pool);
-        let cat = catalog_state.clone();
-        let sec = secrets.clone();
-        let auth = AllowAllAuthorizer::default();
-        queues
-            .register_built_in_queues::<PostgresBackend, SecretsState, AllowAllAuthorizer>(
-                cat,
-                sec,
-                auth,
-                Duration::from_millis(100),
-            )
-            .await;
-        let cancellation_token = tokio_util::sync::CancellationToken::new();
-        let runner = queues.task_queues_runner(cancellation_token.clone()).await;
-        let _queue_task = tokio::task::spawn(runner.run_queue_workers(true));
-
-        let (project_id, warehouse_id) = initialize_warehouse(
-            catalog_state.clone(),
-            Some(MemoryProfile::default().into()),
-            None,
-            None,
-            true,
-        )
-        .await;
-
-        let table = initialize_table(
-            warehouse_id,
-            catalog_state.clone(),
-            false,
-            None,
-            None,
-            Some("tab".to_string()),
-        )
-        .await;
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-        let _ = PostgresBackend::list_tabulars(
-            warehouse_id,
-            None,
-            TabularListFlags {
-                include_active: true,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            None,
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&table.table_id.into())
-        .unwrap();
-        trx.commit().await.unwrap();
-        let mut trx =
-            <PostgresBackend as CatalogStore>::Transaction::begin_write(catalog_state.clone())
-                .await
-                .unwrap();
-        TabularExpirationTask::schedule_task::<PostgresBackend>(
-            ScheduleTaskMetadata {
-                project_id,
-                parent_task_id: None,
-                scheduled_for: Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
-                entity: TaskEntity::EntityInWarehouse {
-                    warehouse_id,
-                    entity_id: WarehouseTaskEntityId::Table {
-                        table_id: table.table_id,
-                    },
-                    entity_name: table.table_ident.into_name_parts(),
-                },
-            },
-            TabularExpirationPayload {
-                deletion_kind: DeleteKind::Purge,
-            },
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-
-        PostgresBackend::mark_tabular_as_deleted(
-            warehouse_id,
-            table.table_id,
-            false,
-            trx.transaction(),
-        )
-        .await
-        .unwrap();
-
-        trx.commit().await.unwrap();
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        let deletion_info = PostgresBackend::list_tabulars(
-            warehouse_id,
-            None,
-            TabularListFlags {
-                include_active: false,
-                include_staged: false,
-                include_deleted: true,
-            },
-            trx.transaction(),
-            None,
-            PaginationQuery::empty(),
-        )
-        .await
-        .unwrap()
-        .remove(&table.table_id.into())
-        .unwrap();
-        assert!(deletion_info.expiration_task().is_some());
-        assert!(deletion_info.deleted_at().is_some());
-        trx.commit().await.unwrap();
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-                .await
-                .unwrap();
-            let gone = PostgresBackend::list_tabulars(
-                warehouse_id,
-                None,
-                TabularListFlags {
-                    include_active: false,
-                    include_staged: false,
-                    include_deleted: true,
-                },
-                trx.transaction(),
-                None,
-                PaginationQuery::empty(),
-            )
-            .await
-            .unwrap()
-            .remove(&table.table_id.into())
-            .is_none();
-            trx.commit().await.unwrap();
-            if gone || std::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-
-        let mut trx = PostgresTransaction::begin_read(catalog_state.clone())
-            .await
-            .unwrap();
-
-        assert!(
-            PostgresBackend::list_tabulars(
-                warehouse_id,
-                None,
-                TabularListFlags {
-                    include_active: false,
-                    include_staged: false,
-                    include_deleted: true,
-                },
-                trx.transaction(),
-                None,
-                PaginationQuery::empty(),
-            )
-            .await
-            .unwrap()
-            .remove(&table.table_id.into())
-            .is_none()
-        );
-        trx.commit().await.unwrap();
-
-        cancellation_token.cancel();
-    }
 }

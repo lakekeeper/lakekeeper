@@ -1,0 +1,27 @@
+[package]
+name = "lakekeeper-secrets-kv2"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+description = "Vault KV2 secrets backend for Lakekeeper"
+keywords = ["iceberg", "rest", "lakekeeper", "vault", "kv2"]
+
+[lib]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+figment = { workspace = true }
+iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
+lakekeeper = { path = "../lakekeeper" }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true, features = ["attributes", "valuable"] }
+url = { workspace = true }
+uuid = { workspace = true }
+vaultrs = "0.8"
+vaultrs-login = "0.2.4"
+veil = { workspace = true }

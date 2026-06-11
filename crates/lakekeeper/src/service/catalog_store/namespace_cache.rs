@@ -20,7 +20,7 @@ use crate::{
 };
 
 // Main cache: stores individual namespaces by ID
-pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =
+pub static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithParent>> =
     LazyLock::new(|| {
         Cache::builder()
             .max_capacity(CONFIG.cache.namespace.capacity)
@@ -82,7 +82,7 @@ pub(crate) static NAMESPACE_CACHE: LazyLock<Cache<NamespaceId, NamespaceWithPare
 type NamespaceCacheKey = (WarehouseId, Vec<String>);
 
 // Secondary index: (warehouse_id, namespace_ident) → namespace_id
-pub(crate) static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> =
+pub static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> =
     LazyLock::new(|| {
         Cache::builder()
             .max_capacity(CONFIG.cache.namespace.capacity)
@@ -292,7 +292,7 @@ fn is_parent_ident(child_ident: &NamespaceIdent, found_parent_ident: &NamespaceI
 
 #[cfg(feature = "router")]
 #[derive(Debug, Clone)]
-pub(crate) struct NamespaceCacheEventListener;
+pub struct NamespaceCacheEventListener;
 
 #[cfg(feature = "router")]
 impl std::fmt::Display for NamespaceCacheEventListener {

@@ -1,7 +1,8 @@
+pub mod data;
 pub mod iceberg;
 pub mod management;
 
-pub(crate) mod endpoints;
+pub mod endpoints;
 #[cfg(feature = "router")]
 pub mod maintenance;
 #[cfg(feature = "router")]

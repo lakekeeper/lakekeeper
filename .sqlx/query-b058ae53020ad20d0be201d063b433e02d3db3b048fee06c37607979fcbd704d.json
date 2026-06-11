@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO generic_table_properties (warehouse_id, generic_table_id, key, value)\n            SELECT $1, $2, UNNEST($3::text[]), UNNEST($4::text[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b058ae53020ad20d0be201d063b433e02d3db3b048fee06c37607979fcbd704d"
+}

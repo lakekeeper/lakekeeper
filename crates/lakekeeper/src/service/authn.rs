@@ -66,8 +66,76 @@ pub struct UserId(Subject);
 
 pub type UserIdRef = std::sync::Arc<UserId>;
 
-const OIDC_IDP_ID: &str = "oidc";
-const K8S_IDP_ID: &str = "kubernetes";
+pub(crate) const OIDC_IDP_ID: &str = "oidc";
+pub(crate) const K8S_IDP_ID: &str = "kubernetes";
+
+/// Default subject-claim preference order applied when a provider does not set
+/// `subject_claims` explicitly. Kept in sync with the `subject_claims` doc on
+/// [`OidcProviderConfig`].
+///
+/// `oid` is preferred so Entra-ID gets the stable per-tenant identifier
+/// out-of-the-box; everything else falls through to `sub`.
+const DEFAULT_SUBJECT_CLAIMS: &[&str] = &["oid", "sub"];
+
+/// Configuration for a single OIDC provider in multi-provider mode.
+///
+/// Lives next to the rest of the OIDC machinery (`build_oidc_authenticator`,
+/// the chain assembly, the IdP-ID constants) so the type and its consumers
+/// share one module. `DynAppConfig` only holds a `HashMap<String, _>` of these.
+///
+/// Each provider fetches its own JWKS keys independently, allowing
+/// authentication from multiple identity sources (e.g., Okta for users + EKS
+/// OIDC for Kubernetes service accounts).
+///
+/// # Example Environment Variables
+/// ```bash
+/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
+/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
+/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+/// ```
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
+pub struct OidcProviderConfig {
+    /// The OIDC provider URI (must expose .well-known/openid-configuration)
+    pub uri: url::Url,
+    /// Expected audience(s) for tokens from this provider.
+    /// Specify multiple audiences as a comma-separated list.
+    #[serde(
+        default,
+        deserialize_with = "crate::config::deserialize_comma_separated",
+        serialize_with = "crate::config::serialize_comma_separated"
+    )]
+    pub audience: Option<Vec<String>>,
+    /// Additional issuers to trust for this provider.
+    #[serde(
+        default,
+        deserialize_with = "crate::config::deserialize_comma_separated",
+        serialize_with = "crate::config::serialize_comma_separated"
+    )]
+    pub additional_issuers: Option<Vec<String>>,
+    /// A scope that must be present in tokens from this provider.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Claims to use as the subject (user ID), in order of preference.
+    /// Defaults to `oid`, then `sub` if not specified.
+    #[serde(
+        default,
+        deserialize_with = "crate::config::deserialize_comma_separated",
+        serialize_with = "crate::config::serialize_comma_separated"
+    )]
+    pub subject_claims: Option<Vec<String>>,
+    /// Claim to use in provided JWT tokens to extract roles.
+    /// The field should contain a single string claim path.
+    /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
+    #[serde(default)]
+    pub roles_claim: Option<String>,
+    /// If true, fail startup when this provider's OIDC/JWKS configuration cannot be loaded.
+    #[serde(default = "default_true")]
+    pub require_connected_on_startup: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone)]
 pub enum BuiltInAuthenticators {
@@ -77,11 +145,20 @@ pub enum BuiltInAuthenticators {
 
 /// Get the default authenticator configuration from the environment.
 ///
+/// Supports both single-provider mode (via `OPENID_PROVIDER_URI`) and
+/// multi-provider mode (via `OPENID_PROVIDERS` map). Multi-provider mode
+/// is additive and extends the single-provider configuration.
+///
 /// # Errors
 /// If the authenticator cannot be created, or if the configuration is invalid.
 #[allow(clippy::too_many_lines)]
 pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<BuiltInAuthenticators>>
 {
+    // K8s has no `require_connected_on_startup` analog: there's only ever one
+    // cluster, so a failure here is always fatal. Unlike OIDC (where N
+    // independent providers can each be marked optional), an unavailable K8s
+    // API at boot means we can't authenticate service-account tokens at all,
+    // which would silently degrade authn — so we fail closed via `?` below.
     let authn_k8s_audience = if CONFIG.enable_kubernetes_authentication {
         Some(
             limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
@@ -125,77 +202,194 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
         None
     };
 
-    let authn_oidc = if let Some(uri) = CONFIG.openid_provider_uri.clone() {
-        let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
-            uri.as_ref(),
-            Some(std::time::Duration::from_hours(1)),
-        )
-        .await?
-        .set_idp_id(OIDC_IDP_ID);
-        if let Some(aud) = &CONFIG.openid_audience {
-            tracing::debug!("Setting accepted audiences: {aud:?}");
-            authenticator = authenticator.set_accepted_audiences(aud.clone());
-        }
-        if let Some(iss) = &CONFIG.openid_additional_issuers {
-            tracing::debug!("Setting openid_additional_issuers: {iss:?}");
-            authenticator = authenticator.add_additional_issuers(iss.clone());
-        }
-        if let Some(scope) = &CONFIG.openid_scope {
-            tracing::debug!("Setting openid_scope: {scope}");
-            authenticator = authenticator.set_scope(scope.clone());
-        }
-        if let Some(subject_claims) = &CONFIG.openid_subject_claim {
-            tracing::debug!("Setting openid_subject_claim: {subject_claims:?}");
-            authenticator = authenticator.with_subject_claims(subject_claims.clone());
-        } else {
-            // "oid" should be used for entra-id, as the `sub` is different between applications.
-            // We prefer oid here by default as no other IdP sets this field (that we know of) and
-            // we can provide an out-of-the-box experience for users.
-            // Nevertheless, we document this behavior in the docs and recommend as part of the
-            // `production` checklist to set the claim explicitly.
-            tracing::debug!("Defaulting openid_subject_claim to: oid, sub");
-            authenticator =
-                authenticator.with_subject_claims(vec!["oid".to_string(), "sub".to_string()]);
-        }
-        if let Some(roles_claim) = &CONFIG.openid_roles_claim {
-            tracing::debug!("Setting openid_roles_claim: {roles_claim}");
-            authenticator = authenticator.with_role_claim(roles_claim.clone());
-        }
-        tracing::info!("Running with OIDC authentication.");
-        Some(authenticator)
-    } else {
+    assemble_authenticator_chain(
+        &CONFIG,
+        authn_k8s_audience.map(AuthenticatorEnum::from),
+        authn_k8s_legacy.map(AuthenticatorEnum::from),
+    )
+    .await
+}
+
+/// Build the OIDC list, apply the fail-closed guard, then assemble the
+/// final chain with any pre-built K8s authenticators. Shared by the
+/// production entry point and tests so the fail-closed error message
+/// has exactly one source of truth.
+async fn assemble_authenticator_chain(
+    config: &crate::config::DynAppConfig,
+    authn_k8s_audience: Option<AuthenticatorEnum>,
+    authn_k8s_legacy: Option<AuthenticatorEnum>,
+) -> anyhow::Result<Option<BuiltInAuthenticators>> {
+    let oidc_provider_configs = oidc_provider_configs_from_config(config);
+    let configured_provider_count = oidc_provider_configs.len();
+    let authn_oidc_list = if oidc_provider_configs.is_empty() {
         tracing::info!("Running without OIDC authentication.");
-        None
+        vec![]
+    } else {
+        tracing::info!("Configuring {configured_provider_count} OIDC provider(s)");
+        build_oidc_authenticators(oidc_provider_configs).await?
     };
 
-    let authn_k8s = authn_k8s_audience.map(AuthenticatorEnum::from);
-    let authn_k8s_legacy = authn_k8s_legacy.map(AuthenticatorEnum::from);
-    let authn_oidc = authn_oidc.map(AuthenticatorEnum::from);
-    match (authn_k8s, authn_oidc, authn_k8s_legacy) {
-        (Some(k8s), Some(oidc), Some(authn_k8s_legacy)) => {
-            Ok(Some(limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
-                .add_authenticator(oidc)
-                .add_authenticator(k8s)
-                .add_authenticator(authn_k8s_legacy)
-                .build().into()))
-        }
-        (None, Some(auth1), Some(auth2))
-        | (Some(auth1), None, Some(auth2))
-        // OIDC has priority over k8s if specified
-        | (Some(auth2), Some(auth1), None) => {
-            Ok(Some(limes::AuthenticatorChain::<AuthenticatorEnum>::builder()
-                .add_authenticator(auth1)
-                .add_authenticator(auth2)
-                .build().into()))
-        }
-        (Some(auth), None, None) | (None, Some(auth), None) | (None, None, Some(auth)) => {
-            Ok(Some(auth.into()))
-        }
-        (None, None, None) => {
+    // `require_connected_on_startup=false` gates only THIS provider's boot-time
+    // failure; it must not allow the whole auth system to silently disable
+    // itself. If every configured provider was skipped, refuse to boot.
+    if configured_provider_count > 0 && authn_oidc_list.is_empty() {
+        return Err(anyhow::anyhow!(
+            "All {configured_provider_count} configured OIDC provider(s) failed to initialize. \
+             Refusing to start with authentication disabled. Fix the providers' OIDC discovery \
+             endpoints, or remove `REQUIRE_CONNECTED_ON_STARTUP=false` from at least one to \
+             surface the underlying error."
+        ));
+    }
+
+    // Collect all authenticators into a chain: OIDC first (priority), then any additional
+    let mut all_authenticators: Vec<AuthenticatorEnum> = authn_oidc_list;
+    if let Some(authn) = authn_k8s_audience {
+        all_authenticators.push(authn);
+    }
+    if let Some(authn) = authn_k8s_legacy {
+        all_authenticators.push(authn);
+    }
+
+    match all_authenticators.len() {
+        0 => {
             tracing::warn!("Authentication is disabled. This is not suitable for production!");
             Ok(None)
         }
+        1 => Ok(Some(all_authenticators.remove(0).into())),
+        _ => {
+            let mut chain_builder = limes::AuthenticatorChain::<AuthenticatorEnum>::builder();
+            for auth in all_authenticators {
+                chain_builder = chain_builder.add_authenticator(auth);
+            }
+            Ok(Some(chain_builder.build().into()))
+        }
     }
+}
+
+fn oidc_provider_configs_from_config(
+    config: &crate::config::DynAppConfig,
+) -> Vec<(String, OidcProviderConfig)> {
+    let mut providers = Vec::new();
+
+    if let Some(uri) = config.openid_provider_uri.clone() {
+        providers.push((
+            OIDC_IDP_ID.to_string(),
+            OidcProviderConfig {
+                uri,
+                audience: config.openid_audience.clone(),
+                additional_issuers: config.openid_additional_issuers.clone(),
+                scope: config.openid_scope.clone(),
+                subject_claims: config.openid_subject_claim.clone(),
+                roles_claim: config.openid_roles_claim.clone(),
+                require_connected_on_startup: true,
+            },
+        ));
+    }
+
+    if !config.openid_providers.is_empty() {
+        let mut extras = config
+            .openid_providers
+            .iter()
+            .map(|(idp_id, provider)| (idp_id.clone(), provider.clone()))
+            .collect::<Vec<_>>();
+        extras.sort_by(|(left, _), (right, _)| left.cmp(right));
+        providers.extend(extras);
+    }
+
+    providers
+}
+
+/// Build authenticators for configured OIDC providers.
+///
+/// `providers` must be supplied in the order they should appear in the
+/// authenticator chain — sort upstream (see `oidc_provider_configs_from_config`).
+/// `Vec` is used over `HashMap` precisely to carry this ordering.
+async fn build_oidc_authenticators(
+    providers: Vec<(String, OidcProviderConfig)>,
+) -> anyhow::Result<Vec<AuthenticatorEnum>> {
+    let mut authenticators = Vec::new();
+
+    for (idp_id, provider) in providers {
+        tracing::info!(
+            "Creating OIDC authenticator for {} ({})",
+            idp_id,
+            provider.uri
+        );
+
+        match build_oidc_authenticator(&idp_id, &provider).await {
+            Ok(authenticator) => {
+                authenticators.push(AuthenticatorEnum::from(authenticator));
+                tracing::info!("Successfully added OIDC authenticator: {}", idp_id);
+            }
+            Err(e) => {
+                if provider.require_connected_on_startup {
+                    return Err(anyhow::anyhow!(
+                        "Failed to create required OIDC authenticator for {idp_id} ({uri}): {e}",
+                        uri = provider.uri
+                    ));
+                }
+                tracing::error!(
+                    "Failed to create OIDC authenticator for {} ({}): {}. Skipping this provider.",
+                    idp_id,
+                    provider.uri,
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(authenticators)
+}
+
+async fn build_oidc_authenticator(
+    idp_id: &str,
+    provider: &OidcProviderConfig,
+) -> anyhow::Result<limes::jwks::JWKSWebAuthenticator> {
+    let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
+        provider.uri.as_ref(),
+        Some(std::time::Duration::from_hours(1)),
+    )
+    .await?
+    .set_idp_id(idp_id);
+
+    if let Some(audiences) = &provider.audience {
+        tracing::debug!("Setting accepted audiences for {idp_id}: {audiences:?}");
+        authenticator = authenticator.set_accepted_audiences(audiences.clone());
+    }
+
+    if let Some(issuers) = &provider.additional_issuers {
+        tracing::debug!("Setting additional issuers for {idp_id}: {issuers:?}");
+        authenticator = authenticator.add_additional_issuers(issuers.clone());
+    }
+
+    if let Some(scope) = &provider.scope {
+        tracing::debug!("Setting scope for {idp_id}: {scope}");
+        authenticator = authenticator.set_scope(scope.clone());
+    }
+
+    if let Some(claims) = &provider.subject_claims {
+        tracing::debug!("Setting subject claims for {idp_id}: {claims:?}");
+        authenticator = authenticator.with_subject_claims(claims.clone());
+    } else {
+        tracing::debug!(
+            "Defaulting subject claims for {idp_id} to: {DEFAULT_SUBJECT_CLAIMS:?}. \
+             We prefer `oid` for Entra-ID (where `sub` differs per application); other IdPs \
+             fall through to `sub`. Set `subject_claims` explicitly in production."
+        );
+        authenticator = authenticator.with_subject_claims(
+            DEFAULT_SUBJECT_CLAIMS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+        );
+    }
+
+    if let Some(roles_claim) = &provider.roles_claim {
+        tracing::debug!("Setting roles claim for {idp_id}: {roles_claim}");
+        authenticator = authenticator.with_role_claim(roles_claim.clone());
+    }
+
+    Ok(authenticator)
 }
 
 #[cfg(feature = "router")]
@@ -621,10 +815,367 @@ impl From<limes::AuthenticatorChain<AuthenticatorEnum>> for BuiltInAuthenticator
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use axum::{Json, Router, routing::get};
+    use limes::Authenticator;
+    use serde_json::json;
+    use tokio::{net::TcpListener, task::JoinHandle};
+    use url::Url;
     use uuid::Uuid;
 
     use super::*;
-    use crate::service::RoleId;
+    use crate::{config::DynAppConfig, service::RoleId};
+
+    async fn spawn_oidc_test_server() -> (Url, Url, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind oidc test server");
+        let addr = listener.local_addr().expect("oidc test server addr");
+        let base = Url::parse(&format!("http://{addr}")).expect("oidc test server base url");
+        let good_base = base.join("good/").expect("good base url");
+        let bad_base = base.join("bad/").expect("bad base url");
+
+        let good_config = json!({
+            "issuer": good_base.as_str(),
+            "jwks_uri": format!("{good_base}jwks"),
+        });
+        let bad_config = json!({
+            "issuer": bad_base.as_str(),
+        });
+        let jwks = json!({ "keys": [] });
+
+        let app = Router::new()
+            .route(
+                "/good/.well-known/openid-configuration",
+                get({
+                    let good_config = good_config.clone();
+                    move || async move { Json(good_config) }
+                }),
+            )
+            .route(
+                "/bad/.well-known/openid-configuration",
+                get({
+                    let bad_config = bad_config.clone();
+                    move || async move { Json(bad_config) }
+                }),
+            )
+            .route(
+                "/good/jwks",
+                get({
+                    let jwks = jwks.clone();
+                    move || async move { Json(jwks) }
+                }),
+            );
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("oidc test server failed");
+        });
+
+        (good_base, bad_base, handle)
+    }
+
+    #[test]
+    fn oidc_provider_configs_from_config_uses_legacy_provider_id_and_roles_claim() {
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(url::Url::parse("https://issuer.example.com").unwrap());
+        config.openid_audience = Some(vec!["lakekeeper".to_string()]);
+        config.openid_additional_issuers = Some(vec!["https://sts.example.com".to_string()]);
+        config.openid_scope = Some("openid".to_string());
+        config.openid_subject_claim = Some(vec!["sub".to_string()]);
+        config.openid_roles_claim = Some("roles".to_string());
+
+        let providers = oidc_provider_configs_from_config(&config);
+
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].0, OIDC_IDP_ID);
+        assert_eq!(
+            providers[0].1.audience,
+            Some(vec!["lakekeeper".to_string()])
+        );
+        assert_eq!(
+            providers[0].1.additional_issuers,
+            Some(vec!["https://sts.example.com".to_string()])
+        );
+        assert_eq!(providers[0].1.scope, Some("openid".to_string()));
+        assert_eq!(providers[0].1.subject_claims, Some(vec!["sub".to_string()]));
+        assert_eq!(providers[0].1.roles_claim, Some("roles".to_string()));
+        assert!(providers[0].1.require_connected_on_startup);
+    }
+
+    #[test]
+    fn oidc_provider_configs_from_config_adds_multi_provider_config() {
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(url::Url::parse("https://legacy.example.com").unwrap());
+        config.openid_providers.insert(
+            "okta".to_string(),
+            OidcProviderConfig {
+                uri: url::Url::parse("https://company.okta.com").unwrap(),
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: Some("groups".to_string()),
+                require_connected_on_startup: false,
+            },
+        );
+
+        let providers = oidc_provider_configs_from_config(&config);
+
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].0, OIDC_IDP_ID);
+        // Primary's `require_connected_on_startup` is hardcoded `true` in
+        // `oidc_provider_configs_from_config` and must stay that way even when
+        // optional extras are also configured. Pinning the invariant.
+        assert!(providers[0].1.require_connected_on_startup);
+        assert_eq!(providers[1].0, "okta");
+        assert_eq!(providers[1].1.roles_claim, Some("groups".to_string()));
+        assert!(!providers[1].1.require_connected_on_startup);
+    }
+
+    /// Multiple extras are returned in deterministic alphabetical order of
+    /// `idp_id`. This is operator-visible (chain order ⇒ which provider gets
+    /// tried first for an ambiguous token) and `HashMap`'s iteration order is
+    /// non-deterministic, so the explicit sort must hold.
+    #[test]
+    fn oidc_provider_configs_from_config_sorts_extras_alphabetically() {
+        let mut config = DynAppConfig::default();
+        // Insert in a non-alphabetical order so a naive "iteration order" sort
+        // would still produce the wrong result.
+        for name in ["zapier", "entra", "okta"] {
+            config.openid_providers.insert(
+                name.to_string(),
+                OidcProviderConfig {
+                    uri: url::Url::parse(&format!("https://{name}.example.com")).unwrap(),
+                    audience: None,
+                    additional_issuers: None,
+                    scope: None,
+                    subject_claims: None,
+                    roles_claim: None,
+                    require_connected_on_startup: true,
+                },
+            );
+        }
+
+        let providers = oidc_provider_configs_from_config(&config);
+        let ids: Vec<&str> = providers.iter().map(|(id, _)| id.as_str()).collect();
+
+        // No primary URI → just the extras, alphabetically.
+        assert_eq!(ids, vec!["entra", "okta", "zapier"]);
+    }
+
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_chain_order_primary_additional_k8s() {
+        let (good_base, _bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(good_base.clone());
+        config.openid_providers.insert(
+            "okta".to_string(),
+            OidcProviderConfig {
+                uri: good_base.clone(),
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: true,
+            },
+        );
+
+        let k8s_stub = limes::jwks::JWKSWebAuthenticator::new(
+            good_base.as_str(),
+            Some(Duration::from_hours(1)),
+        )
+        .await
+        .expect("k8s stub authenticator")
+        .set_idp_id(K8S_IDP_ID);
+
+        let authenticator =
+            assemble_authenticator_chain(&config, Some(AuthenticatorEnum::from(k8s_stub)), None)
+                .await
+                .expect("build authenticators")
+                .expect("authn enabled");
+
+        let idp_ids = match authenticator {
+            BuiltInAuthenticators::Single(auth) => auth
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+            BuiltInAuthenticators::Chain(chain) => chain
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+        };
+        assert_eq!(
+            idp_ids,
+            vec![
+                Some(OIDC_IDP_ID.to_string()),
+                Some("okta".to_string()),
+                Some(K8S_IDP_ID.to_string()),
+            ]
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_skips_optional_provider() {
+        let (good_base, bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(good_base);
+        config.openid_providers.insert(
+            "bad".to_string(),
+            OidcProviderConfig {
+                uri: bad_base,
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: false,
+            },
+        );
+
+        let authenticator = assemble_authenticator_chain(&config, None, None)
+            .await
+            .expect("build authenticators")
+            .expect("authn enabled");
+
+        let idp_ids = match authenticator {
+            BuiltInAuthenticators::Single(auth) => auth
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+            BuiltInAuthenticators::Chain(chain) => chain
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+        };
+        assert_eq!(idp_ids, vec![Some(OIDC_IDP_ID.to_string())]);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_fails_required_provider() {
+        let (good_base, bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        config.openid_provider_uri = Some(good_base);
+        config.openid_providers.insert(
+            "bad".to_string(),
+            OidcProviderConfig {
+                uri: bad_base,
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: true,
+            },
+        );
+
+        let result = assemble_authenticator_chain(&config, None, None).await;
+        assert!(result.is_err());
+
+        server.abort();
+    }
+
+    /// `require_connected_on_startup=false` must not let the whole auth system
+    /// silently disable itself: when every configured provider is optional and
+    /// all of them fail, refuse to boot.
+    #[tokio::test]
+    async fn get_default_authenticator_refuses_when_all_optional_providers_fail() {
+        let (_good_base, bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        // No primary URI, no K8s — only an optional provider that will fail discovery.
+        config.openid_providers.insert(
+            "bad".to_string(),
+            OidcProviderConfig {
+                uri: bad_base,
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: false,
+            },
+        );
+
+        let result = assemble_authenticator_chain(&config, None, None).await;
+        let err = result.expect_err(
+            "must refuse to boot when every configured provider failed, even if all optional",
+        );
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Refusing to start with authentication disabled"),
+            "error must explain the refusal, got: {chain}",
+        );
+
+        server.abort();
+    }
+
+    /// EKS-only shape: no primary `OPENID_PROVIDER_URI`, one extra OIDC provider
+    /// for Kubernetes workloads, and `enable_kubernetes_authentication` for
+    /// in-cluster service accounts. The chain must contain exactly the extra
+    /// provider followed by the K8s authenticator — no `OIDC_IDP_ID` link.
+    #[tokio::test]
+    async fn get_default_authenticator_from_config_k8s_and_provider_no_primary() {
+        let (good_base, _bad_base, server) = spawn_oidc_test_server().await;
+        let mut config = DynAppConfig::default();
+        // Intentionally no `openid_provider_uri` — only an extra provider + K8s.
+        config.openid_providers.insert(
+            "ekscluster".to_string(),
+            OidcProviderConfig {
+                uri: good_base.clone(),
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                require_connected_on_startup: true,
+            },
+        );
+
+        let k8s_stub = limes::jwks::JWKSWebAuthenticator::new(
+            good_base.as_str(),
+            Some(Duration::from_hours(1)),
+        )
+        .await
+        .expect("k8s stub authenticator")
+        .set_idp_id(K8S_IDP_ID);
+
+        let authenticator =
+            assemble_authenticator_chain(&config, Some(AuthenticatorEnum::from(k8s_stub)), None)
+                .await
+                .expect("build authenticators")
+                .expect("authn enabled");
+
+        let idp_ids = match authenticator {
+            BuiltInAuthenticators::Single(auth) => auth
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+            BuiltInAuthenticators::Chain(chain) => chain
+                .idp_ids()
+                .into_iter()
+                .map(|id| id.map(str::to_string))
+                .collect::<Vec<_>>(),
+        };
+        assert_eq!(
+            idp_ids,
+            vec![Some("ekscluster".to_string()), Some(K8S_IDP_ID.to_string()),],
+            "chain must be extra-provider then K8s, with no primary `oidc` link",
+        );
+
+        server.abort();
+    }
 
     #[test]
     fn test_user_id() {

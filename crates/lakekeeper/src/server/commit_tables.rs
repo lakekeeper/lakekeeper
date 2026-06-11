@@ -4,13 +4,31 @@ use iceberg::{TableRequirement, TableUpdate, spec::TableMetadata};
 use iceberg_ext::spec::{TableMetadataBuildResult, TableMetadataBuilder};
 use lakekeeper_io::Location;
 
-use crate::service::{ErrorModel, Result};
+use crate::{
+    server::tables::create_table::ensure_format_version_allowed,
+    service::{AllowedFormatVersions, ErrorModel, Result},
+};
 
 /// Table properties that must not be modified or removed once set.
 ///
 /// Per the Iceberg spec, catalogs must ensure these properties are immutable
 /// after table creation. See: <https://iceberg.apache.org/docs/nightly/encryption/#catalog-security-requirements>
 const IMMUTABLE_TABLE_PROPERTIES: &[&str] = &["encryption.key-id"];
+
+/// Reject any `UpgradeFormatVersion` update whose target version is not permitted
+/// by the warehouse policy. Only the upgrade action is checked, so tightening a
+/// policy does not retroactively block writes to existing tables.
+pub(crate) fn ensure_format_version_upgrades_allowed(
+    updates: &[TableUpdate],
+    allowed_format_versions: &AllowedFormatVersions,
+) -> Result<()> {
+    for update in updates {
+        if let TableUpdate::UpgradeFormatVersion { format_version } = update {
+            ensure_format_version_allowed(*format_version, allowed_format_versions)?;
+        }
+    }
+    Ok(())
+}
 
 /// Apply the commits to table metadata.
 pub(super) fn apply_commit(
@@ -189,7 +207,7 @@ mod tests {
     };
     use iceberg_ext::spec::TableMetadataBuilder;
 
-    use super::apply_commit;
+    use super::{AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed};
 
     fn test_metadata_with_properties(
         props: HashMap<String, String>,
@@ -324,5 +342,34 @@ mod tests {
         );
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_upgrade_to_allowed_format_version_succeeds() {
+        let allowed = AllowedFormatVersions::try_new([FormatVersion::V2, FormatVersion::V3])
+            .expect("non-empty");
+
+        ensure_format_version_upgrades_allowed(
+            &[TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V3,
+            }],
+            &allowed,
+        )
+        .expect("V3 upgrade is allowed");
+    }
+
+    #[test]
+    fn test_upgrade_to_disallowed_format_version_is_rejected() {
+        let allowed = AllowedFormatVersions::try_new([FormatVersion::V2]).expect("non-empty");
+
+        let err = ensure_format_version_upgrades_allowed(
+            &[TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V3,
+            }],
+            &allowed,
+        )
+        .unwrap_err();
+
+        assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
     }
 }

@@ -3,6 +3,7 @@ mod undrop;
 use std::sync::Arc;
 
 use futures::{FutureExt, StreamExt as _};
+use iceberg::spec::FormatVersion;
 use iceberg_ext::catalog::rest::{ErrorModel, IcebergErrorResponse};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -34,13 +35,13 @@ use crate::{
     request_metadata::RequestMetadata,
     server::UnfilteredPage,
     service::{
-        ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
-        CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags, Transaction,
-        ViewOrTableDeletionInfo,
+        AllowedFormatVersions, ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogStore,
+        CatalogTabularOps, CatalogWarehouseOps, NamespaceId, State, TabularId, TabularListFlags,
+        Transaction, ViewOrTableDeletionInfo, WarehouseFormatVersionPolicy,
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogTableAction, CatalogViewAction,
-            CatalogWarehouseAction,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
         },
         events::{
             APIEventContext,
@@ -106,6 +107,20 @@ pub struct CreateWarehouseRequest {
     #[serde(default)]
     #[builder(default)]
     pub delete_profile: TabularDeleteProfile,
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+    /// Defaults to all supported versions when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<Vec<i32>>))]
+    pub allowed_format_versions: Option<Vec<FormatVersion>>,
+    /// Default Iceberg table format version applied when a create-table request
+    /// does not specify one. Must be a member of `allowed-format-versions`. When
+    /// omitted, resolves to v2 if allowed, otherwise the highest allowed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default, setter(strip_option))]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
+    pub default_format_version: Option<FormatVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
@@ -225,6 +240,22 @@ pub struct UpdateWarehouseDeleteProfileRequest {
     pub delete_profile: TabularDeleteProfile,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct UpdateWarehouseFormatVersionPolicyRequest {
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse. Must be a non-empty subset of `[1, 2, 3]`.
+    #[cfg_attr(feature = "open-api", schema(value_type=Vec<i32>))]
+    pub allowed_format_versions: Vec<FormatVersion>,
+    /// Default Iceberg table format version applied when a create-table request
+    /// does not specify one. Must be a member of `allowed-format-versions`. When
+    /// omitted, resolves to v2 if allowed, otherwise the highest allowed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
+    pub default_format_version: Option<FormatVersion>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -263,6 +294,16 @@ pub struct GetWarehouseResponse {
     pub status: WarehouseStatus,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Iceberg table format versions that may be created in, or upgraded to,
+    /// within this warehouse.
+    #[cfg_attr(feature = "open-api", schema(value_type=Vec<i32>))]
+    pub allowed_format_versions: Vec<FormatVersion>,
+    /// Default Iceberg table format version applied when a create-table request
+    /// does not specify one. When absent, resolves to v2 if allowed, otherwise
+    /// the highest allowed version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "open-api", schema(value_type=Option::<i32>))]
+    pub default_format_version: Option<FormatVersion>,
     /// Last updated timestamp.
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -346,8 +387,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             mut storage_profile,
             storage_credential,
             delete_profile,
+            allowed_format_versions,
+            default_format_version,
         } = request;
         let project_id = request_metadata.require_project_id(project_id)?;
+        let format_version_policy =
+            validate_format_version_policy(allowed_format_versions, default_format_version)?;
 
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
@@ -432,6 +477,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             storage_profile,
             delete_profile,
             secret_id,
+            format_version_policy,
             transaction.transaction(),
         )
         .await?;
@@ -801,6 +847,68 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         ))
     }
 
+    async fn update_warehouse_format_version_policy(
+        warehouse_id: WarehouseId,
+        request: UpdateWarehouseFormatVersionPolicyRequest,
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+    ) -> Result<GetWarehouseResponse> {
+        let policy = validate_format_version_policy(
+            Some(request.allowed_format_versions.clone()),
+            request.default_format_version,
+        )?;
+
+        // ------------------- AuthZ -------------------
+        let authorizer = context.v1_state.authz;
+
+        let event_ctx = APIEventContext::for_warehouse(
+            Arc::new(request_metadata),
+            context.v1_state.events.clone(),
+            warehouse_id,
+            CatalogWarehouseAction::SetFormatVersionPolicy,
+        );
+
+        let warehouse = C::get_warehouse_by_id_cache_aware(
+            warehouse_id,
+            WarehouseStatus::active_and_inactive(),
+            CachePolicy::Skip,
+            context.v1_state.catalog.clone(),
+        )
+        .await;
+        let authz_result = authorizer
+            .require_warehouse_action(
+                event_ctx.request_metadata(),
+                warehouse_id,
+                warehouse,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, warehouse) = event_ctx.emit_authz(authz_result)?;
+        let event_ctx = event_ctx.resolve(warehouse);
+
+        // ------------------- Business Logic -------------------
+        let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
+        let updated_warehouse = C::set_warehouse_format_version_policy(
+            warehouse_id,
+            &policy,
+            transaction.transaction(),
+        )
+        .await?;
+        transaction.commit().await?;
+
+        event_ctx.emit_warehouse_format_version_policy_updated(
+            Arc::new(request),
+            updated_warehouse.clone(),
+        );
+
+        let credential_type =
+            resolve_credential_type(&updated_warehouse, &context.v1_state.secrets).await;
+        Ok(GetWarehouseResponse::from_resolved(
+            (*updated_warehouse).clone(),
+            credential_type,
+        ))
+    }
+
     async fn deactivate_warehouse(
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
@@ -1118,6 +1226,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             TabularAction {
                 table_action: CatalogTableAction::Undrop,
                 view_action: CatalogViewAction::Undrop,
+                generic_table_action: CatalogGenericTableAction::Undrop,
             },
         );
 
@@ -1277,6 +1386,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                                     t.as_action_request(
                                         CatalogViewAction::IncludeInList,
                                         CatalogTableAction::IncludeInList,
+                                        CatalogGenericTableAction::IncludeInList,
                                         None,
                                     ),
                                 ))
@@ -1466,6 +1576,8 @@ impl GetWarehouseResponse {
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
+            allowed_format_versions: warehouse.allowed_format_versions.to_vec(),
+            default_format_version: warehouse.default_format_version,
             updated_at: warehouse.updated_at,
         }
     }
@@ -1517,8 +1629,41 @@ fn validate_warehouse_name(warehouse_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a warehouse format version policy and convert it into domain types.
+///
+/// `allowed` defaults to all supported versions when `None`. The policy is
+/// rejected if the allowed set is empty or if `default` is not a member of it.
+fn validate_format_version_policy(
+    allowed: Option<Vec<FormatVersion>>,
+    default: Option<FormatVersion>,
+) -> Result<WarehouseFormatVersionPolicy> {
+    let allowed_format_versions = match allowed {
+        Some(versions) => AllowedFormatVersions::try_new(versions).map_err(ErrorModel::from)?,
+        None => AllowedFormatVersions::default(),
+    };
+
+    if default.is_some_and(|default| !allowed_format_versions.contains(default)) {
+        return Err(ErrorModel::bad_request(
+            format!(
+                "default_format_version '{}' is not in allowed_format_versions",
+                default.expect("default is Some") as u8
+            ),
+            "DefaultFormatVersionNotAllowed",
+            None,
+        )
+        .into());
+    }
+
+    Ok(WarehouseFormatVersionPolicy {
+        allowed_format_versions,
+        default_format_version: default,
+    })
+}
+
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use super::{GetWarehouseResponse, StorageCredentialType, resolve_credential_type};
     use crate::service::{
         ResolvedWarehouse, WarehouseStatus,
@@ -1537,6 +1682,8 @@ mod test {
             status: WarehouseStatus::Active,
             tabular_delete_profile: super::TabularDeleteProfile::Hard {},
             protected: false,
+            allowed_format_versions: crate::service::AllowedFormatVersions::default(),
+            default_format_version: None,
             updated_at: None,
             version: crate::service::WarehouseVersion::from(0),
         }
@@ -1716,340 +1863,5 @@ mod test {
         assert_eq!(s3_profile.bucket, "test");
         assert_eq!(s3_profile.region, "dummy");
         assert_eq!(s3_profile.path_style_access, Some(true));
-    }
-
-    use std::sync::Arc;
-
-    use iceberg::TableIdent;
-    use itertools::Itertools;
-    use sqlx::PgPool;
-
-    use crate::{
-        WarehouseId,
-        api::{
-            ApiContext,
-            iceberg::{
-                types::Prefix,
-                v1::{
-                    DataAccess, DropParams, NamespaceParameters, ViewParameters, views::ViewService,
-                },
-            },
-            management::v1::{
-                ApiServer,
-                warehouse::{ListDeletedTabularsQuery, Service as _, TabularDeleteProfile},
-            },
-        },
-        implementations::postgres::{PostgresBackend, SecretsState},
-        request_metadata::RequestMetadata,
-        server::{CatalogServer, test::impl_pagination_tests},
-        service::{State, UserId, authz::tests::HidingAuthorizer},
-        tests::create_view_request,
-    };
-
-    async fn setup_pagination_test(
-        pool: sqlx::PgPool,
-        n_tabulars: usize,
-        hidden_ranges: &[(usize, usize)],
-    ) -> (
-        ApiContext<State<HidingAuthorizer, PostgresBackend, SecretsState>>,
-        WarehouseId,
-    ) {
-        let prof = crate::server::test::memory_io_profile();
-
-        let authz = HidingAuthorizer::new();
-        authz.block_can_list_everything();
-
-        let (ctx, warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(10),
-            },
-            Some(UserId::new_unchecked("oidc", "test-user-id")),
-        )
-        .await;
-        let ns = crate::server::test::create_ns(
-            ctx.clone(),
-            warehouse.warehouse_id.to_string(),
-            "ns1".to_string(),
-        )
-        .await;
-        let ns_params = NamespaceParameters {
-            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
-            namespace: ns.namespace.clone(),
-        };
-        // create 10 staged tables
-        for i in 0..n_tabulars {
-            let v = CatalogServer::create_view(
-                ns_params.clone(),
-                create_view_request(Some(&format!("{i}")), None),
-                ctx.clone(),
-                DataAccess {
-                    vended_credentials: true,
-                    remote_signing: false,
-                },
-                RequestMetadata::new_unauthenticated(),
-            )
-            .await
-            .unwrap();
-
-            CatalogServer::drop_view(
-                ViewParameters {
-                    prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
-                    view: TableIdent {
-                        name: format!("{i}"),
-                        namespace: ns.namespace.clone(),
-                    },
-                },
-                DropParams {
-                    purge_requested: true,
-                    force: false,
-                },
-                ctx.clone(),
-                RequestMetadata::new_unauthenticated(),
-            )
-            .await
-            .unwrap();
-            if hidden_ranges
-                .iter()
-                .any(|(start, end)| i >= *start && i < *end)
-            {
-                authz.hide(&format!(
-                    "view:{}/{}",
-                    warehouse.warehouse_id,
-                    v.metadata.uuid()
-                ));
-            }
-        }
-
-        (ctx, warehouse.warehouse_id)
-    }
-
-    impl_pagination_tests!(
-        soft_deleted_tabular,
-        setup_pagination_test,
-        ApiServer,
-        ListDeletedTabularsQuery,
-        tabulars,
-        |tid| { tid.name }
-    );
-
-    #[sqlx::test]
-    async fn test_deleted_tabulars_pagination(pool: sqlx::PgPool) {
-        let prof = crate::server::test::memory_io_profile();
-
-        let authz = HidingAuthorizer::new();
-        authz.block_can_list_everything();
-
-        let (ctx, warehouse) = crate::server::test::setup(
-            pool.clone(),
-            prof,
-            None,
-            authz.clone(),
-            TabularDeleteProfile::Soft {
-                expiration_seconds: chrono::Duration::seconds(10),
-            },
-            Some(UserId::new_unchecked("oidc", "test-user-id")),
-        )
-        .await;
-        let ns = crate::server::test::create_ns(
-            ctx.clone(),
-            warehouse.warehouse_id.to_string(),
-            "ns1".to_string(),
-        )
-        .await;
-        let ns_params = NamespaceParameters {
-            prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
-            namespace: ns.namespace.clone(),
-        };
-        for i in 0..10 {
-            let _ = CatalogServer::create_view(
-                ns_params.clone(),
-                create_view_request(Some(&format!("view-{i}")), None),
-                ctx.clone(),
-                DataAccess {
-                    vended_credentials: true,
-                    remote_signing: false,
-                },
-                RequestMetadata::new_unauthenticated(),
-            )
-            .await
-            .unwrap();
-            CatalogServer::drop_view(
-                ViewParameters {
-                    prefix: Some(Prefix(warehouse.warehouse_id.to_string())),
-                    view: TableIdent {
-                        name: format!("view-{i}"),
-                        namespace: ns.namespace.clone(),
-                    },
-                },
-                DropParams {
-                    purge_requested: true,
-                    force: false,
-                },
-                ctx.clone(),
-                RequestMetadata::new_unauthenticated(),
-            )
-            .await
-            .unwrap();
-        }
-
-        // list 1 more than existing tables
-        let all = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(11),
-                page_token: None,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(all.tabulars.len(), 10);
-
-        // list exactly amount of existing tables
-        let all = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(10),
-                page_token: None,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(all.tabulars.len(), 10);
-
-        // next page is empty
-        let next = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(10),
-                page_token: all.next_page_token,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(next.tabulars.len(), 0);
-        assert!(next.next_page_token.is_none());
-
-        let first_six = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(6),
-                page_token: None,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(first_six.tabulars.len(), 6);
-        assert!(first_six.next_page_token.is_some());
-        let first_six_items = first_six
-            .tabulars
-            .iter()
-            .map(|i| i.name.clone())
-            .sorted()
-            .collect::<Vec<_>>();
-
-        for (i, item) in first_six_items.iter().enumerate().take(6) {
-            assert_eq!(item, &format!("view-{i}"));
-        }
-
-        let next_four = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(6),
-                page_token: first_six.next_page_token,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(next_four.tabulars.len(), 4);
-        // page-size > number of items left -> no next page
-        assert!(next_four.next_page_token.is_none());
-
-        let next_four_items = next_four
-            .tabulars
-            .iter()
-            .map(|i| i.name.clone())
-            .sorted()
-            .collect::<Vec<_>>();
-
-        for (idx, i) in (6..10).enumerate() {
-            assert_eq!(next_four_items[idx], format!("view-{i}"));
-        }
-
-        let mut ids = Arc::unwrap_or_clone(all.tabulars);
-        ids.sort_by_key(|e| e.id);
-        for t in ids.iter().take(6).skip(4) {
-            authz.hide(&format!("view:{}/{}", warehouse.warehouse_id, t.id));
-        }
-
-        let page = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(5),
-                page_token: None,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(page.tabulars.len(), 5);
-        assert!(page.next_page_token.is_some());
-        let page_items = page
-            .tabulars
-            .iter()
-            .map(|i| i.name.clone())
-            .sorted()
-            .collect::<Vec<_>>();
-        for (i, item) in page_items.iter().enumerate() {
-            let tab_id = if i > 3 { i + 2 } else { i };
-            assert_eq!(item, &format!("view-{tab_id}"));
-        }
-
-        let next_page = ApiServer::list_soft_deleted_tabulars(
-            warehouse.warehouse_id,
-            ListDeletedTabularsQuery {
-                namespace_id: None,
-                page_size: Some(6),
-                page_token: page.next_page_token,
-            },
-            ctx.clone(),
-            RequestMetadata::new_unauthenticated(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(next_page.tabulars.len(), 3);
-
-        let next_page_items = next_page
-            .tabulars
-            .iter()
-            .map(|i| i.name.clone())
-            .sorted()
-            .collect::<Vec<_>>();
-
-        for (idx, i) in (7..10).enumerate() {
-            assert_eq!(next_page_items[idx], format!("view-{i}"));
-        }
     }
 }

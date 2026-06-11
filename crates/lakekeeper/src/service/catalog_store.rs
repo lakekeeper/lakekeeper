@@ -7,7 +7,7 @@ pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
 
 use super::{
-    NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
+    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
     storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
@@ -46,10 +46,10 @@ mod namespace;
 pub use namespace::*;
 mod tabular;
 pub use tabular::*;
-pub(crate) mod namespace_cache;
-pub(crate) mod role_cache;
+pub mod namespace_cache;
+pub mod role_cache;
 mod warehouse;
-pub(crate) mod warehouse_cache;
+pub mod warehouse_cache;
 pub use warehouse::*;
 mod project;
 pub use project::*;
@@ -72,6 +72,8 @@ pub use role_assignment::*;
 mod idempotency;
 pub(crate) mod role_assignments_cache;
 pub use idempotency::*;
+pub mod generic_table;
+pub use generic_table::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -174,13 +176,19 @@ pub enum OnRoleConflict {
     /// `created_at`, and monotonic `version` are preserved (version only
     /// bumps when name/description actually change).
     ///
+    /// **Storage-layer primitive — not reachable from the public
+    /// service-layer trait.** Production callers seeding catalog-managed
+    /// system roles go through
+    /// [`crate::service::CatalogRoleOps::upsert_system_roles`], which is
+    /// gated by the [`crate::service::SystemRoleSeederCap`] token. This
+    /// variant exists only for [`CatalogStore::create_roles_impl`] to
+    /// dispatch on, so backend implementors can match the conflict mode
+    /// when implementing the trait.
+    ///
     /// The SQL's `WHERE ... IS DISTINCT FROM ...` predicate skips no-op
     /// updates entirely, so the returned `Vec<Role>` reflects only rows
     /// that were **inserted or actually changed** — its length may be
-    /// less than the request count. Use this for catalog-managed seeding
-    /// paths where the **code** is the authoritative source of truth and
-    /// a redeploy may legitimately ship a refined display name or
-    /// description (e.g. catalog-managed system roles).
+    /// less than the request count.
     UpdateMetadata,
 }
 
@@ -266,6 +274,7 @@ where
         storage_profile: StorageProfile,
         tabular_delete_profile: TabularDeleteProfile,
         storage_secret_id: Option<SecretId>,
+        format_version_policy: WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
@@ -341,6 +350,13 @@ where
         protect: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseProtectedError>;
+
+    /// Set the per-warehouse Iceberg table format version policy.
+    async fn set_warehouse_format_version_policy_impl(
+        warehouse_id: WarehouseId,
+        policy: &WarehouseFormatVersionPolicy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
@@ -533,6 +549,41 @@ where
         commit: ViewCommit<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ViewInfo, CommitViewError>;
+
+    // ---------------- Generic Table Management ----------------
+    async fn create_generic_table_impl<'a>(
+        creation: GenericTableCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, CreateGenericTableError>;
+
+    async fn load_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
+    async fn load_generic_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        generic_table_id: GenericTableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableInfo, LoadGenericTableError>;
+
+    async fn list_generic_tables_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<GenericTableListEntry>, Option<String>), ListGenericTablesError>;
+
+    async fn drop_generic_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<GenericTableId, DropGenericTableError>;
 
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(

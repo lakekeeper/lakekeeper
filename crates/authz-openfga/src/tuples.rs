@@ -14,15 +14,17 @@
 //! [`crate::authorizer::tests`] asserts equivalence.
 use lakekeeper::{
     ProjectId, WarehouseId,
-    service::{Actor, NamespaceId, RoleId, TableId, ViewId, authz::NamespaceParent},
+    service::{
+        Actor, GenericTableId, NamespaceId, RoleId, TableId, ViewId, authz::NamespaceParent,
+    },
 };
 use openfga_client::client::TupleKey;
 
 use crate::{
     entities::OpenFgaEntity,
     relations::{
-        NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation, TableRelation,
-        ViewRelation, WarehouseRelation,
+        GenericTableRelation, NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation,
+        TableRelation, ViewRelation, WarehouseRelation,
     },
 };
 
@@ -157,6 +159,37 @@ pub(crate) fn ownership_tuples_for_table(
         actor.to_openfga(),
         TableRelation::Ownership.to_string(),
         (warehouse, table).to_openfga(),
+    )]
+}
+
+/// Hierarchy tuples for a generic table: `namespace ↔ generic_table`.
+pub(crate) fn hierarchy_tuples_for_generic_table(
+    warehouse: WarehouseId,
+    generic_table: GenericTableId,
+    parent_namespace: NamespaceId,
+) -> Vec<TupleKey> {
+    let parent_id = parent_namespace.to_openfga();
+    let this_id = (warehouse, generic_table).to_openfga();
+    vec![
+        tuple(
+            parent_id.clone(),
+            GenericTableRelation::Parent.to_string(),
+            this_id.clone(),
+        ),
+        tuple(this_id, NamespaceRelation::Child.to_string(), parent_id),
+    ]
+}
+
+/// Ownership tuple for a generic table.
+pub(crate) fn ownership_tuples_for_generic_table(
+    actor: &Actor,
+    warehouse: WarehouseId,
+    generic_table: GenericTableId,
+) -> Vec<TupleKey> {
+    vec![tuple(
+        actor.to_openfga(),
+        GenericTableRelation::Ownership.to_string(),
+        (warehouse, generic_table).to_openfga(),
     )]
 }
 

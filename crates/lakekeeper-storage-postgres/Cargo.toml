@@ -1,0 +1,72 @@
+[package]
+name = "lakekeeper-storage-postgres"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+description = "PostgreSQL catalog backend for Lakekeeper"
+keywords = ["iceberg", "rest", "lakekeeper", "postgres"]
+
+[lib]
+
+[features]
+# Exposes `pub mod test_utils` (postgres-pinned `setup`, `memory_io_profile`,
+# `SetupTestCatalog`, etc.) for downstream test crates that exercise the
+# service layer against a real postgres backend. Always-on for in-crate
+# `cfg(test)` builds; downstream crates opt in to use the helpers without
+# pulling them into release artifacts.
+test-utils = ["lakekeeper/test-utils", "lakekeeper/router"]
+# Forwards lakekeeper's `open-api` feature so `utoipa::ToSchema` derives on
+# `TaskConfig` impls compile under workspace `--all-features` runs.
+open-api = ["lakekeeper/open-api"]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+crc = { workspace = true }
+derive_more = { workspace = true }
+fastrand = { workspace = true }
+figment = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+iceberg = { workspace = true }
+iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
+iso8601 = { workspace = true }
+itertools = { workspace = true }
+lakekeeper = { path = "../lakekeeper", features = ["sqlx-postgres"] }
+lakekeeper-io = { path = "../io", features = [
+    "storage-s3",
+    "storage-adls",
+    "storage-gcs",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sqlx = { workspace = true, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "json",
+    "migrate",
+] }
+strum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true, features = ["attributes", "valuable"] }
+tryhard = { workspace = true }
+typed-builder = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+fastrand = { workspace = true }
+figment = { workspace = true, features = ["test"] }
+lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router"] }
+lakekeeper-storage-postgres = { path = ".", features = ["test-utils"] }
+pretty_assertions = { workspace = true }
+similar = { workspace = true }
+tracing-test = { workspace = true }
