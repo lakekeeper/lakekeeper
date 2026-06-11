@@ -1086,10 +1086,13 @@ where
         .await?;
         t.commit().await?;
 
-        let list_result = Arc::new(ListUserRoleAssignmentsResult {
+        let mut list = ListUserRoleAssignmentsResult {
             roles: sync_result.all_roles,
             provider_sync_times: sync_result.provider_sync_times,
-        });
+        };
+        // Dedup role/project identity across cached users before storing.
+        role_assignments_cache::share_identities(&mut list).await;
+        let list_result = Arc::new(list);
 
         // Update the cache directly after the commit, before dispatching the
         // event (mirrors the warehouse / namespace cache-on-read pattern).
@@ -1393,9 +1396,11 @@ where
         // onto one loader run (see `user_assignments_cache_get_or_load`).
         let owned_user_id = user_id.clone();
         role_assignments_cache::user_assignments_cache_get_or_load(user_id, async move {
-            Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state)
-                .await
-                .map(Arc::new)
+            let mut result =
+                Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state).await?;
+            // Dedup role/project identity across cached users before storing.
+            role_assignments_cache::share_identities(&mut result).await;
+            Ok(Arc::new(result))
         })
         .await
     }

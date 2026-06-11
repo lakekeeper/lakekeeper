@@ -9,7 +9,7 @@ use moka::{
 use crate::{
     CONFIG,
     service::{
-        CatalogBackendError, RoleId,
+        ArcProjectId, ArcRoleIdent, CatalogBackendError, RoleId,
         authn::UserId,
         cache_metrics,
         cache_ttl::JitteredTtl,
@@ -154,6 +154,112 @@ where
         })?;
     update_ua_size_metric();
     Ok(result)
+}
+
+// ============================================================================
+// Shared identity pools — dedup Arc<RoleIdent>/Arc<ProjectId> across cached entries
+// ============================================================================
+//
+// The effective-roles loader allocates a fresh `Arc` for each (user, role) row,
+// so without sharing a role held by N users keeps N copies of its identity alive.
+// Sharing collapses those to one `Arc`. Content-addressed: the key is the `Arc`
+// itself, whose `Hash`/`Eq` delegate to the inner value, so a rename produces a
+// new ident → new key → self-heals, and stale (renamed/deleted) idents age out by
+// idle-eviction — no invalidation hook required. The key clone and the stored
+// value share one allocation. The shared `Arc` is strong: the canonical instance
+// stays alive via cached entries even if the pool evicts the key, so eviction
+// only transiently reduces sharing, never correctness.
+//
+// Sizing is INTERNAL, not an operator knob, and deliberately NOT tied to the
+// role-by-id cache (`cache.role`): the pools serve `USER_ASSIGNMENTS_CACHE`, so
+// their idle-TTL tracks *that* cache's TTL, and their capacity is a fixed bound on
+// distinct identities in play. Above the capacity, dedup degrades (cold idents
+// are LRU-evicted and re-allocated on the next load) but is never incorrect. We
+// keep `moka` (sharded, lock-free reads) rather than a hand-rolled weak-value map
+// precisely so this stays uncontended under the lazy per-user role-provider sync
+// load. `share_identities` is gated on `user_assignments.enabled`, so when that
+// cache is off the pools are never populated.
+//
+// Future option (deferred): if true self-sizing (no fixed cap) is ever wanted,
+// swap these for weak-value pools whose canonical `Arc`s are kept alive by the
+// cached entries. That design needs a periodic dead-`Weak` sweep under a lock —
+// if that sweep (or the lock) ever becomes a bottleneck, shard it (an array of
+// locked maps keyed by hash, or a `DashMap`). Not needed now: `moka` is already
+// sharded/concurrent, and the fixed cap only degrades dedup, never correctness.
+
+/// Upper bound on distinct shared identities. Generous — far above any realistic
+/// distinct-role count (the role-by-id cache defaults to 10k). Exceeding it only
+/// degrades dedup, never correctness, so it is a fixed internal constant rather
+/// than an operator-facing knob.
+const MAX_SHARED_IDENTITIES: u64 = 100_000;
+
+const CACHE_TYPE_SHARED_ROLE_IDENTS: &str = "shared_role_idents";
+const CACHE_TYPE_SHARED_PROJECT_IDS: &str = "shared_project_ids";
+
+static SHARED_ROLE_IDENTS: std::sync::LazyLock<Cache<ArcRoleIdent, ArcRoleIdent>> =
+    std::sync::LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(MAX_SHARED_IDENTITIES)
+            .time_to_idle(Duration::from_secs(
+                CONFIG.cache.user_assignments.time_to_live_secs,
+            ))
+            .build()
+    });
+
+static SHARED_PROJECT_IDS: std::sync::LazyLock<Cache<ArcProjectId, ArcProjectId>> =
+    std::sync::LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(MAX_SHARED_IDENTITIES)
+            .time_to_idle(Duration::from_secs(
+                CONFIG.cache.user_assignments.time_to_live_secs,
+            ))
+            .build()
+    });
+
+async fn share_role_ident(ident: ArcRoleIdent) -> ArcRoleIdent {
+    SHARED_ROLE_IDENTS
+        .get_with(Arc::clone(&ident), async move { ident })
+        .await
+}
+
+async fn share_project_id(project_id: ArcProjectId) -> ArcProjectId {
+    SHARED_PROJECT_IDS
+        .get_with(Arc::clone(&project_id), async move { project_id })
+        .await
+}
+
+/// Replace the per-row `Arc<RoleIdent>` / `Arc<ProjectId>` in a freshly-loaded
+/// user-assignments result with shared `Arc`s before it is cached, so a
+/// role/project referenced by many users is stored once in memory. No-op when the
+/// user-assignments cache is disabled (nothing is cached → nothing to dedup).
+pub(super) async fn share_identities(result: &mut ListUserRoleAssignmentsResult) {
+    if !CONFIG.cache.user_assignments.enabled {
+        return;
+    }
+    for role in &mut result.roles {
+        role.role_ident = share_role_ident(Arc::clone(&role.role_ident)).await;
+        role.project_id = share_project_id(Arc::clone(&role.project_id)).await;
+    }
+    for sync in &mut result.provider_sync_times {
+        sync.project_id = share_project_id(Arc::clone(&sync.project_id)).await;
+    }
+    update_shared_identity_metrics();
+}
+
+/// Gauge the shared-identity pools' entry counts so dedup can be confirmed in
+/// prod: compare these against `cache_size{cache_type="user_assignments"}` — a
+/// small pool size relative to UA entries means a role/project held by many users
+/// is stored once. Reuses the shared `lakekeeper_cache_size` gauge with dedicated
+/// `cache_type` labels. `entry_count()` is approximate until moka drains pending
+/// tasks (same caveat the UA/RM gauges already accept).
+#[inline]
+#[allow(clippy::cast_precision_loss)]
+fn update_shared_identity_metrics() {
+    let () = &*cache_metrics::METRICS_INITIALIZED;
+    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_SHARED_ROLE_IDENTS)
+        .set(SHARED_ROLE_IDENTS.entry_count() as f64);
+    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_SHARED_PROJECT_IDS)
+        .set(SHARED_PROJECT_IDS.entry_count() as f64);
 }
 
 // ============================================================================
@@ -454,6 +560,102 @@ mod tests {
 
         let cached = user_assignments_cache_get(&user_id).await.unwrap();
         assert_eq!(cached.roles.len(), 1);
+    }
+
+    /// Two independently-loaded results referencing the same role/project value
+    /// (distinct `Arc` allocations) must, after sharing, collapse to ONE canonical
+    /// `Arc` — the dedup that stops a role held by many users from storing its
+    /// identity once per user.
+    #[tokio::test]
+    async fn share_identities_dedups_shared_identity_across_results() {
+        let role_id = RoleId::new_random();
+        let project = ProjectId::new_random();
+        let mk = || ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id,
+                role_ident: test_role_ident("lakekeeper", "share-dedup-src"),
+                project_id: Arc::new(project.clone()),
+            }],
+            provider_sync_times: vec![],
+        };
+        let mut a = mk();
+        let mut b = mk();
+        // Independently allocated before sharing.
+        assert!(!Arc::ptr_eq(&a.roles[0].role_ident, &b.roles[0].role_ident));
+        assert!(!Arc::ptr_eq(&a.roles[0].project_id, &b.roles[0].project_id));
+
+        share_identities(&mut a).await;
+        share_identities(&mut b).await;
+
+        assert!(
+            Arc::ptr_eq(&a.roles[0].role_ident, &b.roles[0].role_ident),
+            "same role-ident value must dedup to one shared Arc"
+        );
+        assert!(
+            Arc::ptr_eq(&a.roles[0].project_id, &b.roles[0].project_id),
+            "same project-id value must dedup to one shared Arc"
+        );
+    }
+
+    /// Distinct ident VALUES must not merge — a renamed role (new ident) gets a
+    /// fresh canonical, so the content-addressed pool self-heals across renames.
+    #[tokio::test]
+    async fn share_identities_keeps_distinct_idents_separate() {
+        let role_id = RoleId::new_random();
+        let project = Arc::new(ProjectId::new_random());
+        let mut before = ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id,
+                role_ident: test_role_ident("lakekeeper", "share-rename-before"),
+                project_id: Arc::clone(&project),
+            }],
+            provider_sync_times: vec![],
+        };
+        let mut after = ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id,
+                role_ident: test_role_ident("lakekeeper", "share-rename-after"),
+                project_id: Arc::clone(&project),
+            }],
+            provider_sync_times: vec![],
+        };
+        share_identities(&mut before).await;
+        share_identities(&mut after).await;
+        assert!(
+            !Arc::ptr_eq(&before.roles[0].role_ident, &after.roles[0].role_ident),
+            "different ident values must not be deduped together"
+        );
+    }
+
+    /// `provider_sync_times` project ids are shared too, collapsing to the canonical
+    /// `Arc` of a role carrying the same project value.
+    #[tokio::test]
+    async fn share_identities_dedups_provider_sync_project_id() {
+        let project = ProjectId::new_random();
+        let mut result = ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id: RoleId::new_random(),
+                role_ident: test_role_ident("lakekeeper", "share-sync-proj"),
+                project_id: Arc::new(project.clone()),
+            }],
+            provider_sync_times: vec![UserProviderSyncInfo {
+                project_id: Arc::new(project.clone()),
+                provider_id: RoleProviderId::try_new("oidc").unwrap(),
+                synced_at: chrono::Utc::now(),
+            }],
+        };
+        assert!(!Arc::ptr_eq(
+            &result.roles[0].project_id,
+            &result.provider_sync_times[0].project_id
+        ));
+        share_identities(&mut result).await;
+        assert!(
+            Arc::ptr_eq(
+                &result.roles[0].project_id,
+                &result.provider_sync_times[0].project_id
+            ),
+            "provider_sync_times project_id must share the same canonical Arc"
+        );
     }
 
     /// Single-flight: N concurrent misses for the same key run the loader
