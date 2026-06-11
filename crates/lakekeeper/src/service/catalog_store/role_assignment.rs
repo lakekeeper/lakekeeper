@@ -808,10 +808,6 @@ pub struct AddRoleMembersResult {
     /// were already present are excluded — empty when every requested edge
     /// already existed. Drives cache invalidation and events.
     pub added: Vec<RoleId>,
-    /// The parent's direct members after the operation, read back in the same
-    /// transaction (read-your-writes; a follow-up query could hit a lagging read
-    /// replica). For rendering the updated state.
-    pub members: Vec<RoleMembershipEntry>,
 }
 
 /// Outcome of removing role->role edges.
@@ -821,9 +817,6 @@ pub struct RemoveRoleMembersResult {
     /// were not present are excluded — empty when no requested edge existed.
     /// Drives cache invalidation and events.
     pub removed: Vec<RoleId>,
-    /// The parent's direct members after the operation, read back in the same
-    /// transaction (see [`AddRoleMembersResult::members`]).
-    pub members: Vec<RoleMembershipEntry>,
 }
 
 define_transparent_error! {
@@ -1535,12 +1528,13 @@ async fn membership_edge_affected_users<S: CatalogStore>(
     member_role_ids: &[RoleId],
     t: &mut S::Transaction,
 ) -> Result<Vec<UserId>, CatalogBackendError> {
-    let mut affected: HashSet<UserId> = HashSet::new();
-    for member in member_role_ids {
-        let users = S::affected_users_for_membership_edge_impl(*member, t.transaction()).await?;
-        affected.extend(users);
+    if member_role_ids.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(affected.into_iter().collect())
+    // One query seeded from the whole member set computes the union descendant
+    // closure and de-duplicates affected users in SQL (`SELECT DISTINCT`) — no
+    // per-member round-trip inside the held write transaction / advisory lock.
+    S::affected_users_for_membership_edges_impl(member_role_ids, t.transaction()).await
 }
 
 #[cfg(test)]

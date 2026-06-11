@@ -725,19 +725,9 @@ pub(crate) async fn add_role_members(
     validate(parent_role_id)?;
 
     // Empty input is a no-op — but only once the parent has been validated above
-    // (so a bad parent is still rejected). Read back the current direct members so
-    // `members` reflects the parent's state.
+    // (so a bad parent is still rejected).
     if member_role_ids.is_empty() {
-        let members = list_role_memberships(
-            parent_role_id,
-            RoleMembershipDirection::Members,
-            &mut **transaction,
-        )
-        .await?;
-        return Ok(AddRoleMembersResult {
-            added: Vec::new(),
-            members,
-        });
+        return Ok(AddRoleMembersResult { added: Vec::new() });
     }
 
     for member in member_role_ids {
@@ -849,16 +839,7 @@ pub(crate) async fn add_role_members(
     .map(RoleId::new)
     .collect();
 
-    // Read the parent's updated direct members back on the SAME transaction, so the
-    // returned state reflects this write (a follow-up query — possibly on a lagging
-    // read replica — would not be guaranteed to).
-    let members = list_role_memberships(
-        parent_role_id,
-        RoleMembershipDirection::Members,
-        &mut **transaction,
-    )
-    .await?;
-    Ok(AddRoleMembersResult { added, members })
+    Ok(AddRoleMembersResult { added })
 }
 
 // ─── remove_role_members ──────────────────────────────────────────────────────
@@ -894,15 +875,7 @@ pub(crate) async fn remove_role_members(
         .collect()
     };
 
-    // Read the parent's updated direct members back on the SAME transaction (see
-    // `add_role_members`) — read-your-writes, immune to read-replica lag.
-    let members = list_role_memberships(
-        parent_role_id,
-        RoleMembershipDirection::Members,
-        &mut **transaction,
-    )
-    .await?;
-    Ok(RemoveRoleMembersResult { removed, members })
+    Ok(RemoveRoleMembersResult { removed })
 }
 
 // ─── add_user_role_assignments ────────────────────────────────────────────────
@@ -1053,27 +1026,31 @@ pub(crate) async fn remove_user_role_assignments(
     Ok(RemoveUserRoleAssignmentsResult { removed })
 }
 
-// ─── affected_users_for_membership_edge ───────────────────────────────────────
+// ─── affected_users_for_membership_edges ──────────────────────────────────────
 //
-// After a `role_membership` edge `(parent, member)` is added or removed, the set
-// of users whose EFFECTIVE roles changed is exactly the users directly assigned
-// (in `role_assignment`) to `member` OR to any role in the DESCENDANT closure of
-// `member` — i.e. roles that reach `member` by climbing member→parent edges.
+// After `role_membership` edges with member endpoints `member_role_ids` are added
+// or removed, the set of users whose EFFECTIVE roles changed is exactly the users
+// directly assigned (in `role_assignment`) to any of those members OR to any role
+// in their combined DESCENDANT closure — roles that reach a member by climbing
+// member→parent edges.
 //
-// `parent` is intentionally not consulted: descendants of `member` already
-// capture every affected user regardless of which parent the edge attached to.
-pub(crate) async fn affected_users_for_membership_edge<
+// The parent endpoints are intentionally not consulted: the descendants of the
+// members already capture every affected user regardless of which parent each edge
+// attached to. Seeding the recursive walk from the whole `member_role_ids` set in
+// one query (rather than one query per member) computes the union closure with a
+// single round-trip and de-duplicates overlapping subtrees in the `UNION`.
+pub(crate) async fn affected_users_for_membership_edges<
     'c,
     'e: 'c,
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 >(
-    member_role_id: RoleId,
+    member_role_ids: &[Uuid],
     connection: E,
 ) -> Result<Vec<UserId>, CatalogBackendError> {
     let rows = sqlx::query_scalar!(
         r#"
         WITH RECURSIVE descendants(role_id) AS (
-                SELECT $1::uuid
+                SELECT m FROM unnest($1::uuid[]) AS m
             UNION
                 SELECT rm.member_role_id
                 FROM role_membership rm
@@ -1083,7 +1060,7 @@ pub(crate) async fn affected_users_for_membership_edge<
         FROM role_assignment ra
         WHERE ra.role_id IN (SELECT role_id FROM descendants)
         "#,
-        *member_role_id,
+        member_role_ids,
     )
     .fetch_all(connection)
     .await
@@ -3176,14 +3153,8 @@ mod tests {
                 .unwrap();
         t.commit().await.unwrap();
         assert_eq!(first.added, vec![child]);
-        // The result carries the parent's post-op direct members, read back in-txn.
-        assert_eq!(
-            first.members.iter().map(|m| m.role_id).collect::<Vec<_>>(),
-            vec![child]
-        );
 
-        // Second add — a no-op: nothing was newly added, so the delta is empty,
-        // but `members` still reflects the (unchanged) current state.
+        // Second add — a no-op: nothing was newly added, so the delta is empty.
         let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
@@ -3193,11 +3164,8 @@ mod tests {
                 .unwrap();
         t.commit().await.unwrap();
         assert_eq!(second.added, Vec::<RoleId>::new());
-        assert_eq!(
-            second.members.iter().map(|m| m.role_id).collect::<Vec<_>>(),
-            vec![child]
-        );
 
+        // The parent's direct members reflect the (idempotent) adds.
         let members = PostgresBackend::list_role_memberships(
             parent,
             RoleMembershipDirection::Members,
@@ -3749,9 +3717,8 @@ mod tests {
             .unwrap();
         t.commit().await.unwrap();
         assert_eq!(removed.removed, vec![child]);
-        // The post-op members read back on the same transaction are now empty.
-        assert_eq!(removed.members, Vec::new());
 
+        // The parent's direct members are now empty.
         assert_eq!(
             PostgresBackend::list_role_memberships(
                 parent,

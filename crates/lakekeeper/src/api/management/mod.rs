@@ -811,8 +811,9 @@ pub mod v1 {
     ///
     /// Lists the role's transitive members — users assigned to the role or any role
     /// in its downward membership closure, plus every role in that closure — as one
-    /// keyset-paginated page, optionally filtered to one kind. Transitive rows carry
-    /// no `created-at` (no single defining membership edge).
+    /// keyset-paginated page, optionally filtered to one kind. Supported only when
+    /// assignments are catalog-managed; an assignment-managing authorizer (e.g.
+    /// OpenFGA) returns `501`.
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "role",
@@ -825,6 +826,7 @@ pub mod v1 {
         responses(
             (status = 200, description = "Transitive members of the role", body = ListRoleMembersResponse),
             (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Transitive listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
         )
     ))]
     async fn list_role_transitive_members<C: CatalogStore, A: Authorizer, S: SecretStore>(
@@ -841,7 +843,8 @@ pub mod v1 {
     ///
     /// Lists the full effective (transitive) role set a user holds — direct
     /// assignments plus every role reachable upward through membership — keyset-
-    /// paginated. Transitive rows carry no `created-at` (no single defining edge).
+    /// paginated. Supported only when assignments are catalog-managed; an
+    /// assignment-managing authorizer (e.g. OpenFGA) returns `501`.
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "user",
@@ -854,6 +857,7 @@ pub mod v1 {
         responses(
             (status = 200, description = "Transitive roles the user holds", body = ListRoleMembershipsResponse),
             (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Transitive listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
         )
     ))]
     async fn list_user_transitive_roles<C: CatalogStore, A: Authorizer, S: SecretStore>(
@@ -870,7 +874,8 @@ pub mod v1 {
     ///
     /// Lists the full transitive member-of set of a role — every role it
     /// effectively belongs to, reachable upward through membership — keyset-
-    /// paginated. Transitive rows carry no `created-at` (no single defining edge).
+    /// paginated. Supported only when assignments are catalog-managed; an
+    /// assignment-managing authorizer (e.g. OpenFGA) returns `501`.
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "role",
@@ -883,6 +888,7 @@ pub mod v1 {
         responses(
             (status = 200, description = "Transitive roles the role belongs to", body = ListRoleMembershipsResponse),
             (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Transitive listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
         )
     ))]
     async fn list_role_transitive_member_of<C: CatalogStore, A: Authorizer, S: SecretStore>(

@@ -524,12 +524,13 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn affected_users_for_membership_edge_impl<'a>(
-        member_role_id: RoleId,
+    async fn affected_users_for_membership_edges_impl<'a>(
+        member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError> {
-        super::role_assignment::affected_users_for_membership_edge(
-            member_role_id,
+        let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
+        super::role_assignment::affected_users_for_membership_edges(
+            &member_uuids,
             &mut **transaction,
         )
         .await

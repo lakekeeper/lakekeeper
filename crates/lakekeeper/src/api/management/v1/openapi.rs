@@ -130,6 +130,13 @@ use crate::{
         super::update_warehouse_format_version_policy,
         super::whoami,
     ),
+    components(schemas(
+        // `RoleMemberType` is referenced only through `params(...)` (the `?type=`
+        // query filter and the `member_type` path segment), which utoipa does NOT
+        // auto-collect into `components/schemas`. Register it explicitly so the
+        // `$ref`s those params emit resolve instead of dangling.
+        crate::api::management::v1::role_membership::RoleMemberType,
+    )),
     modifiers(&SecurityAddon)
 )]
 pub(super) struct ManagementApiDoc;

@@ -716,7 +716,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     // the delete this walk would return nothing. These are exactly the users whose
     // effective-role set loses `role_id` (direct assignees ∪ descendant-closure
     // assignees). Mirrors `delete_user`'s pre-commit/post-commit eviction.
-    let affected_users = C::affected_users_for_membership_edge_impl(role_id, t.transaction())
+    let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
         .await
         .map_err::<DeleteRoleError, _>(Into::into)?;
     C::delete_role(&project_id, role_id, t.transaction()).await?;

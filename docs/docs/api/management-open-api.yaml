@@ -2185,7 +2185,8 @@ paths:
       description: |-
         Lists the full transitive member-of set of a role — every role it
         effectively belongs to, reachable upward through membership — keyset-
-        paginated. Transitive rows carry no `created-at` (no single defining edge).
+        paginated. Supported only when assignments are catalog-managed; an
+        assignment-managing authorizer (e.g. OpenFGA) returns `501`.
       operationId: list_role_transitive_member_of
       parameters:
         - name: pageToken
@@ -2228,6 +2229,12 @@ paths:
                 $ref: '#/components/schemas/ListRoleMembershipsResponse'
         4XX:
           description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
           content:
             application/json:
               schema:
@@ -2353,8 +2360,9 @@ paths:
       description: |-
         Lists the role's transitive members — users assigned to the role or any role
         in its downward membership closure, plus every role in that closure — as one
-        keyset-paginated page, optionally filtered to one kind. Transitive rows carry
-        no `created-at` (no single defining membership edge).
+        keyset-paginated page, optionally filtered to one kind. Supported only when
+        assignments are catalog-managed; an assignment-managing authorizer (e.g.
+        OpenFGA) returns `501`.
       operationId: list_role_transitive_members
       parameters:
         - name: type
@@ -2405,6 +2413,12 @@ paths:
                 $ref: '#/components/schemas/ListRoleMembersResponse'
         4XX:
           description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
           content:
             application/json:
               schema:
@@ -2885,7 +2899,8 @@ paths:
       description: |-
         Lists the full effective (transitive) role set a user holds — direct
         assignments plus every role reachable upward through membership — keyset-
-        paginated. Transitive rows carry no `created-at` (no single defining edge).
+        paginated. Supported only when assignments are catalog-managed; an
+        assignment-managing authorizer (e.g. OpenFGA) returns `501`.
       operationId: list_user_transitive_roles
       parameters:
         - name: pageToken
@@ -2927,6 +2942,12 @@ paths:
                 $ref: '#/components/schemas/ListRoleMembershipsResponse'
         4XX:
           description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
           content:
             application/json:
               schema:
@@ -4308,7 +4329,7 @@ components:
         Response for `POST /role/{id}/members`: the requested members confirmed present
         (idempotent — already-present members are included). Echoes identity
         [`RoleMemberRef`]s, not hydrated [`RoleMember`]s — use `GET /role/{id}/members`
-        for display names and membership timestamps.
+        for display names.
       required:
         - members
       properties:
@@ -7659,8 +7680,14 @@ components:
       description: |-
         An identity reference to a role member — a `user` or a `role`, by typed id.
         Sent in `POST /role/{id}/members` requests and echoed by the add/remove
-        confirmations. Unlike [`RoleMember`] it is never hydrated (no name/timestamp):
+        confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
         it names *which* principal, not its display identity.
+    RoleMemberType:
+      type: string
+      description: Kind of a role member. Serializes as `"user"` / `"role"`.
+      enum:
+        - user
+        - role
     RoleMembership:
       type: object
       description: |-

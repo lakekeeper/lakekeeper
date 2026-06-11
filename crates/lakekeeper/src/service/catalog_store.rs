@@ -824,13 +824,14 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError>;
 
-    /// Users whose EFFECTIVE roles change when a `role_membership` edge with member
-    /// endpoint `member_role_id` is added or removed: every user assigned to
-    /// `member_role_id` or to any role in its descendant closure. Runs on the
+    /// Users whose EFFECTIVE roles change when `role_membership` edges with member
+    /// endpoints `member_role_ids` are added or removed: every user assigned to any
+    /// of those members or to any role in their combined descendant closure. The
+    /// whole set is walked in a single query (no per-member fan-out). Runs on the
     /// caller's transaction (see `membership_edge_affected_users` for why pre-commit
     /// is sound).
-    async fn affected_users_for_membership_edge_impl<'a>(
-        member_role_id: RoleId,
+    async fn affected_users_for_membership_edges_impl<'a>(
+        member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
 

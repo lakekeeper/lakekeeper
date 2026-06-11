@@ -13,9 +13,18 @@
 //! reads id-only rows and hydrates role identity from the catalog. The hot authz
 //! path is untouched; all of this is cold-path management code.
 //!
+//! **Backend divergence (cold reads).** The two arms return the same membership
+//! *set* but are not otherwise identical: the authorizer arm hydrates role
+//! identity through the role cache (see [`fetch_roles_by_ids`]), so a just-renamed
+//! role may render a stale display name until the cache TTL elapses (display only
+//! — never the authorization decision); and the two arms order results
+//! differently, emit mutually-opaque page tokens, and may cap page size
+//! differently (the authorizer backend can clamp lower). Treat the page token as
+//! opaque and don't assume a cross-backend result order.
+//!
 //! **Direct vs transitive coverage.** The three *direct* reads (`/members`,
 //! `/member-of`, `/user/{id}/roles`) are implemented on both arms. The three
-//! *transitive* reads are implemented on the **catalog arm only** (a bounded,
+//! *transitive* reads are implemented on the **catalog arm only** (a
 //! lazily-paginated recursive SQL CTE); under an assignment-managing authorizer
 //! they return `501` — see [`transitive_listing_not_supported_under_authorizer`]
 //! for why OpenFGA's graph-listing APIs make a correct, bounded transitive
@@ -154,7 +163,7 @@ impl From<CatalogRoleMember> for RoleMember {
 
 /// An identity reference to a role member — a `user` or a `role`, by typed id.
 /// Sent in `POST /role/{id}/members` requests and echoed by the add/remove
-/// confirmations. Unlike [`RoleMember`] it is never hydrated (no name/timestamp):
+/// confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
 /// it names *which* principal, not its display identity.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -211,7 +220,7 @@ pub struct AddRoleMembersRequest {
 /// Response for `POST /role/{id}/members`: the requested members confirmed present
 /// (idempotent — already-present members are included). Echoes identity
 /// [`RoleMemberRef`]s, not hydrated [`RoleMember`]s — use `GET /role/{id}/members`
-/// for display names and membership timestamps.
+/// for display names.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -427,9 +436,13 @@ async fn fetch_users_by_ids<C: CatalogStore>(
 /// [`fetch_users_by_ids`] by id), and `build` turns the raw rows + resolved maps
 /// into output items. A role with no catalog row anywhere (a dangling tuple) is
 /// dropped; a user with no catalog row is kept id-only (legitimately
-/// unprovisioned). If dropping orphan roles empties an otherwise non-final page,
-/// the next authorizer page is pulled, so a returned empty page always means the
-/// listing is exhausted (the house convention treats empty as end).
+/// unprovisioned). If dropping orphan roles (or the `?type=` filter) empties an
+/// otherwise non-final page, the next authorizer page is pulled — but only up to
+/// `MAX_EMPTY_PAGE_HOPS` times per request, after which the empty page is returned
+/// WITH its continuation token so a long run of dropped/filtered pages can't fan
+/// out into an unbounded burst of authorizer Read round-trips. The client resumes
+/// the scan via that token: it must page until the token is null and never treat
+/// an empty page on its own as the end of the listing.
 #[allow(clippy::too_many_arguments)]
 async fn read_hydrated_assignments_page<C, T>(
     assignments: &dyn ManagesRoleAssignments,
@@ -449,6 +462,12 @@ async fn read_hydrated_assignments_page<C, T>(
 where
     C: CatalogStore,
 {
+    // Cap how many consecutive all-dropped/all-filtered authorizer pages we skip
+    // within one request before handing the continuation token back to the client
+    // (see the fn doc): bounds the worst-case Read round-trips per request without
+    // breaking pagination, since the client pages on until the token is null.
+    const MAX_EMPTY_PAGE_HOPS: usize = 50;
+    let mut empty_hops = 0usize;
     loop {
         let page = assignments
             .list_role_assignments(
@@ -477,9 +496,13 @@ where
 
         let items = build(&page.assignments, &roles, &users);
         match page.next_page_token {
-            // The whole page was orphan role tuples but more pages remain; pull the
-            // next so an empty page never masquerades as end-of-listing.
-            Some(token) if items.is_empty() => {
+            // The whole page was dropped/filtered out but more pages remain; pull
+            // the next so an empty page doesn't masquerade as end-of-listing —
+            // but only up to MAX_EMPTY_PAGE_HOPS times, then hand the token back to
+            // the client (an empty page WITH a token) so a long empty stretch can't
+            // fan out into unbounded Read round-trips in one request.
+            Some(token) if items.is_empty() && empty_hops < MAX_EMPTY_PAGE_HOPS => {
+                empty_hops += 1;
                 pagination = PaginationQuery {
                     page_token: PageToken::Present(token),
                     page_size: pagination.page_size,
@@ -591,8 +614,9 @@ fn build_role_members(
 /// graph walk would be unbounded and must materialize the whole closure to
 /// paginate. Rather than ship a best-effort transitive listing on this backend,
 /// these endpoints return `501` here; full transitive support remains on
-/// catalog-backed authorizers (Cedar/AllowAll), whose recursive SQL paginates and
-/// bounds depth natively. The **direct** reads ARE implemented under OpenFGA.
+/// catalog-backed authorizers (Cedar/AllowAll), whose recursive SQL paginates
+/// lazily and terminates via `UNION` de-duplication over the cycle-free graph the
+/// write path guarantees. The **direct** reads ARE implemented under OpenFGA.
 fn transitive_listing_not_supported_under_authorizer() -> ErrorModel {
     ErrorModel::not_implemented(
         "Transitive role-membership listing is not supported under this authorizer \

@@ -132,11 +132,14 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
         .map(|PaginateToken::V1(V1PaginateToken { created_at, id })| (created_at, id))
         .unzip();
 
-    // The name filter matches the *rendered* display name, not the raw column: a
-    // nameless role-provider stub (`name IS NULL`) must stay findable by its
-    // placeholder ("Nameless User with id <id>", see `display_user_name`) and by id,
-    // rather than being silently excluded -- `NULL ILIKE ...` is NULL, so the
-    // unfiltered list would return the stub but a name filter never would.
+    // The name filter matches the raw `name` column. A nameless role-provider stub
+    // (`name IS NULL`) has no name to match, so a name search never returns it
+    // (`NULL ILIKE ...` is NULL → excluded) — by design: such a stub is surfaced by
+    // the unfiltered list or fetched by its id via the `$3/$4` id filter below, not
+    // by a username search. The display placeholder ("Nameless User with id <id>",
+    // see `display_user_name`) is a read-time render only, deliberately NOT a search
+    // key — matching it would leak the presentation string into this query (and its
+    // index) and couple them to the placeholder wording.
     // The trailing `(u.created_at, u.id)` predicate is the keyset pagination cursor.
     let users: Vec<User> = sqlx::query_as!(
         UserRow,
@@ -151,7 +154,7 @@ pub(crate) async fn list_users<'e, 'c: 'e, E: sqlx::Executor<'c, Database = sqlx
             updated_at
         FROM users u
         where (deleted_at is null)
-            AND ($1 OR COALESCE(name, 'Nameless User with id ' || id) ILIKE ('%' || $2 || '%'))
+            AND ($1 OR name ILIKE ('%' || $2 || '%'))
             AND ($3 OR id = any($4))
             AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))
         ORDER BY u.created_at, u.id ASC
