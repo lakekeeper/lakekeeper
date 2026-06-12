@@ -48,7 +48,7 @@ jobs:
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         id: install
         with:
-          version: v3.18.3
+          version: v3.21.1
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
       - name: Install lakekeeper (wait 300s)
