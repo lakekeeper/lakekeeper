@@ -9,7 +9,7 @@ pub mod storage_layout;
 
 use std::{collections::HashMap, str::FromStr as _};
 
-pub use az::{AdlsProfile, AzCredential};
+pub use az::{AzCredential, EndpointMode, FabricAdlsProfile, GenericAdlsProfile, TopLevelFolder};
 pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
@@ -54,10 +54,17 @@ use crate::{
 // tokio::join! uses unsafe code internally.
 // This is no problem since our constructor does not enforce any invariants relevant to the unsafe code. Deserialize is even the primary way of constructing `StorageProfile` since it is received via REST.
 pub enum StorageProfile {
-    /// Azure storage profile
+    /// Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
+    /// any storage account.
     #[serde(rename = "adls", alias = "azdls")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileAdls"))]
-    Adls(AdlsProfile),
+    Adls(GenericAdlsProfile),
+    /// Microsoft Fabric / `OneLake` profile. Knows how to construct `OneLake`
+    /// URLs from workspace + lakehouse IDs and how to derive the
+    /// workspace-private-link endpoint host.
+    #[serde(rename = "fabric")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileFabricAdls"))]
+    FabricAdls(FabricAdlsProfile),
     /// S3 storage profile
     #[serde(rename = "s3")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileS3"))]
@@ -72,7 +79,8 @@ pub enum StorageProfile {
 /// Storage profile for a warehouse.
 #[derive(Debug, Hash, Copy, Clone, Eq, PartialEq, derive_more::From)]
 enum StorageProfileBorrowed<'a> {
-    Adls(&'a AdlsProfile),
+    Adls(&'a GenericAdlsProfile),
+    FabricAdls(&'a FabricAdlsProfile),
     S3(&'a S3Profile),
     Gcs(&'a GcsProfile),
     #[cfg(feature = "test-utils")]
@@ -138,6 +146,7 @@ impl StorageProfile {
                 profile.generate_catalog_config(warehouse_id, request_metadata, delete_profile)
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
+            StorageProfile::FabricAdls(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => CatalogConfig {
@@ -161,6 +170,10 @@ impl StorageProfile {
             (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
+            (
+                StorageProfile::FabricAdls(this_profile),
+                StorageProfile::FabricAdls(other_profile),
+            ) => this_profile.update_with(other_profile).map(Into::into),
             (StorageProfile::Gcs(this_profile), StorageProfile::Gcs(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
@@ -202,6 +215,15 @@ impl StorageProfile {
                 )
                 .await
                 .map(Into::into),
+            StorageProfile::FabricAdls(profile) => profile
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_az())
+                        .ok_or_else(|| CredentialsError::MissingCredential("fabric".to_string()))?
+                        .map_err(CredentialsError::from)?,
+                )
+                .await
+                .map(Into::into),
             StorageProfile::Gcs(prof) => prof
                 .lakekeeper_io(
                     secret
@@ -226,6 +248,7 @@ impl StorageProfile {
         match self {
             StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
             StorageProfile::Adls(profile) => profile.base_location(),
+            StorageProfile::FabricAdls(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
@@ -260,6 +283,7 @@ impl StorageProfile {
         match self {
             StorageProfile::S3(_) => "s3",
             StorageProfile::Adls(_) => "adls",
+            StorageProfile::FabricAdls(_) => "fabric",
             StorageProfile::Gcs(_) => "gcs",
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => "memory",
@@ -308,6 +332,22 @@ impl StorageProfile {
                         data_access,
                         secret
                             .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
+                            .try_to_az()
+                            .map_err(CredentialsError::from)?,
+                        stc_request,
+                        tabular_info,
+                        request_metadata,
+                    )
+                    .await
+            }
+            StorageProfile::FabricAdls(profile) => {
+                profile
+                    .generate_table_config(
+                        data_access,
+                        secret
+                            .ok_or_else(|| {
+                                CredentialsError::MissingCredential("fabric".to_string())
+                            })?
                             .try_to_az()
                             .map_err(CredentialsError::from)?,
                         stc_request,
@@ -372,6 +412,12 @@ impl StorageProfile {
                     .map_err(CredentialsError::from)?,
             ),
             StorageProfile::Adls(prof) => prof.normalize(),
+            StorageProfile::FabricAdls(prof) => prof.normalize(
+                credential
+                    .map(|s| s.try_to_az())
+                    .transpose()
+                    .map_err(CredentialsError::from)?,
+            ),
             StorageProfile::Gcs(profile) => profile.normalize(),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
@@ -417,6 +463,7 @@ impl StorageProfile {
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
             StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::FabricAdls(profile) => profile.sas_enabled,
             StorageProfile::Gcs(profile) => profile.sts_enabled,
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
@@ -533,7 +580,15 @@ impl StorageProfile {
             }
             StorageProfile::Adls(profile) => {
                 tracing::debug!("Building ADLS storage from vended credentials.");
-                az::lakekeeper_io_from_vended_table_config(profile, &tbl_config.config)
+                profile
+                    .lakekeeper_io_from_vended_table_config(&tbl_config.config)
+                    .await?
+                    .into()
+            }
+            StorageProfile::FabricAdls(profile) => {
+                tracing::debug!("Building Fabric/`OneLake` storage from vended credentials.");
+                profile
+                    .lakekeeper_io_from_vended_table_config(&tbl_config.config)
                     .await?
                     .into()
             }
@@ -697,16 +752,30 @@ impl StorageProfile {
         }
     }
 
-    /// Try to convert the storage profile into an Az profile.
+    /// Try to convert the storage profile into a generic ADLS profile.
     ///
     /// # Errors
-    /// Fails if the profile is not an Az profile.
-    pub fn try_into_az(self) -> Result<AdlsProfile, UnexpectedStorageType> {
+    /// Fails if the profile is not a generic ADLS profile.
+    pub fn try_into_generic_adls(self) -> Result<GenericAdlsProfile, UnexpectedStorageType> {
         match self {
             Self::Adls(profile) => Ok(profile),
             _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
                 to: "adls",
+            }),
+        }
+    }
+
+    /// Try to convert the storage profile into a Fabric ADLS profile.
+    ///
+    /// # Errors
+    /// Fails if the profile is not a Fabric ADLS profile.
+    pub fn try_into_fabric_adls(self) -> Result<FabricAdlsProfile, UnexpectedStorageType> {
+        match self {
+            Self::FabricAdls(profile) => Ok(profile),
+            _ => Err(UnexpectedStorageType {
+                is: self.storage_type(),
+                to: "fabric",
             }),
         }
     }
@@ -721,6 +790,9 @@ impl StorageProfile {
                 profile.is_overlapping_location(other_profile)
             }
             (StorageProfile::Adls(profile), StorageProfile::Adls(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
+            (StorageProfile::FabricAdls(profile), StorageProfile::FabricAdls(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
             (StorageProfile::Gcs(profile), StorageProfile::Gcs(other_profile)) => {
@@ -761,6 +833,15 @@ impl StorageProfile {
             if other_scheme != base_location.scheme() {
                 base_location.set_scheme_unchecked_mut(other_scheme);
             }
+        }
+
+        if let StorageProfile::FabricAdls(profile) = self {
+            let other_scheme = other.scheme();
+            if !profile.is_allowed_schema(other_scheme) {
+                tracing::debug!("Scheme {other_scheme} is not allowed for Fabric ADLS profile.",);
+                return false;
+            }
+            // Base location is always `abfss://` for Fabric; no scheme rewrite needed.
         }
 
         base_location.with_trailing_slash();
@@ -832,6 +913,7 @@ impl StorageProfile {
         match self {
             StorageProfile::S3(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Adls(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::FabricAdls(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Gcs(profile) => profile.storage_layout.as_ref(),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(profile) => profile.storage_layout.as_ref(),
@@ -1294,7 +1376,7 @@ mod tests {
 
     #[test]
     fn test_is_allowed_location_wasbs() {
-        let profile = StorageProfile::Adls(AdlsProfile {
+        let profile = StorageProfile::Adls(GenericAdlsProfile {
             filesystem: "filesystem".to_string(),
             key_prefix: Some("test_prefix".to_string()),
             account_name: "account".to_string(),
@@ -1349,6 +1431,20 @@ mod tests {
                 test_profile_vended_creds(&cred, &mut profile).await;
                 test_profile_io(&cred, &mut profile).await;
             }
+        }
+    }
+
+    mod fabric_integration_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_vended_fabric() {
+            let cred: StorageCredential =
+                super::az::test::fabric_integration_tests::client_creds().into();
+            let mut profile: StorageProfile =
+                az::test::fabric_integration_tests::fabric_profile().into();
+            test_profile_vended_creds(&cred, &mut profile).await;
+            test_profile_io(&cred, &mut profile).await;
         }
     }
 
@@ -1555,11 +1651,21 @@ mod tests {
             .unwrap();
         let (downscoped1, downscoped2): (StorageBackend, StorageBackend) = match profile {
             StorageProfile::Adls(p) => (
-                az::lakekeeper_io_from_vended_table_config(p, &config1.config)
+                p.lakekeeper_io_from_vended_table_config(&config1.config)
                     .await
                     .unwrap()
                     .into(),
-                az::lakekeeper_io_from_vended_table_config(p, &config2.config)
+                p.lakekeeper_io_from_vended_table_config(&config2.config)
+                    .await
+                    .unwrap()
+                    .into(),
+            ),
+            StorageProfile::FabricAdls(p) => (
+                p.lakekeeper_io_from_vended_table_config(&config1.config)
+                    .await
+                    .unwrap()
+                    .into(),
+                p.lakekeeper_io_from_vended_table_config(&config2.config)
                     .await
                     .unwrap()
                     .into(),
