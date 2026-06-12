@@ -9,9 +9,10 @@ use crate::{
         CatalogBackendError, CatalogGetWarehouseByIdError, DatabaseIntegrityError,
         ResolvedWarehouse, WarehouseIdNotFound,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogWarehouseAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogAction, CatalogWarehouseAction, IsAllowedActionError,
+            MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -295,7 +296,7 @@ pub trait AuthzWarehouseOps: Authorizer {
         let result = self
             .are_allowed_warehouse_actions_vec(metadata, for_user, warehouses_with_actions)
             .await?
-            .into_inner();
+            .into_allowed();
         let n_returned = result.len();
         let arr: [bool; N] = result
             .try_into()
@@ -310,13 +311,16 @@ pub trait AuthzWarehouseOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
 
         if metadata.bypasses_control_plane_authz(for_user) {
-            Ok(vec![true; warehouses_with_actions.len()])
+            Ok(vec![
+                AuthorizationDecision::allow();
+                warehouses_with_actions.len()
+            ])
         } else {
             let converted: Vec<(&ResolvedWarehouse, Self::WarehouseAction)> =
                 warehouses_with_actions

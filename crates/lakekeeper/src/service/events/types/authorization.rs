@@ -5,7 +5,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use crate::{
     api::RequestMetadata,
     service::{
-        authz::{ActionDescriptor, UserOrRoleId},
+        authz::{ActionDescriptor, DeterminingFactor, UserOrRoleId},
         events::context::{EntityDescriptor, EventEntities},
     },
 };
@@ -34,6 +34,11 @@ pub struct Authorization {
     /// upstream error prevented this entry from producing a decision (e.g. a
     /// batch failed before the inner tuples were evaluated).
     pub allowed: Option<bool>,
+    /// Policies or rules that determined this decision. Empty when the
+    /// authorizer produces no per-decision diagnostics (`AllowAll`, OpenFGA),
+    /// for a default-deny where no policy matched, or for synthesised entries
+    /// whose call site did not capture a trace.
+    pub determined_by: Vec<DeterminingFactor>,
 }
 
 /// Trait for extracting failure reason from authorization errors

@@ -1293,6 +1293,7 @@ fn synthesise_authorizations(
                 action: action.clone(),
                 entity: entity.clone(),
                 allowed,
+                determined_by: Vec::new(),
             });
         }
     }
@@ -1316,6 +1317,7 @@ fn synthesise_authorizations(
                 .cloned()
                 .unwrap_or_else(|| EntityDescriptor::new("unknown")),
             allowed,
+            determined_by: Vec::new(),
         });
     }
     out
