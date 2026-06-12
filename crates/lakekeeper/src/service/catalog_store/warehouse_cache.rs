@@ -109,7 +109,18 @@ pub struct CachedWarehouse {
 async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
     if CONFIG.cache.warehouse.enabled {
         tracing::debug!("Invalidating warehouse id {warehouse_id} from cache");
-        WAREHOUSE_CACHE.invalidate(&warehouse_id).await;
+        // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
+        // `invalidate()`: the version-gate fences stale *updates* but not *deletes*
+        // (a delete leaves no entry to compare), so a bare invalidate racing an
+        // in-flight by-id load lets the loader re-`Put` the deleted warehouse until
+        // TTL. `Op::Remove` shares the loader's lock and still fires the eviction
+        // listener (Explicit), preserving the NAME_TO_ID_CACHE cascade. Closes the
+        // by-id path only; the by-name prime path keeps the residual — see
+        // `secondary_index_get_or_load`.
+        WAREHOUSE_CACHE
+            .entry(warehouse_id)
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
         update_cache_size_metric();
     }
 }
