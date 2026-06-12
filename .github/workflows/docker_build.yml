@@ -36,6 +36,15 @@ jobs:
       - name: Docker info
         run: docker info
 
+      # The full image build (Rust compile + image layers + the `docker save`
+      # tar) can exhaust the ~14 GB free on hosted runners, failing with
+      # "no space left on device". Reclaim preinstalled toolchains we don't use.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          docker-images: false # we build and save Docker images in this job
+          large-packages: false # apt purge is slow; the toolchain dirs free enough
+
       - name: Build Docker image (${{ inputs.platform }})
         run: |
           DOCKER_BUILDKIT=1 docker build --build-arg NO_CHEF=true -t localhost/${{ inputs.image_name }}:${{ inputs.platform }} \
