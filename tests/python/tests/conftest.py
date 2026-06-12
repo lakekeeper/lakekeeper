@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     azure_storage_account_name: Optional[str] = None
     azure_storage_filesystem: Optional[str] = None
     azure_allow_alternative_protocols: Optional[bool] = None
+    fabric_workspace_id: Optional[str] = None
+    fabric_lakehouse_id: Optional[str] = None
+    fabric_region: Optional[str] = None
+    # Comma-separated subset of `default,regional,private-link`. Each listed
+    # mode fans out into its own `storage_config` parametrization. `regional`
+    # additionally requires `LAKEKEEPER_TEST__FABRIC_REGION`. `private-link`
+    # requires the caller to have a Fabric workspace-private-link endpoint
+    # provisioned and reachable from the test runner.
+    fabric_endpoint_mode: Optional[str] = "default"
     gcs_credential: Optional[Secret] = None
     gcs_bucket: Optional[str] = None
     openid_provider_uri: Optional[str] = None
@@ -115,6 +124,29 @@ if (
 
 if settings.azure_client_id is not None:
     STORAGE_CONFIGS.append({"type": "azure"})
+
+# Fan out one storage_config entry per requested Fabric endpoint mode. A Fabric
+# warehouse is identified by workspace+lakehouse; client creds come from the
+# generic AZURE_* env vars (same Entra app reg in practice). `regional` mode
+# also requires LAKEKEEPER_TEST__FABRIC_REGION.
+if (
+    settings.fabric_workspace_id is not None
+    and settings.fabric_lakehouse_id is not None
+    and settings.azure_client_id is not None
+):
+    _modes = {
+        m.strip()
+        for m in (settings.fabric_endpoint_mode or "default").split(",")
+        if m.strip()
+    }
+    _unknown = _modes - {"default", "regional", "private-link"}
+    if _unknown:
+        raise ValueError(
+            f"Invalid LAKEKEEPER_TEST__FABRIC_ENDPOINT_MODE entries: {sorted(_unknown)}. "
+            "Must be a comma-separated subset of 'default,regional,private-link'."
+        )
+    for _mode in sorted(_modes):
+        STORAGE_CONFIGS.append({"type": "fabric", "endpoint-mode": _mode})
 
 if settings.gcs_credential is not None:
     STORAGE_CONFIGS.append({"type": "gcs"})
@@ -265,6 +297,54 @@ def storage_config(request) -> dict:
                 "tenant-id": settings.azure_tenant_id,
             },
         }
+    elif request.param["type"] == "fabric":
+        if not settings.fabric_workspace_id:
+            pytest.skip("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID is not set")
+        if not settings.fabric_lakehouse_id:
+            pytest.skip("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID is not set")
+        if not settings.azure_client_id:
+            pytest.skip("LAKEKEEPER_TEST__AZURE_CLIENT_ID is not set")
+
+        endpoint_mode = request.param["endpoint-mode"]
+        if endpoint_mode == "default":
+            endpoint_mode_json: dict = {"type": "default"}
+        elif endpoint_mode == "regional":
+            if not settings.fabric_region:
+                pytest.skip(
+                    "LAKEKEEPER_TEST__FABRIC_REGION is not set "
+                    "(required for endpoint-mode=regional)"
+                )
+            endpoint_mode_json = {
+                "type": "regional",
+                "region": settings.fabric_region,
+            }
+        elif endpoint_mode == "private-link":
+            # The caller is responsible for having provisioned a Fabric
+            # workspace-private-link endpoint reachable from this runner.
+            # Connection failures here aren't a test bug — they're an
+            # infra-setup gap.
+            endpoint_mode_json = {"type": "private-link"}
+        else:
+            raise ValueError(f"Unknown fabric endpoint-mode: {endpoint_mode}")
+
+        return {
+            "storage-profile": {
+                "type": "fabric",
+                "workspace-id": settings.fabric_workspace_id,
+                "lakehouse-id": settings.fabric_lakehouse_id,
+                "directory-rel-path": test_id,
+                "endpoint-mode": endpoint_mode_json,
+                "sas-token-validity-seconds": 60,
+                "layout": layout,
+            },
+            "storage-credential": {
+                "type": "az",
+                "credential-type": "client-credentials",
+                "client-id": settings.azure_client_id,
+                "client-secret": settings.azure_client_secret,
+                "tenant-id": settings.azure_tenant_id,
+            },
+        }
     elif request.param["type"] == "gcs":
         if settings.gcs_bucket is None or settings.gcs_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__GCS_BUCKET is not set")
@@ -320,6 +400,39 @@ def io_fsspec(storage_config: dict):
             client_id=storage_config["storage-credential"]["client-id"],
             client_secret=storage_config["storage-credential"]["client-secret"],
         )
+        return fs
+    if storage_config["storage-profile"]["type"] == "fabric":
+        endpoint_mode = storage_config["storage-profile"]["endpoint-mode"]
+        mode_type = endpoint_mode["type"]
+        if mode_type == "private-link":
+            # adlfs would need DNS resolution for
+            # `<wsid>.z<xy>.dfs.fabric.microsoft.com` from inside the test
+            # runner. We can't guarantee that — skip tests that need direct
+            # fsspec read-back when the warehouse is on a private endpoint.
+            pytest.skip(
+                "io_fsspec read-back is skipped for Fabric private-link "
+                "warehouses (caller-provisioned infra not assumed)"
+            )
+
+        workspace_id = storage_config["storage-profile"]["workspace-id"]
+        if mode_type == "default":
+            account_name = "onelake"
+        elif mode_type == "regional":
+            account_name = f"{endpoint_mode['region']}-onelake"
+        else:
+            raise ValueError(f"Unknown Fabric endpoint-mode for fsspec: {mode_type}")
+
+        fs = fsspec.filesystem(
+            "abfs",
+            account_name=account_name,
+            account_host=f"{account_name}.dfs.fabric.microsoft.com",
+            tenant_id=storage_config["storage-credential"]["tenant-id"],
+            client_id=storage_config["storage-credential"]["client-id"],
+            client_secret=storage_config["storage-credential"]["client-secret"],
+        )
+        # OneLake uses the workspace UUID where ADLS uses the container name —
+        # tests that interact with fsspec should construct paths via the
+        # storage profile's `workspace-id`, not by hardcoding container names.
         return fs
 
 

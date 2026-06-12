@@ -13,8 +13,9 @@ use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
     CatalogCreateWarehouseRequest, ManagedBy, WarehouseStatus,
     storage::{
-        AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
-        S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
+        AzCredential, FabricAdlsProfile, GcsCredential, GcsProfile, GcsServiceKey,
+        GenericAdlsProfile, S3Credential, S3Profile, StorageCredential, StorageCredentialType,
+        StorageProfile,
     },
 };
 use crate::{

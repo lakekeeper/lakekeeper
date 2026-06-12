@@ -6,7 +6,9 @@ Currently, we support the following storages:
 
 - S3 (tested with AWS & Minio)
 - Azure Data Lake Storage Gen 2
+- Microsoft Fabric / OneLake
 - Google Cloud Storage (with and without Hierarchical Namespaces)
+
 When creating a Warehouse or updating storage information, Lakekeeper validates the configuration.
 
 By default, Lakekeeper Warehouses enforce specific URI schemas for tables and views to ensure compatibility with most query engines:
@@ -657,6 +659,86 @@ LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true
 ```
 
 When enabled, Lakekeeper will use the managed identity of the virtual machine or application it is running on to access ADLS. Ensure that the managed identity has the necessary permissions to access the storage account and container. For example, assign the `Storage Blob Data Contributor` and `Storage Blob Delegator` roles to the managed identity for the relevant storage account as described above.
+
+
+## Microsoft Fabric / OneLake
+
+Microsoft Fabric exposes its OneLake data lake through ADLS Gen2-compatible APIs, so Lakekeeper can back warehouses directly with a Fabric lakehouse using a dedicated `fabric` storage profile. The Fabric profile is a convenience layer over the generic ADLS profile: instead of asking you to encode the OneLake URL conventions yourself (`account_name = "onelake"`, container = workspace ID, key prefix = `<lakehouse>/Files/<dir>`), it derives those from the workspace and lakehouse UUIDs you provide. It also knows how to compute the workspace-scoped private-link endpoint host.
+
+!!! note
+    The generic `adls` profile also works against OneLake if you set the fields manually (`account-name: "onelake"`, `host: "dfs.fabric.microsoft.com"`, `filesystem: <workspace-id>`, `key-prefix: <lakehouse-id>/Files/<dir>`). The `fabric` profile is the recommended path because it validates the OneLake-specific constraints (SAS lifetime cap, supported credentials, endpoint shapes) for you and computes private-link FQDNs automatically.
+
+### Configuration Parameters
+
+| Parameter                      | Type    | Required | Default                             | Description |
+|--------------------------------|---------|----------|-------------------------------------|-------------|
+| `workspace-id`                 | UUID    | Yes      | -                                   | UUID of the Fabric workspace this warehouse lives in. |
+| `lakehouse-id`                 | UUID    | Yes      | -                                   | UUID of the lakehouse within the workspace. |
+| `directory-rel-path`           | String  | Yes      | -                                   | Subpath beneath `<top-level-folder>/` inside the lakehouse — the root directory under which Lakekeeper writes all warehouse data. |
+| `top-level-folder`             | String  | No       | `"Files"`                           | Top-level managed folder. Either `"Files"` (recommended, Iceberg-managed data area) or `"Tables"`. Writing Iceberg metadata under `Tables/` conflicts with Fabric's automatic Delta/Iceberg virtualization — choose only with care. |
+| `endpoint-mode`                | Object  | No       | `{"type": "default"}`               | OneLake endpoint selection. See [Endpoint modes](#endpoint-modes) below. |
+| `sas-enabled`                  | Boolean | No       | `true`                              | Enable SAS-token vending. Disable to force clients to use their own credentials. |
+| `sas-token-validity-seconds`   | Integer | No       | `3600`                              | SAS-token validity in seconds. **Max: 3600 (OneLake hard cap).** Lakekeeper rejects values above 3600 and 0; values below 60 are accepted with a warning and floored at mint time. |
+| `authority-host`               | URL     | No       | `https://login.microsoftonline.com` | Microsoft Entra authority host. |
+| `storage-layout`               | Object  | No       | `{"type": "default"}`               | See [Storage Layout](#storage-layout). |
+
+### Endpoint modes
+
+OneLake exposes three DFS endpoint shapes; the `endpoint-mode` field picks one.
+
+| Type         | JSON                                          | Resulting host                                                          |
+|--------------|-----------------------------------------------|-------------------------------------------------------------------------|
+| Default      | `{"type": "default"}`                         | `onelake.dfs.fabric.microsoft.com`                                      |
+| Regional     | `{"type": "regional", "region": "westus"}`    | `westus-onelake.dfs.fabric.microsoft.com`                               |
+| Private link | `{"type": "private-link"}`                    | `<workspace-id-no-dashes>.z<xy>.dfs.fabric.microsoft.com` (host derived from `workspace-id` automatically; `<xy>` is the first two hex characters of the un-dashed workspace UUID) |
+
+Use `regional` when data residency requires the request to stay within a specific Azure region. Use `private-link` when the workspace is fronted by an Azure Private Link service.
+
+### Credentials
+
+OneLake does not have a storage-account key. Only Microsoft Entra credentials are accepted:
+
+* `client-credentials` (service principal): the standard option.
+* `azure-system-identity` (managed identity): if `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true` is set server-wide.
+
+Supplying `shared-access-key` to a Fabric warehouse is rejected at validation time.
+
+The OneLake tenant setting **"Authenticate with OneLake user-delegated SAS tokens"** must be enabled for the workspace before vended credentials work. This is a Fabric-side setting and cannot be configured from Lakekeeper.
+
+### Example
+
+A POST request to `/management/v1/warehouse` to create a Fabric-backed warehouse:
+
+```json
+{
+  "warehouse-name": "fabric_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential": {
+    "type": "az",
+    "credential-type": "client-credentials",
+    "client-id": "...",
+    "client-secret": "...",
+    "tenant-id": "..."
+  },
+  "storage-profile": {
+    "type": "fabric",
+    "workspace-id": "0388d6cb-27fd-4dc5-948b-32ab7aab9577",
+    "lakehouse-id": "eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac",
+    "directory-rel-path": "my_warehouse",
+    "endpoint-mode": { "type": "default" }
+  }
+}
+```
+
+This produces the abfss base location:
+
+```
+abfss://0388d6cb-27fd-4dc5-948b-32ab7aab9577@onelake.dfs.fabric.microsoft.com/eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac/Files/my_warehouse/
+```
+
+### Immutability
+
+Most fields are immutable on `update-storage-profile` because changing them would orphan every table previously written to the warehouse: `workspace-id`, `lakehouse-id`, `top-level-folder`, `directory-rel-path`, and `endpoint-mode`. The following fields can be updated: `sas-token-validity-seconds`, `sas-enabled`, `authority-host`, `storage-layout`.
 
 
 ## Google Cloud Storage

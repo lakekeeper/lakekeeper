@@ -4339,6 +4339,16 @@ components:
             $ref: '#/components/schemas/RoleMemberRef'
     AdlsProfile:
       type: object
+      description: |-
+        Storage profile for a generic Azure Data Lake Storage Gen2 account.
+
+        This profile speaks ADLS Gen2 against any storage account (including
+        Microsoft Fabric / `OneLake`, if you configure `account_name = "onelake"`,
+        `host = "dfs.fabric.microsoft.com"`, and a `key_prefix` like
+        `<lakehouse>/Files/<sub>`). Lakekeeper offers `FabricAdlsProfile` as a
+        convenience layer that knows how to compute those values from
+        workspace + lakehouse IDs and that supports `OneLake`'s private-link endpoint
+        pattern.
       required:
         - filesystem
         - account-name
@@ -4382,7 +4392,7 @@ components:
             - integer
             - 'null'
           format: int64
-          description: 'The validity of the sas token in seconds. Default: 3600.'
+          description: 'The validity of the sas token in seconds. Default: 3600. Max: 7 days.'
           minimum: 0
         storage-layout:
           oneOf:
@@ -5028,6 +5038,53 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    EndpointMode:
+      oneOf:
+        - type: object
+          description: Use the global `OneLake` endpoint `onelake.dfs.fabric.microsoft.com`. Default.
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - default
+        - type: object
+          description: |-
+            Use a region-pinned endpoint `<region>-onelake.dfs.fabric.microsoft.com`.
+            Use this when data residency requires the request to stay within a
+            specific Azure region.
+          required:
+            - region
+            - type
+          properties:
+            region:
+              type: string
+              description: |-
+                Azure region slug, e.g. `westus`, `centralus`, `northeurope`.
+                Trimmed and lowercased at validation time, then pattern-checked to
+                match the Azure region-slug shape (lowercase ASCII letter followed
+                by lowercase letters or digits) so a stray `.` or `-` can't smuggle
+                an extra host segment into the resolved DFS host. An unknown but
+                well-shaped slug still surfaces as a DNS-resolution failure at
+                access time. See `normalize_endpoint_mode` for the exact rule.
+            type:
+              type: string
+              enum:
+                - regional
+        - type: object
+          description: |-
+            Use a workspace-scoped private-link endpoint
+            `<workspaceId>.z<xy>.dfs.fabric.microsoft.com`. The host is computed
+            from the workspace ID at runtime; users only opt in via this variant.
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - private-link
+      description: How Lakekeeper connects to the `OneLake` DFS endpoint.
     EndpointStatistic:
       type: object
       required:
@@ -5158,6 +5215,63 @@ components:
         type:
           type: string
           description: Internal type definition of the error
+    FabricAdlsProfile:
+      type: object
+      description: |-
+        Storage profile for a Microsoft Fabric / `OneLake` lakehouse.
+
+        Convenience wrapper around the ADLS Gen2 surface that derives the
+        account name (`onelake`), container (workspace ID), key prefix
+        (`<lakehouse>/Files/<sub>`), and endpoint host from the supplied workspace
+        and lakehouse UUIDs and endpoint mode.
+      required:
+        - workspace-id
+        - lakehouse-id
+      properties:
+        authority-host:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            The authority host to use for authentication.
+            Default: `https://login.microsoftonline.com`.
+        directory-rel-path:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Subpath beneath `<top-level-folder>/` inside the lakehouse — the root
+            directory under which Lakekeeper writes all warehouse data.
+        endpoint-mode:
+          $ref: '#/components/schemas/EndpointMode'
+          description: Endpoint connection mode. Defaults to the global endpoint.
+        lakehouse-id:
+          type: string
+          format: uuid
+          description: UUID of the lakehouse within the workspace.
+        sas-enabled:
+          type: boolean
+          description: Enable SAS-token generation. Defaults to true.
+        sas-token-validity-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: 'SAS-token validity in seconds. Default: 3600. Max: 3600 (`OneLake` cap).'
+          minimum: 0
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
+        top-level-folder:
+          $ref: '#/components/schemas/TopLevelFolder'
+          description: Top-level managed folder. Defaults to `Files`.
+        workspace-id:
+          type: string
+          format: uuid
+          description: UUID of the Fabric workspace this warehouse lives in.
     GcsCredential:
       oneOf:
         - type: object
@@ -8583,7 +8697,9 @@ components:
       oneOf:
         - allOf:
             - $ref: '#/components/schemas/AdlsProfile'
-              description: Azure storage profile
+              description: |-
+                Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
+                any storage account.
             - type: object
               required:
                 - type
@@ -8593,7 +8709,28 @@ components:
                   enum:
                     - adls
           title: StorageProfileAdls
-          description: Azure storage profile
+          description: |-
+            Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
+            any storage account.
+        - allOf:
+            - $ref: '#/components/schemas/FabricAdlsProfile'
+              description: |-
+                Microsoft Fabric / `OneLake` profile. Knows how to construct `OneLake`
+                URLs from workspace + lakehouse IDs and how to derive the
+                workspace-private-link endpoint host.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - fabric
+          title: StorageProfileFabricAdls
+          description: |-
+            Microsoft Fabric / `OneLake` profile. Knows how to construct `OneLake`
+            URLs from workspace + lakehouse IDs and how to derive the
+            workspace-private-link endpoint host.
         - allOf:
             - $ref: '#/components/schemas/S3Profile'
               description: S3 storage profile
@@ -8946,6 +9083,18 @@ components:
           example:
             type: page-token
             token: xyz
+    TopLevelFolder:
+      type: string
+      description: |-
+        Top-level managed folder within a Fabric lakehouse.
+
+        Fabric reserves `Files/` and `Tables/` as managed folders directly under
+        each lakehouse item. `Files/` is the default for Lakekeeper-managed Iceberg
+        tables; `Tables/` is supported for completeness but writing Iceberg metadata
+        there conflicts with Fabric's automatic Delta/Iceberg virtualization.
+      enum:
+        - Files
+        - Tables
     UndropTabularsRequest:
       type: object
       required:
