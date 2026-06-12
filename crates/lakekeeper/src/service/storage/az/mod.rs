@@ -646,6 +646,76 @@ pub(crate) mod test {
         ));
     }
 
+    /// Regression test for the `OneLake` SAS canonical-resource bug that
+    /// produced `401 Authentication Failed with Access token validation failed`
+    /// on regional and private-link Fabric warehouses. The Fabric SAS canonical
+    /// resource is always `/blob/onelake/<workspace>/...`, never the
+    /// regional/private-link DNS label — see
+    /// <https://learn.microsoft.com/en-us/fabric/onelake/how-to-create-a-onelake-shared-access-signature>.
+    #[test]
+    fn test_canonical_resource_for_fabric_regional_uses_global_onelake_account() {
+        use std::str::FromStr;
+
+        use lakekeeper_io::Location;
+
+        use crate::{
+            WarehouseId,
+            service::{
+                TableId, TabularId,
+                storage::{ShortTermCredentialsRequest, StoragePermissions},
+            },
+        };
+
+        let stc = ShortTermCredentialsRequest {
+            table_location: Location::from_str(
+                "abfss://c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47@centralus-onelake.dfs.fabric.microsoft.com/lh/Files/test/",
+            )
+            .unwrap(),
+            storage_permissions: StoragePermissions::ReadWrite,
+            warehouse_id: WarehouseId::new_random(),
+            tabular_id: TabularId::Table(TableId::new_random()),
+        };
+        let (canonical, depth) =
+            canonical_resource("onelake", "c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47", &stc).unwrap();
+        assert_eq!(
+            canonical,
+            "/blob/onelake/c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47/lh/Files/test"
+        );
+        // Depth = number of segments in the rootless path `/lh/Files/test` → 3.
+        assert_eq!(depth, 3);
+    }
+
+    #[test]
+    fn test_canonical_resource_for_fabric_private_link_uses_global_onelake_account() {
+        use std::str::FromStr;
+
+        use lakekeeper_io::Location;
+
+        use crate::{
+            WarehouseId,
+            service::{
+                TableId, TabularId,
+                storage::{ShortTermCredentialsRequest, StoragePermissions},
+            },
+        };
+
+        let stc = ShortTermCredentialsRequest {
+            table_location: Location::from_str(
+                "abfss://c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47@c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com/lh/Files/test/",
+            )
+            .unwrap(),
+            storage_permissions: StoragePermissions::ReadWrite,
+            warehouse_id: WarehouseId::new_random(),
+            tabular_id: TabularId::Table(TableId::new_random()),
+        };
+        let (canonical, _depth) =
+            canonical_resource("onelake", "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47", &stc).unwrap();
+        assert!(
+            canonical.starts_with("/blob/onelake/c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47/"),
+            "canonical = {canonical}",
+        );
+    }
+
     pub(crate) mod azure_integration_tests {
         use crate::{
             api::RequestMetadata,
@@ -737,6 +807,25 @@ pub(crate) mod test {
         }
     }
 
+    /// Live Microsoft Fabric / `OneLake` integration tests.
+    ///
+    /// Default-ignored (`#[ignore]`) — opt in with `cargo test -- --ignored`
+    /// or `cargo nextest run --run-ignored=all`. The nextest `default` and
+    /// `ci_no_secrets` profiles also filter this module out by name; either
+    /// gate alone is sufficient, both are kept for parallelism with the other
+    /// secret-requiring integration test modules.
+    ///
+    /// # Required env vars
+    /// - `LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID` — Fabric workspace UUID.
+    /// - `LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID` — lakehouse UUID inside that workspace.
+    /// - `LAKEKEEPER_TEST__FABRIC_CLIENT_ID` — Entra app client ID with rights on the workspace.
+    /// - `LAKEKEEPER_TEST__FABRIC_CLIENT_SECRET` — client secret for that app.
+    /// - `LAKEKEEPER_TEST__FABRIC_TENANT_ID` — Entra tenant ID.
+    ///
+    /// # Mode-specific
+    /// - `LAKEKEEPER_TEST__FABRIC_REGION` — Azure region slug
+    ///   (e.g. `centralus`, `westus`). Required by
+    ///   `test_can_validate_fabric_regional`; ignored otherwise.
     pub(crate) mod fabric_integration_tests {
         use uuid::Uuid;
 
@@ -753,7 +842,7 @@ pub(crate) mod test {
                 .expect("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID to be set");
             let lakehouse_id = std::env::var("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID")
                 .expect("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID to be set");
-            let directory_rel_path = format!("test-{}", uuid::Uuid::now_v7());
+            let directory_rel_path = Some(format!("test-{}", uuid::Uuid::now_v7()));
             FabricAdlsProfile {
                 workspace_id: Uuid::parse_str(&workspace_id)
                     .expect("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID is not a valid UUID"),
@@ -785,6 +874,7 @@ pub(crate) mod test {
         }
 
         #[tokio::test]
+        #[ignore = "live Fabric test; opt in with --ignored (see module docs)"]
         async fn test_can_validate_fabric() {
             let prof = fabric_profile();
             let cred = client_creds();
@@ -799,6 +889,36 @@ pub(crate) mod test {
             ))
             .await
             .unwrap_or_else(|e| panic!("Failed to validate Fabric profile due to '{e:?}'"));
+        }
+
+        /// End-to-end check that regional Fabric warehouses validate. This is
+        /// the live counterpart to the unit-level `canonical_resource` test:
+        /// it actually mints a user-delegation SAS against
+        /// `<region>-onelake.dfs.fabric.microsoft.com` and exercises the
+        /// vended-credential read/write/delete path that used to 401 when the
+        /// canonical resource was signed against the regional account.
+        #[tokio::test]
+        #[ignore = "live Fabric test; opt in with --ignored (see module docs). \
+                    Also requires LAKEKEEPER_TEST__FABRIC_REGION."]
+        async fn test_can_validate_fabric_regional() {
+            let region = std::env::var("LAKEKEEPER_TEST__FABRIC_REGION")
+                .expect("LAKEKEEPER_TEST__FABRIC_REGION to be set");
+            let mut prof = fabric_profile();
+            prof.endpoint_mode = EndpointMode::Regional { region };
+            let cred = client_creds();
+            let mut prof: StorageProfile = prof.into();
+            prof.normalize(Some(&cred.clone().into()))
+                .expect("failed to validate profile");
+            let cred: StorageCredential = cred.into();
+            Box::pin(prof.validate_access(
+                Some(&cred),
+                None,
+                &RequestMetadata::new_unauthenticated(),
+            ))
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to validate regional Fabric profile due to '{e:?}'")
+            });
         }
     }
 

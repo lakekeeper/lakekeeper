@@ -23,7 +23,8 @@ mod adls_storage;
 
 pub use adls_location::{
     AdlsLocation, InvalidADLSAccountName, InvalidADLSFilesystemName, InvalidADLSHost,
-    InvalidADLSPathSegment, normalize_host, validate_account_name, validate_filesystem_name,
+    InvalidADLSPathSegment, normalize_host, validate_adls_host_account, validate_filesystem_name,
+    validate_storage_account_name,
 };
 pub use adls_storage::AdlsStorage;
 

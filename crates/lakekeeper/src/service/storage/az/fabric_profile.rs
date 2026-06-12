@@ -72,9 +72,13 @@ pub enum EndpointMode {
     /// Use this when data residency requires the request to stay within a
     /// specific Azure region.
     Regional {
-        /// Azure region slug, e.g. `westus`, `northeurope`. Normalized to
-        /// lowercase at validation time; no further pattern check (Azure will
-        /// fail DNS resolution if the slug doesn't exist).
+        /// Azure region slug, e.g. `westus`, `centralus`, `northeurope`.
+        /// Trimmed and lowercased at validation time, then pattern-checked to
+        /// match the Azure region-slug shape (lowercase ASCII letter followed
+        /// by lowercase letters or digits) so a stray `.` or `-` can't smuggle
+        /// an extra host segment into the resolved DFS host. An unknown but
+        /// well-shaped slug still surfaces as a DNS-resolution failure at
+        /// access time. See `normalize_endpoint_mode` for the exact rule.
         region: String,
     },
     /// Use a workspace-scoped private-link endpoint
@@ -100,7 +104,7 @@ pub struct FabricAdlsProfile {
     pub lakehouse_id: Uuid,
     /// Subpath beneath `<top-level-folder>/` inside the lakehouse — the root
     /// directory under which Lakekeeper writes all warehouse data.
-    pub directory_rel_path: String,
+    pub directory_rel_path: Option<String>,
     /// Top-level managed folder. Defaults to `Files`.
     #[serde(default)]
     pub top_level_folder: TopLevelFolder,
@@ -154,32 +158,35 @@ impl FabricAdlsProfile {
     }
 
     fn normalize_directory_rel_path(&mut self) -> Result<(), ValidationError> {
-        self.directory_rel_path = self.directory_rel_path.trim_matches('/').to_string();
-        if self.directory_rel_path.is_empty() {
-            return Err(InvalidProfileError {
-                source: None,
-                reason: "`directory-rel-path` must not be empty.".to_string(),
-                entity: "directory-rel-path".to_string(),
+        if let Some(mut directory_rel_path) = self.directory_rel_path.clone() {
+            directory_rel_path = directory_rel_path.trim_matches('/').to_string();
+            if directory_rel_path.is_empty() {
+                return Err(InvalidProfileError {
+                    source: None,
+                    reason: "`directory-rel-path` must not be empty if specified.".to_string(),
+                    entity: "directory-rel-path".to_string(),
+                }
+                .into());
             }
-            .into());
-        }
-        if self.directory_rel_path.split('/').any(|seg| seg == "..") {
-            return Err(InvalidProfileError {
-                source: None,
-                reason: "`directory-rel-path` must not contain `..` segments.".to_string(),
-                entity: "directory-rel-path".to_string(),
+            if directory_rel_path.split('/').any(|seg| seg == "..") {
+                return Err(InvalidProfileError {
+                    source: None,
+                    reason: "`directory-rel-path` must not contain `..` segments.".to_string(),
+                    entity: "directory-rel-path".to_string(),
+                }
+                .into());
             }
-            .into());
-        }
-        // Match the GenericAdlsProfile key-prefix budget so we leave room for
-        // table-level path segments under it.
-        if self.directory_rel_path.len() > 512 {
-            return Err(InvalidProfileError {
-                source: None,
-                reason: "`directory-rel-path` must be less than 512 characters.".to_string(),
-                entity: "directory-rel-path".to_string(),
+            // Match the GenericAdlsProfile key-prefix budget so we leave room for
+            // table-level path segments under it.
+            if directory_rel_path.len() > 512 {
+                return Err(InvalidProfileError {
+                    source: None,
+                    reason: "`directory-rel-path` must be less than 512 characters.".to_string(),
+                    entity: "directory-rel-path".to_string(),
+                }
+                .into());
             }
-            .into());
+            self.directory_rel_path = Some(directory_rel_path);
         }
         Ok(())
     }
@@ -188,14 +195,29 @@ impl FabricAdlsProfile {
         if let EndpointMode::Regional { region } = &mut self.endpoint_mode {
             // DNS is case-insensitive, but Azure region slugs are conventionally
             // lowercase. Lowercasing here keeps the stored profile canonical.
-            // We don't pattern-check the slug: any non-empty string we don't
-            // recognize will simply fail DNS resolution at access time, which
-            // surfaces a clearer error than a regex rejection here would.
             *region = region.trim().to_lowercase();
             if region.is_empty() {
                 return Err(InvalidProfileError {
                     source: None,
                     reason: "Regional endpoint requires a non-empty `region`.".to_string(),
+                    entity: "endpoint-mode.region".to_string(),
+                }
+                .into());
+            }
+            // Tightened to Azure-region-slug shape: start with a lowercase
+            // letter, then lowercase letters/digits. Rejects anything that
+            // could smuggle an extra host segment via `.` or `-`, which would
+            // otherwise let a user point `<region>-onelake.dfs.fabric...` at
+            // an arbitrary DNS subtree.
+            let mut chars = region.chars();
+            let leads_with_letter = chars.next().is_some_and(|c| c.is_ascii_lowercase());
+            let body_alnum = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+            if !leads_with_letter || !body_alnum {
+                return Err(InvalidProfileError {
+                    source: None,
+                    reason: "Regional endpoint `region` must be an Azure region slug \
+                         (lowercase ASCII letter followed by lowercase letters or digits)."
+                        .to_string(),
                     entity: "endpoint-mode.region".to_string(),
                 }
                 .into());
@@ -282,12 +304,30 @@ impl FabricAdlsProfile {
     /// - `Default` → `onelake`
     /// - `Regional{region}` → `<region>-onelake`
     /// - `PrivateLink` → un-dashed workspace UUID
-    fn account_name(&self) -> String {
+    ///
+    /// Distinct from [`Self::sas_account`], which is what we must sign SAS
+    /// canonical resources against — the latter is always the literal
+    /// `onelake`, regardless of which DNS host serves the request.
+    fn host_account(&self) -> String {
         match &self.endpoint_mode {
             EndpointMode::Default => "onelake".to_string(),
             EndpointMode::Regional { region } => format!("{region}-onelake"),
             EndpointMode::PrivateLink => self.workspace_id.simple().to_string(),
         }
+    }
+
+    /// The account name to embed in the SAS canonical resource.
+    ///
+    /// Per [Microsoft Learn](https://learn.microsoft.com/en-us/fabric/onelake/how-to-create-a-onelake-shared-access-signature),
+    /// the SAS canonical resource for `OneLake` is always
+    /// `/blob/onelake/<workspace>/...` — the *literal* string `onelake`,
+    /// regardless of whether the request hits the global, a regional, or a
+    /// workspace-private-link host. Using the regional or workspace-scoped
+    /// label here would mismatch the server's verifier and produce
+    /// `401 Access token validation failed`.
+    #[allow(clippy::unused_self)]
+    fn sas_account(&self) -> &'static str {
+        "onelake"
     }
 
     /// The endpoint suffix — everything after the first DNS label of the host.
@@ -311,7 +351,7 @@ impl FabricAdlsProfile {
 
     /// The full DFS host — `<account>.<endpoint_suffix>`.
     fn dfs_host(&self) -> String {
-        format!("{}.{}", self.account_name(), self.endpoint_suffix())
+        format!("{}.{}", self.host_account(), self.endpoint_suffix())
     }
 
     /// The container ("filesystem") portion of the abfss URL.
@@ -330,17 +370,25 @@ impl FabricAdlsProfile {
     /// The `key_prefix` portion of the abfss URL —
     /// `<lakehouse_id>/<top_level_folder>/<directory_rel_path>`.
     fn key_prefix(&self) -> String {
-        format!(
-            "{lakehouse}/{folder}/{path}",
-            lakehouse = self.lakehouse_id,
-            folder = self.top_level_folder.as_path_segment(),
-            path = self.directory_rel_path,
-        )
+        if let Some(ref directory_rel_path) = self.directory_rel_path {
+            format!(
+                "{lakehouse}/{folder}/{path}",
+                lakehouse = self.lakehouse_id,
+                folder = self.top_level_folder.as_path_segment(),
+                path = directory_rel_path,
+            )
+        } else {
+            format!(
+                "{lakehouse}/{folder}",
+                lakehouse = self.lakehouse_id,
+                folder = self.top_level_folder.as_path_segment()
+            )
+        }
     }
 
     fn cloud_location(&self) -> CloudLocation {
         CloudLocation::Custom {
-            account: self.account_name(),
+            account: self.host_account(),
             uri: format!("https://{}", self.dfs_host()),
         }
     }
@@ -419,11 +467,13 @@ impl FabricAdlsProfile {
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
         let settings = self.azure_settings();
         let filesystem = self.filesystem();
-        let account_name = self.account_name();
         generate_adls_table_config(AdlsTableConfigContext {
             cache_key,
             sas_mint: SasMintContext {
-                account_name: &account_name,
+                // SAS canonical resource for OneLake is always `/blob/onelake/...`,
+                // never the regional/private-link DNS label. Bug fix for `401
+                // Access token validation failed` on regional and PE warehouses.
+                account_name: self.sas_account(),
                 filesystem: &filesystem,
                 user_ttl: self.sas_token_validity_seconds,
                 settings: &settings,
@@ -446,11 +496,11 @@ impl FabricAdlsProfile {
     /// first DNS label of the URL host and `<endpoint_suffix>` is the rest.
     #[must_use]
     pub(super) fn iceberg_sas_property_key(&self) -> String {
-        iceberg_sas_property_key(&self.account_name(), &self.endpoint_suffix())
+        iceberg_sas_property_key(&self.host_account(), &self.endpoint_suffix())
     }
 
     fn iceberg_sas_expires_at_property_key(&self) -> String {
-        iceberg_expiration_property_key(&self.account_name(), &self.endpoint_suffix())
+        iceberg_expiration_property_key(&self.host_account(), &self.endpoint_suffix())
     }
 
     /// Two Fabric profiles overlap if they reference the same workspace +
@@ -467,8 +517,8 @@ impl FabricAdlsProfile {
             return false;
         }
         key_prefix_overlaps(
-            Some(self.directory_rel_path.as_str()),
-            Some(other.directory_rel_path.as_str()),
+            self.directory_rel_path.as_deref(),
+            other.directory_rel_path.as_deref(),
         )
     }
 }
@@ -477,14 +527,14 @@ impl FabricAdlsProfile {
 mod tests {
     use super::*;
 
-    const SAMPLE_WORKSPACE: &str = "0388d6cb-27fd-4dc5-948b-32ab7aab9577";
-    const SAMPLE_LAKEHOUSE: &str = "eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac";
+    const SAMPLE_WORKSPACE: &str = "c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47";
+    const SAMPLE_LAKEHOUSE: &str = "9d3e7a1b-4c6f-4a8e-b2d5-1f8c7e3a9b04";
 
     fn sample_profile() -> FabricAdlsProfile {
         FabricAdlsProfile {
             workspace_id: Uuid::parse_str(SAMPLE_WORKSPACE).unwrap(),
             lakehouse_id: Uuid::parse_str(SAMPLE_LAKEHOUSE).unwrap(),
-            directory_rel_path: "my_warehouse".to_string(),
+            directory_rel_path: Some("my_warehouse".to_string()),
             top_level_folder: TopLevelFolder::Files,
             endpoint_mode: EndpointMode::Default,
             sas_token_validity_seconds: None,
@@ -526,12 +576,12 @@ mod tests {
         let mut p = sample_profile();
         p.endpoint_mode = EndpointMode::PrivateLink;
         let loc = p.base_location().unwrap();
-        // Workspace UUID stripped of dashes = "0388d6cb27fd4dc5948b32ab7aab9577",
-        // first two chars = "03".
+        // Workspace UUID stripped of dashes = "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47",
+        // first two chars = "c5".
         assert_eq!(
             loc.to_string(),
             format!(
-                "abfss://0388d6cb27fd4dc5948b32ab7aab9577@0388d6cb27fd4dc5948b32ab7aab9577.z03.dfs.fabric.microsoft.com/{SAMPLE_LAKEHOUSE}/Files/my_warehouse/"
+                "abfss://c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47@c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com/{SAMPLE_LAKEHOUSE}/Files/my_warehouse/"
             )
         );
     }
@@ -588,14 +638,15 @@ mod tests {
         // account = un-dashed workspace UUID, host = "z<xy>.dfs.fabric.microsoft.com".
         assert_eq!(
             p.iceberg_sas_property_key(),
-            "adls.sas-token.0388d6cb27fd4dc5948b32ab7aab9577.z03.dfs.fabric.microsoft.com"
+            "adls.sas-token.c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com"
         );
     }
 
     #[test]
-    fn test_account_and_suffix_compose_to_dfs_host() {
-        // Internal invariant: `dfs_host()` must equal `<account>.<suffix>` so
-        // that base_location and the SAS property key stay consistent.
+    fn test_host_account_and_suffix_compose_to_dfs_host() {
+        // Internal invariant: `dfs_host()` must equal `<host_account>.<suffix>`
+        // so that base_location and the SAS property key stay consistent with
+        // what an Iceberg client sees on the wire.
         for mode in [
             EndpointMode::Default,
             EndpointMode::Regional {
@@ -609,8 +660,91 @@ mod tests {
             };
             assert_eq!(
                 p.dfs_host(),
-                format!("{}.{}", p.account_name(), p.endpoint_suffix())
+                format!("{}.{}", p.host_account(), p.endpoint_suffix())
             );
+        }
+    }
+
+    #[test]
+    fn test_host_account_per_endpoint_mode() {
+        let mut p = sample_profile();
+        assert_eq!(p.host_account(), "onelake");
+
+        p.endpoint_mode = EndpointMode::Regional {
+            region: "westus".to_string(),
+        };
+        assert_eq!(p.host_account(), "westus-onelake");
+
+        p.endpoint_mode = EndpointMode::PrivateLink;
+        assert_eq!(p.host_account(), "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47");
+    }
+
+    #[test]
+    fn test_sas_account_is_always_onelake() {
+        // Regression for `401 Access token validation failed`: the OneLake
+        // canonical SAS resource is always /blob/onelake/..., even when the
+        // request hits a regional or private-link host. `sas_account()` is
+        // the single point of truth that has to stay `onelake` across modes.
+        for mode in [
+            EndpointMode::Default,
+            EndpointMode::Regional {
+                region: "centralus".to_string(),
+            },
+            EndpointMode::PrivateLink,
+        ] {
+            let p = FabricAdlsProfile {
+                endpoint_mode: mode,
+                ..sample_profile()
+            };
+            assert_eq!(p.sas_account(), "onelake");
+        }
+    }
+
+    #[test]
+    fn test_normalize_rejects_region_with_dot() {
+        let mut p = sample_profile();
+        p.endpoint_mode = EndpointMode::Regional {
+            region: "east.us".to_string(),
+        };
+        let err = p.normalize(None).unwrap_err();
+        assert!(format!("{err:?}").contains("region"));
+    }
+
+    #[test]
+    fn test_normalize_rejects_region_with_hyphen() {
+        let mut p = sample_profile();
+        p.endpoint_mode = EndpointMode::Regional {
+            region: "east-us".to_string(),
+        };
+        let err = p.normalize(None).unwrap_err();
+        assert!(format!("{err:?}").contains("region"));
+    }
+
+    #[test]
+    fn test_normalize_rejects_region_starting_with_digit() {
+        let mut p = sample_profile();
+        p.endpoint_mode = EndpointMode::Regional {
+            region: "1eastus".to_string(),
+        };
+        let err = p.normalize(None).unwrap_err();
+        assert!(format!("{err:?}").contains("region"));
+    }
+
+    #[test]
+    fn test_normalize_accepts_alphanumeric_regions() {
+        for region in [
+            "centralus",
+            "eastus",
+            "westeurope",
+            "eastus2",
+            "eastus2euap",
+        ] {
+            let mut p = sample_profile();
+            p.endpoint_mode = EndpointMode::Regional {
+                region: region.to_string(),
+            };
+            p.normalize(None)
+                .unwrap_or_else(|e| panic!("region '{region}' should be accepted: {e:?}"));
         }
     }
 
@@ -659,17 +793,25 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_acceppts_none_directory_rel_path() {
+        let mut p = sample_profile();
+        p.directory_rel_path = None;
+        p.normalize(None).unwrap();
+        assert_eq!(p.directory_rel_path, None);
+    }
+
+    #[test]
     fn test_normalize_strips_directory_rel_path_slashes() {
         let mut p = sample_profile();
-        p.directory_rel_path = "/foo/bar/".to_string();
+        p.directory_rel_path = Some("/foo/bar/".to_string());
         p.normalize(None).unwrap();
-        assert_eq!(p.directory_rel_path, "foo/bar");
+        assert_eq!(p.directory_rel_path.as_deref(), Some("foo/bar"));
     }
 
     #[test]
     fn test_normalize_rejects_empty_directory_rel_path() {
         let mut p = sample_profile();
-        p.directory_rel_path = "/".to_string();
+        p.directory_rel_path = Some("/".to_string());
         let err = p.normalize(None).unwrap_err();
         assert!(format!("{err:?}").contains("directory-rel-path"));
     }
@@ -677,7 +819,7 @@ mod tests {
     #[test]
     fn test_normalize_rejects_parent_dir_traversal() {
         let mut p = sample_profile();
-        p.directory_rel_path = "foo/../bar".to_string();
+        p.directory_rel_path = Some("foo/../bar".to_string());
         let err = p.normalize(None).unwrap_err();
         assert!(format!("{err:?}").contains(".."));
     }
@@ -821,9 +963,27 @@ mod tests {
     fn test_is_overlapping_directory_prefix() {
         let p1 = sample_profile();
         let mut p2 = sample_profile();
-        p2.directory_rel_path = "my_warehouse/sub".to_string();
+        p2.directory_rel_path = Some("my_warehouse/sub".to_string());
         assert!(p1.is_overlapping_location(&p2));
         assert!(p2.is_overlapping_location(&p1));
+    }
+
+    #[test]
+    fn test_is_overlapping_none_rel_path() {
+        let p1 = sample_profile();
+        let mut p2 = sample_profile();
+        p2.directory_rel_path = None;
+        assert!(p1.is_overlapping_location(&p2));
+        assert!(p2.is_overlapping_location(&p1));
+    }
+
+    #[test]
+    fn test_is_overlapping_different_rel_path() {
+        let p1 = sample_profile();
+        let mut p2 = sample_profile();
+        p2.directory_rel_path = Some("my_second_warehouse".to_string());
+        assert!(!p1.is_overlapping_location(&p2));
+        assert!(!p2.is_overlapping_location(&p1));
     }
 
     #[test]

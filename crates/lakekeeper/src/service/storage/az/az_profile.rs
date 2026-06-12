@@ -5,7 +5,8 @@ use iceberg_ext::configs::table::TableProperties;
 use lakekeeper_io::{
     InvalidLocationError, Location,
     adls::{
-        AdlsStorage, AzureSettings, normalize_host, validate_account_name, validate_filesystem_name,
+        AdlsStorage, AzureSettings, normalize_host, validate_filesystem_name,
+        validate_storage_account_name,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -105,7 +106,7 @@ impl GenericAdlsProfile {
         validate_filesystem_name(&self.filesystem)?;
         self.host = self.host.take().map(normalize_host).transpose()?.flatten();
         self.normalize_key_prefix()?;
-        validate_account_name(&self.account_name)?;
+        validate_storage_account_name(&self.account_name)?;
 
         Ok(())
     }

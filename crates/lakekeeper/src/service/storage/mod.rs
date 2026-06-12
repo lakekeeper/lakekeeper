@@ -1438,6 +1438,8 @@ mod tests {
         use super::*;
 
         #[tokio::test]
+        #[ignore = "live Fabric test; opt in with --ignored (see \
+                    az::fabric_integration_tests module docs)"]
         async fn test_vended_fabric() {
             let cred: StorageCredential =
                 super::az::test::fabric_integration_tests::client_creds().into();
