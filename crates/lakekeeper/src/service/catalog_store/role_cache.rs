@@ -89,8 +89,18 @@ static IDENT_TO_ID_CACHE: LazyLock<Cache<(ArcProjectId, ArcRoleIdent), RoleId>> 
 pub async fn role_cache_invalidate(role_id: RoleId) {
     if CONFIG.cache.role.enabled {
         tracing::debug!("Invalidating role id {role_id} from cache");
-        ROLE_CACHE.invalidate(&role_id).await;
-        // The eviction listener on ROLE_CACHE cascades the invalidation to IDENT_TO_ID_CACHE.
+        // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
+        // `invalidate()`: the version-gate fences stale *updates* but not *deletes*
+        // (a delete leaves no entry to compare), so a bare invalidate racing an
+        // in-flight by-id load lets the loader re-`Put` the deleted role until TTL.
+        // `Op::Remove` shares the loader's lock and still fires the eviction listener
+        // (Explicit), preserving the IDENT_TO_ID_CACHE cascade. Closes the by-id path
+        // only; the by-ident prime path keeps the residual — see
+        // `secondary_index_get_or_load`.
+        ROLE_CACHE
+            .entry(role_id)
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
         update_cache_size_metric();
     }
 }
