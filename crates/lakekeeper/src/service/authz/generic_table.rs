@@ -450,7 +450,7 @@ pub trait AuthZGenericTableOps: Authorizer {
             let mut decision_iter = decisions.into_iter();
             let final_decisions: Vec<bool> = auto_approved
                 .into_iter()
-                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap()))
+                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap().allowed))
                 .collect();
 
             Ok(final_decisions)

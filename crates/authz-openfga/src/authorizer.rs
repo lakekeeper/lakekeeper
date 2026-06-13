@@ -16,11 +16,12 @@ use lakekeeper::{
         TableId, UserId, ViewId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
-            AuthorizationBackendUnavailable, Authorizer, AuthzBackendErrorOrBadRequest,
-            CannotInspectPermissions, CatalogProjectAction, CatalogUserAction,
-            IsAllowedActionError, ListProjectsResponse, ListRoleAssignmentsError,
-            ListRoleAssignmentsResultPage, MalformedRoleAssignment, ManagesRoleAssignments,
-            NamespaceParent, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole, UserOrRoleId,
+            AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
+            AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
+            CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
+            ListRoleAssignmentsError, ListRoleAssignmentsResultPage, MalformedRoleAssignment,
+            ManagesRoleAssignments, NamespaceParent, RoleAssignmentFilter, RoleAssignmentRow,
+            UserOrRole, UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -214,7 +215,7 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, Self::RoleAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Every authenticated user can read role metadata.
         // This does not include assignments to the role.
         // Used for cross-project role get so that we can show role names and not just IDs.
@@ -268,13 +269,16 @@ impl Authorizer for OpenFGAAuthorizer {
                 .await?;
 
             for (batch_idx, result) in batch_results.iter().enumerate() {
-                results.push((batch_indices[batch_idx], *result));
+                results.push((batch_indices[batch_idx], result.allowed));
             }
         }
 
         // Sort by original index and extract boolean values
         results.sort_by_key(|(idx, _)| *idx);
-        Ok(results.into_iter().map(|(_, allowed)| allowed).collect())
+        Ok(results
+            .into_iter()
+            .map(|(_, allowed)| AuthorizationDecision::from(allowed))
+            .collect())
     }
 
     async fn are_allowed_user_actions_impl(
@@ -282,7 +286,7 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, Self::UserAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let actor_principal = match metadata.actor() {
             Actor::Role {
                 principal,
@@ -377,7 +381,10 @@ impl Authorizer for OpenFGAAuthorizer {
         }
 
         results.sort_by_key(|(idx, _)| *idx);
-        Ok(results.into_iter().map(|(_, allowed)| allowed).collect())
+        Ok(results
+            .into_iter()
+            .map(|(_, allowed)| AuthorizationDecision::from(allowed))
+            .collect())
     }
 
     async fn are_allowed_server_actions_impl(
@@ -385,7 +392,7 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         actions: &[Self::ServerAction],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let user = for_user.map_or_else(
             || metadata.actor().to_openfga(),
             |u| u.api_user_or_role().to_openfga(),
@@ -420,7 +427,7 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
-    ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let user = for_user.map_or_else(
             || metadata.actor().to_openfga(),
             |u| u.api_user_or_role().to_openfga(),
@@ -463,7 +470,7 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-    ) -> std::result::Result<Vec<bool>, IsAllowedActionError> {
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let user = for_user.map_or_else(
             || metadata.actor().to_openfga(),
             |u| u.api_user_or_role().to_openfga(),
@@ -508,7 +515,7 @@ impl Authorizer for OpenFGAAuthorizer {
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let user = for_user.map_or_else(
             || metadata.actor().to_openfga(),
             |u| u.api_user_or_role().to_openfga(),
@@ -555,7 +562,7 @@ impl Authorizer for OpenFGAAuthorizer {
             &NamespaceWithParent,
             ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Build check requests with per-action user handling
         let items: Vec<_> = actions
             .iter()
@@ -602,7 +609,7 @@ impl Authorizer for OpenFGAAuthorizer {
             &NamespaceWithParent,
             ActionOnView<'_, '_, impl AuthZViewInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Build check requests with per-action user handling
         let items: Vec<_> = actions
             .iter()
@@ -651,7 +658,7 @@ impl Authorizer for OpenFGAAuthorizer {
             &NamespaceWithParent,
             ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Build check requests with per-action user handling
         let items: Vec<_> = actions
             .iter()
@@ -1239,7 +1246,7 @@ impl OpenFGAAuthorizer {
         _actor: &Actor,
         mut items: Vec<CheckRequestTupleKey>,
         guard_tuples: Vec<CheckRequestTupleKey>,
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let num_guards = guard_tuples.len();
 
         // Collect objects for error reporting if guards fail
@@ -1262,7 +1269,10 @@ impl OpenFGAAuthorizer {
             }
         }
 
-        Ok(results)
+        Ok(results
+            .into_iter()
+            .map(AuthorizationDecision::from)
+            .collect())
     }
     /// A convenience wrapper around `batch_check`.
     async fn batch_check(

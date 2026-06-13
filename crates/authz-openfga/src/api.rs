@@ -3353,8 +3353,8 @@ mod tests {
 
             // Verify results match expected pattern (every other one allowed)
             assert_eq!(results.len(), num_namespaces);
-            for (i, &allowed) in results.iter().enumerate() {
-                assert_eq!(allowed, i % 2 == 0, "Namespace {i} permission mismatch");
+            for (i, allowed) in results.iter().enumerate() {
+                assert_eq!(*allowed, i % 2 == 0, "Namespace {i} permission mismatch");
             }
         }
 
