@@ -170,6 +170,18 @@ where
             let id = id_of(&loaded);
             // Prime the primary cache (+ this index) so coalesced callers resolve
             // the full entity without another backend round-trip.
+            //
+            // RESURRECTION RESIDUAL (by-name/by-ident → primary caches): `prime`
+            // writes the primary cache by id via a plain `*_cache_insert` — a
+            // different lock domain than the by-id `*_cache_invalidate` (`Op::Remove`).
+            // The authoritative read above ran under THIS (secondary) key's lock, not
+            // the primary id's, so a delete that invalidates during this load isn't
+            // serialized against the prime: the stale prime can land after the
+            // invalidate and resurrect the deleted entity until TTL. (The by-id
+            // read-through is safe because it holds the id lock across its own load;
+            // this path structurally cannot.) A full fix needs the prime to revalidate
+            // under the id lock — per-key tombstone, or re-resolve via the by-id
+            // loader — tracked as follow-up; TTL bounds the window for now.
             prime(loaded).await;
             Ok(Op::Put(id))
         })
