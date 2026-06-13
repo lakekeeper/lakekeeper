@@ -281,9 +281,12 @@ namespace Lakekeeper {
 
   // ---------- Server Actions ----------
   action "ServerActions";
+  // ReadUserRoleAssignments — list the roles assigned to a user. A user may
+  // always read the assignments of their own identity (enforced in the
+  // authorizer, not by policy).
   action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources,
          ListServerCedarPolicySources, UpdateUsers, DeleteUsers, ListUsers,
-         ProvisionUsers, IntrospectServerAuthorization,
+         ProvisionUsers, ReadUserRoleAssignments, IntrospectServerAuthorization,
          EvaluateCedarPolicies in ["ServerActions"]
     appliesTo {
       principal: [User, Role],
@@ -345,6 +348,15 @@ namespace Lakekeeper {
   // ---------- Role Actions ----------
   action "RoleActions";
   action AssumeRole, DeleteRole, UpdateRole, ReadRole, ReadRoleMetadata, IntrospectRoleAuthorization in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+  // Role-membership (assignment) actions, gating the role-membership management
+  // API. Roles may have both users and other roles as members (recursive roles).
+  //   ManageRoleAssignments — add/remove members (user or role) of this role.
+  //   ReadRoleAssignments   — list this role's members, parents and assignments.
+  action ManageRoleAssignments, ReadRoleAssignments in ["RoleActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Role]
