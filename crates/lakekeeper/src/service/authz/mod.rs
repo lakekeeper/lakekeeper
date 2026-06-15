@@ -1123,15 +1123,6 @@ impl MustUse<Vec<AuthorizationDecision>> {
     }
 }
 
-impl MustUse<Vec<bool>> {
-    /// The allow/deny flags. Mirrors the same method on the
-    /// `Vec<AuthorizationDecision>` variant so callers that only need the
-    /// boolean outcome read uniformly regardless of which the wrapper holds.
-    #[must_use]
-    pub fn into_allowed(self) -> Vec<bool> {
-        self.0
-    }
-}
 #[async_trait::async_trait]
 /// Interface to provide Authorization functions to the catalog.
 /// For metadata passed into all methods except `check_actor`, the `actor()` in `RequestMetadata`
