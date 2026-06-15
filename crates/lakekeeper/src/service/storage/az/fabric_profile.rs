@@ -387,11 +387,33 @@ impl FabricAdlsProfile {
         }
     }
 
+    /// Cloud location used for the Get-User-Delegation-Key call when minting
+    /// SAS tokens. The workspace-FQDN private-link host rejects this call with
+    /// `DeniedByPolicy`; the global OneLake host serves it. The resulting SAS
+    /// is signed against the canonical resource `/blob/onelake/<workspace>/...`
+    /// and remains valid for clients that subsequently hit the private-link host.
+    fn sas_cloud_location(&self) -> CloudLocation {
+        match &self.endpoint_mode {
+            EndpointMode::PrivateLink => CloudLocation::Custom {
+                account: "onelake".to_string(),
+                uri: "https://onelake.dfs.fabric.microsoft.com".to_string(),
+            },
+            EndpointMode::Default | EndpointMode::Regional { .. } => self.cloud_location(),
+        }
+    }
+
     #[must_use]
     pub(super) fn azure_settings(&self) -> AzureSettings {
         AzureSettings {
             authority_host: self.authority_host.clone(),
             cloud_location: self.cloud_location(),
+        }
+    }
+
+    fn sas_azure_settings(&self) -> AzureSettings {
+        AzureSettings {
+            authority_host: self.authority_host.clone(),
+            cloud_location: self.sas_cloud_location(),
         }
     }
 
@@ -459,14 +481,11 @@ impl FabricAdlsProfile {
         }
 
         let cache_key = STCCacheKey::new(stc_request.clone(), self.into(), Some(credential.into()));
-        let settings = self.azure_settings();
+        let settings = self.sas_azure_settings();
         let filesystem = self.filesystem();
         generate_adls_table_config(AdlsTableConfigContext {
             cache_key,
             sas_mint: SasMintContext {
-                // SAS canonical resource for OneLake is always `/blob/onelake/...`,
-                // never the regional/private-link DNS label. Bug fix for `401
-                // Access token validation failed` on regional and PE warehouses.
                 account_name: self.sas_account(),
                 filesystem: &filesystem,
                 user_ttl: self.sas_token_validity_seconds,
@@ -689,6 +708,38 @@ mod tests {
                 ..sample_profile()
             };
             assert_eq!(p.sas_account(), "onelake");
+        }
+    }
+
+    #[test]
+    fn test_sas_cloud_location_pins_to_global_for_private_link() {
+        let mut p = sample_profile();
+        p.endpoint_mode = EndpointMode::PrivateLink;
+        match p.sas_cloud_location() {
+            CloudLocation::Custom { account, uri } => {
+                assert_eq!(account, "onelake");
+                assert_eq!(uri, "https://onelake.dfs.fabric.microsoft.com");
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_sas_cloud_location_matches_data_location_for_default_and_regional() {
+        for mode in [
+            EndpointMode::Default,
+            EndpointMode::Regional {
+                region: "westus".to_string(),
+            },
+        ] {
+            let p = FabricAdlsProfile {
+                endpoint_mode: mode,
+                ..sample_profile()
+            };
+            assert_eq!(
+                format!("{:?}", p.sas_cloud_location()),
+                format!("{:?}", p.cloud_location()),
+            );
         }
     }
 

@@ -694,6 +694,9 @@ OneLake exposes three DFS endpoint shapes; the `endpoint-mode` field picks one.
 
 Use `regional` when data residency requires the request to stay within a specific Azure region. Use `private-link` when the workspace is fronted by an Azure Private Link service.
 
+!!! note
+    Even when `endpoint-mode` is set to `private-link`, the Lakekeeper server itself must retain DNS resolution and outbound TLS connectivity to the global host `onelake.dfs.fabric.microsoft.com`. SAS token minting (the `Get User Delegation Key` call) is not served by the workspace-FQDN private-link endpoint — Fabric returns `DeniedByPolicy` there — so Lakekeeper issues that single call against the global OneLake host. Vended client traffic (read/write of table data) still flows through the workspace private link.
+
 ### Credentials
 
 OneLake does not have a storage-account key. Only Microsoft Entra credentials are accepted:
