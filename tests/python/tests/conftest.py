@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     aws_s3_use_system_identity: Optional[bool] = None
     aws_s3_assume_role_arn: Optional[str] = None
     aws_s3_assume_role_external_id: Optional[str] = None
+    # Dedicated SSE-KMS bucket + key (shared with the Rust KMS integration tests).
+    aws_kms_s3_bucket: Optional[str] = None
+    aws_s3_kms_arn: Optional[str] = None
     s3_access_key: Optional[Secret] = None
     s3_secret_key: Optional[Secret] = None
     s3_bucket: Optional[str] = None

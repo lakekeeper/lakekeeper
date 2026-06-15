@@ -45,6 +45,8 @@ bash run.sh trino_opa
 bash run.sh spark_minio_sts_separate_endpoint-1.10.1
 # S3 System Identity
 bash run.sh spark_aws_system_identity_sts-1.10.1
+# S3 SSE-KMS (needs LAKEKEEPER_TEST__AWS_KMS_S3_BUCKET + LAKEKEEPER_TEST__AWS_S3_KMS_ARN)
+bash run.sh spark_aws_kms-1.10.1
 ```
 
 To override the Spark image (e.g. for local testing against a custom build):
