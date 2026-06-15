@@ -19,7 +19,7 @@ use crate::{
         SecretStore, State, SystemRoleImmutable, Transaction, UpdateRoleError,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
-            CatalogRoleAction,
+            CatalogRoleAction, RoleSourceSystem, SourceSystemTarget,
         },
         events::{APIEventContext, context::Unresolved},
         role_assignments_cache,
@@ -524,7 +524,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.into(),
             context.v1_state.events.clone(),
             role_id,
-            CatalogRoleAction::Update,
+            CatalogRoleAction::UpdateSourceSystem {
+                target: SourceSystemTarget::To(RoleSourceSystem {
+                    provider_id: request.provider_id.clone(),
+                    source_id: request.source_id.clone(),
+                }),
+            },
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
@@ -645,7 +650,7 @@ async fn authorize_get_role_metadata<A: Authorizer, C: CatalogStore>(
             .await?;
 
     let role = authorizer
-        .require_role_action(request_metadata, Ok(role), *action)
+        .require_role_action(request_metadata, Ok(role), action.clone())
         .await?;
 
     let role_metadata = RoleMetadata {
@@ -701,7 +706,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     let action = event_ctx.action();
 
     let role = authorizer
-        .require_role_action(request_metadata, role, *action)
+        .require_role_action(request_metadata, role, action.clone())
         .await?;
 
     if role.ident.is_system() {
@@ -758,7 +763,7 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     .await;
 
     let role = authorizer
-        .require_role_action(request_metadata, role, *action)
+        .require_role_action(request_metadata, role, action.clone())
         .await?;
 
     if role.ident.is_system() {
@@ -805,7 +810,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     .await;
 
     let role = authorizer
-        .require_role_action(request_metadata, role, *action)
+        .require_role_action(request_metadata, role, action.clone())
         .await?;
 
     if role.ident.is_system() {

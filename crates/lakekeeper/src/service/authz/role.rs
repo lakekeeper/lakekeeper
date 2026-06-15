@@ -10,7 +10,7 @@ use crate::{
         authz::{
             AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
             AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
+            CatalogAction, CatalogRoleAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -21,7 +21,7 @@ use crate::{
 
 pub trait RoleAction
 where
-    Self: std::fmt::Display + Send + Sync + Copy + From<CatalogRoleAction> + PartialEq,
+    Self: CatalogAction + Send + Sync + Clone + From<CatalogRoleAction> + PartialEq,
 {
 }
 
@@ -98,10 +98,10 @@ pub struct AuthZRoleActionForbidden {
 }
 impl AuthZRoleActionForbidden {
     #[must_use]
-    pub fn new(role_id: RoleId, action: impl RoleAction) -> Self {
+    pub fn new(role_id: RoleId, action: &impl RoleAction) -> Self {
         Self {
             role_id,
-            action: action.to_string(),
+            action: action.action_descriptor().log_string(),
         }
     }
 }
@@ -186,7 +186,7 @@ pub trait AuthZRoleOps: Authorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         role: &Role,
-        action: impl Into<Self::RoleAction> + Send + Copy + Sync,
+        action: impl Into<Self::RoleAction> + Send + Clone + Sync,
     ) -> Result<MustUse<bool>, IsAllowedActionError> {
         let [decision] = self
             .are_allowed_role_actions_arr(metadata, for_user, &[(role, action)])
@@ -195,7 +195,7 @@ pub trait AuthZRoleOps: Authorizer {
         Ok(decision.into())
     }
 
-    async fn are_allowed_role_actions_vec<A: Into<Self::RoleAction> + Send + Copy + Sync>(
+    async fn are_allowed_role_actions_vec<A: Into<Self::RoleAction> + Send + Clone + Sync>(
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
@@ -209,7 +209,7 @@ pub trait AuthZRoleOps: Authorizer {
         } else {
             let converted = roles_with_actions
                 .iter()
-                .map(|(id, action)| (*id, (*action).into()))
+                .map(|(id, action)| (*id, action.clone().into()))
                 .collect::<Vec<_>>();
             let decisions = self
                 .are_allowed_role_actions_impl(metadata, for_user, &converted)
@@ -227,7 +227,7 @@ pub trait AuthZRoleOps: Authorizer {
 
     async fn are_allowed_role_actions_arr<
         const N: usize,
-        A: Into<Self::RoleAction> + Send + Copy + Sync,
+        A: Into<Self::RoleAction> + Send + Clone + Sync,
     >(
         &self,
         metadata: &RequestMetadata,
@@ -255,13 +255,13 @@ pub trait AuthZRoleOps: Authorizer {
 
         let action = action.into();
         if self
-            .is_allowed_role_action(metadata, None, &role, action)
+            .is_allowed_role_action(metadata, None, &role, action.clone())
             .await?
             .into_inner()
         {
             Ok(role)
         } else {
-            Err(AuthZRoleActionForbidden::new(role.id, action).into())
+            Err(AuthZRoleActionForbidden::new(role.id, &action).into())
         }
     }
 }

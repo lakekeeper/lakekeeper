@@ -95,6 +95,7 @@ pub enum RoleRelation {
     CanChangeOwnership,
     CanDelete,
     CanUpdate,
+    CanUpdateSourceSystem,
     CanRead,
     CanReadMetadata,
     CanReadAssignments,
@@ -248,6 +249,7 @@ impl ReducedRelation for CatalogRoleAction {
             CatalogRoleAction::ReadMetadata => RoleRelation::CanReadMetadata,
             CatalogRoleAction::ManageRoleAssignments => RoleRelation::CanGrantAssignee,
             CatalogRoleAction::ReadRoleAssignments => RoleRelation::CanReadAssignments,
+            CatalogRoleAction::UpdateSourceSystem { .. } => RoleRelation::CanUpdateSourceSystem,
         }
     }
 }

@@ -9,8 +9,8 @@ use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
-    CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore,
-    State, TableId, ViewId, WarehouseId, health::HealthExt,
+    CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
+    SecretStore, State, TableId, ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
     api::{
@@ -502,19 +502,42 @@ impl CatalogAction for CatalogProjectAction {
     }
 }
 
+/// The external identity (source system) a role is bound to: a `(provider_id,
+/// source_id)` pair. An external identity is always both parts together, so this
+/// type makes a partial binding unrepresentable. Used as the rebind destination
+/// in [`CatalogRoleAction::UpdateSourceSystem`].
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub struct RoleSourceSystem {
+    /// Provider that owns the role (e.g. `oidc`, `ldap`).
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub provider_id: RoleProviderId,
+    /// Identifier of the role within the provider.
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub source_id: RoleSourceId,
+}
+
+/// The destination of a [`CatalogRoleAction::UpdateSourceSystem`] rebind.
+///
+/// `To` names a concrete external identity (the real authorization check); `Any`
+/// is the destination-less base-capability marker used for permission
+/// introspection and "can this principal rebind at all?" queries. Keeping the base
+/// case an explicit, named variant — rather than an absent/`None` value — means an
+/// authorizer is never silently asked to allow an unspecified rebind: a
+/// per-destination policy gates the concrete `To` target and never matches `Any`.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSystemTarget {
+    /// Concrete rebind destination.
+    To(RoleSourceSystem),
+    /// No specific destination — base-capability / introspection marker.
+    Any,
+}
+
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    IntoStaticStr,
-    VariantArray,
+    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
@@ -531,10 +554,58 @@ pub enum CatalogRoleAction {
     ManageRoleAssignments,
     /// Can list members / parents / assignments of this role.
     ReadRoleAssignments,
+    /// Can rebind this role's external identity (provider + source id) to a
+    /// different source system. `target` is the rebind destination, surfaced as
+    /// action context (`target_provider_id` / `target_source_id`) so policy-based
+    /// authorizers can gate it (e.g. forbid moving a role onto a particular
+    /// provider). The catalog backend treats this the same as
+    /// `ManageRoleAssignments`.
+    ///
+    /// The destination is explicit: [`SourceSystemTarget::To`] on the actual write
+    /// (the handler builds it from the request) and [`SourceSystemTarget::Any`] in
+    /// the `GET /role/{id}/actions` introspection enumeration / any "may this
+    /// principal rebind at all?" query. `Any` is a named base-capability marker, not
+    /// a permissive default: a per-destination policy gates the concrete `To` target
+    /// and never matches `Any`, and a `/check` caller chooses `To`/`Any`
+    /// deliberately.
+    UpdateSourceSystem {
+        target: SourceSystemTarget,
+    },
+}
+/// The role actions enumerated for permission introspection (`GET
+/// /role/{id}/actions`). `UpdateSourceSystem` is enumerated with the
+/// destination-less [`SourceSystemTarget::Any`] marker (the base-capability form).
+static ROLE_ACTION_VARIANTS: LazyLock<[CatalogRoleAction; 7]> = LazyLock::new(|| {
+    [
+        CatalogRoleAction::Read,
+        CatalogRoleAction::ReadMetadata,
+        CatalogRoleAction::Delete,
+        CatalogRoleAction::Update,
+        CatalogRoleAction::ManageRoleAssignments,
+        CatalogRoleAction::ReadRoleAssignments,
+        CatalogRoleAction::UpdateSourceSystem {
+            target: SourceSystemTarget::Any,
+        },
+    ]
+});
+impl CatalogRoleAction {
+    /// Introspectable role actions — see [`ROLE_ACTION_VARIANTS`].
+    #[must_use]
+    pub fn variants() -> &'static [CatalogRoleAction; 7] {
+        &ROLE_ACTION_VARIANTS
+    }
 }
 impl CatalogAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::UpdateSourceSystem {
+            target: SourceSystemTarget::To(target),
+        } = self
+        {
+            b = b.context_string("target_provider_id", target.provider_id.to_string());
+            b = b.context_string("target_source_id", target.source_id.to_string());
+        }
+        b.build()
     }
 }
 
@@ -1511,6 +1582,43 @@ pub mod tests {
     fn test_generic_table_action_variant_completeness() {
         let variants = CatalogGenericTableAction::variants();
         assert_eq!(variants.len(), CatalogGenericTableAction::COUNT);
+    }
+
+    #[test]
+    fn test_role_action_variant_completeness() {
+        // `UpdateSourceSystem` is enumerated with the `SourceSystemTarget::Any`
+        // base-capability marker, so the full set is introspectable.
+        let variants = CatalogRoleAction::variants();
+        assert_eq!(variants.len(), CatalogRoleAction::COUNT);
+    }
+
+    #[test]
+    fn test_role_action_update_source_system_serde() {
+        // A concrete destination (`To`) round-trips and surfaces under the tag so a
+        // policy-based authorizer can read it from the action context.
+        let action = CatalogRoleAction::UpdateSourceSystem {
+            target: SourceSystemTarget::To(RoleSourceSystem {
+                provider_id: "oidc".parse().unwrap(),
+                source_id: "group-123".parse().unwrap(),
+            }),
+        };
+        let expected = serde_json::json!({
+            "action": "update_source_system",
+            "target": {"to": {"provider_id": "oidc", "source_id": "group-123"}},
+        });
+        assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+        let deserialized: CatalogRoleAction =
+            serde_json::from_value(expected).expect("deserialize");
+        assert_eq!(deserialized, action);
+
+        // The base-capability / introspection form is an explicit, named value.
+        let any = CatalogRoleAction::UpdateSourceSystem {
+            target: SourceSystemTarget::Any,
+        };
+        assert_eq!(
+            serde_json::to_value(&any).expect("serialize"),
+            serde_json::json!({"action": "update_source_system", "target": "any"}),
+        );
     }
 
     #[test]

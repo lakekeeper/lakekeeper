@@ -1311,6 +1311,8 @@ tests:
         object: role:namespace_2_1_owner
         assertions:
           can_assume: true
+          can_grant_assignee: true
+          can_update_source_system: true
       - user: user:owner_of_role_namespace_2_1_owner
         object: namespace:namespace_2_1
         assertions:

@@ -320,7 +320,7 @@ async fn authorize_get_role_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogRoleAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-    let actions = CatalogRoleAction::VARIANTS;
+    let actions = CatalogRoleAction::variants();
     let can_see_permission = CatalogRoleAction::Read;
 
     // Short-circuit: if resolve_principal already fetched the target role (i.e.
@@ -344,7 +344,7 @@ async fn authorize_get_role_actions<C: CatalogStore>(
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (&*role, *action))
+                .map(|action| (&*role, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
@@ -359,7 +359,7 @@ async fn authorize_get_role_actions<C: CatalogStore>(
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }

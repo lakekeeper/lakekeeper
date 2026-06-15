@@ -6328,6 +6328,7 @@ components:
               enum:
                 - update
         - type: object
+          description: Can add/remove members (user or role) of this role.
           required:
             - action
           properties:
@@ -6336,6 +6337,7 @@ components:
               enum:
                 - manage_role_assignments
         - type: object
+          description: Can list members / parents / assignments of this role.
           required:
             - action
           properties:
@@ -6343,6 +6345,32 @@ components:
               type: string
               enum:
                 - read_role_assignments
+        - type: object
+          description: |-
+            Can rebind this role's external identity (provider + source id) to a
+            different source system. `target` is the rebind destination, surfaced as
+            action context (`target_provider_id` / `target_source_id`) so policy-based
+            authorizers can gate it (e.g. forbid moving a role onto a particular
+            provider). The catalog backend treats this the same as
+            `ManageRoleAssignments`.
+
+            The destination is explicit: [`SourceSystemTarget::To`] on the actual write
+            (the handler builds it from the request) and [`SourceSystemTarget::Any`] in
+            the `GET /role/{id}/actions` introspection enumeration / any "may this
+            principal rebind at all?" query. `Any` is a named base-capability marker, not
+            a permissive default: a per-destination policy gates the concrete `To` target
+            and never matches `Any`, and a `/check` caller chooses `To`/`Any`
+            deliberately.
+          required:
+            - target
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_source_system
+            target:
+              $ref: '#/components/schemas/SourceSystemTarget'
     LakekeeperServerAction:
       oneOf:
         - type: object
@@ -7746,6 +7774,23 @@ components:
       enum:
         - assignee
         - ownership
+    RoleSourceSystem:
+      type: object
+      description: |-
+        The external identity (source system) a role is bound to: a `(provider_id,
+        source_id)` pair. An external identity is always both parts together, so this
+        type makes a partial binding unrepresentable. Used as the rebind destination
+        in [`CatalogRoleAction::UpdateSourceSystem`].
+      required:
+        - provider_id
+        - source_id
+      properties:
+        provider_id:
+          type: string
+          description: Provider that owns the role (e.g. `oidc`, `ldap`).
+        source_id:
+          type: string
+          description: Identifier of the role within the provider.
     S3AccessKeyCredential:
       type: object
       title: S3CredentialAccessKey
@@ -8307,6 +8352,29 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
+    SourceSystemTarget:
+      oneOf:
+        - type: object
+          description: Concrete rebind destination.
+          required:
+            - to
+          properties:
+            to:
+              $ref: '#/components/schemas/RoleSourceSystem'
+              description: Concrete rebind destination.
+        - type: string
+          description: No specific destination — base-capability / introspection marker.
+          enum:
+            - any
+      description: |-
+        The destination of a [`CatalogRoleAction::UpdateSourceSystem`] rebind.
+
+        `To` names a concrete external identity (the real authorization check); `Any`
+        is the destination-less base-capability marker used for permission
+        introspection and "can this principal rebind at all?" queries. Keeping the base
+        case an explicit, named variant — rather than an absent/`None` value — means an
+        authorizer is never silently asked to allow an unspecified rebind: a
+        per-destination policy gates the concrete `To` target and never matches `Any`.
     StorageCredential:
       oneOf:
         - allOf:
