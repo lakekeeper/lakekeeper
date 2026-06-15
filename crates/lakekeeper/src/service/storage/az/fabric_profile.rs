@@ -354,17 +354,11 @@ impl FabricAdlsProfile {
         format!("{}.{}", self.host_account(), self.endpoint_suffix())
     }
 
-    /// The container ("filesystem") portion of the abfss URL.
-    ///
-    /// For private-link endpoints we use the workspace ID without dashes to
-    /// match the hostname's first label; for the global and regional endpoints
-    /// the dashed UUID is used (matches what the `OneLake` REST API expects
-    /// under `/<workspace>/<item>/...`).
+    /// The container ("filesystem") portion of the abfss URL — the dashed
+    /// workspace UUID, as expected by the `OneLake` REST API under
+    /// `/<workspace>/<item>/...`.
     fn filesystem(&self) -> String {
-        match &self.endpoint_mode {
-            EndpointMode::PrivateLink => self.workspace_id.simple().to_string(),
-            EndpointMode::Default | EndpointMode::Regional { .. } => self.workspace_id.to_string(),
-        }
+        self.workspace_id.to_string()
     }
 
     /// The `key_prefix` portion of the abfss URL —
@@ -576,12 +570,10 @@ mod tests {
         let mut p = sample_profile();
         p.endpoint_mode = EndpointMode::PrivateLink;
         let loc = p.base_location().unwrap();
-        // Workspace UUID stripped of dashes = "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47",
-        // first two chars = "c5".
         assert_eq!(
             loc.to_string(),
             format!(
-                "abfss://c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47@c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com/{SAMPLE_LAKEHOUSE}/Files/my_warehouse/"
+                "abfss://{SAMPLE_WORKSPACE}@c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com/{SAMPLE_LAKEHOUSE}/Files/my_warehouse/"
             )
         );
     }

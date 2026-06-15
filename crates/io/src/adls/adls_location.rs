@@ -582,7 +582,7 @@ mod test {
     #[test]
     fn test_try_from_location_fabric_private_link() {
         let loc = Location::from_str(
-            "abfss://c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47@c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com/lh/Files/test/",
+            "abfss://c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47@c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.dfs.fabric.microsoft.com/lh/Files/test/",
         )
         .unwrap();
         let adls = AdlsLocation::try_from_location(&loc, false).unwrap();
