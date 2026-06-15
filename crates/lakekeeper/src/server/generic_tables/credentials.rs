@@ -223,7 +223,7 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
         .await?
-        .into_inner();
+        .into_allowed();
 
     // 10. Interpret results.
     let target_ns = sorted_tabulars_with_full_info

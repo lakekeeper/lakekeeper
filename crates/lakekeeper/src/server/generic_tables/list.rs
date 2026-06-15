@@ -119,7 +119,7 @@ pub(super) async fn list_generic_tables<C: CatalogStore, A: Authorizer + Clone, 
             )
             .await
             .map_err(AuthorizationFailureSource::into_error_model)?
-            .into_inner()
+            .into_allowed()
     };
 
     let identifiers = entries

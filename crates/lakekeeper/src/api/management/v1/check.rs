@@ -1596,16 +1596,6 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                     &tabular_with_actions,
                 )
                 .await?;
-            // Tabular trace surfacing is deferred: tables/views/generic tables
-            // emit empty `determined_by` for now. The per-type `_impl` captures
-            // the trace, but the multi-level tabular merge drops it.
-            let allowed = MustUse::from(
-                allowed
-                    .into_inner()
-                    .into_iter()
-                    .map(AuthorizationDecision::from)
-                    .collect::<Vec<_>>(),
-            );
             Ok::<_, AuthZError>((original_indices, allowed))
         });
     }
@@ -1722,16 +1712,6 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                     &tabular_with_actions,
                 )
                 .await?;
-            // Tabular trace surfacing is deferred: tables/views/generic tables
-            // emit empty `determined_by` for now. The per-type `_impl` captures
-            // the trace, but the multi-level tabular merge drops it.
-            let allowed = MustUse::from(
-                allowed
-                    .into_inner()
-                    .into_iter()
-                    .map(AuthorizationDecision::from)
-                    .collect::<Vec<_>>(),
-            );
             Ok::<_, AuthZError>((original_indices, allowed))
         });
     }

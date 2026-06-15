@@ -148,7 +148,7 @@ macro_rules! list_entities {
                             .map_err(authz_to_error_no_audit)?,
                         ).await
                         .map_err(authz_to_error_no_audit)?
-                        .into_inner()
+                        .into_allowed()
                     }
                 };
 

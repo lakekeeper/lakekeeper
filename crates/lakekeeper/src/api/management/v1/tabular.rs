@@ -109,7 +109,7 @@ where
                 )
                 .await
                 .map_err(authz_to_error_no_audit)?
-                .into_inner()
+                .into_allowed()
         };
 
         // Merge authorized tables and views and show best matches first.
