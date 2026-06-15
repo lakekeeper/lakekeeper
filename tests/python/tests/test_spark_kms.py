@@ -33,6 +33,17 @@ def _require_kms_settings():
         pytest.skip("LAKEKEEPER_TEST__AWS_S3_REGION is not set")
     if not settings.aws_s3_sts_role_arn:
         pytest.skip("LAKEKEEPER_TEST__AWS_S3_STS_ROLE_ARN is not set")
+    # Without system identity, both the warehouse credential and the boto3
+    # inspection client use these access keys; skip cleanly if they are absent
+    # rather than failing later with an opaque authentication error.
+    if not settings.aws_s3_use_system_identity and (
+        not settings.aws_s3_access_key or not settings.aws_s3_secret_access_key
+    ):
+        pytest.skip(
+            "LAKEKEEPER_TEST__AWS_S3_ACCESS_KEY / "
+            "LAKEKEEPER_TEST__AWS_S3_SECRET_ACCESS_KEY is not set "
+            "(required when not using system identity)"
+        )
 
 
 @pytest.fixture(scope="module")
