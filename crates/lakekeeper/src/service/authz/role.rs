@@ -218,10 +218,14 @@ pub trait AuthZRoleOps: Authorizer {
                 .are_allowed_role_actions_impl(metadata, for_user, &converted)
                 .await?;
 
-            debug_assert!(
-                decisions.len() == roles_with_actions.len(),
-                "Mismatched role decision lengths",
-            );
+            if decisions.len() != roles_with_actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    roles_with_actions.len(),
+                    decisions.len(),
+                    "role",
+                )
+                .into());
+            }
 
             Ok(decisions)
         }

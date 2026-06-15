@@ -128,10 +128,14 @@ pub trait AuthZUserOps: Authorizer {
                 .are_allowed_user_actions_impl(metadata, for_user, &converted)
                 .await?;
 
-            debug_assert!(
-                decisions.len() == users_with_actions.len(),
-                "Mismatched user decision lengths",
-            );
+            if decisions.len() != users_with_actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    users_with_actions.len(),
+                    decisions.len(),
+                    "user",
+                )
+                .into());
+            }
 
             Ok(decisions)
         }

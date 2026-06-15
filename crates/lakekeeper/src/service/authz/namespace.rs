@@ -543,25 +543,32 @@ pub trait AuthzNamespaceOps: Authorizer {
                 )
                 .await?;
 
-            if warehouse_matches.len() != actions.len() {
+            // `warehouse_matches` is built from `actions` so it always matches in
+            // length; the authorizer's result is what could be truncated, so guard
+            // its length before zipping (a short `zip` would silently drop tuples).
+            if authz_results.len() != actions.len() {
                 return Err(AuthorizationCountMismatch::new(
                     actions.len(),
-                    warehouse_matches.len(),
+                    authz_results.len(),
                     "namespace",
                 )
                 .into());
             }
 
-            // Combine warehouse check with authorization check (both must be true),
-            // preserving the per-decision diagnostics from the authorizer.
+            // Combine the local warehouse precheck with the authorizer's verdict.
+            // A warehouse mismatch is a *local* denial, so it carries no
+            // `determined_by` — attributing it to the authorizer's policies would
+            // be wrong. When the warehouse matches, the authorizer's decision
+            // (verdict and diagnostics) stands as-is.
             let results = warehouse_matches
                 .iter()
                 .zip(authz_results)
                 .map(|(warehouse_match, authz)| {
-                    AuthorizationDecision::new(
-                        *warehouse_match && authz.allowed,
-                        authz.determined_by,
-                    )
+                    if *warehouse_match {
+                        authz
+                    } else {
+                        AuthorizationDecision::deny()
+                    }
                 })
                 .collect::<Vec<_>>();
 
