@@ -77,13 +77,13 @@ pub enum DeterminingFactor {
     /// A policy that determined the decision, surfaced by a policy-based
     /// authorizer.
     Policy {
-        /// Stable, human-meaningful policy identifier where the authorizer
-        /// provides one, or a fallback identifier otherwise (see
-        /// `id_is_fallback`).
-        id: String,
-        /// `true` when `id` is a fallback because no stable identifier was
-        /// available from the authorizer.
-        id_is_fallback: bool,
+        /// Stable, authorizer-assigned identifier of the policy (e.g. the Cedar
+        /// `PolicyId`). Always present.
+        policy_id: String,
+        /// Optional human-facing name the author gave the policy (e.g. a `@name`
+        /// or `@id` annotation). Neither required nor guaranteed unique; `None`
+        /// when the author provided none.
+        name: Option<String>,
         /// Whether the policy permits or forbids.
         effect: PolicyEffect,
         /// Opaque origin of the policy (e.g. a policy-source identifier). `None`

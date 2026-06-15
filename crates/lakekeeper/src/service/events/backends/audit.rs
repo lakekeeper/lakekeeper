@@ -556,8 +556,8 @@ mod tests {
     #[test]
     fn determined_by_emitted_when_present() {
         let auth = sample(vec![DeterminingFactor::Policy {
-            id: "allow-read".to_string(),
-            id_is_fallback: false,
+            policy_id: "policy0".to_string(),
+            name: Some("allow-read".to_string()),
             effect: PolicyEffect::Permit,
             source: None,
         }]);
