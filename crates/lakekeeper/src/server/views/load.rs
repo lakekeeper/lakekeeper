@@ -223,7 +223,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
         .await?
-        .into_inner();
+        .into_allowed();
 
     // 10. Interpret authorization results
     let (view_info, storage_permissions) =

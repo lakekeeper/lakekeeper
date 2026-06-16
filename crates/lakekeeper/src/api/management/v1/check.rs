@@ -24,12 +24,12 @@ use crate::{
             ActionOnView, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace, AuthZCannotSeeTable,
             AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
-            CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogServerAction, CatalogTableAction, CatalogViewAction, CatalogWarehouseAction,
-            MustUse, RequireNamespaceActionError, RequireTableActionError,
-            RequireWarehouseActionError, RoleAssignee as AuthZRoleAssignee,
-            UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzNamespaceOps,
+            AuthzWarehouseOps, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
+            CatalogProjectAction, CatalogServerAction, CatalogTableAction, CatalogViewAction,
+            CatalogWarehouseAction, DeterminingFactor, MustUse, RequireNamespaceActionError,
+            RequireTableActionError, RequireWarehouseActionError,
+            RoleAssignee as AuthZRoleAssignee, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, Authorization,
@@ -264,6 +264,10 @@ pub struct CatalogActionsBatchCheckResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub allowed: bool,
+    /// Policies/rules that determined this decision. Internal-only: carried
+    /// to the audit event, never serialised into the API response.
+    #[serde(skip)]
+    pub determined_by: Vec<DeterminingFactor>,
 }
 
 /// Convert a request-side `UserOrRole` (which only carries identifiers) to
@@ -407,6 +411,7 @@ fn check_to_authorization(
     index: usize,
     ambient_project_id: Option<&ProjectId>,
     allowed: Option<bool>,
+    determined_by: Vec<DeterminingFactor>,
 ) -> Authorization {
     let (entity, action) = item.operation.to_audit_entity_action(ambient_project_id);
     Authorization {
@@ -415,6 +420,7 @@ fn check_to_authorization(
         action,
         entity,
         allowed,
+        determined_by,
     }
 }
 
@@ -443,7 +449,8 @@ type TabularChecksByIdentMap = HashMap<
     (WarehouseId, Option<UserOrRole>),
     HashMap<TabularIdentOwned, Vec<(usize, TabularActionPair)>>,
 >;
-type AuthzTaskJoinSet = tokio::task::JoinSet<Result<(Vec<usize>, MustUse<Vec<bool>>), AuthZError>>;
+type AuthzTaskJoinSet =
+    tokio::task::JoinSet<Result<(Vec<usize>, MustUse<Vec<AuthorizationDecision>>), AuthZError>>;
 
 /// Grouped checks by resource type
 struct GroupedChecks {
@@ -485,6 +492,7 @@ fn group_checks(
         results.push(CatalogActionsBatchCheckResult {
             id: check.id,
             allowed: false,
+            determined_by: Vec::new(),
         });
         let for_user = check.identity;
 
@@ -1722,17 +1730,18 @@ async fn collect_authz_results(
                     .append_detail("Failed to join authorization check task"),
             )
         })??;
-        let allowed_vec = allowed.into_inner();
-        if original_indices.len() != allowed_vec.len() {
+        let decision_vec = allowed.into_inner();
+        if original_indices.len() != decision_vec.len() {
             return Err(AuthorizationCountMismatch::new(
                 original_indices.len(),
-                allowed_vec.len(),
+                decision_vec.len(),
                 "check endpoint",
             )
             .into());
         }
-        for (i, is_allowed) in original_indices.into_iter().zip(allowed_vec) {
-            results[i].allowed = is_allowed;
+        for (i, decision) in original_indices.into_iter().zip(decision_vec) {
+            results[i].allowed = decision.allowed;
+            results[i].determined_by = decision.determined_by;
         }
     }
     Ok(())
@@ -1803,8 +1812,10 @@ pub async fn check_internal<A: Authorizer, C: CatalogStore, S: SecretStore>(
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let allowed = audit_decisions.and_then(|r| r.get(i)).map(|r| r.allowed);
-            check_to_authorization(c, i, ambient_project_id_ref, allowed)
+            let result = audit_decisions.and_then(|r| r.get(i));
+            let allowed = result.map(|r| r.allowed);
+            let determined_by = result.map(|r| r.determined_by.clone()).unwrap_or_default();
+            check_to_authorization(c, i, ambient_project_id_ref, allowed, determined_by)
         })
         .collect();
     // For an empty batch (`POST {"checks": []}`) `set_authorizations`

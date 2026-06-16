@@ -17,7 +17,7 @@ use crate::{
         WarehouseId,
         authn::UserId,
         authz::{
-            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
             CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
@@ -121,8 +121,11 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, Self::UserAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; users_with_actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![
+            AuthorizationDecision::allow();
+            users_with_actions.len()
+        ])
     }
 
     async fn are_allowed_role_actions_impl(
@@ -130,8 +133,11 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, Self::RoleAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; roles_with_actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![
+            AuthorizationDecision::allow();
+            roles_with_actions.len()
+        ])
     }
 
     async fn are_allowed_server_actions_impl(
@@ -139,8 +145,8 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         actions: &[Self::ServerAction],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); actions.len()])
     }
 
     async fn are_allowed_project_actions_impl(
@@ -148,8 +154,11 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; projects_with_actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![
+            AuthorizationDecision::allow();
+            projects_with_actions.len()
+        ])
     }
 
     async fn are_allowed_warehouse_actions_impl(
@@ -157,8 +166,11 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; warehouses_with_actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![
+            AuthorizationDecision::allow();
+            warehouses_with_actions.len()
+        ])
     }
 
     async fn are_allowed_namespace_actions_impl(
@@ -168,8 +180,8 @@ impl Authorizer for AllowAllAuthorizer {
         _warehouse: &ResolvedWarehouse,
         _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); actions.len()])
     }
 
     async fn are_allowed_table_actions_impl<A: Into<Self::TableAction> + Send + Clone + Sync>(
@@ -181,8 +193,8 @@ impl Authorizer for AllowAllAuthorizer {
             &NamespaceWithParent,
             ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); actions.len()])
     }
 
     async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
@@ -194,8 +206,8 @@ impl Authorizer for AllowAllAuthorizer {
             &NamespaceWithParent,
             ActionOnView<'_, '_, impl AuthZViewInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); actions.len()])
     }
 
     async fn are_allowed_generic_table_actions_impl<
@@ -209,8 +221,8 @@ impl Authorizer for AllowAllAuthorizer {
             &NamespaceWithParent,
             ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError> {
-        Ok(vec![true; actions.len()])
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); actions.len()])
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {

@@ -567,7 +567,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await
             .map_err(authz_to_error_no_audit)?
-            .into_inner()
+            .into_allowed()
             .into_iter()
             .zip(warehouses)
             .filter_map(|(allowed, warehouse)| if allowed { Some(warehouse) } else { None })
@@ -1566,7 +1566,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                             )
                             .await
                             .map_err(authz_to_error_no_audit)?
-                            .into_inner()
+                            .into_allowed()
                     };
 
                     let (next_idents, next_uuids, next_page_tokens, mask): (

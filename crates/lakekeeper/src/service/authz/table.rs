@@ -20,9 +20,10 @@ use crate::{
         authz::{
             AuthZError, AuthZGenericTableActionForbidden, AuthZGenericTableOps,
             AuthZViewActionForbidden, AuthZViewOps, AuthorizationBackendUnavailable,
-            AuthorizationCountMismatch, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
-            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogAction, CatalogTableAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationCountMismatch, AuthorizationDecision, Authorizer, AuthzBadRequest,
+            AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogAction, CatalogTableAction, IsAllowedActionError,
+            MustUse, UserOrRole,
         },
         catalog_store::{
             BasicTabularInfo, CachePolicy, CatalogNamespaceOps, CatalogStore, CatalogTabularOps,
@@ -829,7 +830,7 @@ pub trait AuthZTableOps: Authorizer {
         let decisions = self
             .are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &batch_requests)
             .await?
-            .into_inner();
+            .into_allowed();
 
         // Check authorization results.
         // Due to ordering above, CAN_SEE_PERMISSION is always first for each table.
@@ -908,7 +909,7 @@ pub trait AuthZTableOps: Authorizer {
         let result = self
             .are_allowed_table_actions_vec(metadata, warehouse, parent_namespaces, &actions_vec)
             .await?
-            .into_inner();
+            .into_allowed();
         let n_returned = result.len();
         let arr: [bool; N] = result
             .try_into()
@@ -927,7 +928,7 @@ pub trait AuthZTableOps: Authorizer {
             &NamespaceWithParent,
             ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
             let namespaces: Vec<&NamespaceWithParent> = actions.iter().map(|(ns, _)| *ns).collect();
@@ -980,7 +981,10 @@ pub trait AuthZTableOps: Authorizer {
 
         // If all actions are auto-decided, return early
         if actions_to_check.is_empty() {
-            Ok(auto_approved.into_iter().map(|v| v.unwrap()).collect())
+            Ok(auto_approved
+                .into_iter()
+                .map(|v| AuthorizationDecision::from(v.unwrap()))
+                .collect())
         } else {
             let decisions = self
                 .are_allowed_table_actions_impl(
@@ -1000,11 +1004,17 @@ pub trait AuthZTableOps: Authorizer {
                 .into());
             }
 
-            // Merge auto-approved decisions with checked decisions
+            // Merge auto-approved decisions (warehouse-mismatch / bypass) with the
+            // authorizer's checked decisions, preserving each one's `determined_by`.
             let mut decision_iter = decisions.into_iter();
-            let final_decisions: Vec<bool> = auto_approved
+            let final_decisions: Vec<AuthorizationDecision> = auto_approved
                 .into_iter()
-                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap()))
+                .map(|auto| {
+                    auto.map_or_else(
+                        || decision_iter.next().unwrap(),
+                        AuthorizationDecision::from,
+                    )
+                })
                 .collect();
 
             Ok(final_decisions)
@@ -1038,7 +1048,7 @@ pub trait AuthZTableOps: Authorizer {
                 AG,
             >,
         )],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         let mut tables = Vec::new();
         let mut views = Vec::new();
         let mut generic_tables = Vec::new();
@@ -1107,28 +1117,18 @@ pub trait AuthZTableOps: Authorizer {
             .into());
         }
 
-        // Reorder results to match the original order of actions
-        let mut table_idx = 0;
-        let mut view_idx = 0;
-        let mut gt_idx = 0;
-        let ordered_results: Vec<bool> = actions
+        // Reorder results to match the original order of actions. Each per-type
+        // result is consumed in order (lengths validated above), carrying its
+        // `determined_by` through unchanged.
+        let mut table_results = table_results.into_iter();
+        let mut view_results = view_results.into_iter();
+        let mut generic_table_results = generic_table_results.into_iter();
+        let ordered_results: Vec<AuthorizationDecision> = actions
             .iter()
             .map(|(_ns, action)| match action {
-                ActionOnTableOrView::Table(_) => {
-                    let result = table_results[table_idx];
-                    table_idx += 1;
-                    result
-                }
-                ActionOnTableOrView::View(_) => {
-                    let result = view_results[view_idx];
-                    view_idx += 1;
-                    result
-                }
-                ActionOnTableOrView::GenericTable(_) => {
-                    let result = generic_table_results[gt_idx];
-                    gt_idx += 1;
-                    result
-                }
+                ActionOnTableOrView::Table(_) => table_results.next().unwrap(),
+                ActionOnTableOrView::View(_) => view_results.next().unwrap(),
+                ActionOnTableOrView::GenericTable(_) => generic_table_results.next().unwrap(),
             })
             .collect();
 
@@ -1176,7 +1176,7 @@ pub trait AuthZTableOps: Authorizer {
         let decisions = self
             .are_allowed_tabular_actions_vec(metadata, warehouse, parent_namespaces, tabulars)
             .await?
-            .into_inner();
+            .into_allowed();
 
         for ((_ns, t), &allowed) in tabulars.iter().zip(decisions.iter()) {
             if !allowed {

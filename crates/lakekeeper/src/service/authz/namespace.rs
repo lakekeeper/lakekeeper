@@ -12,10 +12,11 @@ use crate::{
         NamespaceHierarchy, NamespaceId, NamespaceIdentOrId, NamespaceNotFound,
         NamespaceWithParent, ResolvedWarehouse, SerializationError,
         authz::{
-            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzBadRequest, AuthzWarehouseOps as _, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogNamespaceAction, IsAllowedActionError,
-            MustUse, RequireWarehouseActionError, UserOrRole,
+            AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
+            AuthorizationDecision, Authorizer, AuthzBadRequest, AuthzWarehouseOps as _,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogNamespaceAction, IsAllowedActionError, MustUse, RequireWarehouseActionError,
+            UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource, context::UserProvidedNamespace,
@@ -485,7 +486,7 @@ pub trait AuthzNamespaceOps: Authorizer {
                 actions,
             )
             .await?
-            .into_inner();
+            .into_allowed();
         let n_returned = result.len();
         let arr: [bool; N] = result
             .try_into()
@@ -502,7 +503,7 @@ pub trait AuthzNamespaceOps: Authorizer {
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&impl AuthZNamespaceInfo, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
@@ -523,7 +524,10 @@ pub trait AuthzNamespaceOps: Authorizer {
             .collect();
 
         if metadata.bypasses_control_plane_authz(for_user) {
-            Ok(warehouse_matches)
+            Ok(warehouse_matches
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         } else {
             let converted = actions
                 .iter()
@@ -539,20 +543,33 @@ pub trait AuthzNamespaceOps: Authorizer {
                 )
                 .await?;
 
-            if warehouse_matches.len() != actions.len() {
+            // `warehouse_matches` is built from `actions` so it always matches in
+            // length; the authorizer's result is what could be truncated, so guard
+            // its length before zipping (a short `zip` would silently drop tuples).
+            if authz_results.len() != actions.len() {
                 return Err(AuthorizationCountMismatch::new(
                     actions.len(),
-                    warehouse_matches.len(),
+                    authz_results.len(),
                     "namespace",
                 )
                 .into());
             }
 
-            // Combine warehouse check with authorization check (both must be true)
+            // Combine the local warehouse precheck with the authorizer's verdict.
+            // A warehouse mismatch is a *local* denial, so it carries no
+            // `determined_by` — attributing it to the authorizer's policies would
+            // be wrong. When the warehouse matches, the authorizer's decision
+            // (verdict and diagnostics) stands as-is.
             let results = warehouse_matches
                 .iter()
-                .zip(authz_results.iter())
-                .map(|(warehouse_match, authz_allowed)| *warehouse_match && *authz_allowed)
+                .zip(authz_results)
+                .map(|(warehouse_match, authz)| {
+                    if *warehouse_match {
+                        authz
+                    } else {
+                        AuthorizationDecision::deny()
+                    }
+                })
                 .collect::<Vec<_>>();
 
             Ok(results)

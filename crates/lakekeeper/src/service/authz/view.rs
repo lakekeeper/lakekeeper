@@ -12,9 +12,9 @@ use crate::{
         ViewId, ViewIdentOrId, ViewInfo,
         authz::{
             ActionOnView, AuthZError, AuthorizationBackendUnavailable, AuthorizationCountMismatch,
-            Authorizer, AuthzBadRequest, AuthzNamespaceOps, AuthzWarehouseOps,
-            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
-            CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationDecision, Authorizer, AuthzBadRequest, AuthzNamespaceOps,
+            AuthzWarehouseOps, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
+            CatalogAction, CatalogViewAction, IsAllowedActionError, MustUse, UserOrRole,
             refresh_warehouse_and_namespace_if_needed,
         },
         catalog_store::{
@@ -486,7 +486,7 @@ pub trait AuthZViewOps: Authorizer {
         let result = self
             .are_allowed_view_actions_vec(metadata, warehouse, parent_namespaces, &actions_vec)
             .await?
-            .into_inner();
+            .into_allowed();
         let n_returned = result.len();
         let arr: [bool; N] = result
             .try_into()
@@ -503,7 +503,7 @@ pub trait AuthZViewOps: Authorizer {
             &NamespaceWithParent,
             ActionOnView<'_, '_, impl AuthZViewInfo, A>,
         )],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         #[cfg(debug_assertions)]
         {
             let namespaces: Vec<&NamespaceWithParent> = actions.iter().map(|(ns, _)| *ns).collect();
@@ -553,7 +553,10 @@ pub trait AuthZViewOps: Authorizer {
 
         // If all actions are auto-decided, return early
         if actions_to_check.is_empty() {
-            Ok(auto_approved.into_iter().map(|v| v.unwrap()).collect())
+            Ok(auto_approved
+                .into_iter()
+                .map(|v| AuthorizationDecision::from(v.unwrap()))
+                .collect())
         } else {
             let decisions = self
                 .are_allowed_view_actions_impl(
@@ -573,11 +576,17 @@ pub trait AuthZViewOps: Authorizer {
                 .into());
             }
 
-            // Merge auto-approved decisions with checked decisions
+            // Merge auto-approved decisions (warehouse-mismatch / bypass) with the
+            // authorizer's checked decisions, preserving each one's `determined_by`.
             let mut decision_iter = decisions.into_iter();
-            let final_decisions: Vec<bool> = auto_approved
+            let final_decisions: Vec<AuthorizationDecision> = auto_approved
                 .into_iter()
-                .map(|auto| auto.unwrap_or_else(|| decision_iter.next().unwrap()))
+                .map(|auto| {
+                    auto.map_or_else(
+                        || decision_iter.next().unwrap(),
+                        AuthorizationDecision::from,
+                    )
+                })
                 .collect();
 
             Ok(final_decisions)
