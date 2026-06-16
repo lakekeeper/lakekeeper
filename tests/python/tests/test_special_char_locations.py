@@ -42,18 +42,32 @@ _MINIO_NO_IAM_VARS = "MinIO does not resolve IAM policy variables (${*}/${?}/${$
 # Note: `..` and `.` are removed by RFC 3986 path normalisation in
 # `url::Url`, so they can never round-trip in a URL-based location and are
 # not testable here.
+_ONELAKE_PERCENT_COLLAPSE = (
+    "OneLake collapses any `%XX` in the blob path to its decoded character, "
+    "breaking the byte-literal model — Lakekeeper rejects such paths at create time."
+)
+
 SPECIAL_CHARS = [
     SpecialChar("star", "*", expect_deny={("s3", "minio"): _MINIO_NO_IAM_VARS}),
-    SpecialChar("question", "%3F"),
+    SpecialChar(
+        "question",
+        "%3F",
+        expect_create_reject={("onelake", "*"): _ONELAKE_PERCENT_COLLAPSE},
+    ),
     SpecialChar("dollar", "$", expect_deny={("s3", "minio"): _MINIO_NO_IAM_VARS}),
     SpecialChar("squote", "'"),
     SpecialChar("plus", "+"),
-    SpecialChar("dquote", "%22"),
+    SpecialChar(
+        "dquote",
+        "%22",
+        expect_create_reject={("onelake", "*"): _ONELAKE_PERCENT_COLLAPSE},
+    ),
     SpecialChar(
         "space",
         "%20",
         expect_create_reject={
-            ("adls", "*"): "Azure ADLS rejects whitespace-only path segments"
+            ("adls", "*"): "Azure ADLS rejects whitespace-only path segments",
+            ("onelake", "*"): _ONELAKE_PERCENT_COLLAPSE,
         },
     ),
 ]
@@ -178,7 +192,7 @@ def _try_write_payload(
         except botocore.exceptions.ClientError as e:
             return f"s3 ClientError: {e.response.get('Error', {}).get('Code', '?')}"
         return None
-    if provider == "adls":
+    if provider in ("adls", "onelake"):
         sas_key = next((k for k in config if k.startswith("adls.sas-token.")), None)
         assert sas_key, f"no adls.sas-token.* in config: {list(config)}"
         sas = config[sas_key].lstrip("?")
@@ -356,7 +370,7 @@ def _try_read(provider: str, config: dict, target_url: str) -> Optional[bytes]:
             if code in ("AccessDenied", "NoSuchKey", "403", "404"):
                 return None
             raise
-    if provider == "adls":
+    if provider in ("adls", "onelake"):
         sas_key = next((k for k in config if k.startswith("adls.sas-token.")), None)
         assert sas_key, f"no adls.sas-token.* in config: {list(config)}"
         sas = config[sas_key].lstrip("?")
@@ -373,7 +387,11 @@ def _try_read(provider: str, config: dict, target_url: str) -> Optional[bytes]:
         r = requests.get(https_url, timeout=HTTP_TIMEOUT)
         if 200 <= r.status_code < 300:
             return r.content
-        if r.status_code in (403, 404):
+        # 401 (signature mismatch on canonical resource) is the correct outcome
+        # when a SAS scoped to path A is presented against URL B — OneLake
+        # treats it as "this SAS doesn't authorise that URL", same security
+        # meaning as 403/404. Group all three as "denied".
+        if r.status_code in (401, 403, 404):
             return None
         raise AssertionError(
             f"adls GET {_safe_url(https_url)} HTTP {r.status_code} "
@@ -420,6 +438,14 @@ def test_alias_distinct_pair_credential_isolation(
     if not _vending_enabled(storage_config):
         pytest.skip("requires vended credentials")
     provider = _provider(storage_config)
+    if provider == "onelake":
+        # OneLake collapses any `%XX` in blob names to its decoded character,
+        # so `%41bc` and `Abc` would alias rather than be distinct.
+        # Lakekeeper's OneLake storage profile rejects `%`-bearing path
+        # segments at create time to avoid silently aliasing tables — meaning
+        # the byte-literal invariant this test asserts is, on OneLake,
+        # achieved by rejection rather than by isolation.
+        pytest.skip("OneLake doesn't support the byte-literal path model")
 
     ns_name = f"alias_{pair.id}_{uuid.uuid4().hex[:8]}"
     _create_namespace(warehouse, ns_name)

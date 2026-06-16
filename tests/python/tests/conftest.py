@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     azure_storage_account_name: Optional[str] = None
     azure_storage_filesystem: Optional[str] = None
     azure_allow_alternative_protocols: Optional[bool] = None
+    onelake_workspace_id: Optional[str] = None
+    onelake_lakehouse_id: Optional[str] = None
+    onelake_region: Optional[str] = None
+    # Comma-separated subset of `default,regional,workspace-private-link`.
+    # Each listed mode fans out into its own `storage_config` parametrization.
+    # `regional` additionally requires `LAKEKEEPER_TEST__ONELAKE_REGION`.
+    # `workspace-private-link` requires the caller to have a Fabric
+    # workspace-private-link endpoint provisioned and reachable from the
+    # test runner. (Tenant-level private link doesn't need its own mode —
+    # it routes the global onelake FQDN privately and works under `default`.)
+    onelake_endpoint_mode: Optional[str] = "default"
     gcs_credential: Optional[Secret] = None
     gcs_bucket: Optional[str] = None
     openid_provider_uri: Optional[str] = None
@@ -113,8 +124,41 @@ if (
             "must be one of 'both', 'enabled', 'disabled'"
         )
 
-if settings.azure_client_id is not None:
+# Generic ADLS / WASBS testing only when a storage account is supplied.
+# `azure_client_id` alone is not a sufficient signal — it is also the Entra
+# app reg that OneLake reuses, so gating on it pulls generic-ADLS configs into
+# OneLake-only test runs. docker-compose substitutes unset host vars to empty
+# string, so guard against both `None` and `""`.
+if settings.azure_storage_account_name and settings.azure_client_id:
     STORAGE_CONFIGS.append({"type": "azure"})
+
+# Fan out one storage_config entry per requested OneLake endpoint mode. A
+# OneLake warehouse is identified by workspace+lakehouse; client creds come
+# from the generic AZURE_* env vars (same Entra app reg in practice).
+# `regional` mode also requires LAKEKEEPER_TEST__ONELAKE_REGION.
+if (
+    settings.onelake_workspace_id
+    and settings.onelake_lakehouse_id
+    and settings.azure_client_id
+):
+    _modes = {
+        m.strip()
+        for m in (settings.onelake_endpoint_mode or "default").split(",")
+        if m.strip()
+    }
+    if not _modes:
+        raise ValueError(
+            "LAKEKEEPER_TEST__ONELAKE_ENDPOINT_MODE must include at least one of "
+            "'default,regional,workspace-private-link'."
+        )
+    _unknown = _modes - {"default", "regional", "workspace-private-link"}
+    if _unknown:
+        raise ValueError(
+            f"Invalid LAKEKEEPER_TEST__ONELAKE_ENDPOINT_MODE entries: {sorted(_unknown)}. "
+            "Must be a comma-separated subset of 'default,regional,workspace-private-link'."
+        )
+    for _mode in sorted(_modes):
+        STORAGE_CONFIGS.append({"type": "onelake", "endpoint-mode": _mode})
 
 if settings.gcs_credential is not None:
     STORAGE_CONFIGS.append({"type": "gcs"})
@@ -265,6 +309,54 @@ def storage_config(request) -> dict:
                 "tenant-id": settings.azure_tenant_id,
             },
         }
+    elif request.param["type"] == "onelake":
+        if not settings.onelake_workspace_id:
+            pytest.skip("LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID is not set")
+        if not settings.onelake_lakehouse_id:
+            pytest.skip("LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID is not set")
+        if not settings.azure_client_id:
+            pytest.skip("LAKEKEEPER_TEST__AZURE_CLIENT_ID is not set")
+
+        endpoint_mode = request.param["endpoint-mode"]
+        if endpoint_mode == "default":
+            endpoint_mode_json: dict = {"type": "default"}
+        elif endpoint_mode == "regional":
+            if not settings.onelake_region:
+                pytest.skip(
+                    "LAKEKEEPER_TEST__ONELAKE_REGION is not set "
+                    "(required for endpoint-mode=regional)"
+                )
+            endpoint_mode_json = {
+                "type": "regional",
+                "region": settings.onelake_region,
+            }
+        elif endpoint_mode == "workspace-private-link":
+            # The caller is responsible for having provisioned a Fabric
+            # workspace-private-link endpoint reachable from this runner.
+            # Connection failures here aren't a test bug — they're an
+            # infra-setup gap.
+            endpoint_mode_json = {"type": "workspace-private-link"}
+        else:
+            raise ValueError(f"Unknown OneLake endpoint-mode: {endpoint_mode}")
+
+        return {
+            "storage-profile": {
+                "type": "onelake",
+                "workspace-id": settings.onelake_workspace_id,
+                "lakehouse-id": settings.onelake_lakehouse_id,
+                "directory-rel-path": test_id,
+                "endpoint-mode": endpoint_mode_json,
+                "sas-token-validity-seconds": 60,
+                "layout": layout,
+            },
+            "storage-credential": {
+                "type": "az",
+                "credential-type": "client-credentials",
+                "client-id": settings.azure_client_id,
+                "client-secret": settings.azure_client_secret,
+                "tenant-id": settings.azure_tenant_id,
+            },
+        }
     elif request.param["type"] == "gcs":
         if settings.gcs_bucket is None or settings.gcs_bucket == "":
             pytest.skip("LAKEKEEPER_TEST__GCS_BUCKET is not set")
@@ -284,6 +376,91 @@ def storage_config(request) -> dict:
         }
     else:
         raise ValueError(f"Unknown storage type: {request.param['type']}")
+
+
+class _OneLakeFsAdapter:
+    """Minimal fsspec-shaped wrapper over `DataLakeServiceClient` for OneLake.
+
+    OneLake's blob endpoint rejects several LIST verbs that adlfs's
+    BlobServiceClient relies on, so the tests' `io_fsspec` fixture needs a
+    DFS-native client when the storage backend is OneLake. Only the methods
+    actually called from the test files (`.ls`, `.exists`,
+    `.invalidate_cache`) are implemented.
+    """
+
+    def __init__(
+        self,
+        *,
+        account_host: str,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+    ):
+        from azure.identity import ClientSecretCredential
+        from azure.storage.filedatalake import DataLakeServiceClient
+
+        self._service = DataLakeServiceClient(
+            account_url=f"https://{account_host}",
+            credential=ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            ),
+        )
+
+    @staticmethod
+    def _split(abfss_url: str) -> tuple[str, str]:
+        # abfss://<filesystem>@<host>/<path...>  →  (filesystem, path)
+        if not abfss_url.startswith("abfss://"):
+            raise ValueError(f"Not an abfss URL: {abfss_url}")
+        without_scheme = abfss_url[len("abfss://") :]
+        fs_part, _, host_and_path = without_scheme.partition("@")
+        _, _, path = host_and_path.partition("/")
+        return fs_part, path.rstrip("/")
+
+    def ls(self, abfss_url: str) -> list[str]:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        filesystem, path = self._split(abfss_url)
+        fs_client = self._service.get_file_system_client(filesystem)
+        try:
+            return [
+                f"abfss://{filesystem}@{self._service.account_name}.dfs.fabric.microsoft.com/{p.name}"
+                for p in fs_client.get_paths(path=path or None, recursive=False)
+            ]
+        except ResourceNotFoundError:
+            return []
+
+    def exists(self, abfss_url: str) -> bool:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        filesystem, path = self._split(abfss_url)
+        if not path:
+            try:
+                self._service.get_file_system_client(
+                    filesystem
+                ).get_file_system_properties()
+                return True
+            except ResourceNotFoundError:
+                return False
+        try:
+            self._service.get_file_system_client(filesystem).get_file_client(
+                path
+            ).get_file_properties()
+            return True
+        except ResourceNotFoundError:
+            pass
+        try:
+            self._service.get_file_system_client(filesystem).get_directory_client(
+                path
+            ).get_directory_properties()
+            return True
+        except ResourceNotFoundError:
+            return False
+
+    def invalidate_cache(self) -> None:
+        # No client-side cache to invalidate.
+        return None
 
 
 @pytest.fixture(scope="session")
@@ -321,6 +498,35 @@ def io_fsspec(storage_config: dict):
             client_secret=storage_config["storage-credential"]["client-secret"],
         )
         return fs
+    if storage_config["storage-profile"]["type"] == "onelake":
+        endpoint_mode = storage_config["storage-profile"]["endpoint-mode"]
+        mode_type = endpoint_mode["type"]
+        if mode_type == "workspace-private-link":
+            pytest.skip(
+                "io_fsspec read-back is skipped for OneLake workspace-private-link "
+                "warehouses (caller-provisioned infra not assumed)"
+            )
+
+        if mode_type == "default":
+            account_host = "onelake.dfs.fabric.microsoft.com"
+        elif mode_type == "regional":
+            account_host = f"{endpoint_mode['region']}-onelake.dfs.fabric.microsoft.com"
+        else:
+            raise ValueError(f"Unknown OneLake endpoint-mode for fsspec: {mode_type}")
+
+        # OneLake's blob surface is not API-compatible with a regular ADLS Gen2
+        # storage account: adlfs's BlobServiceClient-backed LIST calls fail with
+        # `IncorrectEndpointError: Operation not supported on the specified
+        # endpoint`. Use the DFS-native DataLakeServiceClient instead and
+        # expose a minimal fsspec-shaped surface (.ls / .exists /
+        # .invalidate_cache) — the only methods the test suite calls on
+        # `io_fsspec`.
+        return _OneLakeFsAdapter(
+            account_host=account_host,
+            tenant_id=storage_config["storage-credential"]["tenant-id"],
+            client_id=storage_config["storage-credential"]["client-id"],
+            client_secret=storage_config["storage-credential"]["client-secret"],
+        )
 
 
 @dataclasses.dataclass

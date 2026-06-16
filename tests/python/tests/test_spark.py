@@ -206,19 +206,20 @@ def test_drop_table(
             if not exists:
                 break
 
-        assert (
-            not exists
-        ), f"Table location {table_location} still exists after waiting for {i} seconds"
+        assert not exists, (
+            f"Table location {table_location} still exists after waiting for {i} seconds"
+        )
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "adls":
-        # for adls with vended credentials enabled spark tries to refresh the credentials
-        # for purge after the table is dropped, which fails as the table no longer exists.
-        # Set f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled": "false"
-        # in the catalog session to make client side purge work.
+    if storage_config["storage-profile"]["type"] in ("adls", "onelake"):
+        # For ADLS / OneLake with vended credentials enabled, Spark tries to
+        # refresh the credentials for purge after the table is dropped, which
+        # fails as the table no longer exists. Set
+        # f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled":
+        # "false" in the catalog session to make client side purge work.
         pytest.skip(
-            "ADLS currently doesn't work with spark PURGE and refresh credentials."
+            "ADLS / Onelake currently don't work with spark PURGE and refresh credentials."
         )
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
@@ -308,12 +309,12 @@ def drop_table_and_assert_that_table_is_gone(
     file_io = io._infer_file_io_from_scheme(table_0.location(), properties)
     # sleep to give time for the table to be gone
     time.sleep(5)
-    # On filesystems with hierarchies like HDFS and ADLS we might leave
+    # On filesystems with hierarchies like HDFS and ADLS/Onelake we might leave
     # empty directories. This is a known issue:
     # https://github.com/lakekeeper/lakekeeper/issues/1064
     location = table_0.location().rstrip("/") + "/"
     inp = file_io.new_input(location)
-    if storage_config["storage-profile"]["type"] != "adls":
+    if storage_config["storage-profile"]["type"] not in ("adls", "onelake"):
         assert not inp.exists(), f"Table location {location} still exists"
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
     assert len(tables) == 1
@@ -1663,9 +1664,7 @@ def test_view_case_insensitivity(spark, namespace):
 
 def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
     ns_name = f"Mixed_Case_Ns_{uuid.uuid4().hex[:8]}"
-    spark.sql(
-        f"CREATE NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
-    )
+    spark.sql(f"CREATE NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`")
 
     # Create table using lowercase namespace
     spark.sql(
@@ -1684,16 +1683,12 @@ def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
     # Cleanup: the warehouse uses soft-deletion, so DROP TABLE only marks the
     # table as deleted. Retry DROP NAMESPACE until the soft-deleted entry has
     # expired from the namespace's child set.
-    spark.sql(
-        f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test"
-    )
+    spark.sql(f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test")
     deadline = time.time() + 15
     last_err = None
     while time.time() < deadline:
         try:
-            spark.sql(
-                f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
-            )
+            spark.sql(f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`")
             last_err = None
             break
         except Exception as e:

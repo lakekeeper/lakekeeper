@@ -9,7 +9,7 @@ pub mod storage_layout;
 
 use std::{collections::HashMap, str::FromStr as _};
 
-pub use az::{AdlsProfile, AzCredential};
+pub use az::{AzCredential, EndpointMode, GenericAdlsProfile, OneLakeProfile, TopLevelFolder};
 pub(crate) use error::ValidationError;
 use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
@@ -54,10 +54,17 @@ use crate::{
 // tokio::join! uses unsafe code internally.
 // This is no problem since our constructor does not enforce any invariants relevant to the unsafe code. Deserialize is even the primary way of constructing `StorageProfile` since it is received via REST.
 pub enum StorageProfile {
-    /// Azure storage profile
+    /// Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
+    /// any storage account.
     #[serde(rename = "adls", alias = "azdls")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileAdls"))]
-    Adls(AdlsProfile),
+    Adls(GenericAdlsProfile),
+    /// `OneLake` (Microsoft Fabric) profile. Knows how to construct `OneLake`
+    /// URLs from workspace + lakehouse IDs and how to derive the
+    /// workspace-private-link endpoint host.
+    #[serde(rename = "onelake")]
+    #[cfg_attr(feature = "open-api", schema(title = "StorageProfileOneLake"))]
+    OneLake(OneLakeProfile),
     /// S3 storage profile
     #[serde(rename = "s3")]
     #[cfg_attr(feature = "open-api", schema(title = "StorageProfileS3"))]
@@ -72,7 +79,8 @@ pub enum StorageProfile {
 /// Storage profile for a warehouse.
 #[derive(Debug, Hash, Copy, Clone, Eq, PartialEq, derive_more::From)]
 enum StorageProfileBorrowed<'a> {
-    Adls(&'a AdlsProfile),
+    Adls(&'a GenericAdlsProfile),
+    OneLake(&'a OneLakeProfile),
     S3(&'a S3Profile),
     Gcs(&'a GcsProfile),
     #[cfg(feature = "test-utils")]
@@ -138,6 +146,7 @@ impl StorageProfile {
                 profile.generate_catalog_config(warehouse_id, request_metadata, delete_profile)
             }
             StorageProfile::Adls(prof) => prof.generate_catalog_config(warehouse_id),
+            StorageProfile::OneLake(prof) => prof.generate_catalog_config(warehouse_id),
             StorageProfile::Gcs(prof) => prof.generate_catalog_config(warehouse_id),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => CatalogConfig {
@@ -159,6 +168,9 @@ impl StorageProfile {
                 this_profile.update_with(other_profile).map(Into::into)
             }
             (StorageProfile::Adls(this_profile), StorageProfile::Adls(other_profile)) => {
+                this_profile.update_with(other_profile).map(Into::into)
+            }
+            (StorageProfile::OneLake(this_profile), StorageProfile::OneLake(other_profile)) => {
                 this_profile.update_with(other_profile).map(Into::into)
             }
             (StorageProfile::Gcs(this_profile), StorageProfile::Gcs(other_profile)) => {
@@ -202,6 +214,15 @@ impl StorageProfile {
                 )
                 .await
                 .map(Into::into),
+            StorageProfile::OneLake(profile) => profile
+                .lakekeeper_io(
+                    secret
+                        .map(|s| s.try_to_az())
+                        .ok_or_else(|| CredentialsError::MissingCredential("onelake".to_string()))?
+                        .map_err(CredentialsError::from)?,
+                )
+                .await
+                .map(Into::into),
             StorageProfile::Gcs(prof) => prof
                 .lakekeeper_io(
                     secret
@@ -226,6 +247,7 @@ impl StorageProfile {
         match self {
             StorageProfile::S3(profile) => profile.base_location().map(S3Location::into_location),
             StorageProfile::Adls(profile) => profile.base_location(),
+            StorageProfile::OneLake(profile) => profile.base_location(),
             StorageProfile::Gcs(profile) => profile.base_location(),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(profile) => Ok(Location::from_str(&profile.base_location)
@@ -260,6 +282,7 @@ impl StorageProfile {
         match self {
             StorageProfile::S3(_) => "s3",
             StorageProfile::Adls(_) => "adls",
+            StorageProfile::OneLake(_) => "onelake",
             StorageProfile::Gcs(_) => "gcs",
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => "memory",
@@ -308,6 +331,22 @@ impl StorageProfile {
                         data_access,
                         secret
                             .ok_or_else(|| CredentialsError::MissingCredential("adls".to_string()))?
+                            .try_to_az()
+                            .map_err(CredentialsError::from)?,
+                        stc_request,
+                        tabular_info,
+                        request_metadata,
+                    )
+                    .await
+            }
+            StorageProfile::OneLake(profile) => {
+                profile
+                    .generate_table_config(
+                        data_access,
+                        secret
+                            .ok_or_else(|| {
+                                CredentialsError::MissingCredential("onelake".to_string())
+                            })?
                             .try_to_az()
                             .map_err(CredentialsError::from)?,
                         stc_request,
@@ -372,6 +411,12 @@ impl StorageProfile {
                     .map_err(CredentialsError::from)?,
             ),
             StorageProfile::Adls(prof) => prof.normalize(),
+            StorageProfile::OneLake(prof) => prof.normalize(
+                credential
+                    .map(|s| s.try_to_az())
+                    .transpose()
+                    .map_err(CredentialsError::from)?,
+            ),
             StorageProfile::Gcs(profile) => profile.normalize(),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => Ok(()),
@@ -417,6 +462,7 @@ impl StorageProfile {
         let test_vended_credentials = match self {
             StorageProfile::S3(profile) => profile.sts_enabled,
             StorageProfile::Adls(profile) => profile.sas_enabled,
+            StorageProfile::OneLake(profile) => profile.sas_enabled,
             StorageProfile::Gcs(profile) => profile.sts_enabled,
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(_) => false,
@@ -533,7 +579,15 @@ impl StorageProfile {
             }
             StorageProfile::Adls(profile) => {
                 tracing::debug!("Building ADLS storage from vended credentials.");
-                az::lakekeeper_io_from_vended_table_config(profile, &tbl_config.config)
+                profile
+                    .lakekeeper_io_from_vended_table_config(&tbl_config.config)
+                    .await?
+                    .into()
+            }
+            StorageProfile::OneLake(profile) => {
+                tracing::debug!("Building `OneLake` storage from vended credentials.");
+                profile
+                    .lakekeeper_io_from_vended_table_config(&tbl_config.config)
                     .await?
                     .into()
             }
@@ -697,16 +751,30 @@ impl StorageProfile {
         }
     }
 
-    /// Try to convert the storage profile into an Az profile.
+    /// Try to convert the storage profile into a generic ADLS profile.
     ///
     /// # Errors
-    /// Fails if the profile is not an Az profile.
-    pub fn try_into_az(self) -> Result<AdlsProfile, UnexpectedStorageType> {
+    /// Fails if the profile is not a generic ADLS profile.
+    pub fn try_into_generic_adls(self) -> Result<GenericAdlsProfile, UnexpectedStorageType> {
         match self {
             Self::Adls(profile) => Ok(profile),
             _ => Err(UnexpectedStorageType {
                 is: self.storage_type(),
                 to: "adls",
+            }),
+        }
+    }
+
+    /// Try to convert the storage profile into a `OneLake` profile.
+    ///
+    /// # Errors
+    /// Fails if the profile is not a `OneLake` profile.
+    pub fn try_into_onelake(self) -> Result<OneLakeProfile, UnexpectedStorageType> {
+        match self {
+            Self::OneLake(profile) => Ok(profile),
+            _ => Err(UnexpectedStorageType {
+                is: self.storage_type(),
+                to: "onelake",
             }),
         }
     }
@@ -721,6 +789,9 @@ impl StorageProfile {
                 profile.is_overlapping_location(other_profile)
             }
             (StorageProfile::Adls(profile), StorageProfile::Adls(other_profile)) => {
+                profile.is_overlapping_location(other_profile)
+            }
+            (StorageProfile::OneLake(profile), StorageProfile::OneLake(other_profile)) => {
                 profile.is_overlapping_location(other_profile)
             }
             (StorageProfile::Gcs(profile), StorageProfile::Gcs(other_profile)) => {
@@ -761,6 +832,31 @@ impl StorageProfile {
             if other_scheme != base_location.scheme() {
                 base_location.set_scheme_unchecked_mut(other_scheme);
             }
+        }
+
+        if let StorageProfile::OneLake(profile) = self {
+            let other_scheme = other.scheme();
+            if !profile.is_allowed_schema(other_scheme) {
+                tracing::debug!("Scheme {other_scheme} is not allowed for `OneLake` profile.",);
+                return false;
+            }
+            // OneLake collapses any `%XX` escape in the blob path to its
+            // decoded character somewhere in its request-handling pipeline.
+            // The user-delegation-key-signed canonical never matches the
+            // collapsed form, so vended SAS for such paths fails with
+            // `401 Access token validation failed`. Reject up-front rather
+            // than create unreachable tables.
+            for seg in other.path_segments() {
+                if seg.contains('%') {
+                    tracing::debug!(
+                        "OneLake path segment `{seg}` contains `%` which OneLake \
+                         silently collapses, breaking vended-credentials access. \
+                         Reject up-front."
+                    );
+                    return false;
+                }
+            }
+            // Base location is always `abfss://` for OneLake; no scheme rewrite needed.
         }
 
         base_location.with_trailing_slash();
@@ -832,6 +928,7 @@ impl StorageProfile {
         match self {
             StorageProfile::S3(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Adls(profile) => profile.storage_layout.as_ref(),
+            StorageProfile::OneLake(profile) => profile.storage_layout.as_ref(),
             StorageProfile::Gcs(profile) => profile.storage_layout.as_ref(),
             #[cfg(feature = "test-utils")]
             StorageProfile::Memory(profile) => profile.storage_layout.as_ref(),
@@ -1294,7 +1391,7 @@ mod tests {
 
     #[test]
     fn test_is_allowed_location_wasbs() {
-        let profile = StorageProfile::Adls(AdlsProfile {
+        let profile = StorageProfile::Adls(GenericAdlsProfile {
             filesystem: "filesystem".to_string(),
             key_prefix: Some("test_prefix".to_string()),
             account_name: "account".to_string(),
@@ -1328,6 +1425,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_is_allowed_location_onelake_rejects_percent_in_segments() {
+        use az::{EndpointMode, OneLakeProfile, TopLevelFolder};
+        use uuid::Uuid;
+        let profile = StorageProfile::OneLake(OneLakeProfile {
+            workspace_id: Uuid::parse_str("0388d6cb-27fd-4dc5-948b-32ab7aab9577").unwrap(),
+            lakehouse_id: Uuid::parse_str("eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac").unwrap(),
+            directory_rel_path: Some("test_prefix".to_string()),
+            top_level_folder: TopLevelFolder::default(),
+            endpoint_mode: EndpointMode::Default,
+            sas_token_validity_seconds: None,
+            sas_enabled: true,
+            authority_host: None,
+            storage_layout: None,
+        });
+        let base = "abfss://0388d6cb-27fd-4dc5-948b-32ab7aab9577@onelake.dfs.fabric.microsoft.com/eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac/Files/test_prefix";
+        let cases = vec![
+            // Vanilla sub-locations are allowed.
+            (format!("{base}/ns/t"), true),
+            (format!("{base}/ns/t/metadata/00000.gz.metadata.json"), true),
+            // Any `%` in a segment is rejected (OneLake collapses `%XX`).
+            (format!("{base}/ns/%3F/data"), false),
+            (format!("{base}/ns/%22/data"), false),
+            (format!("{base}/ns/%41bc/data"), false),
+            (format!("{base}/ns/has%percent/data"), false),
+            // Raw URL-safe special chars are NOT blocked (they don't go
+            // through a `%` encoding on the wire).
+            (format!("{base}/ns/star*name/data"), true),
+            (format!("{base}/ns/dollar$name/data"), true),
+        ];
+        for (sublocation, expected_result) in cases {
+            let loc = Location::from_str(&sublocation).unwrap();
+            assert_eq!(
+                profile.is_allowed_location(&loc),
+                expected_result,
+                "sublocation={sublocation}",
+            );
+        }
+    }
+
     mod azure_integration_tests {
         use super::*;
 
@@ -1349,6 +1486,22 @@ mod tests {
                 test_profile_vended_creds(&cred, &mut profile).await;
                 test_profile_io(&cred, &mut profile).await;
             }
+        }
+    }
+
+    mod onelake_integration_tests {
+        use super::*;
+
+        #[tokio::test]
+        #[ignore = "live OneLake test; opt in with --ignored (see \
+                    az::onelake_integration_tests module docs)"]
+        async fn test_vended_onelake() {
+            let cred: StorageCredential =
+                super::az::test::onelake_integration_tests::client_creds().into();
+            let mut profile: StorageProfile =
+                az::test::onelake_integration_tests::onelake_profile().into();
+            test_profile_vended_creds(&cred, &mut profile).await;
+            test_profile_io(&cred, &mut profile).await;
         }
     }
 
@@ -1555,11 +1708,21 @@ mod tests {
             .unwrap();
         let (downscoped1, downscoped2): (StorageBackend, StorageBackend) = match profile {
             StorageProfile::Adls(p) => (
-                az::lakekeeper_io_from_vended_table_config(p, &config1.config)
+                p.lakekeeper_io_from_vended_table_config(&config1.config)
                     .await
                     .unwrap()
                     .into(),
-                az::lakekeeper_io_from_vended_table_config(p, &config2.config)
+                p.lakekeeper_io_from_vended_table_config(&config2.config)
+                    .await
+                    .unwrap()
+                    .into(),
+            ),
+            StorageProfile::OneLake(p) => (
+                p.lakekeeper_io_from_vended_table_config(&config1.config)
+                    .await
+                    .unwrap()
+                    .into(),
+                p.lakekeeper_io_from_vended_table_config(&config2.config)
                     .await
                     .unwrap()
                     .into(),
