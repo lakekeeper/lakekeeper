@@ -4345,7 +4345,7 @@ components:
         This profile speaks ADLS Gen2 against any storage account (including
         Microsoft Fabric / `OneLake`, if you configure `account_name = "onelake"`,
         `host = "dfs.fabric.microsoft.com"`, and a `key_prefix` like
-        `<lakehouse>/Files/<sub>`). Lakekeeper offers `FabricAdlsProfile` as a
+        `<lakehouse>/Files/<sub>`). Lakekeeper offers `OneLakeProfile` as a
         convenience layer that knows how to compute those values from
         workspace + lakehouse IDs and that supports `OneLake`'s private-link endpoint
         pattern.
@@ -5237,63 +5237,6 @@ components:
         type:
           type: string
           description: Internal type definition of the error
-    FabricAdlsProfile:
-      type: object
-      description: |-
-        Storage profile for a Microsoft Fabric / `OneLake` lakehouse.
-
-        Convenience wrapper around the ADLS Gen2 surface that derives the
-        account name (`onelake`), container (workspace ID), key prefix
-        (`<lakehouse>/Files/<sub>`), and endpoint host from the supplied workspace
-        and lakehouse UUIDs and endpoint mode.
-      required:
-        - workspace-id
-        - lakehouse-id
-      properties:
-        authority-host:
-          type:
-            - string
-            - 'null'
-          format: uri
-          description: |-
-            The authority host to use for authentication.
-            Default: `https://login.microsoftonline.com`.
-        directory-rel-path:
-          type:
-            - string
-            - 'null'
-          description: |-
-            Subpath beneath `<top-level-folder>/` inside the lakehouse — the root
-            directory under which Lakekeeper writes all warehouse data.
-        endpoint-mode:
-          $ref: '#/components/schemas/EndpointMode'
-          description: Endpoint connection mode. Defaults to the global endpoint.
-        lakehouse-id:
-          type: string
-          format: uuid
-          description: UUID of the lakehouse within the workspace.
-        sas-enabled:
-          type: boolean
-          description: Enable SAS-token generation. Defaults to true.
-        sas-token-validity-seconds:
-          type:
-            - integer
-            - 'null'
-          format: int64
-          description: 'SAS-token validity in seconds. Default: 3600. Max: 3600 (`OneLake` cap).'
-          minimum: 0
-        storage-layout:
-          oneOf:
-            - type: 'null'
-            - $ref: '#/components/schemas/StorageLayout'
-              description: Storage layout for namespace and tabular paths.
-        top-level-folder:
-          $ref: '#/components/schemas/TopLevelFolder'
-          description: Top-level managed folder. Defaults to `Files`.
-        workspace-id:
-          type: string
-          format: uuid
-          description: UUID of the Fabric workspace this warehouse lives in.
     GcsCredential:
       oneOf:
         - type: object
@@ -7371,6 +7314,63 @@ components:
         - select
         - create
         - modify
+    OneLakeProfile:
+      type: object
+      description: |-
+        Storage profile for a Microsoft Fabric / `OneLake` lakehouse.
+
+        Convenience wrapper around the ADLS Gen2 surface that derives the
+        account name (`onelake`), container (workspace ID), key prefix
+        (`<lakehouse>/Files/<sub>`), and endpoint host from the supplied workspace
+        and lakehouse UUIDs and endpoint mode.
+      required:
+        - workspace-id
+        - lakehouse-id
+      properties:
+        authority-host:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            The authority host to use for authentication.
+            Default: `https://login.microsoftonline.com`.
+        directory-rel-path:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Subpath beneath `<top-level-folder>/` inside the lakehouse — the root
+            directory under which Lakekeeper writes all warehouse data.
+        endpoint-mode:
+          $ref: '#/components/schemas/EndpointMode'
+          description: Endpoint connection mode. Defaults to the global endpoint.
+        lakehouse-id:
+          type: string
+          format: uuid
+          description: UUID of the lakehouse within the workspace.
+        sas-enabled:
+          type: boolean
+          description: Enable SAS-token generation. Defaults to true.
+        sas-token-validity-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: 'SAS-token validity in seconds. Default: 3600. Max: 3600 (`OneLake` cap).'
+          minimum: 0
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
+        top-level-folder:
+          $ref: '#/components/schemas/TopLevelFolder'
+          description: Top-level managed folder. Defaults to `Files`.
+        workspace-id:
+          type: string
+          format: uuid
+          description: UUID of the Fabric workspace this warehouse lives in.
     OpenFGAGenericTableAction:
       type: string
       enum:
@@ -8735,9 +8735,9 @@ components:
             Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
             any storage account.
         - allOf:
-            - $ref: '#/components/schemas/FabricAdlsProfile'
+            - $ref: '#/components/schemas/OneLakeProfile'
               description: |-
-                Microsoft Fabric / `OneLake` profile. Knows how to construct `OneLake`
+                `OneLake` (Microsoft Fabric) profile. Knows how to construct `OneLake`
                 URLs from workspace + lakehouse IDs and how to derive the
                 workspace-private-link endpoint host.
             - type: object
@@ -8747,10 +8747,10 @@ components:
                 type:
                   type: string
                   enum:
-                    - fabric
-          title: StorageProfileFabricAdls
+                    - onelake
+          title: StorageProfileOneLake
           description: |-
-            Microsoft Fabric / `OneLake` profile. Knows how to construct `OneLake`
+            `OneLake` (Microsoft Fabric) profile. Knows how to construct `OneLake`
             URLs from workspace + lakehouse IDs and how to derive the
             workspace-private-link endpoint host.
         - allOf:

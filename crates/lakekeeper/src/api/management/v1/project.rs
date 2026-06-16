@@ -8,8 +8,8 @@ use uuid::Uuid;
 pub use crate::service::{
     WarehouseStatus,
     storage::{
-        AzCredential, FabricAdlsProfile, GcsCredential, GcsProfile, GcsServiceKey,
-        GenericAdlsProfile, S3Credential, S3Profile, StorageCredential, StorageProfile,
+        AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile, OneLakeProfile,
+        S3Credential, S3Profile, StorageCredential, StorageProfile,
     },
 };
 use crate::{

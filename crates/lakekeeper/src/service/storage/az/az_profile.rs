@@ -43,7 +43,7 @@ pub(crate) const ALTERNATIVE_PROTOCOLS: [&str; 1] = ["wasbs"];
 /// This profile speaks ADLS Gen2 against any storage account (including
 /// Microsoft Fabric / `OneLake`, if you configure `account_name = "onelake"`,
 /// `host = "dfs.fabric.microsoft.com"`, and a `key_prefix` like
-/// `<lakehouse>/Files/<sub>`). Lakekeeper offers `FabricAdlsProfile` as a
+/// `<lakehouse>/Files/<sub>`). Lakekeeper offers `OneLakeProfile` as a
 /// convenience layer that knows how to compute those values from
 /// workspace + lakehouse IDs and that supports `OneLake`'s private-link endpoint
 /// pattern.

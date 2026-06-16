@@ -37,11 +37,11 @@ use crate::{
 
 mod az_profile;
 mod credentials;
-mod fabric_profile;
+mod onelake_profile;
 
 pub use az_profile::GenericAdlsProfile;
 pub use credentials::AzCredential;
-pub use fabric_profile::{EndpointMode, FabricAdlsProfile, TopLevelFolder};
+pub use onelake_profile::{EndpointMode, OneLakeProfile, TopLevelFolder};
 
 const DEFAULT_GENERIC_ADLS_HOST: &str = "dfs.core.windows.net";
 
@@ -54,7 +54,7 @@ static DEFAULT_AUTHORITY_HOST: LazyLock<Url> = LazyLock::new(|| {
 // `time::Duration::seconds` and the Azure SAS API both take `i64`. Conversions
 // at API boundaries thus stay direct, with no fallible cast.
 const MAX_GENERIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS: i64 = 7 * 24 * 60 * 60;
-const MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS: i64 = 60 * 60;
+const MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS: i64 = 60 * 60;
 const SAS_TOKEN_DEFAULT_VALIDITY_SECONDS: i64 = 3600;
 
 /// Backshift applied to `signed_start` to tolerate clock skew across machines.
@@ -82,7 +82,7 @@ const SAS_TOKEN_WARN_THRESHOLD_SECONDS: i64 = 60;
 /// Floor for the cache `valid_until` window — prevents an unusually short
 /// user TTL from collapsing the cache lifetime to zero (which would disable
 /// caching). The `StcExpiry` cache policy further halves this and caps at
-/// [`MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS`].
+/// [`MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS`].
 const MIN_CACHE_VALID_FOR_SECONDS: i64 = 10;
 
 // Compile-time invariants: catch a future tweak (e.g. raising
@@ -98,12 +98,12 @@ const _: () = {
         MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS > 0,
         "MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS must be positive",
     );
-    // The floor must not exceed Fabric's hard 1-hour cap; otherwise
+    // The floor must not exceed `OneLake`'s hard 1-hour cap; otherwise
     // `effective_ttl_seconds()` could return a value that
     // `validate_sas_token_validity_seconds` would have rejected on input.
     assert!(
-        MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS <= MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
-        "MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS must not exceed the Fabric cap",
+        MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS <= MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS,
+        "MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS must not exceed the OneLake cap",
     );
     assert!(
         MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS <= MAX_GENERIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
@@ -252,7 +252,7 @@ fn sas_validity_window(effective_ttl: i64) -> (OffsetDateTime, OffsetDateTime) {
 /// wall-clock validity left. Floored at [`MIN_CACHE_VALID_FOR_SECONDS`] so
 /// an unusually short user TTL doesn't collapse the cache window to zero.
 /// The `StcExpiry` policy in the cache layer further halves this and caps at
-/// [`MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS`].
+/// [`MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS`].
 fn cache_valid_until(effective_ttl: i64) -> Option<Instant> {
     let cache_secs =
         (effective_ttl - SAS_TOKEN_START_BACKSHIFT_SECONDS).max(MIN_CACHE_VALID_FOR_SECONDS);
@@ -340,7 +340,7 @@ async fn mint_sas_via_delegation_key(
 }
 
 /// Description of an ADLS-compatible storage profile sufficient for shared SAS
-/// minting + cache plumbing. Both `GenericAdlsProfile` and `FabricAdlsProfile`
+/// minting + cache plumbing. Both `GenericAdlsProfile` and `OneLakeProfile`
 /// build one of these and hand it to [`get_or_mint_sas`].
 pub(super) struct SasMintContext<'a> {
     pub(super) account_name: &'a str,
@@ -468,7 +468,7 @@ pub(super) struct AdlsTableConfigContext<'a, T: BasicTabularInfo> {
     pub(super) tabular_info: &'a T,
     pub(super) request_metadata: &'a RequestMetadata,
     /// Extra `(key, value)` pairs to emit into the vended-creds config.
-    /// Fabric uses this to publish `adls.account-host` so that pyiceberg /
+    /// `OneLake` uses this to publish `adls.account-host` so that pyiceberg /
     /// `adlfs.AzureBlobFileSystem` targets `*.fabric.microsoft.com` instead
     /// of defaulting to `<account>.blob.core.windows.net`.
     pub(super) extra_config: Vec<(String, String)>,
@@ -647,7 +647,7 @@ pub(crate) mod test {
 
     /// Read the cache-window remaining-seconds as `i64` for direct comparison
     /// against the surrounding `i64` constants. The values involved are
-    /// always small (≤ [`MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS`] = 3600),
+    /// always small (≤ [`MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS`] = 3600),
     /// so the conversion never wraps in practice.
     fn cache_remaining_secs(until: Instant) -> i64 {
         i64::try_from(until.duration_since(Instant::now()).as_secs())
@@ -689,40 +689,35 @@ pub(crate) mod test {
 
     #[test]
     fn test_validate_sas_token_validity_seconds_zero_rejected() {
-        let err = validate_sas_token_validity_seconds(
-            Some(0),
-            MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
-        )
-        .unwrap_err();
+        let err =
+            validate_sas_token_validity_seconds(Some(0), MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS)
+                .unwrap_err();
         assert!(format!("{err:?}").contains("greater than 0"), "{err:?}");
     }
 
     #[test]
     fn test_validate_sas_token_validity_seconds_above_max_rejected() {
-        let err = validate_sas_token_validity_seconds(
-            Some(3601),
-            MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
-        )
-        .unwrap_err();
+        let err =
+            validate_sas_token_validity_seconds(Some(3601), MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS)
+                .unwrap_err();
         assert!(format!("{err:?}").contains("3600"), "{err:?}");
     }
 
     #[test]
     fn test_validate_sas_token_validity_seconds_none_ok() {
-        validate_sas_token_validity_seconds(None, MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS)
-            .unwrap();
+        validate_sas_token_validity_seconds(None, MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS).unwrap();
     }
 
     #[test]
     fn test_validate_sas_token_validity_seconds_at_max_ok() {
-        validate_sas_token_validity_seconds(Some(3600), MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS)
+        validate_sas_token_validity_seconds(Some(3600), MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS)
             .unwrap();
     }
 
     #[test]
     #[tracing_test::traced_test]
     fn test_validate_sas_token_validity_seconds_below_threshold_warns() {
-        validate_sas_token_validity_seconds(Some(30), MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS)
+        validate_sas_token_validity_seconds(Some(30), MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS)
             .unwrap();
         let expected = format!(
             "Token lifetime less than {SAS_TOKEN_WARN_THRESHOLD_SECONDS} seconds (provided value: 30)",
@@ -732,12 +727,12 @@ pub(crate) mod test {
 
     /// Regression test for the `OneLake` SAS canonical-resource bug that
     /// produced `401 Authentication Failed with Access token validation failed`
-    /// on regional and private-link Fabric warehouses. The Fabric SAS canonical
-    /// resource is always `/blob/onelake/<workspace>/...`, never the
+    /// on regional and private-link `OneLake` warehouses. The `OneLake` SAS
+    /// canonical resource is always `/blob/onelake/<workspace>/...`, never the
     /// regional/private-link DNS label — see
     /// <https://learn.microsoft.com/en-us/fabric/onelake/how-to-create-a-onelake-shared-access-signature>.
     #[test]
-    fn test_canonical_resource_for_fabric_regional_uses_global_onelake_account() {
+    fn test_canonical_resource_for_onelake_regional_uses_global_onelake_account() {
         use std::str::FromStr;
 
         use lakekeeper_io::Location;
@@ -770,7 +765,7 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_canonical_resource_for_fabric_private_link_uses_global_onelake_account() {
+    fn test_canonical_resource_for_onelake_private_link_uses_global_onelake_account() {
         use std::str::FromStr;
 
         use lakekeeper_io::Location;
@@ -891,7 +886,7 @@ pub(crate) mod test {
         }
     }
 
-    /// Live Microsoft Fabric / `OneLake` integration tests.
+    /// Live `OneLake` (Microsoft Fabric) integration tests.
     ///
     /// Default-ignored (`#[ignore]`) — opt in with `cargo test -- --ignored`
     /// or `cargo nextest run --run-ignored=all`. The nextest `default` and
@@ -900,38 +895,38 @@ pub(crate) mod test {
     /// secret-requiring integration test modules.
     ///
     /// # Required env vars
-    /// - `LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID` — Fabric workspace UUID.
-    /// - `LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID` — lakehouse UUID inside that workspace.
-    /// - `LAKEKEEPER_TEST__FABRIC_CLIENT_ID` — Entra app client ID with rights on the workspace.
-    /// - `LAKEKEEPER_TEST__FABRIC_CLIENT_SECRET` — client secret for that app.
-    /// - `LAKEKEEPER_TEST__FABRIC_TENANT_ID` — Entra tenant ID.
+    /// - `LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID` — Fabric workspace UUID.
+    /// - `LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID` — lakehouse UUID inside that workspace.
+    /// - `LAKEKEEPER_TEST__ONELAKE_CLIENT_ID` — Entra app client ID with rights on the workspace.
+    /// - `LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET` — client secret for that app.
+    /// - `LAKEKEEPER_TEST__ONELAKE_TENANT_ID` — Entra tenant ID.
     ///
     /// # Mode-specific
-    /// - `LAKEKEEPER_TEST__FABRIC_REGION` — Azure region slug
+    /// - `LAKEKEEPER_TEST__ONELAKE_REGION` — Azure region slug
     ///   (e.g. `centralus`, `westus`). Required by
-    ///   `test_can_validate_fabric_regional`; ignored otherwise.
-    pub(crate) mod fabric_integration_tests {
+    ///   `test_can_validate_onelake_regional`; ignored otherwise.
+    pub(crate) mod onelake_integration_tests {
         use uuid::Uuid;
 
         use crate::{
             api::RequestMetadata,
             service::storage::{
-                AzCredential, EndpointMode, FabricAdlsProfile, StorageCredential, StorageProfile,
+                AzCredential, EndpointMode, OneLakeProfile, StorageCredential, StorageProfile,
                 TopLevelFolder,
             },
         };
 
-        pub(crate) fn fabric_profile() -> FabricAdlsProfile {
-            let workspace_id = std::env::var("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID")
-                .expect("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID to be set");
-            let lakehouse_id = std::env::var("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID")
-                .expect("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID to be set");
+        pub(crate) fn onelake_profile() -> OneLakeProfile {
+            let workspace_id = std::env::var("LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID")
+                .expect("LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID to be set");
+            let lakehouse_id = std::env::var("LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID")
+                .expect("LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID to be set");
             let directory_rel_path = Some(format!("test-{}", uuid::Uuid::now_v7()));
-            FabricAdlsProfile {
+            OneLakeProfile {
                 workspace_id: Uuid::parse_str(&workspace_id)
-                    .expect("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID is not a valid UUID"),
+                    .expect("LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID is not a valid UUID"),
                 lakehouse_id: Uuid::parse_str(&lakehouse_id)
-                    .expect("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID is not a valid UUID"),
+                    .expect("LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID is not a valid UUID"),
                 directory_rel_path,
                 top_level_folder: TopLevelFolder::Files,
                 endpoint_mode: EndpointMode::Default,
@@ -943,12 +938,12 @@ pub(crate) mod test {
         }
 
         pub(crate) fn client_creds() -> AzCredential {
-            let client_id = std::env::var("LAKEKEEPER_TEST__FABRIC_CLIENT_ID")
-                .expect("LAKEKEEPER_TEST__FABRIC_CLIENT_ID to be set");
-            let client_secret = std::env::var("LAKEKEEPER_TEST__FABRIC_CLIENT_SECRET")
-                .expect("LAKEKEEPER_TEST__FABRIC_CLIENT_SECRET to be set");
-            let tenant_id = std::env::var("LAKEKEEPER_TEST__FABRIC_TENANT_ID")
-                .expect("LAKEKEEPER_TEST__FABRIC_TENANT_ID to be set");
+            let client_id = std::env::var("LAKEKEEPER_TEST__ONELAKE_CLIENT_ID")
+                .expect("LAKEKEEPER_TEST__ONELAKE_CLIENT_ID to be set");
+            let client_secret = std::env::var("LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET")
+                .expect("LAKEKEEPER_TEST__ONELAKE_CLIENT_SECRET to be set");
+            let tenant_id = std::env::var("LAKEKEEPER_TEST__ONELAKE_TENANT_ID")
+                .expect("LAKEKEEPER_TEST__ONELAKE_TENANT_ID to be set");
 
             AzCredential::ClientCredentials {
                 client_id,
@@ -958,9 +953,9 @@ pub(crate) mod test {
         }
 
         #[tokio::test]
-        #[ignore = "live Fabric test; opt in with --ignored (see module docs)"]
-        async fn test_can_validate_fabric() {
-            let prof = fabric_profile();
+        #[ignore = "live OneLake test; opt in with --ignored (see module docs)"]
+        async fn test_can_validate_onelake() {
+            let prof = onelake_profile();
             let cred = client_creds();
             let mut prof: StorageProfile = prof.into();
             prof.normalize(Some(&cred.clone().into()))
@@ -972,22 +967,22 @@ pub(crate) mod test {
                 &RequestMetadata::new_unauthenticated(),
             ))
             .await
-            .unwrap_or_else(|e| panic!("Failed to validate Fabric profile due to '{e:?}'"));
+            .unwrap_or_else(|e| panic!("Failed to validate OneLake profile due to '{e:?}'"));
         }
 
-        /// End-to-end check that regional Fabric warehouses validate. This is
-        /// the live counterpart to the unit-level `canonical_resource` test:
+        /// End-to-end check that regional `OneLake` warehouses validate. This
+        /// is the live counterpart to the unit-level `canonical_resource` test:
         /// it actually mints a user-delegation SAS against
         /// `<region>-onelake.dfs.fabric.microsoft.com` and exercises the
         /// vended-credential read/write/delete path that used to 401 when the
         /// canonical resource was signed against the regional account.
         #[tokio::test]
-        #[ignore = "live Fabric test; opt in with --ignored (see module docs). \
-                    Also requires LAKEKEEPER_TEST__FABRIC_REGION."]
-        async fn test_can_validate_fabric_regional() {
-            let region = std::env::var("LAKEKEEPER_TEST__FABRIC_REGION")
-                .expect("LAKEKEEPER_TEST__FABRIC_REGION to be set");
-            let mut prof = fabric_profile();
+        #[ignore = "live OneLake test; opt in with --ignored (see module docs). \
+                    Also requires LAKEKEEPER_TEST__ONELAKE_REGION."]
+        async fn test_can_validate_onelake_regional() {
+            let region = std::env::var("LAKEKEEPER_TEST__ONELAKE_REGION")
+                .expect("LAKEKEEPER_TEST__ONELAKE_REGION to be set");
+            let mut prof = onelake_profile();
             prof.endpoint_mode = EndpointMode::Regional { region };
             let cred = client_creds();
             let mut prof: StorageProfile = prof.into();
@@ -1001,7 +996,7 @@ pub(crate) mod test {
             ))
             .await
             .unwrap_or_else(|e| {
-                panic!("Failed to validate regional Fabric profile due to '{e:?}'")
+                panic!("Failed to validate regional OneLake profile due to '{e:?}'")
             });
         }
     }

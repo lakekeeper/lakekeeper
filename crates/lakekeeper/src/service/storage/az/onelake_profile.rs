@@ -11,8 +11,8 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    AdlsTableConfigContext, AzCredential, MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
-    SasMintContext, adls_catalog_config, adls_lakekeeper_io, generate_adls_table_config,
+    AdlsTableConfigContext, AzCredential, MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS, SasMintContext,
+    adls_catalog_config, adls_lakekeeper_io, generate_adls_table_config,
     iceberg_expiration_property_key, iceberg_sas_property_key, key_prefix_overlaps,
     lakekeeper_io_from_vended_adls_table_config, validate_sas_token_validity_seconds,
 };
@@ -117,7 +117,7 @@ pub enum EndpointMode {
 #[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
-pub struct FabricAdlsProfile {
+pub struct OneLakeProfile {
     /// UUID of the Fabric workspace this warehouse lives in.
     pub workspace_id: Uuid,
     /// UUID of the lakehouse within the workspace.
@@ -144,8 +144,8 @@ pub struct FabricAdlsProfile {
     pub storage_layout: Option<StorageLayout>,
 }
 
-impl FabricAdlsProfile {
-    /// Validate the Fabric storage profile.
+impl OneLakeProfile {
+    /// Validate the `OneLake` storage profile.
     ///
     /// # Errors
     /// - Fails if the SAS-token TTL is 0 or above the 1-hour `OneLake` cap.
@@ -153,6 +153,11 @@ impl FabricAdlsProfile {
     /// - Fails if `endpoint_mode = Regional { region }` has an empty `region`.
     /// - Fails if the supplied credential is `SharedAccessKey` (unsupported by
     ///   `OneLake`, which has no storage-account key).
+    /// - Fails if `storage_layout` is set to anything other than
+    ///   [`StorageLayout::Default`]. `OneLake` silently percent-decodes `%XX`
+    ///   sequences in blob paths, so layouts that embed `{name}` segments
+    ///   (`tabular-only`, `full-hierarchy`) would alias paths after server-side
+    ///   decoding; only the default `{uuid}`-only layout is currently supported.
     pub(crate) fn normalize(
         &mut self,
         credential: Option<&AzCredential>,
@@ -162,15 +167,31 @@ impl FabricAdlsProfile {
         {
             return Err(InvalidProfileError {
                 source: None,
-                reason: "Fabric / `OneLake` does not support shared-access-key credentials. Use client-credentials or system identity.".to_string(),
+                reason: "`OneLake` does not support shared-access-key credentials. Use client-credentials or system identity.".to_string(),
                 entity: "credential".to_string(),
+            }
+            .into());
+        }
+
+        if let Some(layout) = &self.storage_layout
+            && !matches!(layout, StorageLayout::Default)
+        {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "`OneLake` currently only supports the `default` storage layout. \
+                         OneLake silently percent-decodes `%XX` sequences in blob paths, \
+                         so `{name}` templates in `tabular-only` / `full-hierarchy` layouts \
+                         would alias to the same blob after server-side decoding. \
+                         Omit `storage-layout` or set it to `{\"type\": \"default\"}`."
+                    .to_string(),
+                entity: "storage-layout".to_string(),
             }
             .into());
         }
 
         validate_sas_token_validity_seconds(
             self.sas_token_validity_seconds,
-            MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
+            MAX_ONELAKE_SAS_TOKEN_VALIDITY_SECONDS,
         )?;
         self.normalize_directory_rel_path()?;
         self.normalize_endpoint_mode()?;
@@ -485,7 +506,7 @@ impl FabricAdlsProfile {
         tabular_info: &impl BasicTabularInfo,
         request_metadata: &RequestMetadata,
     ) -> Result<TableConfig, TableConfigError> {
-        // Defense-in-depth: `normalize` rejects `SharedAccessKey` for Fabric,
+        // Defense-in-depth: `normalize` rejects `SharedAccessKey` for OneLake,
         // but it only sees the credential when it's passed by the caller. A
         // warehouse whose credential has been swapped to `SharedAccessKey`
         // post-creation would otherwise reach this code and try to mint a
@@ -546,7 +567,7 @@ impl FabricAdlsProfile {
         iceberg_expiration_property_key(&self.host_account(), &self.endpoint_suffix())
     }
 
-    /// Two Fabric profiles overlap if they reference the same workspace +
+    /// Two `OneLake` profiles overlap if they reference the same workspace +
     /// lakehouse + top-level folder, and one `directory_rel_path` is a
     /// (directory-bounded) prefix of the other.
     ///
@@ -578,8 +599,8 @@ mod tests {
     const SAMPLE_WORKSPACE: &str = "c5e8a1f3-7b2d-4e8a-9f1c-3b6d8e5a2f47";
     const SAMPLE_LAKEHOUSE: &str = "9d3e7a1b-4c6f-4a8e-b2d5-1f8c7e3a9b04";
 
-    fn sample_profile() -> FabricAdlsProfile {
-        FabricAdlsProfile {
+    fn sample_profile() -> OneLakeProfile {
+        OneLakeProfile {
             workspace_id: Uuid::parse_str(SAMPLE_WORKSPACE).unwrap(),
             lakehouse_id: Uuid::parse_str(SAMPLE_LAKEHOUSE).unwrap(),
             directory_rel_path: Some("my_warehouse".to_string()),
@@ -642,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_dfs_host_private_link_xy_is_first_two_chars() {
-        let p = FabricAdlsProfile {
+        let p = OneLakeProfile {
             workspace_id: Uuid::parse_str("abcdef12-3456-7890-1234-56789abcdef0").unwrap(),
             endpoint_mode: EndpointMode::WorkspacePrivateLink,
             ..sample_profile()
@@ -700,7 +721,7 @@ mod tests {
             },
             EndpointMode::WorkspacePrivateLink,
         ] {
-            let p = FabricAdlsProfile {
+            let p = OneLakeProfile {
                 endpoint_mode: mode,
                 ..sample_profile()
             };
@@ -738,7 +759,7 @@ mod tests {
             },
             EndpointMode::WorkspacePrivateLink,
         ] {
-            let p = FabricAdlsProfile {
+            let p = OneLakeProfile {
                 endpoint_mode: mode,
                 ..sample_profile()
             };
@@ -784,7 +805,7 @@ mod tests {
                 region: "westus".to_string(),
             },
         ] {
-            let p = FabricAdlsProfile {
+            let p = OneLakeProfile {
                 endpoint_mode: mode,
                 ..sample_profile()
             };
@@ -943,6 +964,51 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_rejects_full_hierarchy_layout() {
+        let mut p = sample_profile();
+        p.storage_layout =
+            Some(StorageLayout::try_new_full("{name}".into(), "{name}-{uuid}".into()).unwrap());
+        let err = p.normalize(None).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("storage-layout"), "{msg}");
+        assert!(msg.contains("default"), "{msg}");
+    }
+
+    #[test]
+    fn test_normalize_rejects_tabular_only_layout() {
+        let mut p = sample_profile();
+        p.storage_layout = Some(StorageLayout::try_new_flat("{name}-{uuid}".into()).unwrap());
+        let err = p.normalize(None).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("storage-layout"), "{msg}");
+        assert!(msg.contains("default"), "{msg}");
+    }
+
+    #[test]
+    fn test_normalize_accepts_default_layout() {
+        let mut p = sample_profile();
+        p.storage_layout = Some(StorageLayout::Default);
+        p.normalize(None).unwrap();
+
+        let mut p = sample_profile();
+        p.storage_layout = None;
+        p.normalize(None).unwrap();
+    }
+
+    #[test]
+    fn test_update_with_rejects_non_default_layout() {
+        // `update_with` doesn't call `normalize` itself — but warehouse-update
+        // call sites do. Round-trip through both to guarantee the layout
+        // constraint is enforced when callers swap in a new layout.
+        let p1 = sample_profile();
+        let mut p2 = sample_profile();
+        p2.storage_layout = Some(StorageLayout::try_new_flat("{name}-{uuid}".into()).unwrap());
+        let mut merged = p1.update_with(p2).unwrap();
+        let err = merged.normalize(None).unwrap_err();
+        assert!(format!("{err:?}").contains("storage-layout"));
+    }
+
+    #[test]
     fn test_update_with_immutable_workspace_id() {
         let p1 = sample_profile();
         let mut p2 = sample_profile();
@@ -997,7 +1063,7 @@ mod tests {
     fn test_serde_default_round_trip() {
         let p = sample_profile();
         let s = serde_json::to_string(&p).unwrap();
-        let back: FabricAdlsProfile = serde_json::from_str(&s).unwrap();
+        let back: OneLakeProfile = serde_json::from_str(&s).unwrap();
         assert_eq!(p, back);
     }
 
@@ -1010,7 +1076,7 @@ mod tests {
             "top-level-folder": "Files",
             "endpoint-mode": { "type": "default" },
         });
-        let p: FabricAdlsProfile = serde_json::from_value(json).unwrap();
+        let p: OneLakeProfile = serde_json::from_value(json).unwrap();
         assert_eq!(p.top_level_folder, TopLevelFolder::Files);
 
         let json = serde_json::json!({
@@ -1020,7 +1086,7 @@ mod tests {
             "top-level-folder": "Tables",
             "endpoint-mode": { "type": "default" },
         });
-        let p: FabricAdlsProfile = serde_json::from_value(json).unwrap();
+        let p: OneLakeProfile = serde_json::from_value(json).unwrap();
         assert_eq!(p.top_level_folder, TopLevelFolder::Tables);
     }
 

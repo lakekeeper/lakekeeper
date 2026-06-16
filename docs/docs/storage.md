@@ -6,7 +6,7 @@ Currently, we support the following storages:
 
 - S3 (tested with AWS & Minio)
 - Azure Data Lake Storage Gen 2
-- Microsoft Fabric / OneLake
+- OneLake (Microsoft Fabric)
 - Google Cloud Storage (with and without Hierarchical Namespaces)
 
 When creating a Warehouse or updating storage information, Lakekeeper validates the configuration.
@@ -45,6 +45,9 @@ The storage layout controls how namespace and tabular directories are structured
 | Default                    | `"default"`                    | One directory for the direct parent namespace, one for the tabular, both with `{uuid}` templates. Used when `storage-layout` is omitted. |
 | Full hierarchy             | `"full-hierarchy"`             | One directory per namespace level in the full ancestry, one for the tabular. |
 | Tabular-only (flat)          | `"tabular-only"`                 | No namespace directories; all tabulars are placed directly under the base location. |
+
+!!! note "OneLake supports only the default layout"
+    The [OneLake](#onelake-microsoft-fabric) storage profile currently rejects `tabular-only` and `full-hierarchy` at warehouse-creation time because OneLake silently percent-decodes `%XX` in blob paths, which would alias `{name}` segments that differ only by URL-encoding. See the [OneLake storage-layout note](#onelake-microsoft-fabric) for details.
 
 ### Default
 
@@ -665,12 +668,12 @@ LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true
 
 When enabled, Lakekeeper will use the managed identity of the virtual machine or application it is running on to access ADLS. Ensure that the managed identity has the necessary permissions to access the storage account and container. For example, assign the `Storage Blob Data Contributor` and `Storage Blob Delegator` roles to the managed identity for the relevant storage account as described above.
 
-## Microsoft Fabric / OneLake
+## OneLake (Microsoft Fabric)
 
-Microsoft Fabric exposes its OneLake data lake through ADLS Gen2-compatible APIs, so Lakekeeper can back warehouses directly with a Fabric lakehouse using a dedicated `fabric` storage profile. The Fabric profile is a convenience layer over the generic ADLS profile: instead of asking you to encode the OneLake URL conventions yourself (`account_name = "onelake"`, container = workspace ID, key prefix = `<lakehouse>/Files/<dir>`), it derives those from the workspace and lakehouse UUIDs you provide. It also knows how to compute the workspace-scoped private-link endpoint host.
+Microsoft Fabric exposes its OneLake data lake through ADLS Gen2-compatible APIs, so Lakekeeper can back warehouses directly with a Fabric lakehouse using a dedicated `onelake` storage profile. The OneLake profile is a convenience layer over the generic ADLS profile: instead of asking you to encode the OneLake URL conventions yourself (`account_name = "onelake"`, container = workspace ID, key prefix = `<lakehouse>/Files/<dir>`), it derives those from the workspace and lakehouse UUIDs you provide. It also knows how to compute the workspace-scoped private-link endpoint host.
 
 !!! note
-    The generic `adls` profile also works against OneLake if you set the fields manually (`account-name: "onelake"`, `host: "dfs.fabric.microsoft.com"`, `filesystem: <workspace-id>`, `key-prefix: <lakehouse-id>/Files/<dir>`). The `fabric` profile is the recommended path because it validates the OneLake-specific constraints (SAS lifetime cap, supported credentials, endpoint shapes) for you and computes private-link FQDNs automatically.
+    The generic `adls` profile also works against OneLake if you set the fields manually (`account-name: "onelake"`, `host: "dfs.fabric.microsoft.com"`, `filesystem: <workspace-id>`, `key-prefix: <lakehouse-id>/Files/<dir>`). The `onelake` profile is the recommended path because it validates the OneLake-specific constraints (SAS lifetime cap, supported credentials, endpoint shapes) for you and computes private-link FQDNs automatically.
 
 ### Client compatibility
 
@@ -681,12 +684,12 @@ OneLake's blob surface is API-compatible with regular ADLS Gen2 for the operatio
 | **PyIceberg** | `0.10.0` | First release that ships both [`adls.account-host`](https://github.com/apache/iceberg-python/pull/2016) and [`adls.credential`](https://github.com/apache/iceberg-python/pull/2299). Earlier versions don't construct OneLake URLs correctly even when Lakekeeper hands them the right properties. Transitively requires `adlfs >= 2024.7.0`. |
 | **Spark + Iceberg (Java)** | `iceberg-spark-runtime` ≥ `1.5` on Spark 3.5 *or* ≥ `1.10` on Spark 4 | The Java Iceberg ADLS file IO parses the host from `abfss://<fs>@<host>/...` directly, so it's transparently OneLake-compatible for any version that supports vended ADLS credentials. |
 
-Lakekeeper's own Fabric/OneLake integration tests are run against:
+Lakekeeper's own OneLake integration tests are run against:
 
 - **Spark** `4.0.2` (`apache/spark:4.0.2-scala2.13-java21-python3-ubuntu`) with `iceberg-spark-runtime` `1.10.1`
 - **PyIceberg** `0.10.0` (with the `adlfs` extra)
 
-Older Spark 3 / Iceberg < 1.10 combinations are exercised by other suites in the same harness (`apache/spark:3.5.6-java17-python3`); the Fabric-specific paths in vended credentials don't depend on the Spark major version.
+Older Spark 3 / Iceberg < 1.10 combinations are exercised by other suites in the same harness (`apache/spark:3.5.6-java17-python3`); the OneLake-specific paths in vended credentials don't depend on the Spark major version.
 
 ### Configuration Parameters
 
@@ -700,7 +703,7 @@ Older Spark 3 / Iceberg < 1.10 combinations are exercised by other suites in the
 | `sas-enabled`                  | Boolean | No       | `true`                              | Enable SAS-token vending. Disable to force clients to use their own credentials. |
 | `sas-token-validity-seconds`   | Integer | No       | `3600`                              | SAS-token validity in seconds. **Max: 3600 (OneLake hard cap).** Lakekeeper rejects values above 3600 and below 1; values below 60 are accepted with a warning and floored at mint time. |
 | `authority-host`               | URL     | No       | `https://login.microsoftonline.com` | Microsoft Entra authority host. |
-| `storage-layout`               | Object  | No       | `{"type": "default"}`               | See [Storage Layout](#storage-layout). |
+| `storage-layout`               | Object  | No       | `{"type": "default"}`               | **Must be `{"type": "default"}` or omitted.** OneLake silently percent-decodes `%XX` sequences in blob paths, so layouts that embed `{name}` segments (`tabular-only`, `full-hierarchy`) would alias to the same blob after server-side decoding. Only the default `{uuid}`-only layout is currently supported. See [Storage Layout](#storage-layout). |
 
 ### Endpoint modes
 
@@ -724,7 +727,10 @@ Use `regional` when data residency requires the request to stay within a specifi
     Even when `endpoint-mode` is set to `workspace-private-link`, the Lakekeeper server itself must retain DNS resolution and outbound TLS connectivity to the global host `onelake.dfs.fabric.microsoft.com`. SAS token minting (the `Get User Delegation Key` call) is not served by the workspace-FQDN private-link endpoint — Fabric returns `DeniedByPolicy` there — so Lakekeeper issues that single call against the global OneLake host. Vended client traffic (read/write of table data) still flows through the workspace private link.
 
 !!! warning "OneLake path names cannot contain `%`"
-    OneLake's request pipeline silently collapses any `%XX` percent-escape in a blob path to its decoded character before SAS validation, so a path that stores the *literal* three-character sequence `%3F` is indistinguishable from one that stores the single character `?`. Lakekeeper otherwise treats every byte in a path literally (`%41bc` is a different blob from `Abc`); on OneLake that guarantee can't hold, so the Fabric storage profile **rejects any table location whose path segments contain a literal `%`** at create time. Use a different character or strip the `%` before submitting the location.
+    OneLake's request pipeline silently collapses any `%XX` percent-escape in a blob path to its decoded character before SAS validation, so a path that stores the *literal* three-character sequence `%3F` is indistinguishable from one that stores the single character `?`. Lakekeeper otherwise treats every byte in a path literally (`%41bc` is a different blob from `Abc`); on OneLake that guarantee can't hold, so the OneLake storage profile **rejects any table location whose path segments contain a literal `%`** at create time. Use a different character or strip the `%` before submitting the location.
+
+!!! warning "Only the `default` storage layout is supported"
+    The OneLake profile currently rejects `tabular-only` and `full-hierarchy` storage layouts at warehouse-creation time. These layouts can embed namespace and table **names** into the storage path via `{name}` templates, and Lakekeeper URL-percent-encodes those segments — but OneLake silently decodes `%XX` sequences server-side (see the percent-encoding warning above), so two distinct names whose encoded form differs only by a `%XX` would land at the same blob and overwrite each other. Until we land a layout that side-steps this encoding mismatch, only the default `{uuid}`-only layout is supported. Set `storage-layout` to `{"type": "default"}` or omit it.
 
 ### Credentials
 
@@ -733,17 +739,17 @@ OneLake does not have a storage-account key. Only Microsoft Entra credentials ar
 - `client-credentials` (service principal): the standard option.
 - `azure-system-identity` (managed identity): if `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true` is set server-wide.
 
-Supplying `shared-access-key` to a Fabric warehouse is rejected at validation time.
+Supplying `shared-access-key` to a OneLake warehouse is rejected at validation time.
 
 The OneLake tenant setting **"Authenticate with OneLake user-delegated SAS tokens"** must be enabled for the workspace before vended credentials work. This is a Fabric-side setting and cannot be configured from Lakekeeper.
 
 ### Example
 
-A POST request to `/management/v1/warehouse` to create a Fabric-backed warehouse:
+A POST request to `/management/v1/warehouse` to create a OneLake-backed warehouse:
 
 ```json
 {
-  "warehouse-name": "fabric_dev",
+  "warehouse-name": "onelake_dev",
   "delete-profile": { "type": "hard" },
   "storage-credential": {
     "type": "az",
@@ -753,7 +759,7 @@ A POST request to `/management/v1/warehouse` to create a Fabric-backed warehouse
     "tenant-id": "..."
   },
   "storage-profile": {
-    "type": "fabric",
+    "type": "onelake",
     "workspace-id": "0388d6cb-27fd-4dc5-948b-32ab7aab9577",
     "lakehouse-id": "eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac",
     "directory-rel-path": "my_warehouse",

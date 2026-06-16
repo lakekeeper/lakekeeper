@@ -54,17 +54,17 @@ class Settings(BaseSettings):
     azure_storage_account_name: Optional[str] = None
     azure_storage_filesystem: Optional[str] = None
     azure_allow_alternative_protocols: Optional[bool] = None
-    fabric_workspace_id: Optional[str] = None
-    fabric_lakehouse_id: Optional[str] = None
-    fabric_region: Optional[str] = None
+    onelake_workspace_id: Optional[str] = None
+    onelake_lakehouse_id: Optional[str] = None
+    onelake_region: Optional[str] = None
     # Comma-separated subset of `default,regional,workspace-private-link`.
     # Each listed mode fans out into its own `storage_config` parametrization.
-    # `regional` additionally requires `LAKEKEEPER_TEST__FABRIC_REGION`.
+    # `regional` additionally requires `LAKEKEEPER_TEST__ONELAKE_REGION`.
     # `workspace-private-link` requires the caller to have a Fabric
     # workspace-private-link endpoint provisioned and reachable from the
     # test runner. (Tenant-level private link doesn't need its own mode —
     # it routes the global onelake FQDN privately and works under `default`.)
-    fabric_endpoint_mode: Optional[str] = "default"
+    onelake_endpoint_mode: Optional[str] = "default"
     gcs_credential: Optional[Secret] = None
     gcs_bucket: Optional[str] = None
     openid_provider_uri: Optional[str] = None
@@ -129,34 +129,34 @@ if (
 
 # Generic ADLS / WASBS testing only when a storage account is supplied.
 # `azure_client_id` alone is not a sufficient signal — it is also the Entra
-# app reg that Fabric reuses, so gating on it pulls generic-ADLS configs into
-# Fabric-only test runs. docker-compose substitutes unset host vars to empty
+# app reg that OneLake reuses, so gating on it pulls generic-ADLS configs into
+# OneLake-only test runs. docker-compose substitutes unset host vars to empty
 # string, so guard against both `None` and `""`.
 if settings.azure_storage_account_name and settings.azure_client_id:
     STORAGE_CONFIGS.append({"type": "azure"})
 
-# Fan out one storage_config entry per requested Fabric endpoint mode. A Fabric
-# warehouse is identified by workspace+lakehouse; client creds come from the
-# generic AZURE_* env vars (same Entra app reg in practice). `regional` mode
-# also requires LAKEKEEPER_TEST__FABRIC_REGION.
+# Fan out one storage_config entry per requested OneLake endpoint mode. A
+# OneLake warehouse is identified by workspace+lakehouse; client creds come
+# from the generic AZURE_* env vars (same Entra app reg in practice).
+# `regional` mode also requires LAKEKEEPER_TEST__ONELAKE_REGION.
 if (
-    settings.fabric_workspace_id
-    and settings.fabric_lakehouse_id
+    settings.onelake_workspace_id
+    and settings.onelake_lakehouse_id
     and settings.azure_client_id
 ):
     _modes = {
         m.strip()
-        for m in (settings.fabric_endpoint_mode or "default").split(",")
+        for m in (settings.onelake_endpoint_mode or "default").split(",")
         if m.strip()
     }
     _unknown = _modes - {"default", "regional", "workspace-private-link"}
     if _unknown:
         raise ValueError(
-            f"Invalid LAKEKEEPER_TEST__FABRIC_ENDPOINT_MODE entries: {sorted(_unknown)}. "
+            f"Invalid LAKEKEEPER_TEST__ONELAKE_ENDPOINT_MODE entries: {sorted(_unknown)}. "
             "Must be a comma-separated subset of 'default,regional,workspace-private-link'."
         )
     for _mode in sorted(_modes):
-        STORAGE_CONFIGS.append({"type": "fabric", "endpoint-mode": _mode})
+        STORAGE_CONFIGS.append({"type": "onelake", "endpoint-mode": _mode})
 
 if settings.gcs_credential is not None:
     STORAGE_CONFIGS.append({"type": "gcs"})
@@ -307,11 +307,11 @@ def storage_config(request) -> dict:
                 "tenant-id": settings.azure_tenant_id,
             },
         }
-    elif request.param["type"] == "fabric":
-        if not settings.fabric_workspace_id:
-            pytest.skip("LAKEKEEPER_TEST__FABRIC_WORKSPACE_ID is not set")
-        if not settings.fabric_lakehouse_id:
-            pytest.skip("LAKEKEEPER_TEST__FABRIC_LAKEHOUSE_ID is not set")
+    elif request.param["type"] == "onelake":
+        if not settings.onelake_workspace_id:
+            pytest.skip("LAKEKEEPER_TEST__ONELAKE_WORKSPACE_ID is not set")
+        if not settings.onelake_lakehouse_id:
+            pytest.skip("LAKEKEEPER_TEST__ONELAKE_LAKEHOUSE_ID is not set")
         if not settings.azure_client_id:
             pytest.skip("LAKEKEEPER_TEST__AZURE_CLIENT_ID is not set")
 
@@ -319,14 +319,14 @@ def storage_config(request) -> dict:
         if endpoint_mode == "default":
             endpoint_mode_json: dict = {"type": "default"}
         elif endpoint_mode == "regional":
-            if not settings.fabric_region:
+            if not settings.onelake_region:
                 pytest.skip(
-                    "LAKEKEEPER_TEST__FABRIC_REGION is not set "
+                    "LAKEKEEPER_TEST__ONELAKE_REGION is not set "
                     "(required for endpoint-mode=regional)"
                 )
             endpoint_mode_json = {
                 "type": "regional",
-                "region": settings.fabric_region,
+                "region": settings.onelake_region,
             }
         elif endpoint_mode == "workspace-private-link":
             # The caller is responsible for having provisioned a Fabric
@@ -335,13 +335,13 @@ def storage_config(request) -> dict:
             # infra-setup gap.
             endpoint_mode_json = {"type": "workspace-private-link"}
         else:
-            raise ValueError(f"Unknown fabric endpoint-mode: {endpoint_mode}")
+            raise ValueError(f"Unknown OneLake endpoint-mode: {endpoint_mode}")
 
         return {
             "storage-profile": {
-                "type": "fabric",
-                "workspace-id": settings.fabric_workspace_id,
-                "lakehouse-id": settings.fabric_lakehouse_id,
+                "type": "onelake",
+                "workspace-id": settings.onelake_workspace_id,
+                "lakehouse-id": settings.onelake_lakehouse_id,
                 "directory-rel-path": test_id,
                 "endpoint-mode": endpoint_mode_json,
                 "sas-token-validity-seconds": 60,
@@ -381,7 +381,7 @@ class _OneLakeFsAdapter:
 
     OneLake's blob endpoint rejects several LIST verbs that adlfs's
     BlobServiceClient relies on, so the tests' `io_fsspec` fixture needs a
-    DFS-native client when the storage backend is Fabric. Only the methods
+    DFS-native client when the storage backend is OneLake. Only the methods
     actually called from the test files (`.ls`, `.exists`,
     `.invalidate_cache`) are implemented.
     """
@@ -496,12 +496,12 @@ def io_fsspec(storage_config: dict):
             client_secret=storage_config["storage-credential"]["client-secret"],
         )
         return fs
-    if storage_config["storage-profile"]["type"] == "fabric":
+    if storage_config["storage-profile"]["type"] == "onelake":
         endpoint_mode = storage_config["storage-profile"]["endpoint-mode"]
         mode_type = endpoint_mode["type"]
         if mode_type == "workspace-private-link":
             pytest.skip(
-                "io_fsspec read-back is skipped for Fabric workspace-private-link "
+                "io_fsspec read-back is skipped for OneLake workspace-private-link "
                 "warehouses (caller-provisioned infra not assumed)"
             )
 
@@ -510,7 +510,7 @@ def io_fsspec(storage_config: dict):
         elif mode_type == "regional":
             account_host = f"{endpoint_mode['region']}-onelake.dfs.fabric.microsoft.com"
         else:
-            raise ValueError(f"Unknown Fabric endpoint-mode for fsspec: {mode_type}")
+            raise ValueError(f"Unknown OneLake endpoint-mode for fsspec: {mode_type}")
 
         # OneLake's blob surface is not API-compatible with a regular ADLS Gen2
         # storage account: adlfs's BlobServiceClient-backed LIST calls fail with
