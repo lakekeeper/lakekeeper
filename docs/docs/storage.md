@@ -697,12 +697,15 @@ Use `regional` when data residency requires the request to stay within a specifi
 !!! note
     Even when `endpoint-mode` is set to `private-link`, the Lakekeeper server itself must retain DNS resolution and outbound TLS connectivity to the global host `onelake.dfs.fabric.microsoft.com`. SAS token minting (the `Get User Delegation Key` call) is not served by the workspace-FQDN private-link endpoint — Fabric returns `DeniedByPolicy` there — so Lakekeeper issues that single call against the global OneLake host. Vended client traffic (read/write of table data) still flows through the workspace private link.
 
+!!! warning "OneLake path names cannot contain `%`"
+    OneLake's request pipeline silently collapses any `%XX` percent-escape in a blob path to its decoded character before SAS validation, so a path that stores the *literal* three-character sequence `%3F` is indistinguishable from one that stores the single character `?`. Lakekeeper otherwise treats every byte in a path literally (`%41bc` is a different blob from `Abc`); on OneLake that guarantee can't hold, so the Fabric storage profile **rejects any table location whose path segments contain a literal `%`** at create time. Use a different character or strip the `%` before submitting the location.
+
 ### Credentials
 
 OneLake does not have a storage-account key. Only Microsoft Entra credentials are accepted:
 
-* `client-credentials` (service principal): the standard option.
-* `azure-system-identity` (managed identity): if `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true` is set server-wide.
+- `client-credentials` (service principal): the standard option.
+- `azure-system-identity` (managed identity): if `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true` is set server-wide.
 
 Supplying `shared-access-key` to a Fabric warehouse is rejected at validation time.
 

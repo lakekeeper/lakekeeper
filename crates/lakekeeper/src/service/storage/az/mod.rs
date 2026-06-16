@@ -413,6 +413,11 @@ pub(super) struct AdlsTableConfigContext<'a, T: BasicTabularInfo> {
     pub(super) sas_expires_at_property_key: String,
     pub(super) tabular_info: &'a T,
     pub(super) request_metadata: &'a RequestMetadata,
+    /// Extra `(key, value)` pairs to emit into the vended-creds config.
+    /// Fabric uses this to publish `adls.account-host` so that pyiceberg /
+    /// `adlfs.AzureBlobFileSystem` targets `*.fabric.microsoft.com` instead
+    /// of defaulting to `<account>.blob.core.windows.net`.
+    pub(super) extra_config: Vec<(String, String)>,
 }
 
 /// Mint (or look up cached) SAS + build the iceberg `TableConfig` for it.
@@ -457,6 +462,10 @@ pub(super) async fn generate_adls_table_config<T: BasicTabularInfo>(
         tracing::debug!(
             "Skipping `adls.sas-token-expires-at-ms` property for PyIceberg ≤ 0.10.0 due to known parsing issue."
         );
+    }
+
+    for (key, value) in ctx.extra_config {
+        creds.insert(&custom::CustomConfig { key, value });
     }
 
     Ok(TableConfig {

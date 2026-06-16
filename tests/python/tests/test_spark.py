@@ -212,13 +212,14 @@ def test_drop_table(
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "adls":
-        # for adls with vended credentials enabled spark tries to refresh the credentials
-        # for purge after the table is dropped, which fails as the table no longer exists.
-        # Set f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled": "false"
-        # in the catalog session to make client side purge work.
+    if storage_config["storage-profile"]["type"] in ("adls", "fabric"):
+        # For ADLS / OneLake with vended credentials enabled, Spark tries to
+        # refresh the credentials for purge after the table is dropped, which
+        # fails as the table no longer exists. Set
+        # f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled":
+        # "false" in the catalog session to make client side purge work.
         pytest.skip(
-            "ADLS currently doesn't work with spark PURGE and refresh credentials."
+            "ADLS / Fabric currently don't work with spark PURGE and refresh credentials."
         )
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(

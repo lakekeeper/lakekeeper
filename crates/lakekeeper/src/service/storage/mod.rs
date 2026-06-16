@@ -841,6 +841,22 @@ impl StorageProfile {
                 tracing::debug!("Scheme {other_scheme} is not allowed for Fabric ADLS profile.",);
                 return false;
             }
+            // OneLake collapses any `%XX` escape in the blob path to its
+            // decoded character somewhere in its request-handling pipeline.
+            // The user-delegation-key-signed canonical never matches the
+            // collapsed form, so vended SAS for such paths fails with
+            // `401 Access token validation failed`. Reject up-front rather
+            // than create unreachable tables.
+            for seg in other.path_segments() {
+                if seg.contains('%') {
+                    tracing::debug!(
+                        "Fabric path segment `{seg}` contains `%` which OneLake \
+                         silently collapses, breaking vended-credentials access. \
+                         Reject up-front."
+                    );
+                    return false;
+                }
+            }
             // Base location is always `abfss://` for Fabric; no scheme rewrite needed.
         }
 
@@ -1406,6 +1422,46 @@ mod tests {
                 expected_result,
                 "Base Location: {}, Maybe sublocation: {sublocation}",
                 profile.base_location().unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_allowed_location_fabric_rejects_percent_in_segments() {
+        use az::{EndpointMode, FabricAdlsProfile, TopLevelFolder};
+        use uuid::Uuid;
+        let profile = StorageProfile::FabricAdls(FabricAdlsProfile {
+            workspace_id: Uuid::parse_str("0388d6cb-27fd-4dc5-948b-32ab7aab9577").unwrap(),
+            lakehouse_id: Uuid::parse_str("eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac").unwrap(),
+            directory_rel_path: Some("test_prefix".to_string()),
+            top_level_folder: TopLevelFolder::default(),
+            endpoint_mode: EndpointMode::Default,
+            sas_token_validity_seconds: None,
+            sas_enabled: true,
+            authority_host: None,
+            storage_layout: None,
+        });
+        let base = "abfss://0388d6cb-27fd-4dc5-948b-32ab7aab9577@onelake.dfs.fabric.microsoft.com/eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac/Files/test_prefix";
+        let cases = vec![
+            // Vanilla sub-locations are allowed.
+            (format!("{base}/ns/t"), true),
+            (format!("{base}/ns/t/metadata/00000.gz.metadata.json"), true),
+            // Any `%` in a segment is rejected (OneLake collapses `%XX`).
+            (format!("{base}/ns/%3F/data"), false),
+            (format!("{base}/ns/%22/data"), false),
+            (format!("{base}/ns/%41bc/data"), false),
+            (format!("{base}/ns/has%percent/data"), false),
+            // Raw URL-safe special chars are NOT blocked (they don't go
+            // through a `%` encoding on the wire).
+            (format!("{base}/ns/star*name/data"), true),
+            (format!("{base}/ns/dollar$name/data"), true),
+        ];
+        for (sublocation, expected_result) in cases {
+            let loc = Location::from_str(&sublocation).unwrap();
+            assert_eq!(
+                profile.is_allowed_location(&loc),
+                expected_result,
+                "sublocation={sublocation}",
             );
         }
     }

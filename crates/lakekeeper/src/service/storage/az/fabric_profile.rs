@@ -354,6 +354,15 @@ impl FabricAdlsProfile {
         format!("{}.{}", self.host_account(), self.endpoint_suffix())
     }
 
+    /// The full Blob host — the DFS host with the `dfs.` label rewritten to
+    /// `blob.`. Published to clients as `adls.account-host` so that pyiceberg
+    /// / `adlfs.AzureBlobFileSystem` constructs requests against the OneLake
+    /// blob surface (`*.blob.fabric.microsoft.com`) instead of defaulting to
+    /// the regular Azure Storage suffix `<account>.blob.core.windows.net`.
+    fn blob_host(&self) -> String {
+        self.dfs_host().replacen(".dfs.", ".blob.", 1)
+    }
+
     /// The container ("filesystem") portion of the abfss URL — the dashed
     /// workspace UUID, as expected by the `OneLake` REST API under
     /// `/<workspace>/<item>/...`.
@@ -497,6 +506,7 @@ impl FabricAdlsProfile {
             sas_expires_at_property_key: self.iceberg_sas_expires_at_property_key(),
             tabular_info,
             request_metadata,
+            extra_config: vec![("adls.account-host".to_string(), self.blob_host())],
         })
         .await
     }
@@ -709,6 +719,23 @@ mod tests {
             };
             assert_eq!(p.sas_account(), "onelake");
         }
+    }
+
+    #[test]
+    fn test_blob_host_per_endpoint_mode() {
+        let mut p = sample_profile();
+        assert_eq!(p.blob_host(), "onelake.blob.fabric.microsoft.com");
+
+        p.endpoint_mode = EndpointMode::Regional {
+            region: "westus".to_string(),
+        };
+        assert_eq!(p.blob_host(), "westus-onelake.blob.fabric.microsoft.com");
+
+        p.endpoint_mode = EndpointMode::PrivateLink;
+        assert_eq!(
+            p.blob_host(),
+            "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.blob.fabric.microsoft.com",
+        );
     }
 
     #[test]

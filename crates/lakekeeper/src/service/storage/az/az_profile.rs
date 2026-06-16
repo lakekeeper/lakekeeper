@@ -268,6 +268,7 @@ impl GenericAdlsProfile {
             sas_expires_at_property_key: self.iceberg_sas_expires_at_property_key(),
             tabular_info,
             request_metadata,
+            extra_config: vec![],
         })
         .await
     }

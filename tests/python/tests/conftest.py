@@ -122,7 +122,12 @@ if (
             "must be one of 'both', 'enabled', 'disabled'"
         )
 
-if settings.azure_client_id is not None:
+# Generic ADLS / WASBS testing only when a storage account is supplied.
+# `azure_client_id` alone is not a sufficient signal — it is also the Entra
+# app reg that Fabric reuses, so gating on it pulls generic-ADLS configs into
+# Fabric-only test runs. docker-compose substitutes unset host vars to empty
+# string, so guard against both `None` and `""`.
+if settings.azure_storage_account_name:
     STORAGE_CONFIGS.append({"type": "azure"})
 
 # Fan out one storage_config entry per requested Fabric endpoint mode. A Fabric
@@ -130,9 +135,9 @@ if settings.azure_client_id is not None:
 # generic AZURE_* env vars (same Entra app reg in practice). `regional` mode
 # also requires LAKEKEEPER_TEST__FABRIC_REGION.
 if (
-    settings.fabric_workspace_id is not None
-    and settings.fabric_lakehouse_id is not None
-    and settings.azure_client_id is not None
+    settings.fabric_workspace_id
+    and settings.fabric_lakehouse_id
+    and settings.azure_client_id
 ):
     _modes = {
         m.strip()
@@ -366,6 +371,89 @@ def storage_config(request) -> dict:
         raise ValueError(f"Unknown storage type: {request.param['type']}")
 
 
+class _OneLakeFsAdapter:
+    """Minimal fsspec-shaped wrapper over `DataLakeServiceClient` for OneLake.
+
+    OneLake's blob endpoint rejects several LIST verbs that adlfs's
+    BlobServiceClient relies on, so the tests' `io_fsspec` fixture needs a
+    DFS-native client when the storage backend is Fabric. Only the methods
+    actually called from the test files (`.ls`, `.exists`,
+    `.invalidate_cache`) are implemented.
+    """
+
+    def __init__(
+        self,
+        *,
+        account_host: str,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+    ):
+        from azure.identity import ClientSecretCredential
+        from azure.storage.filedatalake import DataLakeServiceClient
+
+        self._service = DataLakeServiceClient(
+            account_url=f"https://{account_host}",
+            credential=ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            ),
+        )
+
+    @staticmethod
+    def _split(abfss_url: str) -> tuple[str, str]:
+        # abfss://<filesystem>@<host>/<path...>  →  (filesystem, path)
+        if not abfss_url.startswith("abfss://"):
+            raise ValueError(f"Not an abfss URL: {abfss_url}")
+        without_scheme = abfss_url[len("abfss://") :]
+        fs_part, _, host_and_path = without_scheme.partition("@")
+        _, _, path = host_and_path.partition("/")
+        return fs_part, path.rstrip("/")
+
+    def ls(self, abfss_url: str) -> list[str]:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        filesystem, path = self._split(abfss_url)
+        fs_client = self._service.get_file_system_client(filesystem)
+        try:
+            return [
+                f"abfss://{filesystem}@{self._service.account_name}.dfs.fabric.microsoft.com/{p.name}"
+                for p in fs_client.get_paths(path=path or None, recursive=False)
+            ]
+        except ResourceNotFoundError:
+            return []
+
+    def exists(self, abfss_url: str) -> bool:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        filesystem, path = self._split(abfss_url)
+        if not path:
+            try:
+                self._service.get_file_system_client(filesystem).get_file_system_properties()
+                return True
+            except ResourceNotFoundError:
+                return False
+        try:
+            self._service.get_file_system_client(filesystem).get_file_client(
+                path
+            ).get_file_properties()
+            return True
+        except ResourceNotFoundError:
+            pass
+        try:
+            self._service.get_file_system_client(filesystem).get_directory_client(
+                path
+            ).get_directory_properties()
+            return True
+        except ResourceNotFoundError:
+            return False
+
+    def invalidate_cache(self) -> None:
+        # No client-side cache to invalidate.
+        return None
+
+
 @pytest.fixture(scope="session")
 def io_fsspec(storage_config: dict):
     import fsspec
@@ -405,35 +493,31 @@ def io_fsspec(storage_config: dict):
         endpoint_mode = storage_config["storage-profile"]["endpoint-mode"]
         mode_type = endpoint_mode["type"]
         if mode_type == "private-link":
-            # adlfs would need DNS resolution for
-            # `<wsid>.z<xy>.dfs.fabric.microsoft.com` from inside the test
-            # runner. We can't guarantee that — skip tests that need direct
-            # fsspec read-back when the warehouse is on a private endpoint.
             pytest.skip(
                 "io_fsspec read-back is skipped for Fabric private-link "
                 "warehouses (caller-provisioned infra not assumed)"
             )
 
-        workspace_id = storage_config["storage-profile"]["workspace-id"]
         if mode_type == "default":
-            account_name = "onelake"
+            account_host = "onelake.dfs.fabric.microsoft.com"
         elif mode_type == "regional":
-            account_name = f"{endpoint_mode['region']}-onelake"
+            account_host = f"{endpoint_mode['region']}-onelake.dfs.fabric.microsoft.com"
         else:
             raise ValueError(f"Unknown Fabric endpoint-mode for fsspec: {mode_type}")
 
-        fs = fsspec.filesystem(
-            "abfs",
-            account_name=account_name,
-            account_host=f"{account_name}.dfs.fabric.microsoft.com",
+        # OneLake's blob surface is not API-compatible with a regular ADLS Gen2
+        # storage account: adlfs's BlobServiceClient-backed LIST calls fail with
+        # `IncorrectEndpointError: Operation not supported on the specified
+        # endpoint`. Use the DFS-native DataLakeServiceClient instead and
+        # expose a minimal fsspec-shaped surface (.ls / .exists /
+        # .invalidate_cache) — the only methods the test suite calls on
+        # `io_fsspec`.
+        return _OneLakeFsAdapter(
+            account_host=account_host,
             tenant_id=storage_config["storage-credential"]["tenant-id"],
             client_id=storage_config["storage-credential"]["client-id"],
             client_secret=storage_config["storage-credential"]["client-secret"],
         )
-        # OneLake uses the workspace UUID where ADLS uses the container name —
-        # tests that interact with fsspec should construct paths via the
-        # storage profile's `workspace-id`, not by hardcoding container names.
-        return fs
 
 
 @dataclasses.dataclass
