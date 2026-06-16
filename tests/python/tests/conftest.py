@@ -149,6 +149,11 @@ if (
         for m in (settings.onelake_endpoint_mode or "default").split(",")
         if m.strip()
     }
+    if not _modes:
+        raise ValueError(
+            "LAKEKEEPER_TEST__ONELAKE_ENDPOINT_MODE must include at least one of "
+            "'default,regional,workspace-private-link'."
+        )
     _unknown = _modes - {"default", "regional", "workspace-private-link"}
     if _unknown:
         raise ValueError(

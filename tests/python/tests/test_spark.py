@@ -309,12 +309,12 @@ def drop_table_and_assert_that_table_is_gone(
     file_io = io._infer_file_io_from_scheme(table_0.location(), properties)
     # sleep to give time for the table to be gone
     time.sleep(5)
-    # On filesystems with hierarchies like HDFS and ADLS we might leave
+    # On filesystems with hierarchies like HDFS and ADLS/Onelake we might leave
     # empty directories. This is a known issue:
     # https://github.com/lakekeeper/lakekeeper/issues/1064
     location = table_0.location().rstrip("/") + "/"
     inp = file_io.new_input(location)
-    if storage_config["storage-profile"]["type"] != "adls":
+    if storage_config["storage-profile"]["type"] not in ("adls", "onelake"):
         assert not inp.exists(), f"Table location {location} still exists"
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
     assert len(tables) == 1
