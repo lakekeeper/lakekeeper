@@ -70,7 +70,7 @@ azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git",
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+azure_storage = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "dc13d07cf0bc5c4f51df318c3549a4bb22a098e1", default-features = false, features = [
     "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
