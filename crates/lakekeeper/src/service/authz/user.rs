@@ -5,9 +5,9 @@ use crate::{
     service::{
         UserId,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzBadRequest, BackendUnavailableOrCountMismatch, CannotInspectPermissions,
-            CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            Authorizer, AuthzBadRequest, BackendUnavailableOrCountMismatch,
+            CannotInspectPermissions, CatalogUserAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -109,13 +109,16 @@ pub trait AuthZUserOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
 
         if metadata.bypasses_control_plane_authz(for_user) {
-            Ok(vec![true; users_with_actions.len()])
+            Ok(vec![
+                AuthorizationDecision::allow();
+                users_with_actions.len()
+            ])
         } else {
             let converted = users_with_actions
                 .iter()
@@ -125,10 +128,14 @@ pub trait AuthZUserOps: Authorizer {
                 .are_allowed_user_actions_impl(metadata, for_user, &converted)
                 .await?;
 
-            debug_assert!(
-                decisions.len() == users_with_actions.len(),
-                "Mismatched user decision lengths",
-            );
+            if decisions.len() != users_with_actions.len() {
+                return Err(AuthorizationCountMismatch::new(
+                    users_with_actions.len(),
+                    decisions.len(),
+                    "user",
+                )
+                .into());
+            }
 
             Ok(decisions)
         }
@@ -147,7 +154,7 @@ pub trait AuthZUserOps: Authorizer {
         let result = self
             .are_allowed_user_actions_vec(metadata, for_user, users_with_actions)
             .await?
-            .into_inner();
+            .into_allowed();
         let n_returned = result.len();
         let arr: [bool; N] = result
             .try_into()

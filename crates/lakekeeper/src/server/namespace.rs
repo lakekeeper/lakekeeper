@@ -153,7 +153,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                             )
                             .await
                             .map_err(authz_to_error_no_audit)?
-                            .into_inner()
+                            .into_allowed()
                     };
 
                     let (next_namespaces, next_ids, next_page_tokens, mask): (

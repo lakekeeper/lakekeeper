@@ -187,6 +187,14 @@ jobs:
       - name: Docker info
         run: docker info
 
+      # Builds two full images (amd64 + arm64); reclaim preinstalled toolchains
+      # we don't use to avoid "no space left on device" on hosted runners.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          docker-images: false # we build and save Docker images in this job
+          large-packages: false # apt purge is slow; the toolchain dirs free enough
+
       - name: Build Docker image (amd64)
         run: |
           DOCKER_BUILDKIT=1 docker build --provenance=false -t localhost/lakekeeper-local:amd64 \

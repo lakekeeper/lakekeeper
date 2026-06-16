@@ -8,10 +8,10 @@ use crate::{
     service::{
         ArcProjectId,
         authz::{
-            AuthorizationBackendUnavailable, AuthorizationCountMismatch, Authorizer,
-            AuthzBackendErrorOrBadRequest, AuthzBadRequest, BackendUnavailableOrCountMismatch,
-            CannotInspectPermissions, CatalogAction, CatalogProjectAction, IsAllowedActionError,
-            MustUse, UserOrRole,
+            AuthorizationBackendUnavailable, AuthorizationCountMismatch, AuthorizationDecision,
+            Authorizer, AuthzBackendErrorOrBadRequest, AuthzBadRequest,
+            BackendUnavailableOrCountMismatch, CannotInspectPermissions, CatalogAction,
+            CatalogProjectAction, IsAllowedActionError, MustUse, UserOrRole,
         },
         events::{
             AuthorizationFailureReason, AuthorizationFailureSource,
@@ -119,14 +119,14 @@ pub trait AuthZProjectOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ArcProjectId, A)],
-    ) -> Result<MustUse<Vec<bool>>, IsAllowedActionError> {
+    ) -> Result<MustUse<Vec<AuthorizationDecision>>, IsAllowedActionError> {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
 
         Ok(MustUse::from(
             if metadata.bypasses_control_plane_authz(for_user) {
-                vec![true; projects_with_actions.len()]
+                vec![AuthorizationDecision::allow(); projects_with_actions.len()]
             } else {
                 let converted: Vec<(&ArcProjectId, Self::ProjectAction)> = projects_with_actions
                     .iter()
@@ -162,7 +162,7 @@ pub trait AuthZProjectOps: Authorizer {
         let result = self
             .are_allowed_project_actions_vec(metadata, for_user, projects_with_actions)
             .await?
-            .into_inner();
+            .into_allowed();
         let n_returned = result.len();
         let arr: [bool; N] = result
             .try_into()

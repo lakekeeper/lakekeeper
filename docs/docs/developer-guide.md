@@ -354,45 +354,21 @@ cargo nextest run --all-features --ignore-default-filter -E "test(::openfga_inte
 
 ## Extending Authz
 
-When adding a new endpoint, you may need to extend the authorization model. Please check the [Authorization Docs](./authorization.md) for more information. For openfga, you'll have to perform the following steps:
+When adding a new endpoint, you may need to extend the authorization model. Please check the [Authorization Docs](./authorization.md) for more information. For OpenFGA, perform the following steps:
 
-1. extend the respective enum in `crate::service::authz` by adding the new action, e.g. `crate::service::authz::CatalogViewAction::CanUndrop`
-1. add the relation to `crate::service::authz::implementations::openfga::relations`, e.g. add `ViewRelation::CanUndrop`
-1. add the mapping from the `implementations` type to the `service` type in `openfga::relations`, e.g. `CatalogViewAction::CanUndrop => ViewRelation::CanUndrop`
-1. create a new authz schema version by renaming the version for backward compatible changes, e.g. `authz/openfga/v2.1/` to `authz/openfga/v2.2/`. For non-backward compatible changes create a new major version folder.
-1. apply your changes, e.g. add `define can_undrop: modify` to the `view` type in `authz/openfga/v2.2/schema.fga`
-1. regenerate `schema.json` via `./fga model transform --file authz/openfga/v2.2/schema.fga > authz/openfga/v2.2/schema.json` (download the `fga` binary from the [OpenFGA repo](https://github.com/openfga/cli/releases/))
-1. Head to `crate::service::authz::implementations::openfga::migration.rs`, modify `ACTIVE_MODEL_VERSION` to the newer version. For backwards compatible changes, change the `add_model` section. For changes that require migrations, add an additional `add_model` section that includes the migration fn.
+1. Add the new action to the relevant enum in `crate::service::authz`, e.g. `CatalogViewAction::CanUndrop`. Actions that must carry request context for policy-based authorizers are parameterized variants — see `CatalogProjectAction::CreateWarehouse`.
+1. In the `lakekeeper-authz-openfga` crate (`crates/authz-openfga/src/relations.rs`), add or reuse a relation on the resource enum (e.g. `RoleRelation::CanUndrop`) and map the action to it in the `ReducedRelation` impl (e.g. `CatalogViewAction::CanUndrop => ViewRelation::CanUndrop`).
+1. Create the next authz schema version. For **backward-compatible** changes (no tuple rewrite, e.g. adding a relation) **rename** the latest folder — e.g. `authz/openfga/v4.6/` → `authz/openfga/v4.7/` — so existing stores re-migrate to the new model id. Only changes that require tuple migrations get a new major-version folder (keep the old one for the migration chain). Unreleased models are renamed in place rather than duplicated.
+1. Edit the relevant component(s) under `authz/openfga/<version>/components/*.fga` (e.g. add `define can_undrop: modify` to `view.fga`), then regenerate and validate:
 
-```rust
-pub(super) static ACTIVE_MODEL_VERSION: LazyLock<AuthorizationModelVersion> =
-    LazyLock::new(|| AuthorizationModelVersion::new(3, 0)); // <- Change this for every change in the model
+   ```bash
+   just update-openfga   # fga model transform <latest>/fga.mod > <latest>/schema.json
+   just test-openfga     # runs the <latest>/store.fga.yaml assertions
+   ```
 
-
-fn get_model_manager(
-    client: &BasicOpenFgaServiceClient,
-    store_name: Option<String>,
-) -> openfga_client::migration::TupleModelManager<BasicAuthLayer> {
-    openfga_client::migration::TupleModelManager::new(
-        client.clone(),
-        &store_name.unwrap_or(AUTH_CONFIG.store_name.clone()),
-        &AUTH_CONFIG.authorization_model_prefix,
-    )
-    .add_model(
-        serde_json::from_str(include_str!(
-            // Change this for backward compatible changes.
-            // For non-backward compatible changes that require tuple migrations, add another `add_model` call.
-            "../../../../../../../authz/openfga/v3.0/schema.json"
-        ))
-        // Change also the model version in this string:
-        .expect("Model v3.0 is a valid AuthorizationModel in JSON format."),
-        AuthorizationModelVersion::new(3, 0),
-        // For major version upgrades, this is where tuple migrations go.
-        None::<MigrationFn<_>>,
-        None::<MigrationFn<_>>,
-    )
-}
-```
+   (Requires the `fga` CLI — download from the [OpenFGA repo](https://github.com/openfga/cli/releases/).)
+1. In `crates/authz-openfga/src/migration.rs` bump `ACTIVE_MODEL_VERSION` to the new version. For backward-compatible changes, repoint the current `add_model_*_current` call (schema-path `include_str!` + version). For tuple-migrating changes, add another `add_model` call carrying the migration fn.
+1. Record the change under the new version heading in `authz/openfga/README.md`.
 ## Building the docs locally
 
 ```bash

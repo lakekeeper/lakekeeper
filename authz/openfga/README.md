@@ -4,7 +4,7 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.6`
+## `v4.7`
 
 ```
 MODIFIES_TUPLES: FALSE
@@ -49,6 +49,7 @@ Types:
 `role`:
 
 - Broaden `can_read_assignments` to `can_list_roles from project` (was `can_read`).
+- Add `can_update_source_system` (aliases `can_grant_assignee`): rebinding a role's external identity (provider + source id) requires the same membership-control capability as granting assignees.
 
 ## `v4.0`
 

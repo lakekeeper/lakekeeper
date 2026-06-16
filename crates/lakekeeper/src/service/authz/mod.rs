@@ -9,8 +9,8 @@ use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
-    CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, SecretStore,
-    State, TableId, ViewId, WarehouseId, health::HealthExt,
+    CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
+    SecretStore, State, TableId, ViewId, WarehouseId, health::HealthExt,
 };
 use crate::{
     api::{
@@ -24,6 +24,8 @@ use crate::{
     },
 };
 
+mod decision;
+pub use decision::*;
 mod error;
 pub mod implementations;
 pub use error::*;
@@ -502,19 +504,42 @@ impl CatalogAction for CatalogProjectAction {
     }
 }
 
+/// The external identity (source system) a role is bound to: a `(provider_id,
+/// source_id)` pair. An external identity is always both parts together, so this
+/// type makes a partial binding unrepresentable. Used as the rebind destination
+/// in [`CatalogRoleAction::UpdateSourceSystem`].
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub struct RoleSourceSystem {
+    /// Provider that owns the role (e.g. `oidc`, `ldap`).
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub provider_id: RoleProviderId,
+    /// Identifier of the role within the provider.
+    #[cfg_attr(feature = "open-api", schema(value_type = String))]
+    pub source_id: RoleSourceId,
+}
+
+/// The destination of a [`CatalogRoleAction::UpdateSourceSystem`] rebind.
+///
+/// `To` names a concrete external identity (the real authorization check); `Any`
+/// is the destination-less base-capability marker used for permission
+/// introspection and "can this principal rebind at all?" queries. Keeping the base
+/// case an explicit, named variant — rather than an absent/`None` value — means an
+/// authorizer is never silently asked to allow an unspecified rebind: a
+/// per-destination policy gates the concrete `To` target and never matches `Any`.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSystemTarget {
+    /// Concrete rebind destination.
+    To(RoleSourceSystem),
+    /// No specific destination — base-capability / introspection marker.
+    Any,
+}
+
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    strum_macros::Display,
-    EnumIter,
-    EnumString,
-    IntoStaticStr,
-    VariantArray,
+    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
 )]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleAction))]
@@ -531,10 +556,58 @@ pub enum CatalogRoleAction {
     ManageRoleAssignments,
     /// Can list members / parents / assignments of this role.
     ReadRoleAssignments,
+    /// Can rebind this role's external identity (provider + source id) to a
+    /// different source system. `target` is the rebind destination, surfaced as
+    /// action context (`target_provider_id` / `target_source_id`) so policy-based
+    /// authorizers can gate it (e.g. forbid moving a role onto a particular
+    /// provider). The catalog backend treats this the same as
+    /// `ManageRoleAssignments`.
+    ///
+    /// The destination is explicit: [`SourceSystemTarget::To`] on the actual write
+    /// (the handler builds it from the request) and [`SourceSystemTarget::Any`] in
+    /// the `GET /role/{id}/actions` introspection enumeration / any "may this
+    /// principal rebind at all?" query. `Any` is a named base-capability marker, not
+    /// a permissive default: a per-destination policy gates the concrete `To` target
+    /// and never matches `Any`, and a `/check` caller chooses `To`/`Any`
+    /// deliberately.
+    UpdateSourceSystem {
+        target: SourceSystemTarget,
+    },
+}
+/// The role actions enumerated for permission introspection (`GET
+/// /role/{id}/actions`). `UpdateSourceSystem` is enumerated with the
+/// destination-less [`SourceSystemTarget::Any`] marker (the base-capability form).
+static ROLE_ACTION_VARIANTS: LazyLock<[CatalogRoleAction; 7]> = LazyLock::new(|| {
+    [
+        CatalogRoleAction::Read,
+        CatalogRoleAction::ReadMetadata,
+        CatalogRoleAction::Delete,
+        CatalogRoleAction::Update,
+        CatalogRoleAction::ManageRoleAssignments,
+        CatalogRoleAction::ReadRoleAssignments,
+        CatalogRoleAction::UpdateSourceSystem {
+            target: SourceSystemTarget::Any,
+        },
+    ]
+});
+impl CatalogRoleAction {
+    /// Introspectable role actions — see [`ROLE_ACTION_VARIANTS`].
+    #[must_use]
+    pub fn variants() -> &'static [CatalogRoleAction; 7] {
+        &ROLE_ACTION_VARIANTS
+    }
 }
 impl CatalogAction for CatalogRoleAction {
     fn action_descriptor(&self) -> ActionDescriptor {
-        ActionDescriptor::builder().action_name(self.into()).build()
+        let mut b = ActionDescriptor::builder().action_name(self.into());
+        if let Self::UpdateSourceSystem {
+            target: SourceSystemTarget::To(target),
+        } = self
+        {
+            b = b.context_string("target_provider_id", target.provider_id.to_string());
+            b = b.context_string("target_source_id", target.source_id.to_string());
+        }
+        b.build()
     }
 }
 
@@ -1111,6 +1184,16 @@ impl<T> MustUse<T> {
         self.0
     }
 }
+
+impl MustUse<Vec<AuthorizationDecision>> {
+    /// Extract just the allow/deny flags, discarding the per-decision
+    /// diagnostics. For call sites that only need the boolean outcome.
+    #[must_use]
+    pub fn into_allowed(self) -> Vec<bool> {
+        self.0.into_iter().map(|d| d.allowed).collect()
+    }
+}
+
 #[async_trait::async_trait]
 /// Interface to provide Authorization functions to the catalog.
 /// For metadata passed into all methods except `check_actor`, the `actor()` in `RequestMetadata`
@@ -1199,35 +1282,35 @@ where
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         users_with_actions: &[(&UserId, Self::UserAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_role_actions_impl(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, Self::RoleAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_server_actions_impl(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         actions: &[Self::ServerAction],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_project_actions_impl(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_warehouse_actions_impl(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_namespace_actions_impl(
         &self,
@@ -1236,7 +1319,7 @@ where
         warehouse: &ResolvedWarehouse,
         parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
         actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     /// Checks if actions are allowed on tables. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
@@ -1255,7 +1338,7 @@ where
             &NamespaceWithParent,
             ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     /// Checks if actions are allowed on views. If supported by the concrete implementation, these
     /// checks may happen in batches to avoid sending a separate request for each tuple.
@@ -1274,7 +1357,7 @@ where
             &NamespaceWithParent,
             ActionOnView<'_, '_, impl AuthZViewInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     /// Checks if actions are allowed on generic tables.
     async fn are_allowed_generic_table_actions_impl<
@@ -1288,7 +1371,7 @@ where
             &NamespaceWithParent,
             ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
         )],
-    ) -> Result<Vec<bool>, IsAllowedActionError>;
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     /// Hook that is called when a user is deleted.
     async fn delete_user(&self, metadata: &RequestMetadata, user_id: UserId) -> Result<()>;
@@ -1511,6 +1594,43 @@ pub mod tests {
     fn test_generic_table_action_variant_completeness() {
         let variants = CatalogGenericTableAction::variants();
         assert_eq!(variants.len(), CatalogGenericTableAction::COUNT);
+    }
+
+    #[test]
+    fn test_role_action_variant_completeness() {
+        // `UpdateSourceSystem` is enumerated with the `SourceSystemTarget::Any`
+        // base-capability marker, so the full set is introspectable.
+        let variants = CatalogRoleAction::variants();
+        assert_eq!(variants.len(), CatalogRoleAction::COUNT);
+    }
+
+    #[test]
+    fn test_role_action_update_source_system_serde() {
+        // A concrete destination (`To`) round-trips and surfaces under the tag so a
+        // policy-based authorizer can read it from the action context.
+        let action = CatalogRoleAction::UpdateSourceSystem {
+            target: SourceSystemTarget::To(RoleSourceSystem {
+                provider_id: "oidc".parse().unwrap(),
+                source_id: "group-123".parse().unwrap(),
+            }),
+        };
+        let expected = serde_json::json!({
+            "action": "update_source_system",
+            "target": {"to": {"provider_id": "oidc", "source_id": "group-123"}},
+        });
+        assert_eq!(serde_json::to_value(&action).expect("serialize"), expected);
+        let deserialized: CatalogRoleAction =
+            serde_json::from_value(expected).expect("deserialize");
+        assert_eq!(deserialized, action);
+
+        // The base-capability / introspection form is an explicit, named value.
+        let any = CatalogRoleAction::UpdateSourceSystem {
+            target: SourceSystemTarget::Any,
+        };
+        assert_eq!(
+            serde_json::to_value(&any).expect("serialize"),
+            serde_json::json!({"action": "update_source_system", "target": "any"}),
+        );
     }
 
     #[test]
@@ -2130,8 +2250,11 @@ pub mod tests {
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
             users_with_actions: &[(&UserId, Self::UserAction)],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
-            Ok(vec![true; users_with_actions.len()])
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            Ok(vec![
+                AuthorizationDecision::allow();
+                users_with_actions.len()
+            ])
         }
 
         async fn are_allowed_role_actions_impl(
@@ -2139,7 +2262,7 @@ pub mod tests {
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
             roles_with_actions: &[(&Role, Self::RoleAction)],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             let results: Vec<bool> = roles_with_actions
                 .iter()
                 .map(|(role, action)| {
@@ -2149,7 +2272,10 @@ pub mod tests {
                     self.check_available(format!("role:{}", role.id).as_str())
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn are_allowed_server_actions_impl(
@@ -2157,8 +2283,8 @@ pub mod tests {
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
             actions: &[Self::ServerAction],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
-            Ok(vec![true; actions.len()])
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            Ok(vec![AuthorizationDecision::allow(); actions.len()])
         }
 
         async fn are_allowed_project_actions_impl(
@@ -2166,7 +2292,7 @@ pub mod tests {
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
             projects_with_actions: &[(&ArcProjectId, Self::ProjectAction)],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             let results: Vec<bool> = projects_with_actions
                 .iter()
                 .map(|(project_id, action)| {
@@ -2176,7 +2302,10 @@ pub mod tests {
                     self.check_available(format!("project:{project_id}").as_str())
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn are_allowed_warehouse_actions_impl(
@@ -2184,7 +2313,7 @@ pub mod tests {
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
             warehouses_with_actions: &[(&ResolvedWarehouse, Self::WarehouseAction)],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             let results: Vec<bool> = warehouses_with_actions
                 .iter()
                 .map(|(warehouse, action)| {
@@ -2195,7 +2324,10 @@ pub mod tests {
                     self.check_available(format!("warehouse:{warehouse_id}").as_str())
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn are_allowed_namespace_actions_impl(
@@ -2205,7 +2337,7 @@ pub mod tests {
             _warehouse: &ResolvedWarehouse,
             _parent_namespaces: &HashMap<NamespaceId, NamespaceWithParent>,
             actions: &[(&impl AuthZNamespaceInfo, Self::NamespaceAction)],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             let results: Vec<bool> = actions
                 .iter()
                 .map(|(namespace, action)| {
@@ -2216,7 +2348,10 @@ pub mod tests {
                     self.check_available(format!("namespace:{namespace_id}").as_str())
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn are_allowed_table_actions_impl<
@@ -2230,7 +2365,7 @@ pub mod tests {
                 &NamespaceWithParent,
                 ActionOnTable<'_, '_, impl AuthZTableInfo, A>,
             )],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             // `action.user == None` means "acting as self" (subject = actor),
             // so per-user hiding for the actor must still apply.
             let actor_identity = metadata.actor().to_user_or_role();
@@ -2249,7 +2384,10 @@ pub mod tests {
                     self.check_available_for_user(&object, subject)
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn are_allowed_view_actions_impl<A: Into<Self::ViewAction> + Send + Clone + Sync>(
@@ -2261,7 +2399,7 @@ pub mod tests {
                 &NamespaceWithParent,
                 ActionOnView<'_, '_, impl AuthZViewInfo, A>,
             )],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
@@ -2279,7 +2417,10 @@ pub mod tests {
                     self.check_available_for_user(&object, subject)
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn are_allowed_generic_table_actions_impl<
@@ -2293,7 +2434,7 @@ pub mod tests {
                 &NamespaceWithParent,
                 ActionOnGenericTable<'_, '_, impl AuthZGenericTableInfo, A>,
             )],
-        ) -> Result<Vec<bool>, IsAllowedActionError> {
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             // See the table impl above for why we fall back to the actor.
             let actor_identity = metadata.actor().to_user_or_role();
             let results: Vec<bool> = actions
@@ -2310,7 +2451,10 @@ pub mod tests {
                     self.check_available_for_user(&object, subject)
                 })
                 .collect();
-            Ok(results)
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
         }
 
         async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {

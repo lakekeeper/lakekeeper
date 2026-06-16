@@ -330,7 +330,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .map_err(authz_to_error_no_audit)?;
             projects
                 .into_iter()
-                .zip(decisions.into_inner())
+                .zip(decisions.into_allowed())
                 .filter_map(
                     |(project, is_allowed)| {
                         if is_allowed { Some(project) } else { None }
