@@ -821,9 +821,24 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+    // A source-system rebind changes the role's `RoleIdent` (provider_id/source_id),
+    // which is cached per row in every assignee's USER_ASSIGNMENTS closure
+    // (`AssignedRole.role_ident`) and in this role's ROLE_MEMBERS entry. External
+    // authorizers key on the ident, so without eviction those closures evaluate the
+    // stale binding until TTL. Mirror `authorized_delete_role`: read the affected-user
+    // closure pre-commit on the txn (so a failed read rolls the rebind back), evict
+    // post-commit. Unlike delete, the assignment/membership rows are updated (not
+    // cascade-deleted), so the set is identical pre- and post-commit. ROLE_CACHE is
+    // refreshed separately by the `role_updated` event the handler emits.
+    let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
+        .await
+        .map_err::<UpdateRoleError, _>(Into::into)?;
     let role = C::set_role_source_system(&project_id, role_id, &request, t.transaction()).await?;
     t.commit()
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+
+    role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
+    role_assignments_cache::role_members_cache_invalidate(role_id).await;
     Ok(role)
 }
