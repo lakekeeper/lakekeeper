@@ -132,7 +132,7 @@ if (
 # app reg that Fabric reuses, so gating on it pulls generic-ADLS configs into
 # Fabric-only test runs. docker-compose substitutes unset host vars to empty
 # string, so guard against both `None` and `""`.
-if settings.azure_storage_account_name:
+if settings.azure_storage_account_name and settings.azure_client_id:
     STORAGE_CONFIGS.append({"type": "azure"})
 
 # Fan out one storage_config entry per requested Fabric endpoint mode. A Fabric
@@ -435,7 +435,9 @@ class _OneLakeFsAdapter:
         filesystem, path = self._split(abfss_url)
         if not path:
             try:
-                self._service.get_file_system_client(filesystem).get_file_system_properties()
+                self._service.get_file_system_client(
+                    filesystem
+                ).get_file_system_properties()
                 return True
             except ResourceNotFoundError:
                 return False
