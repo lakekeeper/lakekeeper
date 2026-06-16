@@ -6168,16 +6168,6 @@ components:
           type: string
           format: uuid
           description: UUID of the Fabric workspace this warehouse lives in.
-    OpenFGAGenericTableAction:
-      type: string
-      enum:
-        - read_assignments
-        - grant_pass_grants
-        - grant_manage_grants
-        - grant_describe
-        - grant_select
-        - grant_modify
-        - change_ownership
     OpenFGANamespaceAction:
       type: string
       enum:
