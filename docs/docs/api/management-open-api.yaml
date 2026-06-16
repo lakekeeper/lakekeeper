@@ -4559,7 +4559,11 @@ components:
     EndpointMode:
       oneOf:
         - type: object
-          description: Use the global `OneLake` endpoint `onelake.dfs.fabric.microsoft.com`. Default.
+          description: |-
+            Use the global `OneLake` endpoint `onelake.dfs.fabric.microsoft.com`. Default.
+
+            Also the correct choice for tenant-level private link — tenant PE
+            only changes DNS resolution, not the URL Lakekeeper constructs.
           required:
             - type
           properties:
@@ -4595,14 +4599,32 @@ components:
             Use a workspace-scoped private-link endpoint
             `<workspaceId>.z<xy>.dfs.fabric.microsoft.com`. The host is computed
             from the workspace ID at runtime; users only opt in via this variant.
+
+            For *tenant*-level private link, stay on [`Default`] — the global
+            onelake FQDN is what gets routed through a tenant PE.
           required:
             - type
           properties:
             type:
               type: string
               enum:
-                - private-link
-      description: How Lakekeeper connects to the `OneLake` DFS endpoint.
+                - workspace-private-link
+      description: |-
+        How Lakekeeper connects to the `OneLake` DFS endpoint.
+
+        Fabric supports two kinds of Azure Private Link configurations, and only
+        one of them maps to a dedicated variant here:
+
+        - **Tenant-level private link**: traffic to the global host
+          `onelake.dfs.fabric.microsoft.com` is routed privately via DNS that
+          points the global FQDN at a tenant-PE NIC. From Lakekeeper's
+          perspective this is indistinguishable from public traffic — use
+          `Default`. (Same shape as a private endpoint in front of a regular
+          ADLS Gen2 storage account.)
+        - **Workspace-level private link**: each workspace gets its own
+          `<wsId>.z<xy>.dfs.fabric.microsoft.com` FQDN routed via a
+          workspace-scoped PE. Lakekeeper needs to build that FQDN — use
+          [`WorkspacePrivateLink`].
     EndpointStatistic:
       type: object
       required:

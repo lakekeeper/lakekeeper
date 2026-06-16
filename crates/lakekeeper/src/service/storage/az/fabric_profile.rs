@@ -61,11 +61,28 @@ impl TopLevelFolder {
 }
 
 /// How Lakekeeper connects to the `OneLake` DFS endpoint.
+///
+/// Fabric supports two kinds of Azure Private Link configurations, and only
+/// one of them maps to a dedicated variant here:
+///
+/// - **Tenant-level private link**: traffic to the global host
+///   `onelake.dfs.fabric.microsoft.com` is routed privately via DNS that
+///   points the global FQDN at a tenant-PE NIC. From Lakekeeper's
+///   perspective this is indistinguishable from public traffic — use
+///   `Default`. (Same shape as a private endpoint in front of a regular
+///   ADLS Gen2 storage account.)
+/// - **Workspace-level private link**: each workspace gets its own
+///   `<wsId>.z<xy>.dfs.fabric.microsoft.com` FQDN routed via a
+///   workspace-scoped PE. Lakekeeper needs to build that FQDN — use
+///   [`WorkspacePrivateLink`].
 #[derive(Debug, Hash, Eq, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum EndpointMode {
     /// Use the global `OneLake` endpoint `onelake.dfs.fabric.microsoft.com`. Default.
+    ///
+    /// Also the correct choice for tenant-level private link — tenant PE
+    /// only changes DNS resolution, not the URL Lakekeeper constructs.
     #[default]
     Default,
     /// Use a region-pinned endpoint `<region>-onelake.dfs.fabric.microsoft.com`.
@@ -84,8 +101,11 @@ pub enum EndpointMode {
     /// Use a workspace-scoped private-link endpoint
     /// `<workspaceId>.z<xy>.dfs.fabric.microsoft.com`. The host is computed
     /// from the workspace ID at runtime; users only opt in via this variant.
-    #[serde(rename = "private-link")]
-    PrivateLink,
+    ///
+    /// For *tenant*-level private link, stay on [`Default`] — the global
+    /// onelake FQDN is what gets routed through a tenant PE.
+    #[serde(rename = "workspace-private-link")]
+    WorkspacePrivateLink,
 }
 
 /// Storage profile for a Microsoft Fabric / `OneLake` lakehouse.
@@ -303,7 +323,7 @@ impl FabricAdlsProfile {
     ///
     /// - `Default` → `onelake`
     /// - `Regional{region}` → `<region>-onelake`
-    /// - `PrivateLink` → un-dashed workspace UUID
+    /// - `WorkspacePrivateLink` → un-dashed workspace UUID
     ///
     /// Distinct from [`Self::sas_account`], which is what we must sign SAS
     /// canonical resources against — the latter is always the literal
@@ -312,7 +332,7 @@ impl FabricAdlsProfile {
         match &self.endpoint_mode {
             EndpointMode::Default => "onelake".to_string(),
             EndpointMode::Regional { region } => format!("{region}-onelake"),
-            EndpointMode::PrivateLink => self.workspace_id.simple().to_string(),
+            EndpointMode::WorkspacePrivateLink => self.workspace_id.simple().to_string(),
         }
     }
 
@@ -333,14 +353,14 @@ impl FabricAdlsProfile {
     /// The endpoint suffix — everything after the first DNS label of the host.
     ///
     /// - `Default` / `Regional` → `dfs.fabric.microsoft.com`
-    /// - `PrivateLink` → `z<xy>.dfs.fabric.microsoft.com` where `<xy>` is the
+    /// - `WorkspacePrivateLink` → `z<xy>.dfs.fabric.microsoft.com` where `<xy>` is the
     ///   first two characters of the un-dashed workspace UUID
     fn endpoint_suffix(&self) -> String {
         match &self.endpoint_mode {
             EndpointMode::Default | EndpointMode::Regional { .. } => {
                 "dfs.fabric.microsoft.com".to_string()
             }
-            EndpointMode::PrivateLink => {
+            EndpointMode::WorkspacePrivateLink => {
                 let wsid = self.workspace_id.simple().to_string();
                 // `Uuid::simple` always emits 32 lowercase hex chars.
                 let xy = &wsid[..2];
@@ -403,7 +423,7 @@ impl FabricAdlsProfile {
     /// and remains valid for clients that subsequently hit the private-link host.
     fn sas_cloud_location(&self) -> CloudLocation {
         match &self.endpoint_mode {
-            EndpointMode::PrivateLink => CloudLocation::Custom {
+            EndpointMode::WorkspacePrivateLink => CloudLocation::Custom {
                 account: "onelake".to_string(),
                 uri: "https://onelake.dfs.fabric.microsoft.com".to_string(),
             },
@@ -602,7 +622,7 @@ mod tests {
     #[test]
     fn test_base_location_private_link() {
         let mut p = sample_profile();
-        p.endpoint_mode = EndpointMode::PrivateLink;
+        p.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         let loc = p.base_location().unwrap();
         assert_eq!(
             loc.to_string(),
@@ -624,7 +644,7 @@ mod tests {
     fn test_dfs_host_private_link_xy_is_first_two_chars() {
         let p = FabricAdlsProfile {
             workspace_id: Uuid::parse_str("abcdef12-3456-7890-1234-56789abcdef0").unwrap(),
-            endpoint_mode: EndpointMode::PrivateLink,
+            endpoint_mode: EndpointMode::WorkspacePrivateLink,
             ..sample_profile()
         };
         assert_eq!(
@@ -660,7 +680,7 @@ mod tests {
     #[test]
     fn test_iceberg_sas_property_key_private_link() {
         let mut p = sample_profile();
-        p.endpoint_mode = EndpointMode::PrivateLink;
+        p.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         // account = un-dashed workspace UUID, host = "z<xy>.dfs.fabric.microsoft.com".
         assert_eq!(
             p.iceberg_sas_property_key(),
@@ -678,7 +698,7 @@ mod tests {
             EndpointMode::Regional {
                 region: "northeurope".to_string(),
             },
-            EndpointMode::PrivateLink,
+            EndpointMode::WorkspacePrivateLink,
         ] {
             let p = FabricAdlsProfile {
                 endpoint_mode: mode,
@@ -701,7 +721,7 @@ mod tests {
         };
         assert_eq!(p.host_account(), "westus-onelake");
 
-        p.endpoint_mode = EndpointMode::PrivateLink;
+        p.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         assert_eq!(p.host_account(), "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47");
     }
 
@@ -716,7 +736,7 @@ mod tests {
             EndpointMode::Regional {
                 region: "centralus".to_string(),
             },
-            EndpointMode::PrivateLink,
+            EndpointMode::WorkspacePrivateLink,
         ] {
             let p = FabricAdlsProfile {
                 endpoint_mode: mode,
@@ -736,7 +756,7 @@ mod tests {
         };
         assert_eq!(p.blob_host(), "westus-onelake.blob.fabric.microsoft.com");
 
-        p.endpoint_mode = EndpointMode::PrivateLink;
+        p.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         assert_eq!(
             p.blob_host(),
             "c5e8a1f37b2d4e8a9f1c3b6d8e5a2f47.zc5.blob.fabric.microsoft.com",
@@ -746,7 +766,7 @@ mod tests {
     #[test]
     fn test_sas_cloud_location_pins_to_global_for_private_link() {
         let mut p = sample_profile();
-        p.endpoint_mode = EndpointMode::PrivateLink;
+        p.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         match p.sas_cloud_location() {
             CloudLocation::Custom { account, uri } => {
                 assert_eq!(account, "onelake");
@@ -935,7 +955,7 @@ mod tests {
     fn test_update_with_immutable_endpoint_mode() {
         let p1 = sample_profile();
         let mut p2 = sample_profile();
-        p2.endpoint_mode = EndpointMode::PrivateLink;
+        p2.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         let err = p1.update_with(p2).unwrap_err();
         assert!(format!("{err:?}").contains("endpoint_mode"));
     }
@@ -1020,10 +1040,10 @@ mod tests {
             }
         );
 
-        let private_json = serde_json::json!({ "type": "private-link" });
+        let private_json = serde_json::json!({ "type": "workspace-private-link" });
         assert_eq!(
             serde_json::from_value::<EndpointMode>(private_json).unwrap(),
-            EndpointMode::PrivateLink
+            EndpointMode::WorkspacePrivateLink
         );
     }
 
@@ -1091,7 +1111,7 @@ mod tests {
         assert!(p1.is_overlapping_location(&p2));
 
         let mut p3 = sample_profile();
-        p3.endpoint_mode = EndpointMode::PrivateLink;
+        p3.endpoint_mode = EndpointMode::WorkspacePrivateLink;
         assert!(p1.is_overlapping_location(&p3));
         assert!(p2.is_overlapping_location(&p3));
     }

@@ -104,7 +104,7 @@ you set both to the same values.
 | `LAKEKEEPER_TEST__AZURE_CLIENT_SECRET` | Spark | client secret — reused |
 | `LAKEKEEPER_TEST__AZURE_TENANT_ID` | Spark | tenant ID — reused |
 | `LAKEKEEPER_TEST__FABRIC_REGION` | Rust regional, Spark `regional` mode | Azure region slug (e.g. `centralus`) |
-| `LAKEKEEPER_TEST__FABRIC_ENDPOINT_MODE` | Spark only | comma-separated subset of `default,regional,private-link`. Default: `default` |
+| `LAKEKEEPER_TEST__FABRIC_ENDPOINT_MODE` | Spark only | comma-separated subset of `default,regional,workspace-private-link`. Default: `default` |
 
 The Rust live tests are marked `#[ignore]` — opt in with
 `cargo test -- --ignored` or `cargo nextest run --run-ignored=all`. Examples:
@@ -124,11 +124,14 @@ LAKEKEEPER_TEST__FABRIC_ENDPOINT_MODE=default,regional ...other_vars... \
 bash run.sh spark_fabric-1.10.1
 ```
 
-`private-link` requires the caller to have a Fabric workspace-private-link
-endpoint provisioned and reachable from the test container. The host pattern
-is `<wsid-no-dashes>.z<xy>.dfs.fabric.microsoft.com`. If DNS isn't configured,
-the test will fail with a connection error — that's expected; private-link
-infra setup is out of scope for the test harness.
+`workspace-private-link` requires the caller to have a Fabric workspace-level
+private-link endpoint provisioned and reachable from the test container. The
+host pattern is `<wsid-no-dashes>.z<xy>.dfs.fabric.microsoft.com`. If DNS
+isn't configured, the test will fail with a connection error — that's
+expected; private-link infra setup is out of scope for the test harness.
+Tenant-level private link is transparent at this layer (it just changes how
+the global onelake FQDN resolves), so it requires no dedicated mode — use
+`default`.
 
 ### GCS
 

@@ -668,6 +668,22 @@ Microsoft Fabric exposes its OneLake data lake through ADLS Gen2-compatible APIs
 !!! note
     The generic `adls` profile also works against OneLake if you set the fields manually (`account-name: "onelake"`, `host: "dfs.fabric.microsoft.com"`, `filesystem: <workspace-id>`, `key-prefix: <lakehouse-id>/Files/<dir>`). The `fabric` profile is the recommended path because it validates the OneLake-specific constraints (SAS lifetime cap, supported credentials, endpoint shapes) for you and computes private-link FQDNs automatically.
 
+### Client compatibility
+
+OneLake's blob surface is API-compatible with regular ADLS Gen2 for the operations Lakekeeper's vended-credentials path uses, but client libraries need to be OneLake-aware (specifically: they have to honour `adls.account-host` so they target `*.fabric.microsoft.com` instead of defaulting to `<account>.blob.core.windows.net`). Lakekeeper emits the right property in the catalog response; the engine still has to be on a version that consumes it.
+
+| Client | Minimum version | Notes |
+|---|---|---|
+| **PyIceberg** | `0.10.0` | First release that ships both [`adls.account-host`](https://github.com/apache/iceberg-python/pull/2016) and [`adls.credential`](https://github.com/apache/iceberg-python/pull/2299). Earlier versions don't construct OneLake URLs correctly even when Lakekeeper hands them the right properties. Transitively requires `adlfs >= 2024.7.0`. |
+| **Spark + Iceberg (Java)** | `iceberg-spark-runtime` ≥ `1.5` on Spark 3.5 *or* ≥ `1.10` on Spark 4 | The Java Iceberg ADLS file IO parses the host from `abfss://<fs>@<host>/...` directly, so it's transparently OneLake-compatible for any version that supports vended ADLS credentials. |
+
+Lakekeeper's own Fabric/OneLake integration tests are run against:
+
+- **Spark** `4.0.2` (`apache/spark:4.0.2-scala2.13-java21-python3-ubuntu`) with `iceberg-spark-runtime` `1.10.1`
+- **PyIceberg** `0.10.0` (with the `adlfs` extra)
+
+Older Spark 3 / Iceberg < 1.10 combinations are exercised by other suites in the same harness (`apache/spark:3.5.6-java17-python3`); the Fabric-specific paths in vended credentials don't depend on the Spark major version.
+
 ### Configuration Parameters
 
 | Parameter                      | Type    | Required | Default                             | Description |
@@ -686,16 +702,22 @@ Microsoft Fabric exposes its OneLake data lake through ADLS Gen2-compatible APIs
 
 OneLake exposes three DFS endpoint shapes; the `endpoint-mode` field picks one.
 
-| Type         | JSON                                          | Resulting host                                                          |
-|--------------|-----------------------------------------------|-------------------------------------------------------------------------|
-| Default      | `{"type": "default"}`                         | `onelake.dfs.fabric.microsoft.com`                                      |
-| Regional     | `{"type": "regional", "region": "westus"}`    | `westus-onelake.dfs.fabric.microsoft.com`                               |
-| Private link | `{"type": "private-link"}`                    | `<workspace-id-no-dashes>.z<xy>.dfs.fabric.microsoft.com` (host derived from `workspace-id` automatically; `<xy>` is the first two hex characters of the un-dashed workspace UUID) |
+| Type                   | JSON                                                    | Resulting host                                                          |
+|------------------------|---------------------------------------------------------|-------------------------------------------------------------------------|
+| Default                | `{"type": "default"}`                                   | `onelake.dfs.fabric.microsoft.com`                                      |
+| Regional               | `{"type": "regional", "region": "westus"}`              | `westus-onelake.dfs.fabric.microsoft.com`                               |
+| Workspace private link | `{"type": "workspace-private-link"}`                    | `<workspace-id-no-dashes>.z<xy>.dfs.fabric.microsoft.com` (host derived from `workspace-id` automatically; `<xy>` is the first two hex characters of the un-dashed workspace UUID) |
 
-Use `regional` when data residency requires the request to stay within a specific Azure region. Use `private-link` when the workspace is fronted by an Azure Private Link service.
+Use `regional` when data residency requires the request to stay within a specific Azure region. Use `workspace-private-link` when the workspace is fronted by a Fabric workspace-level private endpoint.
+
+!!! info "Tenant-level vs workspace-level private link"
+    Fabric supports two distinct private-link scopes, and only one of them needs a dedicated `endpoint-mode`:
+
+    - **Tenant-level private link**: traffic to the global host `onelake.dfs.fabric.microsoft.com` is routed privately via DNS that points the global FQDN at a tenant-PE NIC. From Lakekeeper's perspective this is indistinguishable from public traffic — use `default`. (Same shape as a private endpoint sitting in front of a regular ADLS Gen2 storage account: the URL Lakekeeper builds doesn't change, only DNS does.)
+    - **Workspace-level private link**: each workspace gets its own `<wsId>.z<xy>.dfs.fabric.microsoft.com` FQDN routed via a workspace-scoped PE. Lakekeeper has to build that FQDN — use `workspace-private-link`.
 
 !!! note
-    Even when `endpoint-mode` is set to `private-link`, the Lakekeeper server itself must retain DNS resolution and outbound TLS connectivity to the global host `onelake.dfs.fabric.microsoft.com`. SAS token minting (the `Get User Delegation Key` call) is not served by the workspace-FQDN private-link endpoint — Fabric returns `DeniedByPolicy` there — so Lakekeeper issues that single call against the global OneLake host. Vended client traffic (read/write of table data) still flows through the workspace private link.
+    Even when `endpoint-mode` is set to `workspace-private-link`, the Lakekeeper server itself must retain DNS resolution and outbound TLS connectivity to the global host `onelake.dfs.fabric.microsoft.com`. SAS token minting (the `Get User Delegation Key` call) is not served by the workspace-FQDN private-link endpoint — Fabric returns `DeniedByPolicy` there — so Lakekeeper issues that single call against the global OneLake host. Vended client traffic (read/write of table data) still flows through the workspace private link.
 
 !!! warning "OneLake path names cannot contain `%`"
     OneLake's request pipeline silently collapses any `%XX` percent-escape in a blob path to its decoded character before SAS validation, so a path that stores the *literal* three-character sequence `%3F` is indistinguishable from one that stores the single character `?`. Lakekeeper otherwise treats every byte in a path literally (`%41bc` is a different blob from `Abc`); on OneLake that guarantee can't hold, so the Fabric storage profile **rejects any table location whose path segments contain a literal `%`** at create time. Use a different character or strip the `%` before submitting the location.

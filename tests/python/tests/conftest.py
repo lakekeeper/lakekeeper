@@ -54,11 +54,13 @@ class Settings(BaseSettings):
     fabric_workspace_id: Optional[str] = None
     fabric_lakehouse_id: Optional[str] = None
     fabric_region: Optional[str] = None
-    # Comma-separated subset of `default,regional,private-link`. Each listed
-    # mode fans out into its own `storage_config` parametrization. `regional`
-    # additionally requires `LAKEKEEPER_TEST__FABRIC_REGION`. `private-link`
-    # requires the caller to have a Fabric workspace-private-link endpoint
-    # provisioned and reachable from the test runner.
+    # Comma-separated subset of `default,regional,workspace-private-link`.
+    # Each listed mode fans out into its own `storage_config` parametrization.
+    # `regional` additionally requires `LAKEKEEPER_TEST__FABRIC_REGION`.
+    # `workspace-private-link` requires the caller to have a Fabric
+    # workspace-private-link endpoint provisioned and reachable from the
+    # test runner. (Tenant-level private link doesn't need its own mode —
+    # it routes the global onelake FQDN privately and works under `default`.)
     fabric_endpoint_mode: Optional[str] = "default"
     gcs_credential: Optional[Secret] = None
     gcs_bucket: Optional[str] = None
@@ -144,11 +146,11 @@ if (
         for m in (settings.fabric_endpoint_mode or "default").split(",")
         if m.strip()
     }
-    _unknown = _modes - {"default", "regional", "private-link"}
+    _unknown = _modes - {"default", "regional", "workspace-private-link"}
     if _unknown:
         raise ValueError(
             f"Invalid LAKEKEEPER_TEST__FABRIC_ENDPOINT_MODE entries: {sorted(_unknown)}. "
-            "Must be a comma-separated subset of 'default,regional,private-link'."
+            "Must be a comma-separated subset of 'default,regional,workspace-private-link'."
         )
     for _mode in sorted(_modes):
         STORAGE_CONFIGS.append({"type": "fabric", "endpoint-mode": _mode})
@@ -323,12 +325,12 @@ def storage_config(request) -> dict:
                 "type": "regional",
                 "region": settings.fabric_region,
             }
-        elif endpoint_mode == "private-link":
+        elif endpoint_mode == "workspace-private-link":
             # The caller is responsible for having provisioned a Fabric
             # workspace-private-link endpoint reachable from this runner.
             # Connection failures here aren't a test bug — they're an
             # infra-setup gap.
-            endpoint_mode_json = {"type": "private-link"}
+            endpoint_mode_json = {"type": "workspace-private-link"}
         else:
             raise ValueError(f"Unknown fabric endpoint-mode: {endpoint_mode}")
 
@@ -492,9 +494,9 @@ def io_fsspec(storage_config: dict):
     if storage_config["storage-profile"]["type"] == "fabric":
         endpoint_mode = storage_config["storage-profile"]["endpoint-mode"]
         mode_type = endpoint_mode["type"]
-        if mode_type == "private-link":
+        if mode_type == "workspace-private-link":
             pytest.skip(
-                "io_fsspec read-back is skipped for Fabric private-link "
+                "io_fsspec read-back is skipped for Fabric workspace-private-link "
                 "warehouses (caller-provisioned infra not assumed)"
             )
 
