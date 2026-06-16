@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT r.id, r.source_id, r.provider_id, ra.created_at\n        FROM role_assignment ra\n        JOIN \"role\" r ON r.id = ra.role_id\n        WHERE ra.user_id = $1\n          AND r.project_id = $2\n          AND ((ra.created_at > $3 OR $3 IS NULL) OR (ra.created_at = $3 AND r.id > $4))\n        ORDER BY ra.created_at, r.id ASC\n        LIMIT $5\n        ",
+  "query": "\n        SELECT r.id, r.source_id, r.provider_id, r.name, rm.created_at\n        FROM role_membership rm\n        JOIN \"role\" r ON r.id = rm.parent_role_id\n        WHERE rm.member_role_id = $1\n          AND r.project_id = $2\n          AND ((rm.created_at > $3 OR $3 IS NULL) OR (rm.created_at = $3 AND r.id > $4))\n        ORDER BY rm.created_at, r.id ASC\n        LIMIT $5\n        ",
   "describe": {
     "columns": [
       {
@@ -38,11 +38,22 @@
       },
       {
         "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "role",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "role_assignment",
+            "table": "role_membership",
             "name": "created_at"
           }
         }
@@ -50,7 +61,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
+        "Uuid",
         "Text",
         "Timestamptz",
         "Uuid",
@@ -61,8 +72,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "ff2e25f588c72c24e66de2da98500756c741e2dd1e87726339fe4e6ab261c520"
+  "hash": "aa29cc19515580fb1b6b3535139322dc58e1e9a35015545599db83fa7a5c54db"
 }

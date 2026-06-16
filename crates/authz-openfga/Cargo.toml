@@ -14,6 +14,9 @@ keywords = ["iceberg", "rest", "lakekeeper", "openfga"]
 
 [features]
 open-api = ["dep:utoipa", "lakekeeper/open-api"]
+# Exposes fresh-store authorizer constructors for downstream integration tests
+# (e.g. the OpenFGA+Postgres e2e harness in lakekeeper-integration-tests).
+test-utils = []
 
 [dependencies]
 anyhow = { workspace = true }

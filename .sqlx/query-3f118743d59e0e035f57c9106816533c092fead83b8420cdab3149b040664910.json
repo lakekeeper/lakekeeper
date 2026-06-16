@@ -129,7 +129,15 @@
                 "management-v1-get-generic-table-protection",
                 "management-v1-set-generic-table-protection",
                 "management-v1-update-warehouse-format-version-policy",
-                "management-v1-set-warehouse-managed-by"
+                "management-v1-set-warehouse-managed-by",
+                "management-v1-list-role-members",
+                "management-v1-add-role-members",
+                "management-v1-remove-role-member",
+                "management-v1-list-role-member-of",
+                "management-v1-list-user-roles",
+                "management-v1-list-role-transitive-members",
+                "management-v1-list-user-transitive-roles",
+                "management-v1-list-role-transitive-member-of"
               ]
             }
           }

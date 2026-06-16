@@ -196,6 +196,12 @@ pub struct ListRoleAssignmentsResultPage {
 pub trait ManagesRoleAssignments: Send + Sync {
     /// Persist `(subject, role)` assignments. Idempotent. Subject may be a user or a member role.
     ///
+    /// Subjects are id-only ([`UserOrRoleId`]): managing authorizers reference a
+    /// subject by id (e.g. OpenFGA writes a `<role>#assignee` userset) and never
+    /// need the resolved [`Role`], so callers must not resolve one just to call this
+    /// (a resolve would also wrongly 404 an assignment to an as-yet-unprovisioned
+    /// member, which these backends tolerate by design).
+    ///
     /// OpenFGA only fails here with a backend-unavailable error. Authorizers that
     /// enforce assignment integrity may also reject an assignment that would create
     /// a role-membership cycle — see [`AddRoleAssignmentsError`].
@@ -203,10 +209,14 @@ pub trait ManagesRoleAssignments: Send + Sync {
         &self,
         metadata: &RequestMetadata,
         project_id: ArcProjectId,
-        assignments: &[(UserOrRole, RoleId)],
+        assignments: &[(UserOrRoleId, RoleId)],
     ) -> std::result::Result<(), AddRoleAssignmentsError>;
 
     /// Remove `(subject, role)` assignments. Idempotent. Subject may be a user or a member role.
+    ///
+    /// Subjects are id-only ([`UserOrRoleId`]) — see [`Self::add_role_assignments`].
+    /// In particular this keeps removal idempotent even when the member role no
+    /// longer exists: a dangling `<role>#assignee` tuple must still be removable.
     ///
     /// Removing an edge can never create a cycle, so this is backend-only; the only
     /// failure mode is the backend being unavailable.
@@ -214,7 +224,7 @@ pub trait ManagesRoleAssignments: Send + Sync {
         &self,
         metadata: &RequestMetadata,
         project_id: ArcProjectId,
-        assignments: &[(UserOrRole, RoleId)],
+        assignments: &[(UserOrRoleId, RoleId)],
     ) -> std::result::Result<(), AuthorizationBackendUnavailable>;
 
     /// List role assignments held in the authorizer's store. Fails if the backend

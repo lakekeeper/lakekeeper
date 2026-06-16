@@ -39,9 +39,15 @@ type project
     define can_include_in_list: can_get_metadata
     # Roles
     define can_create_role: role_creator
+    # The single project-scoped capability behind ALL role-catalog reads: listing
+    # roles AND reading every role's name, description and members. role.can_read and
+    # role.can_read_assignments both derive from this (see role.fga), so it also gates
+    # the transitive member/member-of listings. Describe-level bar.
     define can_list_roles: can_get_metadata or admin from server
     define can_search_roles: can_list_roles or admin from server
-    # Only if we can GRANT a privilege, we can LIST them for now
+    # Read PROJECT-level privilege grants (who holds security_admin/data_admin/etc.).
+    # Distinct from role.can_read_assignments (role membership): only grantors may list
+    # project grants. "Only if we can GRANT a privilege, we can LIST them for now."
     define can_read_assignments: security_admin or project_admin or admin from server
     # Tasks
     define can_get_project_tasks: describe or admin from server

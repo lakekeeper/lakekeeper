@@ -38,7 +38,6 @@ use crate::{
     service::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
-        authz::ListRoleAssignmentsResultPage,
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -171,6 +170,18 @@ where
             let id = id_of(&loaded);
             // Prime the primary cache (+ this index) so coalesced callers resolve
             // the full entity without another backend round-trip.
+            //
+            // RESURRECTION RESIDUAL (by-name/by-ident → primary caches): `prime`
+            // writes the primary cache by id via a plain `*_cache_insert` — a
+            // different lock domain than the by-id `*_cache_invalidate` (`Op::Remove`).
+            // The authoritative read above ran under THIS (secondary) key's lock, not
+            // the primary id's, so a delete that invalidates during this load isn't
+            // serialized against the prime: the stale prime can land after the
+            // invalidate and resurrect the deleted entity until TTL. (The by-id
+            // read-through is safe because it holds the id lock across its own load;
+            // this path structurally cannot.) A full fix needs the prime to revalidate
+            // under the id lock — per-key tombstone, or re-resolve via the by-id
+            // loader — tracked as follow-up; TTL bounds the window for now.
             prime(loaded).await;
             Ok(Op::Put(id))
         })
@@ -825,19 +836,20 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError>;
 
-    /// Users whose EFFECTIVE roles change when a `role_membership` edge with member
-    /// endpoint `member_role_id` is added or removed: every user assigned to
-    /// `member_role_id` or to any role in its descendant closure. Runs on the
+    /// Users whose EFFECTIVE roles change when `role_membership` edges with member
+    /// endpoints `member_role_ids` are added or removed: every user assigned to any
+    /// of those members or to any role in their combined descendant closure. The
+    /// whole set is walked in a single query (no per-member fan-out). Runs on the
     /// caller's transaction (see `membership_edge_affected_users` for why pre-commit
     /// is sound).
-    async fn affected_users_for_membership_edge_impl<'a>(
-        member_role_id: RoleId,
+    async fn affected_users_for_membership_edges_impl<'a>(
+        member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError>;
 
     // ---------------- Role-membership management API (cold, paginated reads) ----
     //
-    // These back the public `/role/{id}/members`, `/role/{id}/parents` and
+    // These back the public `/role/{id}/members`, `/role/{id}/member-of` and
     // `/user/{id}/roles` listings on authorizers that do NOT manage assignments
     // (Cedar/AllowAll). They are deliberately separate from the cached, full-set
     // hot-path readers above: paginating those would defeat their cache.
@@ -851,10 +863,10 @@ where
         type_filter: Option<RoleMemberKind>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRoleAssignmentsResultPage>;
+    ) -> Result<ListCatalogRoleMembersPage>;
 
-    /// Direct parent roles of `role_id`, keyset-paginated and project-scoped.
-    async fn list_direct_role_parents_page(
+    /// Direct roles `role_id` is a member of, keyset-paginated and project-scoped.
+    async fn list_direct_role_member_of_page(
         project_id: &ProjectId,
         role_id: RoleId,
         pagination: PaginationQuery,
@@ -862,14 +874,71 @@ where
     ) -> Result<ListRolesPage>;
 
     /// Direct roles a user is assigned to, keyset-paginated and project-scoped.
+    ///
+    /// `Ok(None)` signals the user does not exist in the catalog (the handler maps
+    /// it to 404); `Ok(Some(page))` is a user that exists, whose page may be empty.
+    /// Backends that cannot prove non-existence (e.g. OpenFGA-only users) return
+    /// `Some`.
     async fn list_direct_user_roles_page(
         project_id: &ProjectId,
         user_id: &UserId,
         pagination: PaginationQuery,
         catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>>;
+
+    /// Transitive members of `role_id` — every user assigned to the role or any
+    /// role in its downward membership closure, plus every role in that closure
+    /// (root excluded) — merged into one keyset-paginated, project-scoped listing.
+    /// `type_filter` optionally restricts to one member kind. Rows carry
+    /// `created_at = None` (a transitive member has no single defining edge).
+    async fn list_transitive_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListCatalogRoleMembersPage>;
+
+    /// The full effective (transitive) role set a user holds — direct assignments
+    /// plus every role reachable upward through membership — keyset-paginated and
+    /// project-scoped. `Ok(None)` signals the user does not exist (handler → 404);
+    /// `Ok(Some(page))` is an existing user, whose page may be empty.
+    async fn list_transitive_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>>;
+
+    /// The full transitive member-of set of `role_id` — every role it effectively
+    /// belongs to, reachable upward through membership (root excluded) — keyset-
+    /// paginated and project-scoped. Rows carry `created_at = None` (a transitive
+    /// ancestor has no single defining edge).
+    async fn list_transitive_role_member_of_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
     ) -> Result<ListRolesPage>;
 
+    /// Fetch raw membership identity for `user_ids` (nullable name/email + type),
+    /// in any order. Unknown ids are simply absent — an assignment-managing
+    /// authorizer may reference a not-yet-provisioned user, which the API layer
+    /// then hydrates to id-only. Reads the raw `users.name`, NOT the
+    /// `display_user_name` placeholder, so a nameless user surfaces with
+    /// `name = None`. Used to hydrate the authorizer-arm members listing.
+    async fn list_user_membership_entries(
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserMembershipEntry>>;
+
     // ---------------- User Management API ----------------
+    /// Insert or update a user. `mode` controls whether an existing row is
+    /// overwritten unconditionally ([`UserUpsertMode::Overwrite`], the explicit
+    /// create/update endpoints) or only an un-named role-provider stub is
+    /// backfilled ([`UserUpsertMode::BackfillUnnamedStub`], the first-login hook).
+    /// The backfill guard is applied atomically, so a row that already carries a
+    /// real name is never clobbered, even by a concurrent role-provider sync.
     async fn create_or_update_user<'a>(
         user_id: &UserId,
         name: &str,
@@ -877,6 +946,7 @@ where
         email: Option<&str>,
         last_updated_with: UserLastUpdatedWith,
         user_type: UserType,
+        mode: UserUpsertMode,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<CreateOrUpdateUserResponse>;
 

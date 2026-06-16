@@ -28,8 +28,9 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct CatalogUserRoleAssignmentUser<'a> {
     pub user_id: &'a UserIdRef,
-    /// Display name. When `None` the user is stored with `"Nameless User with id {id}"`
-    /// as fallback for new rows, and the existing name is preserved for updates.
+    /// Display name. When `None` a new row is stored with a NULL name (rendered
+    /// as a `"Nameless User with id {id}"` placeholder at read time); the
+    /// existing name is preserved for updates.
     pub name: Option<&'a str>,
     pub email: Option<&'a str>,
     /// User type. When `None` defaults to `Human` for new users and preserves
@@ -718,6 +719,10 @@ impl From<RoleMembershipLockTimeout> for ErrorModel {
 pub struct RoleMembershipEntry {
     pub role_id: RoleId,
     pub role_ident: Arc<RoleIdent>,
+    /// The role's human-readable display name (`role.name`). Carried so the
+    /// `member-of` and `user roles` listings can render names without a
+    /// per-row follow-up lookup.
+    pub name: String,
     /// When the membership edge to this role was created. Non-optional: the
     /// `role_membership.created_at` column is `NOT NULL`.
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -729,6 +734,43 @@ impl RoleMembershipEntry {
     pub fn manually_assignable(&self) -> bool {
         self.role_ident.is_lakekeeper() || self.role_ident.is_system()
     }
+}
+
+/// A user's identity for a membership listing, read raw from the catalog: the
+/// nullable `name`/`email` exactly as stored — NO `display_user_name` placeholder
+/// (a nameless user surfaces as `None`). The user-side counterpart of
+/// [`RoleMembershipEntry`]; the API layer maps it to the `user` member variant.
+/// (`PartialEq` only — `UserType` is not `Eq`.)
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserMembershipEntry {
+    pub user_id: UserId,
+    /// Display name, raw from the column — `None` for a nameless user (no
+    /// placeholder is applied here, unlike the user-management `User` DTO).
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub user_type: UserType,
+}
+
+/// One enriched, display-ready member of a role read directly from the catalog
+/// (JOIN-hydrated). The catalog arm of the members listing produces these so the
+/// page needs no second round-trip; an assignment-managing authorizer (OpenFGA)
+/// instead returns id-only assignment rows that the API layer hydrates. The
+/// `role_membership.created_at` carried by the `Role` variant's
+/// [`RoleMembershipEntry`] is the edge timestamp (vestigial for the listing — the
+/// API drops it; for transitive listings it is the role's own creation time, used
+/// only as the keyset key).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CatalogRoleMember {
+    User(UserMembershipEntry),
+    Role(RoleMembershipEntry),
+}
+
+/// One page of a role's direct or transitive members (users ∪ member roles),
+/// each enriched with display identity, under one opaque continuation token.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListCatalogRoleMembersPage {
+    pub members: Vec<CatalogRoleMember>,
+    pub next_page_token: Option<String>,
 }
 
 /// Filter for the merged role-members listing: restrict to user members, role
@@ -755,8 +797,8 @@ pub struct ListRolesPage {
 pub enum RoleMembershipDirection {
     /// Direct (depth-1) member roles of the given role (it is the parent).
     Members,
-    /// Direct (depth-1) parent roles of the given role (it is the member).
-    Parents,
+    /// Direct (depth-1) roles the given role is a member of (it is the member).
+    MemberOf,
 }
 
 /// Outcome of adding role->role edges.
@@ -766,10 +808,6 @@ pub struct AddRoleMembersResult {
     /// were already present are excluded — empty when every requested edge
     /// already existed. Drives cache invalidation and events.
     pub added: Vec<RoleId>,
-    /// The parent's direct members after the operation, read back in the same
-    /// transaction (read-your-writes; a follow-up query could hit a lagging read
-    /// replica). For rendering the updated state.
-    pub members: Vec<RoleMembershipEntry>,
 }
 
 /// Outcome of removing role->role edges.
@@ -779,9 +817,6 @@ pub struct RemoveRoleMembersResult {
     /// were not present are excluded — empty when no requested edge existed.
     /// Drives cache invalidation and events.
     pub removed: Vec<RoleId>,
-    /// The parent's direct members after the operation, read back in the same
-    /// transaction (see [`AddRoleMembersResult::members`]).
-    pub members: Vec<RoleMembershipEntry>,
 }
 
 define_transparent_error! {
@@ -1051,10 +1086,13 @@ where
         .await?;
         t.commit().await?;
 
-        let list_result = Arc::new(ListUserRoleAssignmentsResult {
+        let mut list = ListUserRoleAssignmentsResult {
             roles: sync_result.all_roles,
             provider_sync_times: sync_result.provider_sync_times,
-        });
+        };
+        // Dedup role/project identity across cached users before storing.
+        role_assignments_cache::share_identities(&mut list).await;
+        let list_result = Arc::new(list);
 
         // Update the cache directly after the commit, before dispatching the
         // event (mirrors the warehouse / namespace cache-on-read pattern).
@@ -1264,9 +1302,68 @@ where
         Ok(result)
     }
 
+    /// Atomic mixed batch for `POST /role/{id}/members`: in ONE transaction,
+    /// assign `user_ids` (direct user→role) AND add `member_role_ids` (role→role
+    /// edges) to `role_id`, then invalidate caches. All-or-nothing — any failure
+    /// rolls the whole batch back. The two single-kind `*_and_invalidate` wrappers
+    /// each own a separate transaction, so calling both would not be atomic across
+    /// kinds; this wrapper exists precisely to span both writes on one transaction.
+    ///
+    /// Combines their cache rationale: each newly-assigned user evicts its
+    /// `USER_ASSIGNMENTS_CACHE`, the role's `ROLE_MEMBERS_CACHE` is evicted iff a
+    /// direct user member was added, and edge additions evict the transitively-
+    /// affected users' `USER_ASSIGNMENTS_CACHE`.
+    async fn add_role_members_mixed_and_invalidate(
+        project_id: &ArcProjectId,
+        role_id: RoleId,
+        user_ids: &[UserId],
+        member_role_ids: &[RoleId],
+        catalog_state: Self::State,
+    ) -> crate::api::Result<(AddUserRoleAssignmentsResult, AddRoleMembersResult)> {
+        let user_ids = dedup_user_ids(user_ids);
+        let mut t = Self::Transaction::begin_write(catalog_state.clone()).await?;
+
+        // Lock ordering matters here. `add_role_members_impl` takes the per-project
+        // membership advisory lock as its FIRST action; `add_user_role_assignments_impl`
+        // takes `FOR UPDATE` on the parent role row and no advisory lock. Running the
+        // role-edge write FIRST keeps this mixed batch advisory-first, matching the
+        // standalone `add_role_members` path — otherwise the two would acquire the
+        // advisory lock and the parent-row lock in opposite orders and could deadlock
+        // under concurrency. Each empty arm still skips its write.
+        let role_result = if member_role_ids.is_empty() {
+            AddRoleMembersResult::default()
+        } else {
+            Self::add_role_members_impl(project_id, role_id, member_role_ids, t.transaction())
+                .await?
+        };
+        let user_result = if user_ids.is_empty() {
+            AddUserRoleAssignmentsResult::default()
+        } else {
+            Self::add_user_role_assignments_impl(project_id, role_id, &user_ids, t.transaction())
+                .await?
+        };
+
+        // Transitively-affected users from the edge additions, computed on the same
+        // transaction before commit (see `add_role_members_and_invalidate`).
+        let edge_affected = membership_edge_affected_users::<Self>(&role_result.added, &mut t)
+            .await
+            .map_err(ErrorModel::from)?;
+        t.commit().await?;
+
+        // Post-commit, infallible in-memory eviction.
+        for user_id in &user_result.added {
+            role_assignments_cache::user_assignments_cache_invalidate(user_id).await;
+        }
+        role_assignments_cache::user_assignments_cache_invalidate_many(&edge_affected).await;
+        if !user_result.added.is_empty() {
+            role_assignments_cache::role_members_cache_invalidate(role_id).await;
+        }
+        Ok((user_result, role_result))
+    }
+
     /// Direct (depth-1) adjacent roles of `role_id` in the membership graph:
-    /// its member roles ([`RoleMembershipDirection::Members`]) or its parent
-    /// roles ([`RoleMembershipDirection::Parents`]).
+    /// its member roles ([`RoleMembershipDirection::Members`]) or the roles it
+    /// is a member of ([`RoleMembershipDirection::MemberOf`]).
     async fn list_role_memberships(
         role_id: RoleId,
         direction: RoleMembershipDirection,
@@ -1299,9 +1396,11 @@ where
         // onto one loader run (see `user_assignments_cache_get_or_load`).
         let owned_user_id = user_id.clone();
         role_assignments_cache::user_assignments_cache_get_or_load(user_id, async move {
-            Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state)
-                .await
-                .map(Arc::new)
+            let mut result =
+                Self::list_role_assignments_for_user_impl(&owned_user_id, catalog_state).await?;
+            // Dedup role/project identity across cached users before storing.
+            role_assignments_cache::share_identities(&mut result).await;
+            Ok(Arc::new(result))
         })
         .await
     }
@@ -1434,12 +1533,13 @@ async fn membership_edge_affected_users<S: CatalogStore>(
     member_role_ids: &[RoleId],
     t: &mut S::Transaction,
 ) -> Result<Vec<UserId>, CatalogBackendError> {
-    let mut affected: HashSet<UserId> = HashSet::new();
-    for member in member_role_ids {
-        let users = S::affected_users_for_membership_edge_impl(*member, t.transaction()).await?;
-        affected.extend(users);
+    if member_role_ids.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(affected.into_iter().collect())
+    // One query seeded from the whole member set computes the union descendant
+    // closure and de-duplicates affected users in SQL (`SELECT DISTINCT`) — no
+    // per-member round-trip inside the held write transaction / advisory lock.
+    S::affected_users_for_membership_edges_impl(member_role_ids, t.transaction()).await
 }
 
 #[cfg(test)]

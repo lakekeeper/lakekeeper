@@ -44,6 +44,8 @@ assert-json-diff = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 http-body-util = { workspace = true }
+# Real OpenFGA authorizer for the OpenFGA+Postgres role-membership e2e harness.
+lakekeeper-authz-openfga = { path = "../authz-openfga", features = ["test-utils"] }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 similar = { workspace = true }

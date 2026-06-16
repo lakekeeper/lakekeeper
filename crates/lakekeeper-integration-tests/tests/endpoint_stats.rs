@@ -27,7 +27,7 @@ mod test {
     use lakekeeper::{
         DEFAULT_PROJECT_ID, ProjectId,
         api::{
-            RequestMetadata,
+            RequestMetadata, RequestMetadataTestBuilder,
             endpoints::{CatalogV1Endpoint, Endpoint},
             management::v1::{
                 ApiServer, DeleteWarehouseQuery,
@@ -38,10 +38,7 @@ mod test {
                 warehouse::Service,
             },
         },
-        service::{
-            Actor,
-            endpoint_statistics::{EndpointStatisticsMessage, FlushMode},
-        },
+        service::endpoint_statistics::{EndpointStatisticsMessage, FlushMode},
     };
     use maplit::hashmap;
     use sqlx::PgPool;
@@ -304,14 +301,11 @@ mod test {
         for ep in Endpoint::iter() {
             let (method, path) = ep.as_http_route().split_once(' ').unwrap();
             let method = Method::from_str(method).unwrap();
-            let request_metadata = RequestMetadata::new_test(
-                None,
-                None,
-                Actor::Anonymous,
-                DEFAULT_PROJECT_ID.clone(),
-                Some(Arc::from(path)),
-                method,
-            );
+            let request_metadata = RequestMetadataTestBuilder::builder()
+                .project_id(DEFAULT_PROJECT_ID.clone())
+                .matched_path(Some(Arc::from(path)))
+                .request_method(method)
+                .build();
 
             setup
                 .tx
@@ -331,14 +325,11 @@ mod test {
         for ep in Endpoint::iter().take(3) {
             let (method, path) = ep.as_http_route().split_once(' ').unwrap();
             let method = Method::from_str(method).unwrap();
-            let request_metadata = RequestMetadata::new_test(
-                None,
-                None,
-                Actor::Anonymous,
-                DEFAULT_PROJECT_ID.clone(),
-                Some(Arc::from(path)),
-                method,
-            );
+            let request_metadata = RequestMetadataTestBuilder::builder()
+                .project_id(DEFAULT_PROJECT_ID.clone())
+                .matched_path(Some(Arc::from(path)))
+                .request_method(method)
+                .build();
 
             setup
                 .tx
@@ -418,14 +409,11 @@ mod test {
         let ep: Endpoint = CatalogV1Endpoint::DropTable.into();
         let (method, path) = ep.as_http_route().split_once(' ').unwrap();
         let method = Method::from_str(method).unwrap();
-        let request_metadata = RequestMetadata::new_test(
-            None,
-            None,
-            Actor::Anonymous,
-            Some(ProjectId::new_random().into()),
-            Some(Arc::from(path)),
-            method,
-        );
+        let request_metadata = RequestMetadataTestBuilder::builder()
+            .project_id(Some(ProjectId::new_random().into()))
+            .matched_path(Some(Arc::from(path)))
+            .request_method(method)
+            .build();
 
         setup
             .tx
@@ -474,14 +462,11 @@ mod test {
         let setup = super::setup_stats_test(pg_pool, FlushMode::Manual, 3).await;
         let ep: Endpoint = CatalogV1Endpoint::DropTable.into();
 
-        let request_metadata = RequestMetadata::new_test(
-            None,
-            None,
-            Actor::Anonymous,
-            DEFAULT_PROJECT_ID.clone(),
-            Some(Arc::from(ep.path())),
-            ep.method(),
-        );
+        let request_metadata = RequestMetadataTestBuilder::builder()
+            .project_id(DEFAULT_PROJECT_ID.clone())
+            .matched_path(Some(Arc::from(ep.path())))
+            .request_method(ep.method())
+            .build();
 
         setup
             .tx
@@ -559,14 +544,11 @@ mod test {
         for ep in Endpoint::iter() {
             let (method, path) = ep.as_http_route().split_once(' ').unwrap();
             let method = Method::from_str(method).unwrap();
-            let request_metadata = RequestMetadata::new_test(
-                None,
-                None,
-                Actor::Anonymous,
-                DEFAULT_PROJECT_ID.clone(),
-                Some(Arc::from(path)),
-                method,
-            );
+            let request_metadata = RequestMetadataTestBuilder::builder()
+                .project_id(DEFAULT_PROJECT_ID.clone())
+                .matched_path(Some(Arc::from(path)))
+                .request_method(method)
+                .build();
 
             setup
                 .tx

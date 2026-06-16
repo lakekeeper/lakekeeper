@@ -31,9 +31,24 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: engineerd/setup-kind@v0.6.2 # does not support hash pinning (no dist/ in commit)
+      # Pre-pull the kind node image. Docker Hub flakily times out on shared CI
+      # IPs; the retried pull means cluster creation below uses the cached image.
+      - name: Pre-pull kind node image
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         with:
-          version: "v0.24.0"
+          max_attempts: 5
+          timeout_minutes: 5
+          retry_wait_seconds: 15
+          command: docker pull kindest/node:v1.31.0
+      # Maintained and SHA-pinnable, unlike engineerd/setup-kind@v0.6.2 — whose
+      # mutable v0.6.2 tag was force-moved to a commit missing the action
+      # entrypoint (dist/main/index.js), breaking main CI deterministically.
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: v0.24.0
+          node_image: kindest/node:v1.31.0
+          cluster_name: kind
       - name: Restore binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

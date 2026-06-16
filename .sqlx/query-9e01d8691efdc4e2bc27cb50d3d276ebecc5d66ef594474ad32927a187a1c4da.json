@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id, r.source_id, r.provider_id, rm.created_at\n            FROM role_membership rm\n            JOIN \"role\" r ON r.id = rm.parent_role_id\n            WHERE rm.member_role_id = $1\n            ORDER BY rm.parent_role_id\n            ",
+  "query": "\n        WITH RECURSIVE ancestors(role_id) AS (\n            SELECT $1::uuid\n          UNION\n            SELECT rm.parent_role_id\n            FROM role_membership rm\n            JOIN ancestors a ON rm.member_role_id = a.role_id\n        )\n        SELECT r.id, r.source_id, r.provider_id, r.name, r.created_at\n        FROM ancestors a\n        JOIN \"role\" r ON r.id = a.role_id\n        WHERE a.role_id <> $1 AND r.project_id = $2\n          AND ((r.created_at > $3 OR $3 IS NULL) OR (r.created_at = $3 AND r.id > $4))\n        ORDER BY r.created_at, r.id ASC\n        LIMIT $5\n        ",
   "describe": {
     "columns": [
       {
@@ -38,11 +38,22 @@
       },
       {
         "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "role",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "role_membership",
+            "table": "role",
             "name": "created_at"
           }
         }
@@ -50,15 +61,20 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "8b7c0c2f8e451fe68dc0a9a873a1cea2973fbeba64928a732d6c006856fdff69"
+  "hash": "9e01d8691efdc4e2bc27cb50d3d276ebecc5d66ef594474ad32927a187a1c4da"
 }

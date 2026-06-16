@@ -112,7 +112,18 @@ pub static IDENT_TO_ID_CACHE: LazyLock<Cache<NamespaceCacheKey, NamespaceId>> =
 async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     if CONFIG.cache.namespace.enabled {
         tracing::debug!("Invalidating namespace id {namespace_id} from cache");
-        NAMESPACE_CACHE.invalidate(&namespace_id).await;
+        // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
+        // `invalidate()`: the version-gate fences stale *updates* but not *deletes*
+        // (a delete leaves no entry to compare), so a bare invalidate racing an
+        // in-flight by-id load lets the loader re-`Put` the deleted namespace until
+        // TTL. `Op::Remove` shares the loader's lock and still fires the eviction
+        // listener (Explicit), preserving the IDENT_TO_ID_CACHE cascade. Closes the
+        // by-id path only; the by-ident prime path keeps the residual — see
+        // `secondary_index_get_or_load`.
+        NAMESPACE_CACHE
+            .entry(namespace_id)
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
         update_cache_size_metric();
     }
 }

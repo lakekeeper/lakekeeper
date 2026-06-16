@@ -35,26 +35,25 @@ use lakekeeper::{
         CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
         DropTabularError, EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId,
         GenericTableInfo, GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListGenericTablesError, ListNamespacesQuery,
-        ListRoleMembersResult, ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, ManagedBy, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
-        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
-        RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult, RenameTabularError,
-        ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role, RoleId, RoleIdent,
-        RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry, RoleProviderId,
-        SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId, ServerInfo,
-        SetTabularProtectionError, SetWarehouseDeletionProfileError,
-        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
-        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
-        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
-        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction, UniqueMembers,
-        UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError, ViewCommit, ViewId,
-        ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
-        WarehouseId, WarehouseStatus,
+        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
+        ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
+        ListRolesPage, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
+        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
+        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
+        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
+        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
+        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
+        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
+        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
+        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
+        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
+        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
+        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
+        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
+        UserMembershipEntry, UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
-        authz::ListRoleAssignmentsResultPage,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
         task_configs::TaskQueueConfigFilter,
@@ -525,12 +524,13 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn affected_users_for_membership_edge_impl<'a>(
-        member_role_id: RoleId,
+    async fn affected_users_for_membership_edges_impl<'a>(
+        member_role_ids: &[RoleId],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<UserId>, CatalogBackendError> {
-        super::role_assignment::affected_users_for_membership_edge(
-            member_role_id,
+        let member_uuids: Vec<uuid::Uuid> = member_role_ids.iter().map(|r| **r).collect();
+        super::role_assignment::affected_users_for_membership_edges(
+            &member_uuids,
             &mut **transaction,
         )
         .await
@@ -542,7 +542,7 @@ impl CatalogStore for super::PostgresBackend {
         type_filter: Option<RoleMemberKind>,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRoleAssignmentsResultPage> {
+    ) -> Result<ListCatalogRoleMembersPage> {
         super::role_assignment::list_direct_role_members_page(
             project_id,
             role_id,
@@ -553,13 +553,13 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
-    async fn list_direct_role_parents_page(
+    async fn list_direct_role_member_of_page(
         project_id: &ProjectId,
         role_id: RoleId,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListRolesPage> {
-        super::role_assignment::list_direct_role_parents_page(
+        super::role_assignment::list_direct_role_member_of_page(
             project_id,
             role_id,
             pagination,
@@ -573,7 +573,7 @@ impl CatalogStore for super::PostgresBackend {
         user_id: &UserId,
         pagination: PaginationQuery,
         catalog_state: Self::State,
-    ) -> Result<ListRolesPage> {
+    ) -> Result<Option<ListRolesPage>> {
         super::role_assignment::list_direct_user_roles_page(
             project_id,
             user_id,
@@ -583,6 +583,61 @@ impl CatalogStore for super::PostgresBackend {
         .await
     }
 
+    async fn list_transitive_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListCatalogRoleMembersPage> {
+        super::role_assignment::list_transitive_role_members_page(
+            project_id,
+            role_id,
+            type_filter,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_transitive_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>> {
+        super::role_assignment::list_transitive_user_roles_page(
+            project_id,
+            user_id,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_transitive_role_member_of_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage> {
+        super::role_assignment::list_transitive_role_member_of_page(
+            project_id,
+            role_id,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_user_membership_entries(
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserMembershipEntry>> {
+        super::role_assignment::list_user_membership_entries(user_ids, &catalog_state.read_pool())
+            .await
+    }
+
     // ---------------- User Management API ----------------
     async fn create_or_update_user<'a>(
         user_id: &UserId,
@@ -590,6 +645,7 @@ impl CatalogStore for super::PostgresBackend {
         email: Option<&str>,
         last_updated_with: UserLastUpdatedWith,
         user_type: UserType,
+        mode: UserUpsertMode,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<CreateOrUpdateUserResponse> {
         create_or_update_user(
@@ -598,6 +654,7 @@ impl CatalogStore for super::PostgresBackend {
             email,
             last_updated_with,
             user_type,
+            mode,
             &mut **transaction,
         )
         .await

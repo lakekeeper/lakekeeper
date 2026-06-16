@@ -2125,6 +2125,350 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/member-of:
+    get:
+      tags:
+        - role
+      summary: List Roles a Role Is a Member Of
+      description: Lists the roles that the given role is a direct member of, keyset-paginated.
+      operationId: list_role_member_of
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Roles the role is a member of
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/member-of/transitive:
+    get:
+      tags:
+        - role
+      summary: List Transitive Role Member-Of
+      description: |-
+        Lists the full transitive member-of set of a role — every role it
+        effectively belongs to, reachable upward through membership — keyset-
+        paginated. Supported only when assignments are catalog-managed; an
+        assignment-managing authorizer (e.g. OpenFGA) returns `501`.
+      operationId: list_role_transitive_member_of
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive roles the role belongs to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members:
+    get:
+      tags:
+        - role
+      summary: List Role Members
+      description: |-
+        Lists the direct members of a role — users and member roles — as one merged,
+        keyset-paginated page. Optionally filtered to a single member kind via `?type=`.
+      operationId: list_role_members
+      parameters:
+        - name: type
+          in: query
+          description: Restrict to one member kind (`user` or `role`). Both kinds when omitted.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RoleMemberType'
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Direct members of the role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - role
+      summary: Add Role Members
+      description: |-
+        Adds one or more members (users and/or roles) to a role in a single atomic
+        (all-or-nothing) batch. Idempotent — already-present members are accepted.
+        Returns the requested members confirmed present.
+
+        Handling of a not-yet-provisioned member depends on the configured
+        authorization backend: a backend that stores assignments itself accepts the
+        member by id, whereas catalog-backed authorization requires the member to
+        exist first and otherwise returns `404` — provision the user (via
+        `POST /user`) or create the role before assigning. Behavior is consistent
+        within a deployment.
+      operationId: add_role_members
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddRoleMembersRequest'
+        required: true
+      responses:
+        '200':
+          description: Members added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members/transitive:
+    get:
+      tags:
+        - role
+      summary: List Transitive Role Members
+      description: |-
+        Lists the role's transitive members — users assigned to the role or any role
+        in its downward membership closure, plus every role in that closure — as one
+        keyset-paginated page, optionally filtered to one kind. Supported only when
+        assignments are catalog-managed; an assignment-managing authorizer (e.g.
+        OpenFGA) returns `501`.
+      operationId: list_role_transitive_members
+      parameters:
+        - name: type
+          in: query
+          description: Restrict to one member kind (`user` or `role`). Both kinds when omitted.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RoleMemberType'
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive members of the role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members/{member_type}/{member_id}:
+    delete:
+      tags:
+        - role
+      summary: Remove Role Member
+      description: |-
+        Removes a single member (a user or a role) from a role. Idempotent — removing
+        an absent member is a no-op and still returns `204`.
+      operationId: remove_role_member
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: member_type
+          in: path
+          description: 'Member kind: `user` or `role`'
+          required: true
+          schema:
+            $ref: '#/components/schemas/RoleMemberType'
+        - name: member_id
+          in: path
+          description: User id or role UUID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Member removed (or already absent)
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role/{role_id}/metadata:
     get:
       tags:
@@ -2492,6 +2836,118 @@ paths:
                 $ref: '#/components/schemas/GetLakekeeperUserActionsResponse'
         4XX:
           description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/roles:
+    get:
+      tags:
+        - user
+      summary: List User Roles
+      description: Lists the roles a user is directly assigned to, keyset-paginated.
+      operationId: list_user_roles
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: user_id
+          in: path
+          description: User ID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Roles the user is assigned to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/roles/transitive:
+    get:
+      tags:
+        - user
+      summary: List Transitive User Roles
+      description: |-
+        Lists the full effective (transitive) role set a user holds — direct
+        assignments plus every role reachable upward through membership — keyset-
+        paginated. Supported only when assignments are catalog-managed; an
+        assignment-managing authorizer (e.g. OpenFGA) returns `501`.
+      operationId: list_user_transitive_roles
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: user_id
+          in: path
+          description: User ID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive roles the user holds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
           content:
             application/json:
               schema:
@@ -3855,6 +4311,32 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
 components:
   schemas:
+    AddRoleMembersRequest:
+      type: object
+      description: |-
+        Request body for `POST /role/{id}/members`. Batch: adds every listed member to
+        the role atomically (all-or-nothing).
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMemberRef'
+    AddRoleMembersResponse:
+      type: object
+      description: |-
+        Response for `POST /role/{id}/members`: the requested members confirmed present
+        (idempotent — already-present members are included). Echoes identity
+        [`RoleMemberRef`]s, not hydrated [`RoleMember`]s — use `GET /role/{id}/members`
+        for display names.
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMemberRef'
     AdlsProfile:
       type: object
       description: |-
@@ -6598,6 +7080,46 @@ components:
           items:
             $ref: '#/components/schemas/GetProjectResponse'
           description: List of projects
+    ListRoleMembersResponse:
+      type: object
+      description: One page of a role's direct members (users ∪ member roles).
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMember'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Token for the next page; `null`/absent once the listing is exhausted.
+            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            final page of results may itself return a null token, so don't rely on
+            receiving a separate trailing empty page — keep requesting until the token
+            is null.
+    ListRoleMembershipsResponse:
+      type: object
+      description: One page of roles (the `member-of` set, or a user's directly-assigned roles).
+      required:
+        - roles
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Token for the next page; `null`/absent once the listing is exhausted.
+            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            final page of results may itself return a null token, so don't rely on
+            receiving a separate trailing empty page — keep requesting until the token
+            is null.
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMembership'
     ListRolesResponse:
       type: object
       required:
@@ -7233,6 +7755,96 @@ components:
                   enum:
                     - ownership
           title: RoleAssignmentOwnership
+    RoleMember:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserMembership'
+              description: A user assigned to the role.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - user
+          description: A user assigned to the role.
+        - allOf:
+            - $ref: '#/components/schemas/RoleMembership'
+              description: Another role that is a member of the role.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - role
+          description: Another role that is a member of the role.
+      description: |-
+        A member of a role, returned by `GET /role/{id}/members`. Discriminated by
+        `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
+        Identity is hydrated; for requests and add/remove confirmations use the
+        un-hydrated [`RoleMemberRef`] instead.
+    RoleMemberRef:
+      oneOf:
+        - type: object
+          description: A user, by `IdP` subject id.
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+            type:
+              type: string
+              enum:
+                - user
+        - type: object
+          description: A role, by id.
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - role
+      description: |-
+        An identity reference to a role member — a `user` or a `role`, by typed id.
+        Sent in `POST /role/{id}/members` requests and echoed by the add/remove
+        confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
+        it names *which* principal, not its display identity.
+    RoleMemberType:
+      type: string
+      description: Kind of a role member. Serializes as `"user"` / `"role"`.
+      enum:
+        - user
+        - role
+    RoleMembership:
+      type: object
+      description: |-
+        A role's display identity in a membership listing: the role-member variant of
+        [`RoleMember`], and the item type of `/member-of` and `/user/{id}/roles`.
+        `ident` (`provider/source-id`) is the stable external handle a client references
+        the role by; `id` is the internal UUID. All fields are always present — a role
+        whose id no longer resolves in the catalog (a dangling authorizer edge) is
+        dropped from the listing and logged, never surfaced with a null identity.
+      required:
+        - id
+        - ident
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+        ident:
+          type: string
+        name:
+          type: string
     RoleMetadata:
       type: object
       description: |-
@@ -8748,6 +9360,37 @@ components:
         - config-call-creation
         - update-endpoint
         - role-provider
+    UserMembership:
+      type: object
+      description: |-
+        A user's identity in a membership listing (the `user` variant of
+        [`RoleMember`]). All identity fields are nullable: under an assignment-managing
+        authorizer (e.g. OpenFGA) a member may be assigned but not yet provisioned in
+        the catalog, so only the `id` is known. `name`/`email` are also `null` for a
+        provisioned-but-nameless user.
+      required:
+        - id
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+          description: Email; `null` if unknown.
+        id:
+          type: string
+          description: '`IdP` subject id of the user.'
+        name:
+          type:
+            - string
+            - 'null'
+          description: Display name; `null` when the user has no name.
+        user-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserType'
+              description: |-
+                Whether the principal is a human or an application; `null` when the user
+                is assigned but not provisioned in the catalog (the id is all that's known).
     UserOrRole:
       oneOf:
         - type: object

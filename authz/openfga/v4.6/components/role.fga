@@ -15,9 +15,22 @@ type role
     define can_delete: can_grant_assignee
     # Can update base attributes like name and description
     define can_update: can_grant_assignee
-    # Can get name and description of this role.
-    # In the implementation a second permission can_read_metadata exists that is always allowed
-    # for cross-project gets of non-critical data.
+    # ------------------ Read (project-scoped by design) ------------------
+    # A role has NO directly-assignable read relation. `assignee`/`ownership` above
+    # grant assume + write (grant_assignee/delete/update) but NEVER read. Both reads
+    # below derive purely from the parent project's `can_list_roles`, so role reads
+    # are PROJECT-UNIFORM: whoever can list roles in a project can read the name,
+    # description AND assignees (members) of EVERY role in it, and no principal can be
+    # granted read on a single role in isolation. (`can_list_roles` resolves to the
+    # describe-level `can_get_metadata`; see project.fga.) That uniformity is what
+    # lets the transitive member / member-of listings authorize a whole role closure
+    # with ONE project-level `can_list_roles` (ListRoles) check rather than a per-role
+    # one. NB: this is unrelated to project.fga's own `can_read_assignments`, a
+    # DIFFERENT, narrower relation (security_admin) that gates reads of PROJECT-level
+    # privilege grants, not role membership.
+
+    # Name + description of this role. (A second, always-allowed `can_read_metadata`
+    # exists in the implementation for cross-project gets of non-critical data.)
     define can_read: can_list_roles from project
-    # get assignments to this role
+    # Assignees (members) of this role — same project-scoped gate as `can_read`.
     define can_read_assignments: can_list_roles from project

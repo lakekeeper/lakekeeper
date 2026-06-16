@@ -13,6 +13,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
+        UserUpsertMode,
         authz::{
             AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction,
             RequireServerActionError,
@@ -22,7 +23,7 @@ use crate::{
 };
 
 /// How the user was last updated
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum UserLastUpdatedWith {
@@ -345,6 +346,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             email.as_deref(),
             UserLastUpdatedWith::CreateEndpoint,
             user_type,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await?;
@@ -507,6 +509,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             email,
             UserLastUpdatedWith::UpdateEndpoint,
             request.user_type,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await?;

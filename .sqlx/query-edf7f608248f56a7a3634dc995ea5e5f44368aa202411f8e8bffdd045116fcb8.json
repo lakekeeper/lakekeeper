@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH RECURSIVE descendants(role_id) AS (\n                SELECT m FROM unnest($1::uuid[]) AS m\n            UNION\n                SELECT rm.member_role_id\n                FROM role_membership rm\n                JOIN descendants d ON rm.parent_role_id = d.role_id\n        )\n        SELECT DISTINCT ra.user_id\n        FROM role_assignment ra\n        WHERE ra.role_id IN (SELECT role_id FROM descendants)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "role_assignment",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "edf7f608248f56a7a3634dc995ea5e5f44368aa202411f8e8bffdd045116fcb8"
+}

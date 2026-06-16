@@ -12,7 +12,10 @@ use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
-    configs::table::{TableProperties, client, creds, custom, s3, signer},
+    configs::{
+        ConfigProperty as _,
+        table::{TableProperties, client, creds, custom, s3, signer},
+    },
 };
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -409,6 +412,14 @@ impl S3Profile {
             defaults.insert("s3.delete-enabled".to_string(), "false".to_string());
         }
 
+        // Advertise SSE-KMS catalog-wide so FileIO created from the catalog config (not just the
+        // per-table load config) encrypts client-side writes with the configured key. Per-table
+        // `generate_table_config` emits the same keys and takes precedence.
+        if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            defaults.insert(s3::SseType::KEY.to_string(), "kms".to_string());
+            defaults.insert(s3::SseKey::KEY.to_string(), kms_key_arn.clone());
+        }
+
         CatalogConfig {
             defaults,
             overrides: HashMap::new(),
@@ -503,6 +514,18 @@ impl S3Profile {
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));
             creds.insert(&s3::Endpoint(endpoint.clone()));
+        }
+
+        // When the warehouse is configured with a KMS key, advertise SSE-KMS to clients so
+        // their own writes (vended credentials or remote signing) encrypt with the same key,
+        // independent of any S3 bucket-default-encryption configuration. Lakekeeper's own writes
+        // already set this header via lakekeeper-io. Mirrors region/endpoint by emitting into both
+        // the load config and the credential-refresh properties.
+        if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            config.insert(&s3::SseType("kms".to_string()));
+            config.insert(&s3::SseKey(kms_key_arn.clone()));
+            creds.insert(&s3::SseType("kms".to_string()));
+            creds.insert(&s3::SseKey(kms_key_arn.clone()));
         }
 
         if vended_credentials {
@@ -2039,6 +2062,110 @@ pub(crate) mod test {
                 true,
             );
         }
+    }
+
+    fn client_managed_table_config(profile: &S3Profile) -> TableConfig {
+        let warehouse_id = WarehouseId::new_random();
+        let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
+        let table_location: Location = "s3://bucket-name/path/to/table".parse().unwrap();
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: table_location.clone(),
+            storage_permissions: StoragePermissions::ReadWriteDelete,
+            warehouse_id,
+            tabular_id: tabular_info.tabular_id(),
+        };
+        test_block_on(
+            profile.generate_table_config(
+                DataAccessMode::ClientManaged,
+                None,
+                stc_request,
+                &tabular_info,
+                &RequestMetadata::new_unauthenticated(),
+            ),
+            false,
+        )
+        .expect("generate_table_config failed")
+    }
+
+    #[test]
+    fn table_config_emits_sse_kms_when_arn_set() {
+        let arn = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .aws_kms_key_arn(arn.to_string())
+            .build();
+        let config = client_managed_table_config(&profile);
+        // Emitted into both the load config and the credential-refresh properties.
+        assert_eq!(
+            config.config.get_prop_opt::<s3::SseType>(),
+            Some("kms".to_string())
+        );
+        assert_eq!(
+            config.config.get_prop_opt::<s3::SseKey>(),
+            Some(arn.to_string())
+        );
+        assert_eq!(
+            config.creds.get_prop_opt::<s3::SseType>(),
+            Some("kms".to_string())
+        );
+        assert_eq!(
+            config.creds.get_prop_opt::<s3::SseKey>(),
+            Some(arn.to_string())
+        );
+    }
+
+    #[test]
+    fn catalog_config_emits_sse_kms_when_arn_set() {
+        let arn = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .aws_kms_key_arn(arn.to_string())
+            .build();
+        let config = profile.generate_catalog_config(
+            WarehouseId::new_random(),
+            &RequestMetadata::new_unauthenticated(),
+            crate::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        );
+        assert_eq!(config.defaults.get("s3.sse.type"), Some(&"kms".to_string()));
+        assert_eq!(config.defaults.get("s3.sse.key"), Some(&arn.to_string()));
+    }
+
+    #[test]
+    fn catalog_config_omits_sse_when_no_kms_arn() {
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .build();
+        let config = profile.generate_catalog_config(
+            WarehouseId::new_random(),
+            &RequestMetadata::new_unauthenticated(),
+            crate::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        );
+        assert!(!config.defaults.contains_key("s3.sse.type"));
+        assert!(!config.defaults.contains_key("s3.sse.key"));
+    }
+
+    #[test]
+    fn table_config_omits_sse_when_no_kms_arn() {
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .build();
+        let config = client_managed_table_config(&profile);
+        assert_eq!(config.config.get_prop_opt::<s3::SseType>(), None);
+        assert_eq!(config.config.get_prop_opt::<s3::SseKey>(), None);
     }
 
     #[test]

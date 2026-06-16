@@ -9,7 +9,7 @@ use moka::{
 use crate::{
     CONFIG,
     service::{
-        CatalogBackendError, RoleId,
+        ArcProjectId, ArcRoleIdent, CatalogBackendError, RoleId,
         authn::UserId,
         cache_metrics,
         cache_ttl::JitteredTtl,
@@ -76,7 +76,15 @@ pub(crate) async fn user_assignments_cache_get(
 pub(crate) async fn user_assignments_cache_invalidate(user_id: &UserId) {
     if CONFIG.cache.user_assignments.enabled {
         tracing::debug!("Invalidating user assignments for {user_id} from cache");
-        USER_ASSIGNMENTS_CACHE.invalidate(user_id).await;
+        // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
+        // `invalidate()`: a bare invalidate is a different moka lock domain, so one
+        // landing mid-load is a no-op and the loader's later insert resurrects the
+        // revoked entry until TTL. `Op::Remove` orders this post-commit removal after
+        // any in-flight load's insert. See `user_assignments_cache_get_or_load`.
+        USER_ASSIGNMENTS_CACHE
+            .entry(user_id.clone())
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
         update_ua_size_metric();
     }
 }
@@ -92,7 +100,12 @@ pub(crate) async fn user_assignments_cache_invalidate_many(user_ids: &[UserId]) 
     }
     for user_id in user_ids {
         tracing::debug!("Invalidating user assignments for {user_id} from cache");
-        USER_ASSIGNMENTS_CACHE.invalidate(user_id).await;
+        // Compute-based removal — serializes with the loader. See
+        // `user_assignments_cache_invalidate`.
+        USER_ASSIGNMENTS_CACHE
+            .entry(user_id.clone())
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
     }
     update_ua_size_metric();
 }
@@ -107,17 +120,16 @@ fn update_ua_size_metric() {
 
 /// Single-flight read-through for the user-assignments cache.
 ///
-/// On a miss, concurrent requests for the same `user_id` are **coalesced**: the
-/// (relatively expensive) effective-roles loader runs once per key, not once per
-/// caller, and every waiter receives a clone of the same `Arc`. This replaces the
-/// previous get-then-load-then-insert path, where N concurrent misses each ran
-/// the loader (a per-replica thundering herd). Hit/miss metrics and the `enabled`
-/// flag are preserved; when caching is disabled the loader runs directly with no
-/// caching or coalescing. Errors are never cached, so a transient load failure
-/// does not poison the entry.
+/// Concurrent misses for the same `user_id` coalesce onto one loader run; hit/miss
+/// metrics and the `enabled` flag are preserved; errors are never cached (returned
+/// by value, never poisoning the entry).
 ///
-/// Uses moka `try_get_with` (hence the `Fut: 'static` bound); the
-/// `and_try_compute_with`-based helpers for the other caches do not require it.
+/// Uses `and_try_compute_with`, not `try_get_with`, deliberately: moka holds the
+/// per-key compute lock across the `load` await, and `user_assignments_cache_invalidate`
+/// removes through that *same* lock (`Op::Remove`). So a revocation racing an
+/// in-flight load can't be lost — it is serialized after this loader's insert
+/// (cleaning it up) or before it starts. `try_get_with` removed in a different lock
+/// domain, so the loader's insert resurrected the revoked grant until TTL.
 pub(super) async fn user_assignments_cache_get_or_load<Fut>(
     user_id: &UserId,
     load: Fut,
@@ -125,8 +137,7 @@ pub(super) async fn user_assignments_cache_get_or_load<Fut>(
 where
     Fut: std::future::Future<
             Output = Result<Arc<ListUserRoleAssignmentsResult>, CatalogBackendError>,
-        > + Send
-        + 'static,
+        > + Send,
 {
     if !CONFIG.cache.user_assignments.enabled {
         return load.await;
@@ -139,21 +150,140 @@ where
     }
 
     // Miss (already counted by the get above): coalesce concurrent loaders for this
-    // key (moka shares one in-flight init across all waiters).
-    let result = USER_ASSIGNMENTS_CACHE
-        .try_get_with(user_id.clone(), load)
-        .await
-        .map_err(|e: Arc<CatalogBackendError>| {
-            // Move the original error out when we are the sole owner (the common,
-            // uncontended case). Only when waiters genuinely shared one failed load
-            // can we not move it — and a read-only loader yields `Unexpected`
-            // anyway, so wrapping does not change the surfaced status.
-            Arc::try_unwrap(e).unwrap_or_else(|shared| {
-                CatalogBackendError::new_unexpected(std::io::Error::other(shared.to_string()))
-            })
-        })?;
+    // key and hold the per-key compute lock across the load, so a racing invalidate
+    // is serialized against us rather than lost (see the doc comment).
+    let outcome = USER_ASSIGNMENTS_CACHE
+        .entry(user_id.clone())
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Populated by another caller while we waited on the key lock.
+                return Ok::<_, CatalogBackendError>(Op::Nop);
+            }
+            Ok(Op::Put(load.await?))
+        })
+        .await?;
     update_ua_size_metric();
-    Ok(result)
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => entry.into_value(),
+        // Unreachable: the closure only emits `Put` (→ Inserted) or `Nop` with an
+        // existing entry (→ Unchanged). Re-read defensively rather than panic.
+        CompResult::StillNone(_) | CompResult::Removed(_) => {
+            user_assignments_cache_get(user_id).await.ok_or_else(|| {
+                CatalogBackendError::new_unexpected(std::io::Error::other(
+                    "user-assignments cache compute returned no entry",
+                ))
+            })?
+        }
+    })
+}
+
+// ============================================================================
+// Shared identity pools — dedup Arc<RoleIdent>/Arc<ProjectId> across cached entries
+// ============================================================================
+//
+// The effective-roles loader allocates a fresh `Arc` for each (user, role) row,
+// so without sharing a role held by N users keeps N copies of its identity alive.
+// Sharing collapses those to one `Arc`. Content-addressed: the key is the `Arc`
+// itself, whose `Hash`/`Eq` delegate to the inner value, so a rename produces a
+// new ident → new key → self-heals, and stale (renamed/deleted) idents age out by
+// idle-eviction — no invalidation hook required. The key clone and the stored
+// value share one allocation. The shared `Arc` is strong: the canonical instance
+// stays alive via cached entries even if the pool evicts the key, so eviction
+// only transiently reduces sharing, never correctness.
+//
+// Sizing is INTERNAL, not an operator knob, and deliberately NOT tied to the
+// role-by-id cache (`cache.role`): the pools serve `USER_ASSIGNMENTS_CACHE`, so
+// their idle-TTL tracks *that* cache's TTL, and their capacity is a fixed bound on
+// distinct identities in play. Above the capacity, dedup degrades (cold idents
+// are LRU-evicted and re-allocated on the next load) but is never incorrect. We
+// keep `moka` (sharded, lock-free reads) rather than a hand-rolled weak-value map
+// precisely so this stays uncontended under the lazy per-user role-provider sync
+// load. `share_identities` is gated on `user_assignments.enabled`, so when that
+// cache is off the pools are never populated.
+//
+// Future option (deferred): if true self-sizing (no fixed cap) is ever wanted,
+// swap these for weak-value pools whose canonical `Arc`s are kept alive by the
+// cached entries. That design needs a periodic dead-`Weak` sweep under a lock —
+// if that sweep (or the lock) ever becomes a bottleneck, shard it (an array of
+// locked maps keyed by hash, or a `DashMap`). Not needed now: `moka` is already
+// sharded/concurrent, and the fixed cap only degrades dedup, never correctness.
+
+/// Upper bound on distinct shared identities. Generous — far above any realistic
+/// distinct-role count (the role-by-id cache defaults to 10k). Exceeding it only
+/// degrades dedup, never correctness, so it is a fixed internal constant rather
+/// than an operator-facing knob.
+const MAX_SHARED_IDENTITIES: u64 = 100_000;
+
+const CACHE_TYPE_SHARED_ROLE_IDENTS: &str = "shared_role_idents";
+const CACHE_TYPE_SHARED_PROJECT_IDS: &str = "shared_project_ids";
+
+static SHARED_ROLE_IDENTS: std::sync::LazyLock<Cache<ArcRoleIdent, ArcRoleIdent>> =
+    std::sync::LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(MAX_SHARED_IDENTITIES)
+            .time_to_idle(Duration::from_secs(
+                CONFIG.cache.user_assignments.time_to_live_secs,
+            ))
+            .build()
+    });
+
+static SHARED_PROJECT_IDS: std::sync::LazyLock<Cache<ArcProjectId, ArcProjectId>> =
+    std::sync::LazyLock::new(|| {
+        Cache::builder()
+            .max_capacity(MAX_SHARED_IDENTITIES)
+            .time_to_idle(Duration::from_secs(
+                CONFIG.cache.user_assignments.time_to_live_secs,
+            ))
+            .build()
+    });
+
+async fn share_role_ident(ident: ArcRoleIdent) -> ArcRoleIdent {
+    SHARED_ROLE_IDENTS
+        .get_with(Arc::clone(&ident), async move { ident })
+        .await
+}
+
+async fn share_project_id(project_id: ArcProjectId) -> ArcProjectId {
+    SHARED_PROJECT_IDS
+        .get_with(Arc::clone(&project_id), async move { project_id })
+        .await
+}
+
+/// Replace the per-row `Arc<RoleIdent>` / `Arc<ProjectId>` in a freshly-loaded
+/// user-assignments result with shared `Arc`s before it is cached, so a
+/// role/project referenced by many users is stored once in memory. No-op when the
+/// user-assignments cache is disabled (nothing is cached → nothing to dedup).
+pub(super) async fn share_identities(result: &mut ListUserRoleAssignmentsResult) {
+    if !CONFIG.cache.user_assignments.enabled {
+        return;
+    }
+    for role in &mut result.roles {
+        role.role_ident = share_role_ident(Arc::clone(&role.role_ident)).await;
+        role.project_id = share_project_id(Arc::clone(&role.project_id)).await;
+    }
+    for sync in &mut result.provider_sync_times {
+        sync.project_id = share_project_id(Arc::clone(&sync.project_id)).await;
+    }
+    update_shared_identity_metrics();
+}
+
+/// Gauge the shared-identity pools' entry counts so dedup can be confirmed in
+/// prod: compare these against `cache_size{cache_type="user_assignments"}` — a
+/// small pool size relative to UA entries means a role/project held by many users
+/// is stored once. Reuses the shared `lakekeeper_cache_size` gauge with dedicated
+/// `cache_type` labels. `entry_count()` is approximate until moka drains pending
+/// tasks (same caveat the UA/RM gauges already accept).
+#[inline]
+#[allow(clippy::cast_precision_loss)]
+fn update_shared_identity_metrics() {
+    let () = &*cache_metrics::METRICS_INITIALIZED;
+    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_SHARED_ROLE_IDENTS)
+        .set(SHARED_ROLE_IDENTS.entry_count() as f64);
+    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_SHARED_PROJECT_IDS)
+        .set(SHARED_PROJECT_IDS.entry_count() as f64);
 }
 
 // ============================================================================
@@ -210,7 +340,13 @@ pub(crate) async fn role_members_cache_get(role_id: RoleId) -> Option<Arc<ListRo
 pub(crate) async fn role_members_cache_invalidate(role_id: RoleId) {
     if CONFIG.cache.role_members.enabled {
         tracing::debug!("Invalidating role members for {role_id} from cache");
-        ROLE_MEMBERS_CACHE.invalidate(&role_id).await;
+        // Compute-based removal — serializes with the loader's per-key lock so a
+        // racing in-flight load can't resurrect the entry. See
+        // `user_assignments_cache_invalidate`.
+        ROLE_MEMBERS_CACHE
+            .entry(role_id)
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
         update_rm_size_metric();
     }
 }
@@ -395,6 +531,105 @@ mod tests {
         assert!(user_assignments_cache_get(&user_id).await.is_none());
     }
 
+    /// Regression: a revocation racing an in-flight loader must win — no resurrecting
+    /// the revoked entry. Deterministic: the loader holds the key's compute lock
+    /// across its `await`, so the invalidate's `Op::Remove` is ordered after the
+    /// loader's insert and removes it. (Before the fix the loader used `try_get_with`
+    /// and the invalidate a bare, different-lock-domain `invalidate()` — a no-op
+    /// mid-load, and the insert resurrected the grant until TTL.)
+    #[tokio::test]
+    async fn invalidate_wins_over_in_flight_user_assignments_loader() {
+        use tokio::sync::oneshot;
+
+        let user_id = test_user_id("race-invalidate-vs-loader");
+        // Clean slate — the cache is a process-global static shared across tests.
+        user_assignments_cache_invalidate(&user_id).await;
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let stale = user_result_with_role(
+            RoleId::new_random(),
+            Arc::new(ProjectId::new_random()),
+            test_role_ident("lakekeeper", "stale-grant"),
+        );
+        let stale_for_loader = Arc::clone(&stale);
+
+        // The loader runs inside the compute closure (holding the key lock). It
+        // signals once mid-flight, then blocks until the test releases it before
+        // returning the now-stale snapshot.
+        let uid = user_id.clone();
+        let loader = tokio::spawn(async move {
+            let load = async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(stale_for_loader)
+            };
+            user_assignments_cache_get_or_load(&uid, load).await
+        });
+
+        // Once the loader holds the key lock, fire the revocation. Its `Op::Remove`
+        // queues behind the loader on the same key lock.
+        started_rx.await.unwrap();
+        let inv_uid = user_id.clone();
+        let invalidate = tokio::spawn(async move {
+            user_assignments_cache_invalidate(&inv_uid).await;
+        });
+
+        release_tx.send(()).unwrap();
+        let returned = loader.await.unwrap().expect("loader succeeds");
+        invalidate.await.unwrap();
+
+        // The loader still returns its snapshot to *its* caller (a read that raced a
+        // write — acceptable) ...
+        assert_eq!(returned.roles.len(), 1);
+        // ... but the cache must NOT retain the revoked grant: the invalidate won.
+        assert!(
+            user_assignments_cache_get(&user_id).await.is_none(),
+            "revoked grant was resurrected by the racing loader"
+        );
+    }
+
+    /// Same race, for `ROLE_MEMBERS`: its loader was already compute-based, so this
+    /// guards that the invalidate change (`Op::Remove`) serializes with it.
+    #[tokio::test]
+    async fn invalidate_wins_over_in_flight_role_members_loader() {
+        use tokio::sync::oneshot;
+
+        let role_id = RoleId::new_random();
+        role_members_cache_invalidate(role_id).await;
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let stale = role_result_with_members(role_id, vec![test_user_id("stale-member")]);
+        let stale_for_loader = Arc::clone(&stale);
+
+        let loader = tokio::spawn(async move {
+            let load = async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(Some(stale_for_loader))
+            };
+            role_members_cache_get_or_load(role_id, load).await
+        });
+
+        started_rx.await.unwrap();
+        let invalidate = tokio::spawn(async move {
+            role_members_cache_invalidate(role_id).await;
+        });
+
+        release_tx.send(()).unwrap();
+        let returned = loader.await.unwrap().expect("loader succeeds");
+        invalidate.await.unwrap();
+
+        assert_eq!(returned.unwrap().members.len(), 1);
+        assert!(
+            role_members_cache_get(role_id).await.is_none(),
+            "removed role-members entry was resurrected by the racing loader"
+        );
+    }
+
     #[tokio::test]
     async fn test_user_assignments_get_returns_same_arc() {
         let user_id = test_user_id("arc-check-ua");
@@ -454,6 +689,102 @@ mod tests {
 
         let cached = user_assignments_cache_get(&user_id).await.unwrap();
         assert_eq!(cached.roles.len(), 1);
+    }
+
+    /// Two independently-loaded results referencing the same role/project value
+    /// (distinct `Arc` allocations) must, after sharing, collapse to ONE canonical
+    /// `Arc` — the dedup that stops a role held by many users from storing its
+    /// identity once per user.
+    #[tokio::test]
+    async fn share_identities_dedups_shared_identity_across_results() {
+        let role_id = RoleId::new_random();
+        let project = ProjectId::new_random();
+        let mk = || ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id,
+                role_ident: test_role_ident("lakekeeper", "share-dedup-src"),
+                project_id: Arc::new(project.clone()),
+            }],
+            provider_sync_times: vec![],
+        };
+        let mut a = mk();
+        let mut b = mk();
+        // Independently allocated before sharing.
+        assert!(!Arc::ptr_eq(&a.roles[0].role_ident, &b.roles[0].role_ident));
+        assert!(!Arc::ptr_eq(&a.roles[0].project_id, &b.roles[0].project_id));
+
+        share_identities(&mut a).await;
+        share_identities(&mut b).await;
+
+        assert!(
+            Arc::ptr_eq(&a.roles[0].role_ident, &b.roles[0].role_ident),
+            "same role-ident value must dedup to one shared Arc"
+        );
+        assert!(
+            Arc::ptr_eq(&a.roles[0].project_id, &b.roles[0].project_id),
+            "same project-id value must dedup to one shared Arc"
+        );
+    }
+
+    /// Distinct ident VALUES must not merge — a renamed role (new ident) gets a
+    /// fresh canonical, so the content-addressed pool self-heals across renames.
+    #[tokio::test]
+    async fn share_identities_keeps_distinct_idents_separate() {
+        let role_id = RoleId::new_random();
+        let project = Arc::new(ProjectId::new_random());
+        let mut before = ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id,
+                role_ident: test_role_ident("lakekeeper", "share-rename-before"),
+                project_id: Arc::clone(&project),
+            }],
+            provider_sync_times: vec![],
+        };
+        let mut after = ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id,
+                role_ident: test_role_ident("lakekeeper", "share-rename-after"),
+                project_id: Arc::clone(&project),
+            }],
+            provider_sync_times: vec![],
+        };
+        share_identities(&mut before).await;
+        share_identities(&mut after).await;
+        assert!(
+            !Arc::ptr_eq(&before.roles[0].role_ident, &after.roles[0].role_ident),
+            "different ident values must not be deduped together"
+        );
+    }
+
+    /// `provider_sync_times` project ids are shared too, collapsing to the canonical
+    /// `Arc` of a role carrying the same project value.
+    #[tokio::test]
+    async fn share_identities_dedups_provider_sync_project_id() {
+        let project = ProjectId::new_random();
+        let mut result = ListUserRoleAssignmentsResult {
+            roles: vec![AssignedRole {
+                role_id: RoleId::new_random(),
+                role_ident: test_role_ident("lakekeeper", "share-sync-proj"),
+                project_id: Arc::new(project.clone()),
+            }],
+            provider_sync_times: vec![UserProviderSyncInfo {
+                project_id: Arc::new(project.clone()),
+                provider_id: RoleProviderId::try_new("oidc").unwrap(),
+                synced_at: chrono::Utc::now(),
+            }],
+        };
+        assert!(!Arc::ptr_eq(
+            &result.roles[0].project_id,
+            &result.provider_sync_times[0].project_id
+        ));
+        share_identities(&mut result).await;
+        assert!(
+            Arc::ptr_eq(
+                &result.roles[0].project_id,
+                &result.provider_sync_times[0].project_id
+            ),
+            "provider_sync_times project_id must share the same canonical Arc"
+        );
     }
 
     /// Single-flight: N concurrent misses for the same key run the loader
@@ -516,22 +847,26 @@ mod tests {
         user_assignments_cache_invalidate(&user_id).await;
     }
 
-    /// A failed load (`Err`) coalesces like a success but **must not poison** the
-    /// entry: concurrent callers share one failing load and all observe an error,
-    /// and a subsequent successful load still populates the cache (errors are
-    /// never cached).
+    /// A failed load must not poison the entry: every caller observes the error and
+    /// nothing is cached, so a later success still populates. Errors are NOT
+    /// coalesced — `and_try_compute_with` inserts nothing on `Err`, so each
+    /// serialized caller re-runs the load (consistent with every compute-based cache;
+    /// the old `try_get_with` shared one failing load — traded away to serialize the
+    /// loader against invalidation).
     #[tokio::test]
     async fn user_assignments_get_or_load_does_not_cache_errors() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        const CALLERS: usize = 16;
         let user_id = test_user_id("single-flight-error");
         user_assignments_cache_invalidate(&user_id).await;
 
         let loads = Arc::new(AtomicUsize::new(0));
 
-        // Concurrent callers whose loader fails — coalesced onto one failing load.
+        // Concurrent callers whose loader fails. They serialize on the key's compute
+        // lock; since `Err` caches nothing, each one re-runs the failing load.
         let mut handles = Vec::new();
-        for _ in 0..16 {
+        for _ in 0..CALLERS {
             let loads = Arc::clone(&loads);
             let uid = user_id.clone();
             handles.push(tokio::spawn(async move {
@@ -551,13 +886,13 @@ mod tests {
         for h in handles {
             assert!(
                 h.await.unwrap().is_err(),
-                "every coalesced caller observes the failure"
+                "every caller observes the failure"
             );
         }
         assert_eq!(
             loads.load(Ordering::SeqCst),
-            1,
-            "concurrent callers coalesce onto a single failing load"
+            CALLERS,
+            "errors are not negative-cached, so each serialized caller re-runs the failing load"
         );
         assert!(
             user_assignments_cache_get(&user_id).await.is_none(),

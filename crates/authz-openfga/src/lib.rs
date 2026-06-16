@@ -10,6 +10,8 @@
 use std::{str::FromStr as _, sync::LazyLock};
 
 pub use authorizer::OpenFGAAuthorizer;
+#[cfg(any(test, feature = "test-utils"))]
+pub use client::new_authorizer_in_empty_store_from_default_config;
 pub use client::{
     BearerOpenFGAAuthorizer, ClientCredentialsOpenFGAAuthorizer, UnauthenticatedOpenFGAAuthorizer,
     new_authorizer_from_default_config, new_client_from_default_config,

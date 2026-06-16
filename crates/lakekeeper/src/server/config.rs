@@ -14,7 +14,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
-        WarehouseNameNotFound, WarehouseStatus,
+        UserUpsertMode, WarehouseNameNotFound, WarehouseStatus,
         authz::{
             Authorizer, AuthzWarehouseOps, CatalogWarehouseAction, RequireWarehouseActionError,
         },
@@ -165,6 +165,17 @@ fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
     }
 }
 
+/// True if the token carries a non-empty name claim. Backfilling a stub is only
+/// useful — and only safe — when the token actually provides a name: backfilling
+/// from a nameless token would flip the row to `ConfigCallCreation` with a still-
+/// placeholder name, locking out a later name-bearing login or SCIM full-sync.
+fn token_provides_name(request_metadata: &RequestMetadata) -> bool {
+    request_metadata
+        .authentication()
+        .and_then(|auth| auth.full_name())
+        .is_some_and(|name| !name.is_empty())
+}
+
 async fn maybe_register_user<D: CatalogStore>(
     request_metadata: &RequestMetadata,
     state: <D as CatalogStore>::State,
@@ -185,11 +196,29 @@ async fn maybe_register_user<D: CatalogStore>(
     )
     .await?;
 
-    if user.users.is_empty() {
+    // Register on first touch, OR backfill a role-provider stub once a real name
+    // is available. #1824 made admin-facing assignment writes 404 on unknown
+    // users, so role-provider sync now stubs a `users` row (`name IS NULL`,
+    // `last_updated_with = RoleProvider`) before the user ever logs in; without
+    // this, that stub (rendered as a placeholder name) would survive first login
+    // forever. A `RoleProvider` row is the only ambiguous case — it may be an
+    // un-named stub OR a real SCIM-synced name — so we attempt the write and let
+    // `create_or_backfill_user`'s `WHERE name IS NULL` guard disambiguate
+    // atomically: a real name (even a concurrent one) is left untouched. The
+    // `token_provides_name` gate keeps the backfill from being a downgrade.
+    let should_register = match user.users.first() {
+        None => true,
+        Some(existing) => {
+            existing.last_updated_with == UserLastUpdatedWith::RoleProvider
+                && token_provides_name(request_metadata)
+        }
+    };
+
+    if should_register {
         let (creation_user_id, name, user_type, email) =
             parse_create_user_request(request_metadata, None)?;
 
-        // If the user is authenticated, create a user in the catalog
+        // If the user is authenticated, create or backfill the catalog user.
         let mut t = D::Transaction::begin_write(state).await?;
         D::create_or_update_user(
             &creation_user_id,
@@ -197,6 +226,7 @@ async fn maybe_register_user<D: CatalogStore>(
             email.as_deref(),
             UserLastUpdatedWith::ConfigCallCreation,
             user_type,
+            UserUpsertMode::BackfillUnnamedStub,
             t.transaction(),
         )
         .await?;

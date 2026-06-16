@@ -194,7 +194,15 @@ fn update_cache_size_metric() {
 async fn secrets_cache_invalidate(secret_id: SecretId) {
     if CONFIG.cache.secrets.enabled {
         tracing::debug!("Invalidating secret id {secret_id} from cache");
-        SECRETS_CACHE.invalidate(&secret_id).await;
+        // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
+        // `invalidate()`: otherwise a delete racing an in-flight load lets the loader
+        // re-`Put` the removed secret until TTL (up to 600s of a decryptable stale
+        // credential). Secrets are by-id only, so this fully closes the race. See
+        // `user_assignments_cache_invalidate`.
+        SECRETS_CACHE
+            .entry(secret_id)
+            .and_compute_with(|_| async { Op::Remove })
+            .await;
         update_cache_size_metric();
     }
 }
@@ -276,4 +284,71 @@ where
         // here — the closure only returns `Nop`/`Put`, never `Remove`.
         CompResult::StillNone(_) | CompResult::Removed(_) => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::oneshot;
+
+    use super::*;
+    use crate::service::storage::StorageCredential;
+
+    fn test_cached_secret(secret_id: SecretId) -> CachedSecret {
+        // Construct a minimal credential via the documented serde shape — the
+        // concrete contents are irrelevant, we only need *some* CachedSecret.
+        let cred: StorageCredential = serde_json::from_str(
+            r#"{
+                "type": "s3",
+                "credential-type": "access-key",
+                "access-key-id": "minio-root-user",
+                "secret-access-key": "minio-root-password"
+            }"#,
+        )
+        .unwrap();
+        CachedSecret::StorageCredential(Secret {
+            secret_id,
+            secret: Arc::new(cred),
+            created_at: chrono::Utc::now(),
+            updated_at: None,
+        })
+    }
+
+    /// Regression: a `delete_secret` racing an in-flight load must win — no
+    /// resurrecting the removed (still-decryptable) credential. Same mechanism as the
+    /// user-assignments test; secrets are by-id only, so the race is fully closed here.
+    #[tokio::test]
+    async fn invalidate_wins_over_in_flight_secret_loader() {
+        let secret_id = SecretId::from(uuid::Uuid::new_v4());
+        secrets_cache_invalidate(secret_id).await; // clean slate
+
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+
+        let stale = test_cached_secret(secret_id);
+        let loader = tokio::spawn(async move {
+            let load = async move {
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(Some(stale))
+            };
+            secrets_cache_get_or_load(secret_id, load).await
+        });
+
+        started_rx.await.unwrap();
+        let invalidate = tokio::spawn(async move {
+            secrets_cache_invalidate(secret_id).await;
+        });
+
+        release_tx.send(()).unwrap();
+        let returned = loader.await.unwrap().expect("loader succeeds");
+        invalidate.await.unwrap();
+
+        assert!(returned.is_some());
+        assert!(
+            secrets_cache_get(secret_id).await.is_none(),
+            "deleted secret was resurrected by the racing loader"
+        );
+    }
 }

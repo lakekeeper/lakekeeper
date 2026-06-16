@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\",\n            user_type as \"user_type: DbUserType\",\n            email,\n            created_at,\n            updated_at\n        FROM users u\n        where (deleted_at is null)\n            AND ($1 OR name ILIKE ('%' || $2 || '%'))\n            AND ($3 OR id = any($4))\n            --- PAGINATION\n            AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))\n        ORDER BY u.created_at, u.id ASC\n        LIMIT $7\n        ",
+  "query": "\n        SELECT\n            id,\n            name,\n            last_updated_with as \"last_updated_with: DbUserLastUpdatedWith\",\n            user_type as \"user_type: DbUserType\",\n            email,\n            created_at,\n            updated_at\n        FROM users u\n        where (deleted_at is null)\n            AND ($1 OR name ILIKE ('%' || $2 || '%'))\n            AND ($3 OR id = any($4))\n            AND ((u.created_at > $5 OR $5 IS NULL) OR (u.created_at = $5 AND u.id > $6))\n        ORDER BY u.created_at, u.id ASC\n        LIMIT $7\n        ",
   "describe": {
     "columns": [
       {
@@ -116,7 +116,7 @@
     },
     "nullable": [
       false,
-      false,
+      true,
       false,
       false,
       true,
@@ -124,5 +124,5 @@
       true
     ]
   },
-  "hash": "5a450894a677d31c8a80122908dbf49ad77d804682936d96a9142028ce5372f7"
+  "hash": "8d860be8ef5a01568ac0e85c69e76f181b2cf8c1e144937d69cd1827f880b4cc"
 }

@@ -346,40 +346,60 @@ impl RequestMetadata {
         self.project_id.clone().or(DEFAULT_PROJECT_ID.clone())
     }
 
+    /// Build an [`Authentication`] for a user with the given optional `name`
+    /// claim and otherwise-empty claims. Test-only — used by the named test
+    /// helpers below and reachable from tests that need a custom shape.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_authentication(
+        user_id: crate::service::UserId,
+        name: Option<String>,
+    ) -> Authentication {
+        Authentication::builder()
+            .token_header(None)
+            .claims(serde_json::json!({}))
+            .subject(user_id.into())
+            .name(name)
+            .email(None)
+            .principal_type(None)
+            .build()
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn test_user(user_id: crate::service::UserId) -> Self {
-        Self {
-            request_id: Uuid::now_v7(),
-            authentication: Some(
-                Authentication::builder()
-                    .token_header(None)
-                    .claims(serde_json::json!({}))
-                    .subject(user_id.clone().into())
-                    .name(Some("Test User".to_string()))
-                    .email(None)
-                    .principal_type(None)
-                    .build(),
-            ),
-            base_url: "http://localhost:8181".to_string(),
-            actor: Actor::Principal(user_id).into(),
-            matched_path: None,
-            request_method: Method::default(),
-            project_id: None,
-            user_agent: None,
-            engines: MatchedEngines::default(),
-            token_roles: None,
-            idempotency_key: None,
-            is_instance_admin: false,
-        }
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(user_id.clone()))
+            .authentication(Self::test_authentication(
+                user_id,
+                Some("Test User".to_string()),
+            ))
+            .build()
+    }
+
+    /// Like [`Self::test_user`] but the token carries no `name` claim — exercises
+    /// the nameless-token path (e.g. the role-provider stub backfill gate, which
+    /// must NOT downgrade a row from a token that provides no name).
+    #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
+    pub fn test_user_without_name(user_id: crate::service::UserId) -> Self {
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(user_id.clone()))
+            .authentication(Self::test_authentication(user_id, None))
+            .build()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn test_instance_admin(user_id: crate::service::UserId) -> Self {
-        let mut md = Self::test_user(user_id);
-        md.is_instance_admin = true;
-        md
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Principal(user_id.clone()))
+            .authentication(Self::test_authentication(
+                user_id,
+                Some("Test User".to_string()),
+            ))
+            .is_instance_admin(true)
+            .build()
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -389,60 +409,16 @@ impl RequestMetadata {
         role_id: crate::service::RoleId,
     ) -> Self {
         use crate::service::Role;
-
-        Self {
-            request_id: Uuid::now_v7(),
-            authentication: Some(
-                Authentication::builder()
-                    .token_header(None)
-                    .claims(serde_json::json!({}))
-                    .subject(user_id.clone().into())
-                    .name(Some("Test User".to_string()))
-                    .email(None)
-                    .principal_type(None)
-                    .build(),
-            ),
-            base_url: "http://localhost:8181".to_string(),
-            actor: Actor::Role {
-                principal: user_id,
+        RequestMetadataTestBuilder::builder()
+            .actor(Actor::Role {
+                principal: user_id.clone(),
                 assumed_role: Arc::new(Role::new_random_with_id(role_id)),
-            }
-            .into(),
-            matched_path: None,
-            request_method: Method::default(),
-            project_id: None,
-            user_agent: None,
-            engines: MatchedEngines::default(),
-            token_roles: None,
-            idempotency_key: None,
-            is_instance_admin: false,
-        }
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    #[must_use]
-    pub fn new_test(
-        authentication: Option<Authentication>,
-        base_url: Option<String>,
-        actor: Actor,
-        project_id: Option<ArcProjectId>,
-        matched_path: Option<Arc<str>>,
-        request_method: Method,
-    ) -> Self {
-        Self {
-            request_id: Uuid::now_v7(),
-            authentication,
-            base_url: base_url.unwrap_or_else(|| "http://localhost:8181".to_string()),
-            actor: actor.into(),
-            project_id,
-            matched_path,
-            request_method,
-            user_agent: None,
-            engines: MatchedEngines::default(),
-            token_roles: None,
-            idempotency_key: None,
-            is_instance_admin: false,
-        }
+            })
+            .authentication(Self::test_authentication(
+                user_id,
+                Some("Test User".to_string()),
+            ))
+            .build()
     }
 
     #[must_use]
@@ -541,6 +517,54 @@ impl RequestMetadata {
     #[must_use]
     pub fn base_uri_management(&self) -> String {
         format!("{}/management", self.base_url())
+    }
+}
+
+/// Test-only builder for [`RequestMetadata`]. Anonymous actor, no project, GET
+/// method, not an instance admin by default — override only what your test
+/// needs. Prefer the named helpers on [`RequestMetadata`] for common shapes
+/// ([`RequestMetadata::test_user`], [`RequestMetadata::test_instance_admin`],
+/// [`RequestMetadata::test_user_assumed_role`]); reach for this builder when
+/// no named helper fits.
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Debug, typed_builder::TypedBuilder)]
+#[builder(build_method(into = RequestMetadata))]
+pub struct RequestMetadataTestBuilder {
+    #[builder(default = Actor::Anonymous)]
+    pub actor: Actor,
+    #[builder(default, setter(strip_option))]
+    pub authentication: Option<Authentication>,
+    #[builder(default = "http://localhost:8181".to_string(), setter(into))]
+    pub base_url: String,
+    #[builder(default, setter(into))]
+    pub project_id: Option<ArcProjectId>,
+    #[builder(default, setter(into))]
+    pub matched_path: Option<Arc<str>>,
+    #[builder(default = Method::default())]
+    pub request_method: Method,
+    #[builder(default = false)]
+    pub is_instance_admin: bool,
+    #[builder(default, setter(strip_option))]
+    pub token_roles: Option<TokenRoles>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl From<RequestMetadataTestBuilder> for RequestMetadata {
+    fn from(b: RequestMetadataTestBuilder) -> Self {
+        Self {
+            request_id: Uuid::now_v7(),
+            authentication: b.authentication,
+            base_url: b.base_url,
+            actor: b.actor.into(),
+            project_id: b.project_id,
+            matched_path: b.matched_path,
+            request_method: b.request_method,
+            user_agent: None,
+            engines: MatchedEngines::default(),
+            token_roles: b.token_roles,
+            idempotency_key: None,
+            is_instance_admin: b.is_instance_admin,
+        }
     }
 }
 
