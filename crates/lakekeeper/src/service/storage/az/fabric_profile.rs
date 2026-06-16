@@ -888,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_acceppts_none_directory_rel_path() {
+    fn test_normalize_accepts_none_directory_rel_path() {
         let mut p = sample_profile();
         p.directory_rel_path = None;
         p.normalize(None).unwrap();

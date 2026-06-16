@@ -411,7 +411,7 @@ For browser-based access to S3 buckets (required for [DuckDB WASM](engines.md#du
 
 To configure CORS for your S3 bucket:
 
-1. In the AWS S3 Configuration Menu, klick on the name of your bucket
+1. In the AWS S3 Configuration Menu, click on the name of your bucket
 2. Choose **Permissions** Tab
 3. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
 4. In the CORS configuration editor text box, type or copy and paste a new CORS configuration, or edit an existing configuration. The CORS configuration is a JSON file. The text that you type in the editor must be valid JSON. See below for an example.
@@ -698,7 +698,7 @@ Older Spark 3 / Iceberg < 1.10 combinations are exercised by other suites in the
 | `top-level-folder`             | String  | No       | `"Files"`                           | Top-level managed folder. Either `"Files"` (recommended, Iceberg-managed data area) or `"Tables"`. Writing Iceberg metadata under `Tables/` conflicts with Fabric's automatic Delta/Iceberg virtualization — choose only with care. |
 | `endpoint-mode`                | Object  | No       | `{"type": "default"}`               | OneLake endpoint selection. See [Endpoint modes](#endpoint-modes) below. |
 | `sas-enabled`                  | Boolean | No       | `true`                              | Enable SAS-token vending. Disable to force clients to use their own credentials. |
-| `sas-token-validity-seconds`   | Integer | No       | `3600`                              | SAS-token validity in seconds. **Max: 3600 (OneLake hard cap).** Lakekeeper rejects values above 3600 and 0; values below 60 are accepted with a warning and floored at mint time. |
+| `sas-token-validity-seconds`   | Integer | No       | `3600`                              | SAS-token validity in seconds. **Max: 3600 (OneLake hard cap).** Lakekeeper rejects values above 3600 and below 1; values below 60 are accepted with a warning and floored at mint time. |
 | `authority-host`               | URL     | No       | `https://login.microsoftonline.com` | Microsoft Entra authority host. |
 | `storage-layout`               | Object  | No       | `{"type": "default"}`               | See [Storage Layout](#storage-layout). |
 

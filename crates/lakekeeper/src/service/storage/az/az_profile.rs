@@ -112,7 +112,7 @@ impl GenericAdlsProfile {
     }
 
     /// Update the storage profile with another profile.
-    /// `key_prefix`, `region` and `bucket` must be the same.
+    /// `filesystem`, `key_prefix`, `authority_host` and `host` must be the same.
     /// We enforce this to avoid issues by accidentally changing the bucket or region
     /// of a warehouse, after which all tables would not be accessible anymore.
     /// Changing an endpoint might still result in an invalid profile, but we allow it.
