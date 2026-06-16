@@ -6,18 +6,21 @@ use std::{
 use futures::future::try_join_all;
 use lakekeeper::{
     ProjectId, WarehouseId,
-    api::{ApiContext, IcebergErrorResponse, RequestMetadata},
+    api::{ApiContext, IcebergErrorResponse, RequestMetadata, iceberg::v1::PaginationQuery},
     async_trait,
     axum::Router,
     service::{
         Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
-        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, NamespaceId, NamespaceWithParent,
-        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, UserId, ViewId,
+        AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, InternalErrorMessage, NamespaceId,
+        NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State,
+        TableId, UserId, ViewId,
         authz::{
-            ActionOnGenericTable, ActionOnTable, ActionOnView, Authorizer,
-            AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, IsAllowedActionError, ListProjectsResponse, NamespaceParent,
-            UserOrRole,
+            ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
+            AuthorizationBackendUnavailable, Authorizer, AuthzBackendErrorOrBadRequest,
+            CannotInspectPermissions, CatalogProjectAction, CatalogUserAction,
+            IsAllowedActionError, ListProjectsResponse, ListRoleAssignmentsError,
+            ListRoleAssignmentsResultPage, MalformedRoleAssignment, ManagesRoleAssignments,
+            NamespaceParent, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole, UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -293,9 +296,15 @@ impl Authorizer for OpenFGAAuthorizer {
         let mut batch_indices = Vec::new();
 
         for (idx, (user_id, action)) in users_with_actions.iter().enumerate() {
-            // 1. Users can perform all actions on themselves
+            // 1. The inspected subject can perform all actions on themselves. The
+            //    subject is `for_user` when inspecting another principal's access,
+            //    or the actor otherwise.
             // 2. Every authenticated user can read user metadata given the user id
-            let is_same_user = for_user.is_none() && (actor_principal == Some(*user_id));
+            let is_same_user = match for_user {
+                None => actor_principal == Some(*user_id),
+                Some(UserOrRole::User(subject)) => subject == *user_id,
+                Some(UserOrRole::Role(_)) => false,
+            };
             if is_same_user || *action == CatalogUserAction::Read {
                 results.push((idx, true));
             } else {
@@ -324,18 +333,31 @@ impl Authorizer for OpenFGAAuthorizer {
                         object: server_id.clone(),
                     },
                     CheckRequestTupleKey {
-                        user,
+                        user: user.clone(),
                         relation: ServerRelation::CanDeleteUsers.to_string(),
+                        object: server_id.clone(),
+                    },
+                    // The inspected subject's own `CanListUsers` — distinct from
+                    // the actor's (`batch_results[0]`). `ReadRoleAssignments`
+                    // reflects whether *the subject* may know about users, not the
+                    // caller. When `for_user` is None, `user` is the actor, so this
+                    // coincides with `batch_results[0]`.
+                    CheckRequestTupleKey {
+                        user,
+                        relation: ServerRelation::CanListUsers.to_string(),
                         object: server_id.clone(),
                     },
                 ])
                 .await?;
 
-            let is_allowed_to_know = batch_results[0];
+            // `batch_results[0]` is the *actor's* permission to know about users —
+            // it gates whether the caller may inspect another principal's access.
+            let actor_can_inspect = batch_results[0];
             let can_update = batch_results[1];
             let can_delete = batch_results[2];
+            let subject_can_list_users = batch_results[3];
 
-            if for_user.is_some() && !is_allowed_to_know {
+            if for_user.is_some() && !actor_can_inspect {
                 return Err(CannotInspectPermissions::new(&server_id).into());
             }
 
@@ -344,6 +366,11 @@ impl Authorizer for OpenFGAAuthorizer {
                     CatalogUserAction::Read => true,
                     CatalogUserAction::Update => can_update,
                     CatalogUserAction::Delete => can_delete,
+                    // List the roles assigned to this user: gated on whether the
+                    // inspected subject may know about users (`CanListUsers`). A
+                    // subject reading their own assignments is already
+                    // short-circuited above via `is_same_user`.
+                    CatalogUserAction::ReadRoleAssignments => subject_can_list_users,
                 };
                 results.push((idx, allowed));
             }
@@ -883,6 +910,181 @@ impl Authorizer for OpenFGAAuthorizer {
     ) -> AuthorizerResult<()> {
         self.delete_all_relations(&(warehouse_id, view_id)).await
     }
+
+    fn role_assignments(&self) -> Option<&dyn ManagesRoleAssignments> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl ManagesRoleAssignments for OpenFGAAuthorizer {
+    async fn add_role_assignments(
+        &self,
+        _metadata: &RequestMetadata,
+        _project_id: ArcProjectId,
+        assignments: &[(UserOrRoleId, RoleId)],
+    ) -> std::result::Result<(), AddRoleAssignmentsError> {
+        // Just persist the `#assignee` tuples. Cycle prevention is a catalog concern
+        // (`add_role_members`); OpenFGA tolerates cycles, so this never returns
+        // `AddRoleAssignmentsError::Cycle`.
+        let writes = assignments
+            .iter()
+            .map(|(subject, role_id)| TupleKey {
+                user: subject.to_openfga(),
+                relation: RoleRelation::Assignee.to_string(),
+                object: role_id.to_openfga(),
+                condition: None,
+            })
+            .collect::<Vec<_>>();
+
+        // OpenFGA rejects writes larger than `MAX_TUPLES_PER_WRITE`, so chunk. Writes
+        // are idempotent (a partial failure completes on retry); empty input no-ops.
+        for chunk in writes.chunks(MAX_TUPLES_PER_WRITE as usize) {
+            self.client
+                .write_with_options(Some(chunk.to_vec()), None, WriteOptions::new_idempotent())
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Failed to write role assignments to OpenFGA: {e}");
+                })
+                .map_err(|e| {
+                    AddRoleAssignmentsError::BackendUnavailable(
+                        OpenFGABackendUnavailable::from(Box::new(e)).into(),
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn remove_role_assignments(
+        &self,
+        _metadata: &RequestMetadata,
+        _project_id: ArcProjectId,
+        assignments: &[(UserOrRoleId, RoleId)],
+    ) -> std::result::Result<(), AuthorizationBackendUnavailable> {
+        let deletes = assignments
+            .iter()
+            .map(|(subject, role_id)| TupleKeyWithoutCondition {
+                user: subject.to_openfga(),
+                relation: RoleRelation::Assignee.to_string(),
+                object: role_id.to_openfga(),
+            })
+            .collect::<Vec<_>>();
+
+        // Chunk to the per-write limit (see `add_role_assignments`); idempotent.
+        for chunk in deletes.chunks(MAX_TUPLES_PER_WRITE as usize) {
+            self.client
+                .write_with_options(None, Some(chunk.to_vec()), WriteOptions::new_idempotent())
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("Failed to remove role assignments from OpenFGA: {e}");
+                })
+                .map_err(|e| {
+                    AuthorizationBackendUnavailable::from(OpenFGABackendUnavailable::from(
+                        Box::new(e),
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
+    async fn list_role_assignments(
+        &self,
+        _metadata: &RequestMetadata,
+        _project_id: ArcProjectId,
+        filter: RoleAssignmentFilter,
+        pagination: PaginationQuery,
+    ) -> std::result::Result<ListRoleAssignmentsResultPage, ListRoleAssignmentsError> {
+        // `ByRole(role)`   -> read all assignees of `role:<role>`   (subject is the key user).
+        // `ByAssignee(sub)`-> read all roles the subject is assignee of (object is the key role).
+        let tuple_key = match &filter {
+            RoleAssignmentFilter::ByRole(role_id) => ReadRequestTupleKey {
+                user: String::new(),
+                relation: RoleRelation::Assignee.to_string(),
+                object: role_id.to_openfga(),
+            },
+            RoleAssignmentFilter::ByAssignee(subject) => ReadRequestTupleKey {
+                user: subject.to_openfga(),
+                relation: RoleRelation::Assignee.to_string(),
+                object: format!("{}:", FgaType::Role),
+            },
+        };
+
+        // OpenFGA's Read RPC caps page_size at 100; clamp rather than surface an
+        // over-large request as a backend error (the caller paginates via the
+        // token). `MAX_TUPLES_PER_WRITE` is a different limit that happens to be the
+        // same 100 — reused here only to avoid a second constant.
+        let page_size = pagination
+            .page_size
+            .and_then(|s| i32::try_from(s).ok())
+            .filter(|s| *s > 0)
+            .unwrap_or(MAX_TUPLES_PER_WRITE)
+            .min(MAX_TUPLES_PER_WRITE);
+
+        // Listings use higher consistency, not the default cache-friendly read:
+        // a management caller that just wrote an assignment expects to see it
+        // (read-after-write), and the service-layer transitive walkers issue many
+        // sequential reads — a stale cache could yield a torn closure that never
+        // existed atomically. This is a cold path, so the extra latency is fine;
+        // the hot `Check`/`ListObjects` authz path is unaffected.
+        let response = self
+            .read_higher_consistency(
+                page_size,
+                tuple_key,
+                pagination.page_token.as_option().map(ToString::to_string),
+            )
+            .await
+            .map_err(AuthorizationBackendUnavailable::from)?;
+
+        let assignments = response
+            .tuples
+            .into_iter()
+            .map(
+                |t| -> std::result::Result<RoleAssignmentRow, MalformedRoleAssignment> {
+                    // A Read response tuple always carries a key; a missing one is a
+                    // malformed response — surface it rather than silently dropping it
+                    // (which would yield an incomplete page).
+                    let key = t.key.ok_or_else(|| {
+                        MalformedRoleAssignment::new(
+                            "authorization backend returned a tuple without a key",
+                            InternalErrorMessage(
+                                "OpenFGA Read response contained a tuple with no key".to_string(),
+                            ),
+                        )
+                    })?;
+                    let (subject, role_id) = match &filter {
+                        RoleAssignmentFilter::ByRole(role_id) => {
+                            (parse_role_subject(&key.user)?, *role_id)
+                        }
+                        RoleAssignmentFilter::ByAssignee(subject) => {
+                            (subject.clone(), parse_role_object(&key.object)?)
+                        }
+                    };
+                    // OpenFGA tuples carry a protobuf well-known timestamp recording when
+                    // the tuple was written. Valid timestamps have `nanos` in [0, 1e9), so a
+                    // negative value is malformed; clamp it to 0 rather than panic.
+                    let created_at = t.timestamp.and_then(|ts| {
+                        chrono::DateTime::from_timestamp(
+                            ts.seconds,
+                            u32::try_from(ts.nanos).unwrap_or(0),
+                        )
+                    });
+                    Ok(RoleAssignmentRow {
+                        subject,
+                        role_id,
+                        created_at,
+                    })
+                },
+            )
+            .collect::<std::result::Result<Vec<_>, MalformedRoleAssignment>>()?;
+
+        // OpenFGA returns an empty continuation token when there are no further pages.
+        let next_page_token = Some(response.continuation_token).filter(|t| !t.is_empty());
+
+        Ok(ListRoleAssignmentsResultPage {
+            assignments,
+            next_page_token,
+        })
+    }
 }
 
 impl OpenFGAAuthorizer {
@@ -968,7 +1170,9 @@ impl OpenFGAAuthorizer {
         page_size: i32,
         tuple_key: impl Into<Option<ReadRequestTupleKey>>,
         continuation_token: impl Into<Option<String>>,
-    ) -> OpenFGAResult<ReadResponse> {
+    ) -> Result<ReadResponse, OpenFGABackendUnavailable> {
+        // A read can only fail with a transport/client error (no request-data
+        // variants apply), so the narrow backend error is the precise return type.
         self.client
             .read(page_size, tuple_key, continuation_token)
             .await
@@ -976,7 +1180,7 @@ impl OpenFGAAuthorizer {
                 tracing::error!("Failed to read from OpenFGA: {e}");
             })
             .map(tonic::Response::into_inner)
-            .map_err(Into::into)
+            .map_err(|e| OpenFGABackendUnavailable::from(Box::new(e)))
     }
 
     /// A convenience wrapper around read that handles error conversion.
@@ -988,7 +1192,7 @@ impl OpenFGAAuthorizer {
         page_size: i32,
         tuple_key: impl Into<Option<ReadRequestTupleKey>>,
         continuation_token: impl Into<Option<String>>,
-    ) -> OpenFGAResult<ReadResponse> {
+    ) -> Result<ReadResponse, OpenFGABackendUnavailable> {
         self.client_higher_consistency
             .read(page_size, tuple_key, continuation_token)
             .await
@@ -996,18 +1200,18 @@ impl OpenFGAAuthorizer {
                 tracing::error!("Failed to read from OpenFGA: {e}");
             })
             .map(tonic::Response::into_inner)
-            .map_err(Into::into)
+            .map_err(|e| OpenFGABackendUnavailable::from(Box::new(e)))
     }
 
     /// Read all tuples for a given request
     pub(crate) async fn read_all(
         &self,
         tuple_key: Option<impl Into<ReadRequestTupleKey>>,
-    ) -> OpenFGAResult<Vec<Tuple>> {
+    ) -> Result<Vec<Tuple>, OpenFGABackendUnavailable> {
         self.client
             .read_all_pages(tuple_key, 100, 500)
             .await
-            .map_err(Into::into)
+            .map_err(|e| OpenFGABackendUnavailable::from(Box::new(e)))
     }
 
     /// A convenience wrapper around check
@@ -1303,6 +1507,30 @@ impl OpenFGAAuthorizer {
             .map_err(Into::into)
             .map(|response| response.into_inner().objects)
     }
+}
+
+/// Parse an OpenFGA assignee subject (`user:<id>` or `role:<id>#assignee`) into the
+/// id-only [`UserOrRoleId`]. A tuple we wrote but can't read back is an internal
+/// invariant violation, so a parse failure is a [`MalformedRoleAssignment`] (500),
+/// not the backend-fault (503).
+fn parse_role_subject(subject: &str) -> Result<UserOrRoleId, MalformedRoleAssignment> {
+    use lakekeeper::api::management::v1::check::UserOrRole as ApiUserOrRole;
+
+    let parsed = ApiUserOrRole::parse_from_openfga(subject).map_err(|e| {
+        MalformedRoleAssignment::new("authorization backend returned an unparseable subject", e)
+    })?;
+    Ok(match parsed {
+        ApiUserOrRole::User(user_id) => UserOrRoleId::User(user_id),
+        ApiUserOrRole::Role(assignee) => UserOrRoleId::Role(assignee.role_id()),
+    })
+}
+
+/// Parse an OpenFGA role object string (`role:<id>`) into a [`RoleId`]. See
+/// [`parse_role_subject`] for the error rationale.
+fn parse_role_object(object: &str) -> Result<RoleId, MalformedRoleAssignment> {
+    RoleId::parse_from_openfga(object).map_err(|e| {
+        MalformedRoleAssignment::new("authorization backend returned an unparseable role", e)
+    })
 }
 
 fn suffixes_for_user(user: &FgaType) -> Vec<String> {
@@ -1834,6 +2062,93 @@ pub(crate) mod tests {
             assert_eq!(results, vec![true, false]);
         }
 
+        /// `ReadRoleAssignments` must reflect the *inspected subject's* permission
+        /// to know about users, not the caller's. Regression for the bug where the
+        /// `for_user` path returned the actor's `CanListUsers` result.
+        #[tokio::test]
+        async fn test_are_allowed_user_actions_read_role_assignments_uses_inspected_subject() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let server = authorizer.openfga_server();
+
+            // Actor (caller) — granted server Admin so it MAY inspect others
+            // (`CanListUsers` ⇒ passes the inspection guard).
+            let actor_id = UserId::new_unchecked("oidc", "actor_admin");
+            // Inspected subject — initially has NO server grant, so it cannot list users.
+            let subject_id = UserId::new_unchecked("oidc", "inspected_subject");
+            let subject = UserOrRole::User(subject_id.clone());
+            // The user whose assignments are being asked about.
+            let target_id = UserId::new_unchecked("oidc", "target_user");
+
+            let metadata = RequestMetadata::test_user(actor_id.clone());
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: actor_id.to_openfga(),
+                        relation: ServerRelation::Admin.to_string(),
+                        object: server.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Subject lacks `CanListUsers`: the actor can inspect (no error), but
+            // the result reflects the SUBJECT — false. (The old code returned the
+            // actor's permission here, which would be `true`.)
+            let results = authorizer
+                .are_allowed_user_actions_impl(
+                    &metadata,
+                    Some(&subject),
+                    &[(&target_id, CatalogUserAction::ReadRoleAssignments)],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![false]);
+
+            // Grant the subject server Admin (⇒ `CanListUsers`); now the same query
+            // reflects the subject's permission — true.
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: subject_id.to_openfga(),
+                        relation: ServerRelation::Admin.to_string(),
+                        object: server.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let results = authorizer
+                .are_allowed_user_actions_impl(
+                    &metadata,
+                    Some(&subject),
+                    &[(&target_id, CatalogUserAction::ReadRoleAssignments)],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true]);
+
+            // Self fast-path: inspecting a subject's permission on *itself* is
+            // allowed without any grant and without the inspection guard firing.
+            // `loner` has no server grants, so a `true` here can only come from the
+            // `is_same_user` short-circuit, not from a `CanListUsers` check.
+            let loner_id = UserId::new_unchecked("oidc", "loner");
+            let loner = UserOrRole::User(loner_id.clone());
+            let results = authorizer
+                .are_allowed_user_actions_impl(
+                    &metadata,
+                    Some(&loner),
+                    &[(&loner_id, CatalogUserAction::ReadRoleAssignments)],
+                )
+                .await
+                .unwrap();
+            assert_eq!(results, vec![true]);
+        }
+
         #[tokio::test]
         async fn test_are_allowed_project_actions_for_user_checks_correct_user() {
             let authorizer = new_authorizer_in_empty_store().await;
@@ -1986,6 +2301,542 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             assert_eq!(results, vec![false, false]);
+        }
+
+        #[tokio::test]
+        async fn role_member_can_assume_parent_transitively() {
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "transitive_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+
+            // Role A (parent) and Role B (member of A).
+            let role_a = Arc::new(Role::new_random());
+            let role_b = Arc::new(Role::new_random());
+
+            // B becomes an assignee (member) of A: role -> role nesting.
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::Role(role_b.id), role_a.id)],
+                )
+                .await
+                .unwrap();
+
+            // U becomes an assignee of B: user -> role.
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::User(user_id.clone()), role_b.id)],
+                )
+                .await
+                .unwrap();
+
+            // U can assume B directly.
+            let can_assume_b = authorizer
+                .check_assume_role_impl(&user_id, &role_b, &metadata)
+                .await
+                .unwrap();
+            assert!(can_assume_b);
+
+            // U can assume A transitively (U -> B -> A).
+            let can_assume_a = authorizer
+                .check_assume_role_impl(&user_id, &role_a, &metadata)
+                .await
+                .unwrap();
+            assert!(can_assume_a);
+        }
+
+        /// OpenFGA TOLERATES cyclic role-in-role memberships: the authorizer does
+        /// no write-time cycle detection (cycle prevention is a catalog-layer
+        /// concern — see `add_role_members` — not the authorizer's). Writing both
+        /// `B member of A` and the cycle-closing `A member of B` succeed, and
+        /// `can_assume` resolves the cyclic userset safely (returns promptly, no
+        /// infinite loop). This test locks that behavior against a live server.
+        #[tokio::test]
+        async fn openfga_tolerates_cyclic_role_membership() {
+            use std::time::Duration;
+
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "cyclic_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+
+            let role_a = Arc::new(Role::new_random());
+            let role_b = Arc::new(Role::new_random());
+
+            // Generous client-side guard: every OpenFGA call must return well under this.
+            let guard = Duration::from_secs(30);
+
+            // B member of A, then the cycle-closing A member of B — both accepted.
+            for (member, parent) in [(role_b.clone(), role_a.id), (role_a.clone(), role_b.id)] {
+                tokio::time::timeout(
+                    guard,
+                    authorizer
+                        .role_assignments()
+                        .expect("OpenFGA manages role assignments")
+                        .add_role_assignments(
+                            &metadata,
+                            project_id.clone(),
+                            &[(UserOrRoleId::Role(member.id), parent)],
+                        ),
+                )
+                .await
+                .expect("write must not hang")
+                .expect("OpenFGA must accept the (cyclic) membership write");
+            }
+
+            // Assign a user to A; the cyclic userset resolves safely, so the user
+            // can assume BOTH A and B, and every check returns promptly (no hang).
+            tokio::time::timeout(
+                guard,
+                authorizer
+                    .role_assignments()
+                    .expect("OpenFGA manages role assignments")
+                    .add_role_assignments(
+                        &metadata,
+                        project_id.clone(),
+                        &[(UserOrRoleId::User(user_id.clone()), role_a.id)],
+                    ),
+            )
+            .await
+            .expect("write must not hang")
+            .expect("user assignment must succeed");
+
+            for role in [&role_a, &role_b] {
+                let can_assume = tokio::time::timeout(
+                    guard,
+                    authorizer.check_assume_role_impl(&user_id, role, &metadata),
+                )
+                .await
+                .expect("can_assume check must not hang (cycle resolves safely)")
+                .expect("check must not error");
+                assert!(
+                    can_assume,
+                    "user assigned to A assumes both A and B through the cycle"
+                );
+            }
+        }
+
+        /// A legitimate DEEP (depth >= 2) non-cyclic role->role chain must be
+        /// ACCEPTED: the write-time cycle check in `add_role_assignments` must
+        /// not false-positive on an acyclic chain `C => A => B`.
+        ///
+        /// Setup:
+        ///   - A is a member of B   (A => B)
+        ///   - C is a member of A   (C => A)  -- depth-2 edge, NOT a cycle
+        ///
+        /// Then a user U assigned to C must transitively assume C, A and B, while
+        /// a holder of B (`role:B#assignee`) must NOT be able to assume C, proving
+        /// the chain stays directional (no reverse/cyclic edge was created).
+        #[tokio::test]
+        async fn openfga_accepts_deep_noncyclic_role_chain() {
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "deep_chain_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+
+            let role_a = Arc::new(Role::new_random());
+            let role_b = Arc::new(Role::new_random());
+            let role_c = Arc::new(Role::new_random());
+
+            // Step 1: A is a member of B (A => B). Normal first-level edge.
+            let write_a_in_b = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::Role(role_a.id), role_b.id)],
+                )
+                .await;
+            assert!(
+                write_a_in_b.is_ok(),
+                "first edge A-in-B must be accepted, got {write_a_in_b:?}"
+            );
+
+            // Step 2: C is a member of A (C => A). This extends the chain to
+            // C => A => B (depth 2). It is acyclic and must NOT be rejected.
+            let result = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::Role(role_c.id), role_a.id)],
+                )
+                .await;
+            assert!(
+                result.is_ok(),
+                "deep non-cyclic chain must be accepted, got {result:?}"
+            );
+
+            // Step 3: assign user U to C (user => role).
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::User(user_id.clone()), role_c.id)],
+                )
+                .await
+                .unwrap();
+
+            // U can assume C directly.
+            let can_assume_c = authorizer
+                .check_assume_role_impl(&user_id, &role_c, &metadata)
+                .await
+                .unwrap();
+            assert!(can_assume_c, "U must assume C directly");
+
+            // U can assume A transitively (U => C => A).
+            let can_assume_a = authorizer
+                .check_assume_role_impl(&user_id, &role_a, &metadata)
+                .await
+                .unwrap();
+            assert!(can_assume_a, "U must assume A transitively (U=>C=>A)");
+
+            // U can assume B transitively across two levels (U => C => A => B).
+            let can_assume_b = authorizer
+                .check_assume_role_impl(&user_id, &role_b, &metadata)
+                .await
+                .unwrap();
+            assert!(can_assume_b, "U must assume B transitively (U=>C=>A=>B)");
+
+            // The chain is directional: a holder of B (role:B#assignee) must NOT
+            // be able to assume C. If a reverse/cyclic edge existed this would be
+            // true.
+            let role_b_assume_c = authorizer
+                .check(CheckRequestTupleKey {
+                    user: format!("{}#assignee", role_b.id.to_openfga()),
+                    relation: relations::RoleRelation::CanAssume.to_string(),
+                    object: role_c.id.to_openfga(),
+                })
+                .await
+                .unwrap();
+            assert!(
+                !role_b_assume_c,
+                "B's holder must NOT assume C: chain is directional, no reverse edge"
+            );
+        }
+
+        #[tokio::test]
+        async fn list_role_assignments_returns_role_members() {
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "list_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+
+            let role_a = Arc::new(Role::new_random());
+            let role_b = Arc::new(Role::new_random());
+
+            // B is a member of A; U is a member of A directly.
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[
+                        (UserOrRoleId::Role(role_b.id), role_a.id),
+                        (UserOrRoleId::User(user_id.clone()), role_a.id),
+                    ],
+                )
+                .await
+                .unwrap();
+
+            let page = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_a.id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+
+            // Every returned row targets role A and carries the tuple write timestamp.
+            for row in &page.assignments {
+                assert_eq!(row.role_id, role_a.id);
+                assert!(row.created_at.is_some());
+            }
+
+            let subjects: HashSet<UserOrRoleId> =
+                page.assignments.into_iter().map(|r| r.subject).collect();
+            let expected: HashSet<UserOrRoleId> = HashSet::from_iter(vec![
+                UserOrRoleId::Role(role_b.id),
+                UserOrRoleId::User(user_id.clone()),
+            ]);
+            assert_eq!(subjects, expected);
+        }
+
+        #[tokio::test]
+        async fn list_role_assignments_populates_created_at() {
+            let authorizer = new_authorizer_in_empty_store().await;
+
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "created_at_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+
+            let role = Arc::new(Role::new_random());
+
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::User(user_id.clone()), role.id)],
+                )
+                .await
+                .unwrap();
+
+            let first_page = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role.id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+
+            // Exactly one assignment, and it carries a populated created_at.
+            assert_eq!(first_page.assignments.len(), 1);
+            for row in &first_page.assignments {
+                assert!(row.created_at.is_some());
+            }
+            let first_created_at = first_page.assignments[0].created_at;
+            assert!(first_created_at.is_some());
+
+            // Re-adding the same (subject, role) is idempotent (ignore-on-duplicate) and
+            // must NOT rewrite the tuple, so the timestamp must be unchanged.
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[(UserOrRoleId::User(user_id.clone()), role.id)],
+                )
+                .await
+                .unwrap();
+
+            let second_page = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role.id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(second_page.assignments.len(), 1);
+            let second_created_at = second_page.assignments[0].created_at;
+            assert!(second_created_at.is_some());
+            assert_eq!(first_created_at, second_created_at);
+        }
+
+        /// `ByAssignee` lists every role a subject is assigned to (the inverse
+        /// axis of `ByRole`), parsing the role from the tuple's `object`.
+        #[tokio::test]
+        async fn list_role_assignments_by_assignee_returns_roles() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "by_assignee_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+            let role_a = Arc::new(Role::new_random());
+            let role_b = Arc::new(Role::new_random());
+
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[
+                        (UserOrRoleId::User(user_id.clone()), role_a.id),
+                        (UserOrRoleId::User(user_id.clone()), role_b.id),
+                    ],
+                )
+                .await
+                .unwrap();
+
+            let page = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByAssignee(UserOrRoleId::User(user_id.clone())),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+
+            let roles: HashSet<RoleId> = page.assignments.iter().map(|r| r.role_id).collect();
+            assert_eq!(roles, HashSet::from([role_a.id, role_b.id]));
+            // Every row's subject is exactly the queried user.
+            for row in &page.assignments {
+                assert_eq!(row.subject, UserOrRoleId::User(user_id.clone()));
+            }
+        }
+
+        /// Round-trip: a role-member assignment can be added, listed, removed, and
+        /// removing it again is idempotent (ignore-on-missing).
+        #[tokio::test]
+        async fn remove_role_assignments_round_trip() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let user_id = UserId::new_unchecked("oidc", "remove_rt_user");
+            let metadata = RequestMetadata::test_user(user_id.clone());
+            let role_a = Arc::new(Role::new_random());
+            let role_b = Arc::new(Role::new_random());
+            let edge = [(UserOrRoleId::Role(role_b.id), role_a.id)];
+
+            // B is a member of A.
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(&metadata, project_id.clone(), &edge)
+                .await
+                .unwrap();
+
+            let before = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_a.id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            let subjects: HashSet<UserOrRoleId> = before
+                .assignments
+                .iter()
+                .map(|r| r.subject.clone())
+                .collect();
+            assert_eq!(subjects, HashSet::from([UserOrRoleId::Role(role_b.id)]));
+
+            // Remove it.
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .remove_role_assignments(&metadata, project_id.clone(), &edge)
+                .await
+                .unwrap();
+
+            let after = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role_a.id),
+                    PaginationQuery::new_with_page_size(100),
+                )
+                .await
+                .unwrap();
+            assert!(after.assignments.is_empty());
+
+            // Removing an already-absent edge is a no-op (idempotent).
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .remove_role_assignments(&metadata, project_id.clone(), &edge)
+                .await
+                .unwrap();
+        }
+
+        /// Pagination: a `page_size` of 1 over two assignments yields one row plus
+        /// a continuation token; following the token returns the rest, and the
+        /// union across pages is exactly the full set (no gaps, no duplicates).
+        #[tokio::test]
+        async fn list_role_assignments_paginates() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let project_id: ArcProjectId = Arc::new(ProjectId::from(uuid::Uuid::now_v7()));
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "pager"));
+            let role = Arc::new(Role::new_random());
+            let u1 = UserId::new_unchecked("oidc", "page_user_1");
+            let u2 = UserId::new_unchecked("oidc", "page_user_2");
+
+            authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .add_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    &[
+                        (UserOrRoleId::User(u1.clone()), role.id),
+                        (UserOrRoleId::User(u2.clone()), role.id),
+                    ],
+                )
+                .await
+                .unwrap();
+
+            let first = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role.id),
+                    PaginationQuery::new_with_page_size(1),
+                )
+                .await
+                .unwrap();
+            assert_eq!(first.assignments.len(), 1);
+            let token = first
+                .next_page_token
+                .clone()
+                .expect("page 1 of 2 must yield a continuation token");
+
+            let second = authorizer
+                .role_assignments()
+                .expect("OpenFGA manages role assignments")
+                .list_role_assignments(
+                    &metadata,
+                    project_id.clone(),
+                    RoleAssignmentFilter::ByRole(role.id),
+                    PaginationQuery {
+                        page_token: lakekeeper::api::iceberg::v1::PageToken::Present(token),
+                        page_size: Some(1),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(second.assignments.len(), 1);
+
+            let subjects: HashSet<UserOrRoleId> = first
+                .assignments
+                .iter()
+                .chain(second.assignments.iter())
+                .map(|r| r.subject.clone())
+                .collect();
+            assert_eq!(
+                subjects,
+                HashSet::from([UserOrRoleId::User(u1), UserOrRoleId::User(u2)])
+            );
         }
     }
 }

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO role_membership (parent_role_id, member_role_id)\n        SELECT $1, m FROM unnest($2::uuid[]) AS m\n        ON CONFLICT (parent_role_id, member_role_id) DO NOTHING\n        RETURNING member_role_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "member_role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "role_membership",
+            "name": "member_role_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1d737de8a3d5199214c767bfd30781527b0ef8113b1cf2d405739fc30d06adbf"
+}

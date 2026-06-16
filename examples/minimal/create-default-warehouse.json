@@ -6,16 +6,18 @@
     "bucket": "examples",
     "key-prefix": "initial-warehouse",
     "assume-role-arn": null,
-    "endpoint": "http://minio:9000",
+    "endpoint": "http://seaweedfs:8333",
+    "sts-endpoint": "http://seaweedfs:8333",
+    "sts-role-arn": "arn:aws:iam::000000000000:role/LakekeeperVendedRole",
     "region": "local-01",
     "path-style-access": true,
-    "flavor": "minio",
+    "flavor": "s3-compat",
     "sts-enabled": true
   },
   "storage-credential": {
     "type": "s3",
     "credential-type": "access-key",
-    "access-key-id": "minio-root-user",
-    "secret-access-key": "minio-root-password"
+    "access-key-id": "seaweedfs-root-user",
+    "secret-access-key": "seaweedfs-root-password"
   }
 }

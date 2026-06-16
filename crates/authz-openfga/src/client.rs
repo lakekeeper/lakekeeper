@@ -71,6 +71,33 @@ pub async fn new_authorizer_from_default_config(
     .await
 }
 
+/// Create an `OpenFGA` authorizer backed by a freshly-created, migrated store.
+///
+/// Test-only: each call provisions an isolated store (`test_store_<uuid>`) so
+/// parallel integration tests never share assignment tuples. Endpoint/auth come
+/// from the process config (as a non-test dependency that is
+/// `LAKEKEEPER__OPENFGA__ENDPOINT`). Uses `HigherConsistency` so a write is
+/// visible to the immediately-following read — exactly what assertion-driven
+/// tests need.
+///
+/// # Errors
+/// - `OpenFGA` is unreachable, or store creation / migration fails.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn new_authorizer_in_empty_store_from_default_config() -> OpenFGAResult<OpenFGAAuthorizer>
+{
+    let client = new_client_from_default_config().await?;
+    let server_id = ServerId::new_random();
+    let store_name = format!("test_store_{}", uuid::Uuid::now_v7());
+    crate::migration::migrate(&client, Some(store_name.clone()), server_id).await?;
+    new_authorizer(
+        client,
+        Some(store_name),
+        ConsistencyPreference::HigherConsistency,
+        server_id,
+    )
+    .await
+}
+
 /// Create a new `OpenFGA` authorizer with the given client.
 /// This must be run after migration.
 ///

@@ -41,6 +41,14 @@ pub struct SetWarehouseProtectionEvent {
     pub request_metadata: Arc<RequestMetadata>,
 }
 
+/// Event emitted when the warehouse managed-by marker changes
+#[derive(Clone, Debug)]
+pub struct SetWarehouseManagedByEvent {
+    pub requested_managed_by: crate::service::ManagedBy,
+    pub updated_warehouse: Arc<ResolvedWarehouse>,
+    pub request_metadata: Arc<RequestMetadata>,
+}
+
 /// Event emitted when a warehouse is renamed
 #[derive(Clone, Debug)]
 pub struct RenameWarehouseEvent {
@@ -232,6 +240,34 @@ impl
         let dispatcher = self.dispatcher;
         tokio::spawn(async move {
             let () = dispatcher.task_queue_config_set(event).await;
+        });
+    }
+}
+
+// The managed-by marker is set via an instance-admin action (not a
+// `CatalogWarehouseAction`) and without resolving the warehouse for authz, so
+// this emitter is generic over the action and resolution state. It needs only
+// the request metadata plus the freshly-written warehouse.
+impl<R, A, Z> APIEventContext<WarehouseId, R, A, Z>
+where
+    R: crate::service::events::context::ResolutionState,
+    A: crate::service::events::context::APIEventActions,
+    Z: crate::service::events::context::AuthzState,
+{
+    /// Emit warehouse managed-by set event
+    pub(crate) fn emit_warehouse_managed_by_set(
+        self,
+        requested_managed_by: crate::service::ManagedBy,
+        updated_warehouse: Arc<ResolvedWarehouse>,
+    ) {
+        let event = SetWarehouseManagedByEvent {
+            requested_managed_by,
+            updated_warehouse,
+            request_metadata: self.request_metadata,
+        };
+        let dispatcher = self.dispatcher;
+        tokio::spawn(async move {
+            let () = dispatcher.warehouse_managed_by_set(event).await;
         });
     }
 }

@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id AS \"id!\", name, email, user_type AS \"user_type!: DbUserType\"\n        FROM (\n            ( SELECT id, name, email, user_type, 0 AS rank, 0::real AS dist\n              FROM users\n              WHERE id = $1 AND deleted_at IS NULL )\n          UNION ALL\n            ( SELECT id, name, email, user_type, 1 AS rank,\n                     (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1 AS dist\n              FROM users\n              WHERE id <> $1 AND deleted_at IS NULL\n              ORDER BY (COALESCE(name, '') || ' ' || COALESCE(email, '')) <-> $1\n              LIMIT 10 )\n        ) ranked\n        ORDER BY rank, dist\n        LIMIT 10\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "email",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "user_type!: DbUserType",
+        "type_info": {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0771aaacf89cdd2ace45710c9d8440b16fbec77192196812fa6bb3cd2ae223fb"
+}

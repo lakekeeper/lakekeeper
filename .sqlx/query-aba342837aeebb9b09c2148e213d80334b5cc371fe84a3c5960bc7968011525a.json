@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            m.created_at        AS \"created_at!\",\n            m.member_type       AS \"member_type!\",\n            m.member_id         AS \"member_id!\",\n            m.user_name         AS \"user_name?\",\n            m.user_email        AS \"user_email?\",\n            m.user_type         AS \"user_type?: DbUserType\",\n            m.role_provider_id  AS \"role_provider_id?\",\n            m.role_source_id    AS \"role_source_id?\",\n            m.role_name         AS \"role_name?\"\n        FROM (\n            SELECT ra.created_at, 'user'::text AS member_type, ra.user_id AS member_id,\n                   u.name AS user_name, u.email AS user_email, u.user_type AS user_type,\n                   NULL::text AS role_provider_id, NULL::text AS role_source_id,\n                   NULL::text AS role_name\n            FROM role_assignment ra\n            JOIN \"role\" r ON r.id = ra.role_id\n            JOIN users u ON u.id = ra.user_id\n            WHERE ra.role_id = $1 AND r.project_id = $2 AND $3\n          UNION ALL\n            SELECT rm.created_at, 'role'::text AS member_type, rm.member_role_id::text AS member_id,\n                   NULL::text AS user_name, NULL::text AS user_email, NULL::user_type AS user_type,\n                   r.provider_id AS role_provider_id, r.source_id AS role_source_id,\n                   r.name AS role_name\n            FROM role_membership rm\n            JOIN \"role\" r ON r.id = rm.member_role_id\n            WHERE rm.parent_role_id = $1 AND r.project_id = $2 AND $4\n        ) m\n        WHERE ($5::timestamptz IS NULL)\n           OR (m.created_at, m.member_type, m.member_id) > ($5, $6, $7)\n        ORDER BY m.created_at, m.member_type, m.member_id\n        LIMIT $8\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "member_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "member_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "user_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "user_email?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_type?: DbUserType",
+        "type_info": {
+          "Custom": {
+            "name": "user_type",
+            "kind": {
+              "Enum": [
+                "application",
+                "human"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "role_provider_id?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "role_source_id?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "role_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool",
+        "Timestamptz",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "aba342837aeebb9b09c2148e213d80334b5cc371fe84a3c5960bc7968011525a"
+}

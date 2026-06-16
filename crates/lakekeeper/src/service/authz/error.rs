@@ -11,7 +11,7 @@ use crate::{
     service::{
         CreateRoleError, DeleteRoleError, GetRoleAcrossProjectsError, GetTaskDetailsError,
         InternalErrorMessage, ListRolesError, NoWarehouseTaskError, ResolveTasksError,
-        SearchRolesError, TaskNotFoundError, UpdateRoleError,
+        RoleMembershipCycle, SearchRolesError, TaskNotFoundError, UpdateRoleError,
         authz::{
             AuthZCannotSeeAnonymousNamespace, AuthZCannotSeeGenericTable, AuthZCannotSeeNamespace,
             AuthZCannotSeeTable, AuthZCannotSeeTableLocation, AuthZCannotSeeView,
@@ -175,6 +175,74 @@ impl From<AuthzBackendErrorOrBadRequest> for IsAllowedActionError {
 impl From<AuthzBackendErrorOrBadRequest> for AuthZError {
     fn from(err: AuthzBackendErrorOrBadRequest) -> Self {
         IsAllowedActionError::from(err).into()
+    }
+}
+
+/// Error from [`ManagesRoleAssignments::add_role_assignments`](super::ManagesRoleAssignments::add_role_assignments).
+///
+/// OpenFGA only fails with `BackendUnavailable` (it tolerates cycles). Authorizers
+/// that enforce assignment integrity may also reject a cycle, so the trait admits
+/// that variant.
+#[derive(Debug, derive_more::From)]
+pub enum AddRoleAssignmentsError {
+    BackendUnavailable(AuthorizationBackendUnavailable),
+    Cycle(RoleMembershipCycle),
+}
+impl From<AddRoleAssignmentsError> for ErrorModel {
+    fn from(err: AddRoleAssignmentsError) -> Self {
+        match err {
+            AddRoleAssignmentsError::BackendUnavailable(e) => e.into_error_model(),
+            AddRoleAssignmentsError::Cycle(e) => e.into(),
+        }
+    }
+}
+
+/// The authorization backend returned a role assignment Lakekeeper cannot parse.
+/// Lakekeeper wrote these records, so this is an internal invariant violation
+/// (HTTP 500), not the backend being *unavailable* (503).
+///
+/// `reason` is returned to the client; `source` (the authorizer's typed parse
+/// error) is only logged — the same split as [`ErrorModel`]'s message vs. its
+/// `#[serde(skip)]` source.
+#[derive(Debug, thiserror::Error)]
+#[error("{reason}")]
+pub struct MalformedRoleAssignment {
+    reason: String,
+    #[source]
+    source: Box<dyn StdError + Send + Sync + 'static>,
+}
+impl MalformedRoleAssignment {
+    pub fn new(reason: impl Into<String>, source: impl StdError + Send + Sync + 'static) -> Self {
+        Self {
+            reason: reason.into(),
+            source: Box::new(source),
+        }
+    }
+}
+impl AuthorizationFailureSource for MalformedRoleAssignment {
+    fn into_error_model(self) -> ErrorModel {
+        ErrorModel::internal(self.reason, "MalformedRoleAssignment", Some(self.source))
+    }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InternalAuthorizationError
+    }
+}
+
+/// Error from [`ManagesRoleAssignments::list_role_assignments`](super::ManagesRoleAssignments::list_role_assignments):
+/// the backend is unavailable (503), or it returned a tuple we cannot interpret
+/// (500). The two are deliberately distinct — a parse failure is not a transient
+/// availability problem.
+#[derive(Debug, derive_more::From)]
+pub enum ListRoleAssignmentsError {
+    BackendUnavailable(AuthorizationBackendUnavailable),
+    Malformed(MalformedRoleAssignment),
+}
+impl From<ListRoleAssignmentsError> for ErrorModel {
+    fn from(err: ListRoleAssignmentsError) -> Self {
+        match err {
+            ListRoleAssignmentsError::BackendUnavailable(e) => e.into_error_model(),
+            ListRoleAssignmentsError::Malformed(e) => e.into_error_model(),
+        }
     }
 }
 

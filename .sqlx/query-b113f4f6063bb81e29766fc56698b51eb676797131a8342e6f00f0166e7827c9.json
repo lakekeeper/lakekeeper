@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH RECURSIVE\n        up(role_id, d) AS (\n            SELECT $1::uuid, 0\n          UNION ALL\n            SELECT rm.parent_role_id, up.d + 1\n            FROM role_membership rm JOIN up ON rm.member_role_id = up.role_id\n            WHERE up.d < $3\n        ),\n        down(seed, role_id, d) AS (\n            SELECT m, m, 0 FROM unnest($2::uuid[]) AS m\n          UNION ALL\n            SELECT down.seed, rm.member_role_id, down.d + 1\n            FROM role_membership rm JOIN down ON rm.parent_role_id = down.role_id\n            WHERE down.d < $3\n        )\n        SELECT down.seed AS \"member_role_id!\"\n        FROM down\n        CROSS JOIN (SELECT max(d) AS up_max FROM up) u\n        GROUP BY down.seed, u.up_max\n        HAVING u.up_max + 1 + max(down.d) > $3\n        LIMIT 1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "member_role_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b113f4f6063bb81e29766fc56698b51eb676797131a8342e6f00f0166e7827c9"
+}

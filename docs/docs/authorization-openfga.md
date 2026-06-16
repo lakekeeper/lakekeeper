@@ -18,6 +18,7 @@ The default permission model is focused on collaborating on data. Permissions ar
 | namespace | ownership, pass_grants, manage_grants, describe, select, create, modify |
 | table     | ownership, pass_grants, manage_grants, describe, select, modify  |
 | view      | ownership, pass_grants, manage_grants, describe, select, modify  |
+| generic table | ownership, pass_grants, manage_grants, describe, select, modify |
 | role      | assignee, ownership                                              |
 
 

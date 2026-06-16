@@ -14,15 +14,15 @@ use crate::{
     service::{
         BasicTabularInfo, CachePolicy, CatalogBackendError, CatalogStore,
         InternalParseLocationError, InvalidPaginationToken, ListNamespacesQuery, NamespaceId,
-        SerializationError, StateOrTransaction, TableIdent, TabularId, Transaction,
-        WarehouseIdNotFound,
+        SerializationError, StateOrTransaction, StateOrTransactionEnum, TableIdent, TabularId,
+        Transaction, WarehouseIdNotFound,
         authz::AuthZCannotSeeNamespace,
         define_transparent_error, define_version_newtype,
         events::impl_authorization_failure_source,
         impl_error_stack_methods, impl_from_with_detail,
         namespace_cache::{
             namespace_cache_get_by_id, namespace_cache_get_by_ident,
-            namespace_cache_insert_multiple,
+            namespace_cache_insert_multiple, namespace_id_get_or_load, namespace_ident_get_or_load,
         },
         storage::storage_layout::NamespaceNameContext,
         tasks::TaskId,
@@ -686,6 +686,26 @@ fn build_namespace_hierarchy_from_vec(
     Some(build_namespace_hierarchy(target_namespace, &parent_lookup))
 }
 
+/// Serve a single namespace from cache, applying the caller's case for by-name
+/// lookups. The cache stores canonical case; by-name responses overlay the
+/// caller's ident so they reflect the request, not whatever case a previous caller
+/// used. Returns `None` on a cache miss.
+async fn namespace_lookup_cached(
+    warehouse_id: WarehouseId,
+    namespace: &NamespaceIdentOrId,
+) -> Option<NamespaceHierarchy> {
+    let cached = match namespace {
+        NamespaceIdentOrId::Id(namespace_id) => namespace_cache_get_by_id(*namespace_id).await,
+        NamespaceIdentOrId::Name(namespace_ident) => {
+            namespace_cache_get_by_ident(namespace_ident, warehouse_id).await
+        }
+    }?;
+    Some(match namespace {
+        NamespaceIdentOrId::Name(user_ident) => cached.with_user_ident(user_ident),
+        NamespaceIdentOrId::Id(_) => cached,
+    })
+}
+
 /// Build a `NamespaceHierarchy` from a `NamespaceWithParent` and a lookup map of parent namespaces.
 /// This follows the parent chain using `parent_namespaces_id` to look up parents.
 /// Returns None if a required parent cannot be found (logs warning in that case).
@@ -917,33 +937,85 @@ where
             >,
     {
         let namespace = namespace.into();
-        let cached = match namespace {
-            NamespaceIdentOrId::Id(namespace_id) => namespace_cache_get_by_id(namespace_id).await,
-            NamespaceIdentOrId::Name(ref namespace_ident) => {
-                namespace_cache_get_by_ident(namespace_ident, warehouse_id).await
+
+        // Fast path: serve from cache (with case overlay for by-name lookups).
+        if let Some(hierarchy) = namespace_lookup_cached(warehouse_id, &namespace).await {
+            return Ok(Some(hierarchy));
+        }
+
+        // Miss. Coalesce the chain-fetch ONLY on the pooled-`State` path: a
+        // transaction must read through its own connection, so coalescing onto
+        // another request's load would violate transaction isolation / the
+        // no-nested-connection rule. We therefore single-flight only when given a
+        // `State`, and read through the transaction directly otherwise.
+        let pooled_state = match state_or_transaction.as_enum_mut() {
+            StateOrTransactionEnum::State(state) => Some(state),
+            StateOrTransactionEnum::Transaction(_) => None,
+        };
+
+        let Some(state) = pooled_state else {
+            // Transaction path: read through the active transaction, with no
+            // coalescing and no cache warming. A transaction can observe its own
+            // uncommitted writes, so publishing what we read into the shared
+            // (cross-request) `NAMESPACE_CACHE` could expose state that later rolls
+            // back. Cache warming is left to the pooled-`State` path above, which
+            // only ever reads committed data.
+            let namespaces =
+                fetch_namespace::<Self, _>(warehouse_id, namespace, &mut state_or_transaction)
+                    .await?;
+            return Ok(build_namespace_hierarchy_from_vec(&namespaces));
+        };
+
+        // Single-flight the cold fetch: concurrent identical misses share one DB
+        // load. The hierarchy/case logic is unchanged — coalescing only wraps the
+        // existing fetch+insert; every caller then rebuilds via the cache-hit path.
+        let found = match &namespace {
+            NamespaceIdentOrId::Id(namespace_id) => {
+                let namespace_id = *namespace_id;
+                namespace_id_get_or_load(namespace_id, async move {
+                    let mut state = state;
+                    fetch_namespace::<Self, _>(
+                        warehouse_id,
+                        NamespaceIdentOrId::Id(namespace_id),
+                        &mut state,
+                    )
+                    .await
+                })
+                .await?
+            }
+            NamespaceIdentOrId::Name(namespace_ident) => {
+                let namespace_ident = namespace_ident.clone();
+                let loader_ident = namespace_ident.clone();
+                namespace_ident_get_or_load(warehouse_id, &namespace_ident, async move {
+                    let mut state = state;
+                    fetch_namespace::<Self, _>(
+                        warehouse_id,
+                        NamespaceIdentOrId::Name(loader_ident),
+                        &mut state,
+                    )
+                    .await
+                })
+                .await?
+                .is_some()
             }
         };
 
-        if let Some(cached_namespace) = cached {
-            // Cache always stores canonical case. If the lookup was by name, overlay
-            // the caller's case onto the returned hierarchy so the response reflects
-            // the caller's request — not whatever case a previous caller used.
-            let result = match &namespace {
-                NamespaceIdentOrId::Name(user_ident) => {
-                    cached_namespace.with_user_ident(user_ident)
-                }
-                NamespaceIdentOrId::Id(_) => cached_namespace,
-            };
-            return Ok(Some(result));
+        if !found {
+            return Ok(None);
         }
 
+        // Rebuild from the now-cached chain (the normal cache-hit path, incl. the
+        // by-name case overlay).
+        if let Some(hierarchy) = namespace_lookup_cached(warehouse_id, &namespace).await {
+            return Ok(Some(hierarchy));
+        }
+
+        // Rare: evicted between insert and re-read. Fall back to a direct fetch+build
+        // rather than return a spurious not-found for a namespace that exists.
         let namespaces =
             fetch_namespace::<Self, _>(warehouse_id, namespace, &mut state_or_transaction).await?;
         namespace_cache_insert_multiple(namespaces.clone()).await;
-        // DB rows already carry `requested_ident` per the SQL's COALESCE against
-        // requested_parent_paths, so no further substitution is needed here.
-        let namespace_hierarchy = build_namespace_hierarchy_from_vec(&namespaces);
-        Ok(namespace_hierarchy)
+        Ok(build_namespace_hierarchy_from_vec(&namespaces))
     }
 
     /// Get all namespaces including their parents.

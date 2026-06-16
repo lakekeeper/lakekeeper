@@ -7,6 +7,7 @@ pub mod v1 {
     pub mod namespace;
     pub mod project;
     pub mod role;
+    pub mod role_membership;
     pub mod server;
     pub mod table;
     pub mod tabular;
@@ -25,7 +26,7 @@ pub mod v1 {
         Extension, Json, Router,
         extract::{Path, Query, State as AxumState},
         response::{IntoResponse, Response},
-        routing::{get, post, put},
+        routing::{delete, get, post, put},
     };
     use generic_table::GenericTableManagementService as _;
     use http::StatusCode;
@@ -52,6 +53,10 @@ pub mod v1 {
     use role::{
         CreateRoleRequest, ListRolesQuery, Role, SearchRoleRequest, Service as _, UpdateRoleRequest,
     };
+    use role_membership::{
+        AddRoleMembersRequest, AddRoleMembersResponse, ListMembersQuery, ListRoleMembersResponse,
+        ListRoleMembershipsResponse, ListRolesPageQuery, RoleMemberType, Service as _,
+    };
     use serde::{Deserialize, Serialize};
     use server::{BootstrapRequest, ServerInfo, Service as _};
     use table::TableManagementService as _;
@@ -59,15 +64,16 @@ pub mod v1 {
     use typed_builder::TypedBuilder;
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
-        User,
+        User, WhoamiResponse,
     };
     use view::ViewManagementService as _;
     use warehouse::{
         CreateWarehouseRequest, CreateWarehouseResponse, GetWarehouseResponse,
         ListDeletedTabularsQuery, ListWarehousesRequest, ListWarehousesResponse,
-        RenameWarehouseRequest, Service as _, UpdateWarehouseCredentialRequest,
-        UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
-        UpdateWarehouseStorageRequest, WarehouseStatisticsResponse,
+        RenameWarehouseRequest, Service as _, SetWarehouseManagedByRequest,
+        UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+        UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
+        WarehouseStatisticsResponse,
     };
 
     /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
@@ -335,14 +341,14 @@ pub mod v1 {
         tag = "user",
         path = ManagementV1Endpoint::Whoami.path(),
         responses(
-            (status = 200, description = "User details", body = User),
+            (status = 200, description = "Current user and instance-admin status", body = WhoamiResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
     async fn whoami<C: CatalogStore, A: Authorizer, S: SecretStore>(
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
-    ) -> Result<(StatusCode, Json<User>)> {
+    ) -> Result<(StatusCode, Json<WhoamiResponse>)> {
         let id = match metadata.actor() {
             Actor::Role { principal, .. } | Actor::Principal(principal) => principal.clone(),
             Actor::Anonymous => {
@@ -355,9 +361,18 @@ pub mod v1 {
             }
         };
 
+        let is_instance_admin = metadata.is_instance_admin();
         ApiServer::<C, A, S>::get_user(api_context, metadata, id)
             .await
-            .map(|user| (StatusCode::OK, Json(user)))
+            .map(|user| {
+                (
+                    StatusCode::OK,
+                    Json(WhoamiResponse {
+                        user,
+                        is_instance_admin,
+                    }),
+                )
+            })
     }
 
     /// Replace User
@@ -641,6 +656,249 @@ pub mod v1 {
                 allowed_actions: relations,
             }),
         ))
+    }
+
+    /// List Role Members
+    ///
+    /// Lists the direct members of a role — users and member roles — as one merged,
+    /// keyset-paginated page. Optionally filtered to a single member kind via `?type=`.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleMembers.path(),
+        params(
+            ListMembersQuery,
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Direct members of the role", body = ListRoleMembersResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_members<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListMembersQuery>,
+    ) -> Result<ListRoleMembersResponse> {
+        ApiServer::<C, A, S>::list_role_members(api_context, metadata, role_id, query).await
+    }
+
+    /// Add Role Members
+    ///
+    /// Adds one or more members (users and/or roles) to a role in a single atomic
+    /// (all-or-nothing) batch. Idempotent — already-present members are accepted.
+    /// Returns the requested members confirmed present.
+    ///
+    /// Handling of a not-yet-provisioned member depends on the configured
+    /// authorization backend: a backend that stores assignments itself accepts the
+    /// member by id, whereas catalog-backed authorization requires the member to
+    /// exist first and otherwise returns `404` — provision the user (via
+    /// `POST /user`) or create the role before assigning. Behavior is consistent
+    /// within a deployment.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "role",
+        path = ManagementV1Endpoint::AddRoleMembers.path(),
+        params(
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        request_body = AddRoleMembersRequest,
+        responses(
+            (status = 200, description = "Members added", body = AddRoleMembersResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn add_role_members<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<AddRoleMembersRequest>,
+    ) -> Result<AddRoleMembersResponse> {
+        ApiServer::<C, A, S>::add_role_members(api_context, metadata, role_id, request).await
+    }
+
+    /// Remove Role Member
+    ///
+    /// Removes a single member (a user or a role) from a role. Idempotent — removing
+    /// an absent member is a no-op and still returns `204`.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "role",
+        path = ManagementV1Endpoint::RemoveRoleMember.path(),
+        params(
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("member_type" = RoleMemberType, Path, description = "Member kind: `user` or `role`"),
+            ("member_id" = String, Path, description = "User id or role UUID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 204, description = "Member removed (or already absent)"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn remove_role_member<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((role_id, member_type, member_id)): Path<(RoleId, RoleMemberType, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::remove_role_member(
+            api_context,
+            metadata,
+            role_id,
+            member_type,
+            member_id,
+        )
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Roles a Role Is a Member Of
+    ///
+    /// Lists the roles that the given role is a direct member of, keyset-paginated.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleMemberOf.path(),
+        params(
+            ListRolesPageQuery,
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Roles the role is a member of", body = ListRoleMembershipsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_member_of<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListRolesPageQuery>,
+    ) -> Result<ListRoleMembershipsResponse> {
+        ApiServer::<C, A, S>::list_role_member_of(api_context, metadata, role_id, query).await
+    }
+
+    /// List User Roles
+    ///
+    /// Lists the roles a user is directly assigned to, keyset-paginated.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "user",
+        path = ManagementV1Endpoint::ListUserRoles.path(),
+        params(
+            ListRolesPageQuery,
+            ("user_id" = String, Path, description = "User ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Roles the user is assigned to", body = ListRoleMembershipsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_user_roles<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(user_id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListRolesPageQuery>,
+    ) -> Result<ListRoleMembershipsResponse> {
+        ApiServer::<C, A, S>::list_user_roles(api_context, metadata, user_id, query).await
+    }
+
+    /// List Transitive Role Members
+    ///
+    /// Lists the role's transitive members — users assigned to the role or any role
+    /// in its downward membership closure, plus every role in that closure — as one
+    /// keyset-paginated page, optionally filtered to one kind. Supported only when
+    /// assignments are catalog-managed; an assignment-managing authorizer (e.g.
+    /// OpenFGA) returns `501`.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleTransitiveMembers.path(),
+        params(
+            ListMembersQuery,
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Transitive members of the role", body = ListRoleMembersResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Transitive listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_transitive_members<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListMembersQuery>,
+    ) -> Result<ListRoleMembersResponse> {
+        ApiServer::<C, A, S>::list_role_transitive_members(api_context, metadata, role_id, query)
+            .await
+    }
+
+    /// List Transitive User Roles
+    ///
+    /// Lists the full effective (transitive) role set a user holds — direct
+    /// assignments plus every role reachable upward through membership — keyset-
+    /// paginated. Supported only when assignments are catalog-managed; an
+    /// assignment-managing authorizer (e.g. OpenFGA) returns `501`.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "user",
+        path = ManagementV1Endpoint::ListUserTransitiveRoles.path(),
+        params(
+            ListRolesPageQuery,
+            ("user_id" = String, Path, description = "User ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Transitive roles the user holds", body = ListRoleMembershipsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Transitive listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_user_transitive_roles<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(user_id): Path<UserId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListRolesPageQuery>,
+    ) -> Result<ListRoleMembershipsResponse> {
+        ApiServer::<C, A, S>::list_user_transitive_roles(api_context, metadata, user_id, query)
+            .await
+    }
+
+    /// List Transitive Role Member-Of
+    ///
+    /// Lists the full transitive member-of set of a role — every role it
+    /// effectively belongs to, reachable upward through membership — keyset-
+    /// paginated. Supported only when assignments are catalog-managed; an
+    /// assignment-managing authorizer (e.g. OpenFGA) returns `501`.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "role",
+        path = ManagementV1Endpoint::ListRoleTransitiveMemberOf.path(),
+        params(
+            ListRolesPageQuery,
+            ("role_id" = Uuid, Path, description = "Role ID"),
+            ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)
+        ),
+        responses(
+            (status = 200, description = "Transitive roles the role belongs to", body = ListRoleMembershipsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Transitive listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_role_transitive_member_of<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(role_id): Path<RoleId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListRolesPageQuery>,
+    ) -> Result<ListRoleMembershipsResponse> {
+        ApiServer::<C, A, S>::list_role_transitive_member_of(api_context, metadata, role_id, query)
+            .await
     }
 
     /// Create Warehouse
@@ -1796,6 +2054,37 @@ pub mod v1 {
         .await
     }
 
+    /// Set Warehouse Managed-By
+    ///
+    /// Sets (or clears) the managed-by marker on a warehouse. When set, the
+    /// warehouse spec becomes mutable only by the managing control plane
+    /// (instance admins). Requires instance-admin privilege.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::SetWarehouseManagedBy.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = SetWarehouseManagedByRequest,
+        responses(
+            (status = 200, body = GetWarehouseResponse, description = "Warehouse managed-by marker set successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_warehouse_managed_by<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        Extension(metadata): Extension<RequestMetadata>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Json(request): Json<SetWarehouseManagedByRequest>,
+    ) -> Result<GetWarehouseResponse> {
+        ApiServer::<C, A, S>::set_warehouse_managed_by(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
     /// Set the configuration for a Task Queue.
     ///
     /// These configurations are global per warehouse and shared across all instances of this kind of task.
@@ -2225,6 +2514,35 @@ pub mod v1 {
                     ManagementV1Endpoint::GetRoleMetadata.path_in_management_v1(),
                     get(get_role_metadata),
                 )
+                // Role membership management
+                .route(
+                    ManagementV1Endpoint::ListRoleMembers.path_in_management_v1(),
+                    get(list_role_members).post(add_role_members),
+                )
+                .route(
+                    ManagementV1Endpoint::RemoveRoleMember.path_in_management_v1(),
+                    delete(remove_role_member),
+                )
+                .route(
+                    ManagementV1Endpoint::ListRoleMemberOf.path_in_management_v1(),
+                    get(list_role_member_of),
+                )
+                .route(
+                    ManagementV1Endpoint::ListUserRoles.path_in_management_v1(),
+                    get(list_user_roles),
+                )
+                .route(
+                    ManagementV1Endpoint::ListRoleTransitiveMembers.path_in_management_v1(),
+                    get(list_role_transitive_members),
+                )
+                .route(
+                    ManagementV1Endpoint::ListUserTransitiveRoles.path_in_management_v1(),
+                    get(list_user_transitive_roles),
+                )
+                .route(
+                    ManagementV1Endpoint::ListRoleTransitiveMemberOf.path_in_management_v1(),
+                    get(list_role_transitive_member_of),
+                )
                 // User management
                 .route("/whoami", get(whoami))
                 .route("/search/user", post(search_user))
@@ -2351,6 +2669,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::SetWarehouseProtection.path_in_management_v1(),
                     post(set_warehouse_protection),
+                )
+                .route(
+                    ManagementV1Endpoint::SetWarehouseManagedBy.path_in_management_v1(),
+                    post(set_warehouse_managed_by),
                 )
                 .route(
                     ManagementV1Endpoint::SetTaskQueueConfig.path_in_management_v1(),

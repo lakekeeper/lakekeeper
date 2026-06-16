@@ -20,6 +20,7 @@ use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 mod authorizer;
 mod config;
+mod events;
 mod healthcheck;
 mod secrets;
 mod serve;

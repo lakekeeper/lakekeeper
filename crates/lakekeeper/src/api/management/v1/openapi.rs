@@ -94,6 +94,14 @@ use crate::{
         super::list_projects,
         super::list_project_tasks,
         super::list_roles,
+        super::list_role_members,
+        super::add_role_members,
+        super::remove_role_member,
+        super::list_role_member_of,
+        super::list_user_roles,
+        super::list_role_transitive_members,
+        super::list_user_transitive_roles,
+        super::list_role_transitive_member_of,
         super::list_tasks,
         super::list_user,
         super::list_warehouses,
@@ -111,6 +119,7 @@ use crate::{
         super::set_task_queue_config,
         super::set_view_protection,
         super::set_warehouse_protection,
+        super::set_warehouse_managed_by,
         super::undrop_tabulars,
         super::update_role_source_system,
         super::update_role,
@@ -121,6 +130,13 @@ use crate::{
         super::update_warehouse_format_version_policy,
         super::whoami,
     ),
+    components(schemas(
+        // `RoleMemberType` is referenced only through `params(...)` (the `?type=`
+        // query filter and the `member_type` path segment), which utoipa does NOT
+        // auto-collect into `components/schemas`. Register it explicitly so the
+        // `$ref`s those params emit resolve instead of dangling.
+        crate::api::management::v1::role_membership::RoleMemberType,
+    )),
     modifiers(&SecurityAddon)
 )]
 pub(super) struct ManagementApiDoc;

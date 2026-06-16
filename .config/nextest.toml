@@ -1,3 +1,10 @@
+# Cloud storage integration tests open many concurrent connections (e.g. the
+# 100-way delete_batch fanout). Running too many of them at once exhausts
+# ephemeral ports / SNAT against the cloud endpoints, causing connect timeouts
+# (os error 110) that exhaust the SDK retry budget. Cap how many run together.
+[test-groups]
+cloud-io = { max-threads = 4 }
+
 # Tests that can run without secrets and external services.
 [profile.default]
 default-filter = """
@@ -23,6 +30,16 @@ default-filter = "all()"
 failure-output = "immediate-final"
 fail-fast = false
 retries = 0
+
+# The io integration tests hit live cloud backends (ADLS/GCS/S3/R2) and are
+# inherently prone to transient network blips under concurrency. Cap their
+# combined concurrency and retry transient failures: a retried test runs in
+# isolation under less load, so genuine flakes pass on re-run while real
+# failures (which fail every attempt) still fail.
+[[profile.ci.overrides]]
+filter = 'package(lakekeeper-io) and binary(integration_tests)'
+test-group = 'cloud-io'
+retries = { backoff = "exponential", count = 2, delay = "2s", jitter = true }
 
 [profile.ci.junit] # this can be some other profile, too
 path = "junit.xml"

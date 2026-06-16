@@ -5,6 +5,10 @@ use iceberg::spec::ViewMetadata;
 use iceberg_ext::catalog::rest::ErrorModel;
 pub use iceberg_ext::catalog::rest::{CommitTableResponse, CreateTableRequest};
 use lakekeeper_io::Location;
+use moka::{
+    future::Cache,
+    ops::compute::{CompResult, Op},
+};
 
 use super::{
     GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
@@ -105,6 +109,83 @@ macro_rules! define_version_newtype {
 
 pub(crate) use define_version_newtype;
 
+/// Single-flight read-through for a secondary-index cache `Cache<IdxKey, Id>` that
+/// maps a lookup key (name / ident) to a primary-cache id.
+///
+/// Coalesces concurrent misses for the same `key`: moka serializes the per-key
+/// compute, so the loader runs once; the loaded value is primed into the primary
+/// cache (`prime`), and every coalesced caller resolves the same `Id`. Returns
+/// `None` if the entity does not exist (**not** negative-cached). The loader error
+/// is returned by value.
+///
+/// This is the by-name/by-ident analog of the STC `get_or_load_stc` win: the
+/// per-cache differences collapse to the `Loaded` type plus the `id_of`/`prime`
+/// closures, so warehouse-by-name, role-by-ident, and namespace-by-ident all share
+/// this one implementation. The `StillNone` arm does a final read because moka's
+/// snapshot-based `Op::Nop` result cannot surface a concurrent insert (a different
+/// lock domain than the compute).
+pub(super) async fn secondary_index_get_or_load<IdxKey, Id, Loaded, Fut, E, PrimeFut>(
+    enabled: bool,
+    index: &Cache<IdxKey, Id>,
+    key: IdxKey,
+    load: Fut,
+    id_of: impl FnOnce(&Loaded) -> Id + Send,
+    prime: impl FnOnce(Loaded) -> PrimeFut + Send,
+) -> Result<Option<Id>, E>
+where
+    IdxKey: std::hash::Hash + Eq + Clone + Send + Sync + 'static,
+    Id: Clone + Send + Sync + 'static,
+    Loaded: Send,
+    Fut: std::future::Future<Output = Result<Option<Loaded>, E>> + Send,
+    PrimeFut: std::future::Future<Output = ()> + Send,
+    E: Send + Sync + 'static,
+{
+    if !enabled {
+        let Some(loaded) = load.await? else {
+            return Ok(None);
+        };
+        let id = id_of(&loaded);
+        prime(loaded).await;
+        return Ok(Some(id));
+    }
+
+    if let Some(id) = index.get(&key).await {
+        return Ok(Some(id));
+    }
+
+    let lookup_key = key.clone();
+    let outcome = index
+        .entry(key)
+        .and_try_compute_with(|maybe_entry| async move {
+            if maybe_entry.is_some() {
+                // Resolved by another caller while we waited on the key lock.
+                return Ok::<_, E>(Op::Nop);
+            }
+            let Some(loaded) = load.await? else {
+                // Not found — never negative-cached. Coalescing applies only to a
+                // found entity; concurrent lookups of a missing one each re-run the
+                // loader (rare, no worse than before).
+                return Ok(Op::Nop);
+            };
+            let id = id_of(&loaded);
+            // Prime the primary cache (+ this index) so coalesced callers resolve
+            // the full entity without another backend round-trip.
+            prime(loaded).await;
+            Ok(Op::Put(id))
+        })
+        .await?;
+
+    Ok(match outcome {
+        CompResult::Inserted(entry)
+        | CompResult::ReplacedWith(entry)
+        | CompResult::Unchanged(entry) => Some(entry.into_value()),
+        // `StillNone` = not found, or a concurrent insert moka's snapshot-based
+        // `Op::Nop` cannot surface — a final read disambiguates. `Removed` is
+        // unreachable (the closure only returns `Nop`/`Put`).
+        CompResult::StillNone(_) | CompResult::Removed(_) => index.get(&lookup_key).await,
+    })
+}
+
 /// Enum to represent either a State or a Transaction reference
 /// This allows functions to accept either for database operations
 pub enum StateOrTransactionEnum<'e, S, T> {
@@ -160,6 +241,24 @@ pub struct CatalogCreateRoleRequest<'a> {
     pub description: Option<&'a str>,
     pub source_id: &'a RoleSourceId,
     pub provider_id: &'a RoleProviderId,
+}
+
+/// Spec for creating a warehouse, passed to
+/// [`CatalogWarehouseOps::create_warehouse`](crate::service::CatalogWarehouseOps::create_warehouse).
+/// `project_id` is supplied separately (the parent scope), mirroring
+/// [`CatalogCreateRoleRequest`]. `format_version_policy` and `managed_by` default
+/// (all versions allowed; self-managed) so most callers omit them.
+#[derive(Debug, typed_builder::TypedBuilder)]
+pub struct CatalogCreateWarehouseRequest {
+    pub warehouse_name: String,
+    pub storage_profile: StorageProfile,
+    #[builder(default)]
+    pub storage_secret_id: Option<SecretId>,
+    pub delete_profile: TabularDeleteProfile,
+    #[builder(default)]
+    pub format_version_policy: WarehouseFormatVersionPolicy,
+    #[builder(default)]
+    pub managed_by: ManagedBy,
 }
 
 /// How [`CatalogStore::create_roles_impl`] should handle a row that already
@@ -269,12 +368,8 @@ where
     // ---------------- Warehouse Management ----------------
     /// Create a warehouse.
     async fn create_warehouse_impl<'a>(
-        warehouse_name: String,
         project_id: &ProjectId,
-        storage_profile: StorageProfile,
-        tabular_delete_profile: TabularDeleteProfile,
-        storage_secret_id: Option<SecretId>,
-        format_version_policy: WarehouseFormatVersionPolicy,
+        request: CatalogCreateWarehouseRequest,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<ResolvedWarehouse, CatalogCreateWarehouseError>;
 
@@ -357,6 +452,22 @@ where
         policy: &WarehouseFormatVersionPolicy,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<ResolvedWarehouse, SetWarehouseFormatVersionPolicyError>;
+
+    /// Set (or clear) the managed-by marker on a warehouse.
+    async fn set_warehouse_managed_by_impl<'a>(
+        warehouse_id: WarehouseId,
+        managed_by: ManagedBy,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<ResolvedWarehouse, SetWarehouseManagedByError>;
+
+    /// Verify within the active write transaction that the warehouse spec may be
+    /// mutated by this caller (managed-by lock). See
+    /// [`CatalogWarehouseOps::ensure_warehouse_spec_mutable`].
+    async fn ensure_warehouse_spec_mutable_impl<'a>(
+        warehouse_id: WarehouseId,
+        bypass: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(), EnsureWarehouseSpecMutableError>;
 
     // ---------------- Namespace Management ----------------
     // Should only return namespaces if the warehouse is active.
@@ -675,7 +786,147 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<ListRoleMembersResult>, CatalogBackendError>;
 
+    async fn add_role_members_impl<'a>(
+        project_id: &ArcProjectId,
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddRoleMembersResult, AddRoleMembersError>;
+
+    async fn remove_role_members_impl<'a>(
+        parent_role_id: RoleId,
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveRoleMembersResult, RemoveRoleMembersError>;
+
+    /// Additively assign users to a role (user→role `role_assignment` rows).
+    /// Idempotent (already-assigned users are skipped). The user→role relation is
+    /// bipartite, so unlike `add_role_members_impl` there is no cycle risk and no
+    /// advisory lock. Pre-checks user existence → `RoleAssignmentUserNotFound`
+    /// (provision-then-assign).
+    async fn add_user_role_assignments_impl<'a>(
+        project_id: &ArcProjectId,
+        role_id: RoleId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AddUserRoleAssignmentsResult, AddUserRoleAssignmentsError>;
+
+    /// Remove user→role assignments. Idempotent.
+    async fn remove_user_role_assignments_impl<'a>(
+        role_id: RoleId,
+        user_ids: &[UserId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<RemoveUserRoleAssignmentsResult, RemoveUserRoleAssignmentsError>;
+
+    async fn list_role_memberships_impl(
+        role_id: RoleId,
+        direction: RoleMembershipDirection,
+        catalog_state: Self::State,
+    ) -> Result<Vec<RoleMembershipEntry>, CatalogBackendError>;
+
+    /// Users whose EFFECTIVE roles change when `role_membership` edges with member
+    /// endpoints `member_role_ids` are added or removed: every user assigned to any
+    /// of those members or to any role in their combined descendant closure. The
+    /// whole set is walked in a single query (no per-member fan-out). Runs on the
+    /// caller's transaction (see `membership_edge_affected_users` for why pre-commit
+    /// is sound).
+    async fn affected_users_for_membership_edges_impl<'a>(
+        member_role_ids: &[RoleId],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<UserId>, CatalogBackendError>;
+
+    // ---------------- Role-membership management API (cold, paginated reads) ----
+    //
+    // These back the public `/role/{id}/members`, `/role/{id}/member-of` and
+    // `/user/{id}/roles` listings on authorizers that do NOT manage assignments
+    // (Cedar/AllowAll). They are deliberately separate from the cached, full-set
+    // hot-path readers above: paginating those would defeat their cache.
+
+    /// Direct members of `role_id` (user members ∪ member roles) merged into one
+    /// keyset-paginated, project-scoped listing. `type_filter` optionally restricts
+    /// to one member kind.
+    async fn list_direct_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListCatalogRoleMembersPage>;
+
+    /// Direct roles `role_id` is a member of, keyset-paginated and project-scoped.
+    async fn list_direct_role_member_of_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage>;
+
+    /// Direct roles a user is assigned to, keyset-paginated and project-scoped.
+    ///
+    /// `Ok(None)` signals the user does not exist in the catalog (the handler maps
+    /// it to 404); `Ok(Some(page))` is a user that exists, whose page may be empty.
+    /// Backends that cannot prove non-existence (e.g. OpenFGA-only users) return
+    /// `Some`.
+    async fn list_direct_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>>;
+
+    /// Transitive members of `role_id` — every user assigned to the role or any
+    /// role in its downward membership closure, plus every role in that closure
+    /// (root excluded) — merged into one keyset-paginated, project-scoped listing.
+    /// `type_filter` optionally restricts to one member kind. Rows carry
+    /// `created_at = None` (a transitive member has no single defining edge).
+    async fn list_transitive_role_members_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        type_filter: Option<RoleMemberKind>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListCatalogRoleMembersPage>;
+
+    /// The full effective (transitive) role set a user holds — direct assignments
+    /// plus every role reachable upward through membership — keyset-paginated and
+    /// project-scoped. `Ok(None)` signals the user does not exist (handler → 404);
+    /// `Ok(Some(page))` is an existing user, whose page may be empty.
+    async fn list_transitive_user_roles_page(
+        project_id: &ProjectId,
+        user_id: &UserId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<Option<ListRolesPage>>;
+
+    /// The full transitive member-of set of `role_id` — every role it effectively
+    /// belongs to, reachable upward through membership (root excluded) — keyset-
+    /// paginated and project-scoped. Rows carry `created_at = None` (a transitive
+    /// ancestor has no single defining edge).
+    async fn list_transitive_role_member_of_page(
+        project_id: &ProjectId,
+        role_id: RoleId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListRolesPage>;
+
+    /// Fetch raw membership identity for `user_ids` (nullable name/email + type),
+    /// in any order. Unknown ids are simply absent — an assignment-managing
+    /// authorizer may reference a not-yet-provisioned user, which the API layer
+    /// then hydrates to id-only. Reads the raw `users.name`, NOT the
+    /// `display_user_name` placeholder, so a nameless user surfaces with
+    /// `name = None`. Used to hydrate the authorizer-arm members listing.
+    async fn list_user_membership_entries(
+        user_ids: &[UserId],
+        catalog_state: Self::State,
+    ) -> Result<Vec<UserMembershipEntry>>;
+
     // ---------------- User Management API ----------------
+    /// Insert or update a user. `mode` controls whether an existing row is
+    /// overwritten unconditionally ([`UserUpsertMode::Overwrite`], the explicit
+    /// create/update endpoints) or only an un-named role-provider stub is
+    /// backfilled ([`UserUpsertMode::BackfillUnnamedStub`], the first-login hook).
+    /// The backfill guard is applied atomically, so a row that already carries a
+    /// real name is never clobbered, even by a concurrent role-provider sync.
     async fn create_or_update_user<'a>(
         user_id: &UserId,
         name: &str,
@@ -683,6 +934,7 @@ where
         email: Option<&str>,
         last_updated_with: UserLastUpdatedWith,
         user_type: UserType,
+        mode: UserUpsertMode,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<CreateOrUpdateUserResponse>;
 
@@ -699,10 +951,15 @@ where
         catalog_state: Self::State,
     ) -> Result<ListUsersResponse>;
 
+    /// Soft-deletes the user and removes their role assignments + provider sync
+    /// log (so a deleted user is no member of any role, matching the OpenFGA
+    /// authorizer). Returns `None` if absent, else the roles the user was
+    /// assigned to — the caller evicts those roles' member caches and the user's
+    /// effective-roles cache after commit.
     async fn delete_user<'a>(
         user_id: UserId,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Option<()>>;
+    ) -> Result<Option<Vec<RoleId>>>;
 
     // ---------------- Endpoint Statistics ----------------
     /// Get endpoint statistics for the project

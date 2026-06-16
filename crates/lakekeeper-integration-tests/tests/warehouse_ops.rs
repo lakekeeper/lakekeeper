@@ -3,17 +3,19 @@ use lakekeeper::{
     api::{
         RequestMetadata,
         management::v1::{
-            ApiServer,
+            ApiServer, DeleteWarehouseQuery,
             warehouse::{
-                RenameWarehouseRequest, Service, TabularDeleteProfile,
-                UpdateWarehouseDeleteProfileRequest, UpdateWarehouseFormatVersionPolicyRequest,
-                UpdateWarehouseStorageRequest,
+                CreateWarehouseRequest, RenameWarehouseRequest, Service,
+                SetWarehouseManagedByRequest, TabularDeleteProfile,
+                UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
+                UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
             },
         },
     },
     service::{
-        CachePolicy, CatalogStore, CatalogWarehouseOps, Transaction, WarehouseFormatVersionPolicy,
-        WarehouseStatus, authz::AllowAllAuthorizer, warehouse_cache::WAREHOUSE_CACHE,
+        CachePolicy, CatalogCreateWarehouseRequest, CatalogStore, CatalogWarehouseOps, ManagedBy,
+        Transaction, UserId, WarehouseStatus, authz::AllowAllAuthorizer,
+        warehouse_cache::WAREHOUSE_CACHE,
     },
 };
 use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
@@ -42,12 +44,12 @@ async fn test_create_warehouse(pool: PgPool) {
 
     // Create warehouse
     let warehouse = PostgresBackend::create_warehouse(
-        format!("test-warehouse-{}", Uuid::now_v7()),
         &project_id,
-        storage_profile.clone(),
-        TabularDeleteProfile::Hard {},
-        None,
-        WarehouseFormatVersionPolicy::default(),
+        CatalogCreateWarehouseRequest::builder()
+            .warehouse_name(format!("test-warehouse-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
         transaction.transaction(),
     )
     .await
@@ -88,14 +90,15 @@ async fn test_create_warehouse_with_secret(pool: PgPool) {
 
     // Create warehouse with secret
     let warehouse = PostgresBackend::create_warehouse(
-        format!("test-warehouse-secret-{}", Uuid::now_v7()),
         &project_id,
-        storage_profile.clone(),
-        TabularDeleteProfile::Soft {
-            expiration_seconds: chrono::TimeDelta::seconds(86400),
-        },
-        Some(secret_id),
-        WarehouseFormatVersionPolicy::default(),
+        CatalogCreateWarehouseRequest::builder()
+            .warehouse_name(format!("test-warehouse-secret-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile.clone())
+            .storage_secret_id(Some(secret_id))
+            .delete_profile(TabularDeleteProfile::Soft {
+                expiration_seconds: chrono::TimeDelta::seconds(86400),
+            })
+            .build(),
         transaction.transaction(),
     )
     .await
@@ -131,12 +134,12 @@ async fn test_create_warehouse_duplicate_name(pool: PgPool) {
 
     // Try to create warehouse with same name
     let result = PostgresBackend::create_warehouse(
-        warehouse_resp.warehouse_name.clone(),
         &project_id,
-        storage_profile.clone(),
-        TabularDeleteProfile::Hard {},
-        None,
-        WarehouseFormatVersionPolicy::default(),
+        CatalogCreateWarehouseRequest::builder()
+            .warehouse_name(warehouse_resp.warehouse_name.clone())
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .build(),
         transaction.transaction(),
     )
     .await;
@@ -1402,4 +1405,279 @@ async fn test_update_format_version_policy_invalid_default(pool: PgPool) {
 
     let err = result.unwrap_err();
     assert_eq!(err.error.r#type, "DefaultFormatVersionNotAllowed");
+}
+
+/// End-to-end of the managed-by lock through the management handlers (not just
+/// the storage layer): only an instance admin may set/clear the marker, a
+/// managed warehouse's spec is locked even when the resource authorizer allows
+/// the action (AllowAll here), and clearing the marker restores mutability.
+#[sqlx::test]
+async fn test_managed_by_locks_spec_via_handlers(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    let non_admin = RequestMetadata::new_unauthenticated();
+    let admin = RequestMetadata::test_instance_admin(UserId::new_unchecked("oidc", "admin"));
+
+    // A non-instance-admin cannot set the marker (403, even with AllowAll authz).
+    let err = ApiServer::set_warehouse_managed_by(
+        warehouse_id,
+        SetWarehouseManagedByRequest {
+            managed_by: ManagedBy::InstanceAdmin,
+        },
+        ctx.clone(),
+        non_admin.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.r#type, "InstanceAdminRequired");
+
+    // An instance admin can mark it managed.
+    let resp = ApiServer::set_warehouse_managed_by(
+        warehouse_id,
+        SetWarehouseManagedByRequest {
+            managed_by: ManagedBy::InstanceAdmin,
+        },
+        ctx.clone(),
+        admin.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.managed_by, ManagedBy::InstanceAdmin);
+    // Let the managed-by-set event update the warehouse cache.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Spec mutation by a non-admin is now locked, despite AllowAll passing authz.
+    let err =
+        ApiServer::set_warehouse_protection(warehouse_id, true, ctx.clone(), non_admin.clone())
+            .await
+            .unwrap_err();
+    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.r#type, "WarehouseManaged");
+
+    // The same mutation succeeds for an instance admin (bypass).
+    let updated =
+        ApiServer::set_warehouse_protection(warehouse_id, true, ctx.clone(), admin.clone())
+            .await
+            .unwrap();
+    assert!(updated.protected);
+
+    // Clearing the marker is the recovery path — always allowed for an admin.
+    let resp = ApiServer::set_warehouse_managed_by(
+        warehouse_id,
+        SetWarehouseManagedByRequest {
+            managed_by: ManagedBy::SelfManaged,
+        },
+        ctx.clone(),
+        admin.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.managed_by, ManagedBy::SelfManaged);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // With the marker cleared, the non-admin can mutate the spec again.
+    let updated =
+        ApiServer::set_warehouse_protection(warehouse_id, false, ctx.clone(), non_admin.clone())
+            .await
+            .unwrap();
+    assert!(!updated.protected);
+}
+
+/// A warehouse may only be *born* managed if the caller is an instance admin;
+/// a non-admin creating a managed warehouse is rejected before it exists.
+#[sqlx::test]
+async fn test_create_managed_warehouse_requires_instance_admin(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let managed_request = |name: &str| {
+        CreateWarehouseRequest::builder()
+            .warehouse_name(name.to_string())
+            .project_id(project_id.clone())
+            .storage_profile(storage_profile.clone())
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .managed_by(ManagedBy::InstanceAdmin)
+            .build()
+    };
+
+    // Non-admin: rejected, warehouse never created.
+    let err = ApiServer::create_warehouse(
+        managed_request(&format!("managed-{}", Uuid::now_v7())),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.r#type, "WarehouseManaged");
+
+    // Instance admin: created managed.
+    let name = format!("managed-{}", Uuid::now_v7());
+    let created = ApiServer::create_warehouse(
+        managed_request(&name),
+        ctx.clone(),
+        RequestMetadata::test_instance_admin(UserId::new_unchecked("oidc", "admin")),
+    )
+    .await
+    .unwrap();
+
+    let warehouse = PostgresBackend::get_warehouse_by_id(
+        created.warehouse_id(),
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(warehouse.managed_by, ManagedBy::InstanceAdmin);
+}
+
+/// Every spec-mutating management endpoint enforces the managed-by lock. Drives
+/// all nine against a managed warehouse as a non-admin (whom AllowAll would
+/// otherwise authorize) and asserts each is rejected with `WarehouseManaged`.
+/// Guards against a new mutation endpoint silently skipping the lock — the
+/// `is_spec_mutation` classification and the per-handler guard call must not
+/// drift apart.
+#[sqlx::test]
+async fn test_all_spec_mutations_blocked_on_managed_warehouse(pool: PgPool) {
+    use iceberg::spec::FormatVersion;
+
+    let storage_profile = memory_io_profile();
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse_resp.warehouse_id;
+    let non_admin = RequestMetadata::new_unauthenticated();
+
+    // Mark the warehouse managed (as instance admin).
+    ApiServer::set_warehouse_managed_by(
+        warehouse_id,
+        SetWarehouseManagedByRequest {
+            managed_by: ManagedBy::InstanceAdmin,
+        },
+        ctx.clone(),
+        RequestMetadata::test_instance_admin(UserId::new_unchecked("oidc", "admin")),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // The guard reads `managed_by` FOR UPDATE in-txn, so the lock fires even
+    // though AllowAll passes the resource-authz check first.
+    macro_rules! assert_locked {
+        ($label:expr, $call:expr) => {{
+            let err = $call
+                .await
+                .err()
+                .expect(concat!($label, " must be blocked on a managed warehouse"));
+            assert_eq!(err.error.code, 403, "{}: expected 403", $label);
+            assert_eq!(
+                err.error.r#type, "WarehouseManaged",
+                "{}: expected WarehouseManaged",
+                $label
+            );
+        }};
+    }
+
+    assert_locked!(
+        "delete_warehouse",
+        ApiServer::delete_warehouse(
+            warehouse_id,
+            DeleteWarehouseQuery::builder().build(),
+            ctx.clone(),
+            non_admin.clone(),
+        )
+    );
+    assert_locked!(
+        "set_warehouse_protection",
+        ApiServer::set_warehouse_protection(warehouse_id, true, ctx.clone(), non_admin.clone())
+    );
+    assert_locked!(
+        "rename_warehouse",
+        ApiServer::rename_warehouse(
+            warehouse_id,
+            RenameWarehouseRequest {
+                new_name: "renamed".to_string(),
+            },
+            ctx.clone(),
+            non_admin.clone(),
+        )
+    );
+    assert_locked!(
+        "update_warehouse_delete_profile",
+        ApiServer::update_warehouse_delete_profile(
+            warehouse_id,
+            UpdateWarehouseDeleteProfileRequest {
+                delete_profile: TabularDeleteProfile::Hard {},
+            },
+            ctx.clone(),
+            non_admin.clone(),
+        )
+    );
+    assert_locked!(
+        "update_warehouse_format_version_policy",
+        ApiServer::update_warehouse_format_version_policy(
+            warehouse_id,
+            UpdateWarehouseFormatVersionPolicyRequest {
+                allowed_format_versions: vec![FormatVersion::V2],
+                default_format_version: None,
+            },
+            ctx.clone(),
+            non_admin.clone(),
+        )
+    );
+    assert_locked!(
+        "deactivate_warehouse",
+        ApiServer::deactivate_warehouse(warehouse_id, ctx.clone(), non_admin.clone())
+    );
+    assert_locked!(
+        "activate_warehouse",
+        ApiServer::activate_warehouse(warehouse_id, ctx.clone(), non_admin.clone())
+    );
+    assert_locked!(
+        "update_storage",
+        ApiServer::update_storage(
+            warehouse_id,
+            UpdateWarehouseStorageRequest {
+                storage_profile: storage_profile.clone(),
+                storage_credential: None,
+            },
+            ctx.clone(),
+            non_admin.clone(),
+        )
+    );
+    assert_locked!(
+        "update_storage_credential",
+        ApiServer::update_storage_credential(
+            warehouse_id,
+            UpdateWarehouseCredentialRequest {
+                new_storage_credential: None,
+            },
+            ctx.clone(),
+            non_admin.clone(),
+        )
+    );
 }

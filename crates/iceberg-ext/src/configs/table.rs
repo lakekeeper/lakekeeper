@@ -25,6 +25,9 @@ impl TableProperties {
             } else if key.starts_with("gcs") {
                 gcs::validate(&key, &value)?;
                 config.props.insert(key, value);
+            } else if key.starts_with("signer") {
+                signer::validate(&key, &value)?;
+                config.props.insert(key, value);
             } else if key.starts_with("adls") {
                 adls::validate(&key, &value)?;
             } else if [creds::ExpirationTimeMs::KEY].contains(&key.as_str()) {
@@ -73,6 +76,26 @@ pub mod s3 {
             SignerEndpoint, String, "s3.signer.endpoint", "s3_signer_endpoint";
             SesionTokenExpiresAtMs, i64, "s3.session-token-expires-at-ms", "s3_session_token_expires_at_ms";
          }
+    );
+}
+
+/// Remote-signing properties introduced in Iceberg 1.11.0. These supersede the
+/// S3-namespaced `s3.signer.uri` / `s3.signer.endpoint` (deprecated, removed in Iceberg 1.12.0).
+/// Lakekeeper emits both the old and new keys with identical values: new clients (>=1.11) read
+/// these and avoid the deprecation warning, while older clients keep using the `s3.signer.*` keys.
+pub mod signer {
+    use super::{
+        super::ConfigProperty, ConfigParseError, NotCustomProp, ParseFromStr, TableProperties,
+        TableProperty,
+    };
+    use crate::configs::impl_config_values;
+
+    impl_config_values!(
+        Table,
+        {
+            Uri, String, "signer.uri", "signer_uri";
+            Endpoint, String, "signer.endpoint", "signer_endpoint";
+        }
     );
 }
 
@@ -158,5 +181,30 @@ mod tests {
         assert_eq!(iceberg::io::S3_ACCESS_KEY_ID, s3::AccessKeyId::KEY);
         assert_eq!(iceberg::io::S3_SECRET_ACCESS_KEY, s3::SecretAccessKey::KEY);
         assert_eq!(iceberg::io::S3_SESSION_TOKEN, s3::SessionToken::KEY);
+    }
+
+    #[test]
+    fn test_signer_keys_match_iceberg_1_11() {
+        // Property names introduced in Iceberg 1.11.0 (org.apache.iceberg.rest.RESTCatalogProperties).
+        assert_eq!(signer::Uri::KEY, "signer.uri");
+        assert_eq!(signer::Endpoint::KEY, "signer.endpoint");
+    }
+
+    #[test]
+    fn test_signer_props_round_trip_through_validate() {
+        // `signer.*` keys must be dispatched to `signer::validate` and retained, not dropped as custom.
+        let config = TableProperties::try_from_props([
+            (
+                "signer.uri".to_string(),
+                "https://example.com/catalog/".to_string(),
+            ),
+            ("signer.endpoint".to_string(), "v1/aws/s3/sign".to_string()),
+        ])
+        .unwrap();
+        assert_eq!(
+            config.signer_uri().as_deref(),
+            Some("https://example.com/catalog/")
+        );
+        assert_eq!(config.signer_endpoint().as_deref(), Some("v1/aws/s3/sign"));
     }
 }

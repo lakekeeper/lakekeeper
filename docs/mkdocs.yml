@@ -9,6 +9,7 @@ hooks:
 nav:
     - Concepts: concepts.md
     - API:
+          - Overview: api-overview.md
           - Catalog: api/catalog.md
           - Generic Tables: api/generic-table.md
           - Management (Core): api/management.md

@@ -13,6 +13,7 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CreateOrUpdateUserResponse, Result, SecretStore, State, Transaction, UserId,
+        UserUpsertMode,
         authz::{
             AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction,
             RequireServerActionError,
@@ -22,7 +23,7 @@ use crate::{
 };
 
 /// How the user was last updated
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum UserLastUpdatedWith {
@@ -77,6 +78,21 @@ pub struct User {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the user was last updated
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Response of the `whoami` endpoint: the catalog user for the current token,
+/// plus request-scoped privilege not stored on the user record.
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct WhoamiResponse {
+    #[serde(flatten)]
+    pub user: User,
+    /// Whether the authenticated principal is an instance admin (configured via
+    /// `LAKEKEEPER__INSTANCE_ADMINS`). Instance admins may modify the spec of
+    /// warehouses marked `managed-by: instance-admin`. Only ever `true` for a
+    /// principal acting directly; role-assumed requests do not inherit it.
+    pub is_instance_admin: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -330,6 +346,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             email.as_deref(),
             UserLastUpdatedWith::CreateEndpoint,
             user_type,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await?;
@@ -492,6 +509,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             email,
             UserLastUpdatedWith::UpdateEndpoint,
             request.user_type,
+            UserUpsertMode::Overwrite,
             t.transaction(),
         )
         .await?;
@@ -526,19 +544,29 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         // ------------------- Business Logic -------------------
         let mut t = C::Transaction::begin_write(context.v1_state.catalog).await?;
-        let deleted = C::delete_user(user_id.clone(), t.transaction()).await?;
-        if deleted.is_none() {
+        // Soft-deletes the user AND removes their role assignments; returns the
+        // roles whose member lists changed (for cache eviction below).
+        let Some(affected_roles) = C::delete_user(user_id.clone(), t.transaction()).await? else {
             return Err(ErrorModel::not_found(
                 format!("User with id {} not found.", user_id.clone()),
                 "UserNotFound",
                 None,
             )
             .into());
-        }
+        };
         authorizer
-            .delete_user(event_ctx.request_metadata(), user_id)
+            .delete_user(event_ctx.request_metadata(), user_id.clone())
             .await?;
-        t.commit().await
+        t.commit().await?;
+
+        // Post-commit (infallible, in-memory): the user's assignments were
+        // removed, so their effective-roles entry and each affected role's
+        // member-list entry are now stale.
+        for role_id in &affected_roles {
+            crate::service::role_assignments_cache::role_members_cache_invalidate(*role_id).await;
+        }
+        crate::service::role_assignments_cache::user_assignments_cache_invalidate(&user_id).await;
+        Ok(())
     }
 }
 

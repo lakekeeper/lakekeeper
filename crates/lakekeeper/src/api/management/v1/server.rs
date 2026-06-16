@@ -9,7 +9,7 @@ use crate::{
     api::{ApiContext, management::v1::ApiServer},
     request_metadata::RequestMetadata,
     service::{
-        Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction,
+        Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction, UserUpsertMode,
         authz::Authorizer,
         tasks::{
             ScheduleTaskMetadata, TaskEntity,
@@ -254,6 +254,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 email.as_deref(),
                 UserLastUpdatedWith::UpdateEndpoint,
                 user_type,
+                UserUpsertMode::Overwrite,
                 t.transaction(),
             )
             .await?;

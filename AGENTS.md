@@ -51,9 +51,15 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Before adding new code, check if existing crates already solve the problem. Reuse over reinvention.
 - Challenge duplication — if similar logic exists elsewhere, refactor to share it.
 - New features should extend existing traits/interfaces where possible rather than introducing parallel abstractions.
+- Cold path (management/admin routes): bypass per-process in-memory caches; read authoritative data from the DB.
+- Hot authz path: may tolerate cache lag.
+- After any write: invalidate the local replica's in-memory cache immediately.
+- Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
 
 ## Rules
 - Never skip or disable tests.
 - Do not modify generated or vendored files.
 - Release versioning is managed by release-please (`release-please/`).
+- Write a clear PR description of the user-visible change; optionally add a `## Release notes` section. The docs-site Release Notes page (`site/docs/about/release-notes.md`) is summarised from PR descriptions at release; `CHANGELOG.md` (release-please) stays headlines-only. See `.github/RELEASING.md`.
 - Never acquire a nested database connection. If a transaction is active, all subsequent queries must use that transaction — do not check out another connection from the read or write pool. Nested connections cause pool exhaustion and deadlocks.
+- To return updated state after a write, read it back **in the same transaction** — a follow-up query may hit a lagging read replica and miss the write.

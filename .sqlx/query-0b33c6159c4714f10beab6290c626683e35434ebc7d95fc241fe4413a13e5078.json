@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM role_membership\n            WHERE parent_role_id = $1\n              AND member_role_id = ANY($2::uuid[])\n            RETURNING member_role_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "member_role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "role_membership",
+            "name": "member_role_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0b33c6159c4714f10beab6290c626683e35434ebc7d95fc241fe4413a13e5078"
+}

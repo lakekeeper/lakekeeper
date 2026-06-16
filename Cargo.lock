@@ -1440,6 +1440,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3687,7 +3697,6 @@ version = "0.12.3"
 dependencies = [
  "anyhow",
  "assert-json-diff",
- "async-nats",
  "async-trait",
  "aws-config",
  "aws-credential-types",
@@ -3707,7 +3716,6 @@ dependencies = [
  "derive_more",
  "fastrand 2.3.0",
  "figment",
- "figment_file_provider_adapter",
  "flate2",
  "futures",
  "gcloud-auth",
@@ -3729,7 +3737,6 @@ dependencies = [
  "percent-encoding",
  "pretty_assertions",
  "quick-xml 0.38.4",
- "rdkafka",
  "reqwest 0.12.28",
  "semver",
  "serde",
@@ -3769,6 +3776,7 @@ name = "lakekeeper-authz-openfga"
 version = "0.12.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "fastrand 2.3.0",
  "figment",
  "futures",
@@ -3805,6 +3813,8 @@ dependencies = [
  "lakekeeper",
  "lakekeeper-authz-openfga",
  "lakekeeper-console",
+ "lakekeeper-events-kafka",
+ "lakekeeper-events-nats",
  "lakekeeper-secrets-kv2",
  "lakekeeper-storage-postgres",
  "limes",
@@ -3827,6 +3837,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "lakekeeper-events-kafka"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "cloudevents-sdk",
+ "figment",
+ "figment_file_provider_adapter",
+ "lakekeeper",
+ "rdkafka",
+ "serde",
+ "tempfile",
+ "tracing",
+ "typed-builder 0.23.2",
+ "veil",
+]
+
+[[package]]
+name = "lakekeeper-events-nats"
+version = "0.12.3"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "async-trait",
+ "cloudevents-sdk",
+ "figment",
+ "lakekeeper",
+ "serde",
+ "serde_json",
+ "tracing",
+ "typed-builder 0.23.2",
+ "url",
+ "veil",
+]
+
+[[package]]
 name = "lakekeeper-integration-tests"
 version = "0.12.3"
 dependencies = [
@@ -3843,6 +3889,7 @@ dependencies = [
  "iceberg-ext",
  "itertools 0.14.0",
  "lakekeeper",
+ "lakekeeper-authz-openfga",
  "lakekeeper-io",
  "lakekeeper-storage-postgres",
  "maplit",
@@ -3958,6 +4005,7 @@ dependencies = [
  "lakekeeper",
  "lakekeeper-io",
  "lakekeeper-storage-postgres",
+ "metrics",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -6388,9 +6436,12 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "similar"
-version = "2.7.0"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+checksum = "e6505efef05804732ed8a3f2d4f279429eb485bd69d5b0cc6b19cc02005cda16"
+dependencies = [
+ "bstr",
+]
 
 [[package]]
 name = "simple_asn1"

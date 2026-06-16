@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT managed_by as \"managed_by: ManagedBy\"\n           FROM warehouse WHERE warehouse_id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "managed_by: ManagedBy",
+        "type_info": {
+          "Custom": {
+            "name": "managed_by",
+            "kind": {
+              "Enum": [
+                "self-managed",
+                "instance-admin"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "managed_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9022ab14de77d542c69970449bcc31eae35447dc4392677253bcfb53f4e4dc80"
+}

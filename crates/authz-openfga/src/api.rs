@@ -2477,7 +2477,7 @@ async fn get_relations<RA: Assignment>(
             .await?
             .into_iter()
             .filter_map(|t| t.key)
-            .map(|t| RA::try_from_user(&t.user, relation))
+            .map(|t| RA::try_from_user(&t.user, relation).map_err(OpenFGAError::from))
             .collect::<OpenFGAResult<Vec<RA>>>()
     });
 

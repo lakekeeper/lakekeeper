@@ -83,6 +83,53 @@ impl AuthorizationFailureSource for OpenFGABackendUnavailable {
     }
 }
 
+/// The only failures from parsing an OpenFGA entity string (`type:id`). Distinct
+/// from the wide [`OpenFGAError`], which folds it back in via `#[from]` for callers
+/// that propagate the wide error.
+#[derive(Debug, thiserror::Error)]
+pub enum ParseOpenFgaEntityError {
+    #[error("Invalid OpenFGA entity string: `{0}`")]
+    InvalidEntity(String),
+    #[error("Unknown OpenFGA type: {0}")]
+    UnknownType(String),
+    #[error("Unexpected entity for type {type:?}: {value}. {reason}")]
+    UnexpectedEntity {
+        r#type: Vec<FgaType>,
+        value: String,
+        reason: String,
+    },
+}
+
+impl ParseOpenFgaEntityError {
+    pub(crate) fn unexpected_entity(r#type: Vec<FgaType>, value: String, reason: String) -> Self {
+        ParseOpenFgaEntityError::UnexpectedEntity {
+            r#type,
+            value,
+            reason,
+        }
+    }
+}
+
+impl AuthorizationFailureSource for ParseOpenFgaEntityError {
+    fn into_error_model(self) -> ErrorModel {
+        let err_msg = self.to_string();
+        match self {
+            ParseOpenFgaEntityError::UnknownType(_) => {
+                ErrorModel::bad_request(err_msg, "UnknownOpenFGAType", None)
+            }
+            e @ ParseOpenFgaEntityError::UnexpectedEntity { .. } => {
+                ErrorModel::internal(err_msg, "UnexpectedEntity", Some(Box::new(e)))
+            }
+            e @ ParseOpenFgaEntityError::InvalidEntity(_) => {
+                ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(e)))
+            }
+        }
+    }
+    fn to_failure_reason(&self) -> AuthorizationFailureReason {
+        AuthorizationFailureReason::InvalidRequestData
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OpenFGAError {
     #[error("OpenFGA client error: {0}")]
@@ -103,16 +150,8 @@ pub enum OpenFGAError {
     ActiveAuthModelNotFound(String),
     #[error("OpenFGA Store not found: {0}. Make sure to run migration first!")]
     StoreNotFound(String),
-    #[error("Unexpected entity for type {type:?}: {value}. {reason}")]
-    UnexpectedEntity {
-        r#type: Vec<FgaType>,
-        value: String,
-        reason: String,
-    },
-    #[error("Unknown OpenFGA type: {0}")]
-    UnknownType(String),
-    #[error("Invalid OpenFGA entity string: `{0}`")]
-    InvalidEntity(String),
+    #[error(transparent)]
+    Parse(#[from] ParseOpenFgaEntityError),
     #[error("Project ID could not be inferred from request. Please the x-project-id header.")]
     NoProjectId,
     #[error("Authentication required")]
@@ -125,16 +164,6 @@ pub enum OpenFGAError {
     InvalidQuery(String),
     #[error("Cannot grant permissions while role is assumed in OpenFGA Authorizer")]
     GrantRoleWithAssumedRole,
-}
-
-impl OpenFGAError {
-    pub(crate) fn unexpected_entity(r#type: Vec<FgaType>, value: String, reason: String) -> Self {
-        OpenFGAError::UnexpectedEntity {
-            r#type,
-            value,
-            reason,
-        }
-    }
 }
 
 impl From<OpenFGAClientError> for OpenFGAError {
@@ -182,9 +211,7 @@ impl AuthorizationFailureSource for OpenFGAError {
             OpenFGAError::InternalClientError(client_error) => {
                 OpenFGABackendUnavailable::from(client_error).into_error_model()
             }
-            e @ OpenFGAError::UnexpectedEntity { .. } => {
-                ErrorModel::internal(err_msg, "UnexpectedEntity", Some(Box::new(e)))
-            }
+            OpenFGAError::Parse(e) => e.into_error_model(),
             OpenFGAError::UnexpectedCorrelationId(e) => {
                 OpenFGABackendUnavailable::from(e).into_error_model()
             }
@@ -194,15 +221,11 @@ impl AuthorizationFailureSource for OpenFGAError {
             OpenFGAError::MissingItemInBatchCheck(e) => {
                 OpenFGABackendUnavailable::from(e).into_error_model()
             }
-            OpenFGAError::UnknownType(_) => {
-                ErrorModel::bad_request(err_msg, "UnknownOpenFGAType", None)
-            }
             OpenFGAError::GrantRoleWithAssumedRole => {
                 ErrorModel::bad_request(err_msg, "GrantRoleWithAssumedRole", None)
             }
             e @ (OpenFGAError::ActiveAuthModelNotFound(_)
             | OpenFGAError::StoreNotFound(_)
-            | OpenFGAError::InvalidEntity(_)
             | OpenFGAError::InvalidQuery(_)) => {
                 ErrorModel::internal(err_msg, "OpenFGAError", Some(Box::new(e)))
             }
@@ -222,12 +245,10 @@ impl AuthorizationFailureSource for OpenFGAError {
             | OpenFGAError::StoreNotFound(_) => {
                 AuthorizationFailureReason::InternalAuthorizationError
             }
+            OpenFGAError::Parse(e) => e.to_failure_reason(),
             OpenFGAError::NoProjectId
             | OpenFGAError::AuthenticationRequired
             | OpenFGAError::SelfAssignment { .. }
-            | OpenFGAError::UnexpectedEntity { .. }
-            | OpenFGAError::UnknownType(_)
-            | OpenFGAError::InvalidEntity(_)
             | OpenFGAError::InvalidQuery(_)
             | OpenFGAError::GrantRoleWithAssumedRole
             | OpenFGAError::CannotWriteTupleAlreadyExists(_) => {

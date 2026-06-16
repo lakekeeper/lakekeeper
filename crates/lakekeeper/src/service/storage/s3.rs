@@ -12,7 +12,7 @@ use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
-    configs::table::{TableProperties, client, creds, custom, s3},
+    configs::table::{TableProperties, client, creds, custom, s3, signer},
 };
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -41,10 +41,7 @@ use crate::{
         BasicTabularInfo,
         storage::{
             StoragePermissions, TableConfig,
-            cache::{
-                STCCacheKey, STCCacheValue, ShortTermCredential, get_stc_from_cache,
-                insert_stc_into_cache,
-            },
+            cache::{CachedStc, S3_STC_CACHE, STCCacheKey, get_or_load_stc},
             error::{
                 CredentialsError, InvalidProfileError, TableConfigError, UpdateError,
                 ValidationError,
@@ -560,10 +557,15 @@ impl S3Profile {
             let tabular_id = stc_request.tabular_id;
             push_fsspec_fileio_with_s3v4restsigner(&mut config);
             config.insert(&s3::RemoteSigningEnabled(true));
-            config.insert(&s3::SignerUri(request_metadata.s3_signer_uri(warehouse_id)));
-            config.insert(&s3::SignerEndpoint(
-                request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id),
-            ));
+            let signer_uri = request_metadata.s3_signer_uri(warehouse_id);
+            let signer_endpoint =
+                request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id);
+            // Iceberg 1.11.0 renamed `s3.signer.*` to `signer.*`. Emit both so clients >=1.11 read
+            // the new keys (no deprecation warning) and older clients keep using the old ones.
+            config.insert(&signer::Uri(signer_uri.clone()));
+            config.insert(&signer::Endpoint(signer_endpoint.clone()));
+            config.insert(&s3::SignerUri(signer_uri));
+            config.insert(&s3::SignerEndpoint(signer_endpoint));
         }
 
         Ok(TableConfig { creds, config })
@@ -575,39 +577,19 @@ impl S3Profile {
         s3_credential: Option<&S3Credential>,
         cache_key: STCCacheKey,
     ) -> Result<aws_sdk_sts::types::Credentials, TableConfigError> {
-        // Try to get from cache if enabled
-        if CONFIG.cache.stc.enabled {
-            if let Some(STCCacheValue {
-                credentials: ShortTermCredential::S3(cached),
-                ..
-            }) = get_stc_from_cache(&cache_key).await
-            {
-                tracing::debug!("Using cached STS credentials for request: {sts_request}");
-                return Ok(cached);
-            }
-            tracing::debug!(
-                "No cached STS credentials found for request: {sts_request}, fetching new credentials"
-            );
-        } else {
-            tracing::debug!(
-                "STS caching disabled, fetching new STS credentials for request: {sts_request}"
-            );
-        }
-
-        // Fetch new credentials
-        let temporary_credential = self
-            .get_temporary_credentials(sts_request, s3_credential)
-            .await?;
-
-        // Cache the new credentials if enabled
-        if CONFIG.cache.stc.enabled {
-            let sts_validity_duration = Duration::from_secs(self.sts_token_validity_seconds);
-            let valid_until = Instant::now().checked_add(sts_validity_duration);
-            let cache_value = STCCacheValue::new(temporary_credential.clone(), valid_until);
-            insert_stc_into_cache(cache_key, cache_value).await;
-        }
-
-        Ok(temporary_credential)
+        // Single-flight read-through: concurrent identical requests coalesce onto
+        // one STS fetch (the most expensive miss in the system) per cache key. The
+        // typed cache returns the S3 credential directly — no variant check.
+        get_or_load_stc(&S3_STC_CACHE, cache_key, || async {
+            tracing::debug!("Fetching new STS credentials for request: {sts_request}");
+            let temporary_credential = self
+                .get_temporary_credentials(sts_request, s3_credential)
+                .await?;
+            let valid_until =
+                Instant::now().checked_add(Duration::from_secs(self.sts_token_validity_seconds));
+            Ok::<_, TableConfigError>(CachedStc::new(temporary_credential, valid_until))
+        })
+        .await
     }
 
     async fn get_temporary_credentials(

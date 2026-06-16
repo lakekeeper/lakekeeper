@@ -7,7 +7,6 @@ use std::{
     convert::Infallible,
     net::{IpAddr, Ipv4Addr},
     ops::{Deref, DerefMut},
-    path::PathBuf,
     str::FromStr,
     sync::{Arc, LazyLock},
     time::Duration,
@@ -19,7 +18,6 @@ use http::HeaderValue;
 use itertools::Itertools;
 use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
-use veil::Redact;
 
 use crate::{
     WarehouseId,
@@ -46,8 +44,6 @@ fn get_config() -> DynAppConfig {
     #[cfg(test)]
     let prefixes = &["LAKEKEEPER_TEST__"];
 
-    let file_keys = &["kafka_config"];
-
     let config_keys_map = &[("METRICS_PORT", "METRICS__PORT")];
 
     let mut config = figment::Figment::from(defaults);
@@ -66,9 +62,7 @@ fn get_config() -> DynAppConfig {
                     .unwrap_or(env_key.into())
             })
             .split("__");
-        config = config
-            .merge(figment_file_provider_adapter::FileAdapter::wrap(env.clone()).only(file_keys))
-            .merge(env);
+        config = config.merge(env);
     }
 
     let mut config = config
@@ -336,7 +330,7 @@ impl MatchedEngines {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Deserialize, Serialize, Redact)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 /// Configuration of this Module
 pub struct DynAppConfig {
     /// Base URL for this REST Catalog.
@@ -393,21 +387,6 @@ pub struct DynAppConfig {
 
     /// Enable GCP System Identities
     pub(crate) enable_gcp_system_credentials: bool,
-
-    // ------------- NATS CLOUDEVENTS -------------
-    pub nats_address: Option<Url>,
-    pub nats_topic: Option<String>,
-    pub nats_creds_file: Option<PathBuf>,
-    pub nats_user: Option<String>,
-    #[redact]
-    pub nats_password: Option<String>,
-    #[redact]
-    pub nats_token: Option<String>,
-
-    // ------------- KAFKA CLOUDEVENTS -------------
-    pub kafka_topic: Option<String>,
-    #[cfg(feature = "kafka")]
-    pub kafka_config: Option<crate::service::events::backends::kafka::KafkaConfig>,
 
     // ------------- TRACING CLOUDEVENTS ----------
     pub log_cloudevents: Option<bool>,
@@ -550,6 +529,10 @@ pub struct DynAppConfig {
     // ------------- Debug -------------
     #[serde(default)]
     pub debug: DebugConfig,
+
+    // ------------- Roles -------------
+    #[serde(default)]
+    pub role: RoleConfig,
 
     // ------------- Request Limits -------------
     /// Maximum request body size in bytes. Defaults to 2 MB.
@@ -797,6 +780,25 @@ impl IdempotencyConfig {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub struct RoleConfig {
+    /// Maximum number of `role_membership` (role→role) edges allowed in any
+    /// nesting chain. Enforced at write time on the catalog (Postgres) path: an
+    /// edge that would make some chain longer than this is rejected with
+    /// `RoleMembershipDepthExceeded` (HTTP 409). The OpenFGA authorization path
+    /// is not bounded here — it relies on its own resolution limits, the same
+    /// asymmetry as cycle prevention. Default: 10.
+    pub max_nesting_depth: usize,
+}
+
+impl Default for RoleConfig {
+    fn default() -> Self {
+        Self {
+            max_nesting_depth: 10,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
 pub struct DebugConfig {
     /// If true, log all request bodies to the debug log for debugging purposes.
@@ -1033,15 +1035,6 @@ impl Default for DynAppConfig {
             s3_enable_direct_system_credentials: false,
             s3_require_external_id_for_system_credentials: true,
             enable_gcp_system_credentials: false,
-            nats_address: None,
-            nats_topic: None,
-            nats_creds_file: None,
-            nats_user: None,
-            nats_password: None,
-            nats_token: None,
-            #[cfg(feature = "kafka")]
-            kafka_config: None,
-            kafka_topic: None,
             log_cloudevents: None,
             authz_backend: AuthZBackend::default(),
             instance_admins: HashSet::new(),
@@ -1074,6 +1067,7 @@ impl Default for DynAppConfig {
             skip_storage_validation: false,
             idempotency: IdempotencyConfig::default(),
             debug: DebugConfig::default(),
+            role: RoleConfig::default(),
             cache: Cache::default(),
             max_request_body_size: 2 * 1024 * 1024, // 2 MB
             max_request_time: Duration::from_secs(30),
@@ -1174,8 +1168,6 @@ mod test {
 
     #[allow(unused_imports)]
     use super::*;
-    #[cfg(feature = "kafka")]
-    use crate::service::events::backends::kafka::KafkaConfig;
 
     #[test]
     fn test_authz_backend_default() {
@@ -1560,78 +1552,6 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__USE_X_FORWARDED_HEADERS", "false");
             let config = get_config();
             assert!(!config.use_x_forwarded_headers);
-            Ok(())
-        });
-    }
-
-    #[cfg(feature = "kafka")]
-    #[test]
-    fn test_kafka_config_env_var() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("LAKEKEEPER_TEST__KAFKA_TOPIC", "test_topic");
-            jail.set_env(
-                "LAKEKEEPER_TEST__KAFKA_CONFIG",
-                r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#,
-            );
-            jail.set_env(
-                "LAKEKEEPER_TEST__KAFKA_CONFIG_FILE",
-                r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#,
-            );
-            let config = get_config();
-            assert_eq!(config.kafka_topic, Some("test_topic".to_string()));
-            assert_eq!(
-                config.kafka_config,
-                Some(KafkaConfig {
-                    sasl_password: Some("my_pw".to_string()),
-                    sasl_oauthbearer_client_secret: None,
-                    ssl_key_password: None,
-                    ssl_keystore_password: None,
-                    conf: std::collections::HashMap::from_iter([
-                        (
-                            "bootstrap.servers".to_string(),
-                            "host1:port,host2:port".to_string()
-                        ),
-                        ("security.protocol".to_string(), "SSL".to_string()),
-                    ]),
-                })
-            );
-            Ok(())
-        });
-    }
-
-    #[cfg(feature = "kafka")]
-    #[test]
-    fn test_kafka_config_file() {
-        let named_tmp_file = tempfile::NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut named_tmp_file
-            .as_file(), r#"{"sasl.password"="my_pw","bootstrap.servers"="host1:port,host2:port","security.protocol"="SSL"}"#.as_bytes())
-            .unwrap();
-        figment::Jail::expect_with(|jail| {
-            use std::collections::HashMap;
-
-            jail.set_env("LAKEKEEPER_TEST__KAFKA_TOPIC", "test_topic");
-            jail.set_env(
-                "LAKEKEEPER_TEST__KAFKA_CONFIG_FILE",
-                named_tmp_file.path().to_str().unwrap(),
-            );
-            let config = get_config();
-            assert_eq!(config.kafka_topic, Some("test_topic".to_string()));
-            assert_eq!(
-                config.kafka_config,
-                Some(KafkaConfig {
-                    sasl_password: Some("my_pw".to_string()),
-                    sasl_oauthbearer_client_secret: None,
-                    ssl_key_password: None,
-                    ssl_keystore_password: None,
-                    conf: HashMap::from_iter([
-                        (
-                            "bootstrap.servers".to_string(),
-                            "host1:port,host2:port".to_string()
-                        ),
-                        ("security.protocol".to_string(), "SSL".to_string()),
-                    ]),
-                })
-            );
             Ok(())
         });
     }
@@ -2140,6 +2060,25 @@ mod test {
             let TrustedEngine::Trino(c) = engine;
             let oidc = c.identities.get("oidc").unwrap();
             assert_eq!(oidc.audiences, vec!["trino"]);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_defaults() {
+        figment::Jail::expect_with(|_jail| {
+            let config = get_config();
+            assert_eq!(config.role.max_nesting_depth, 10);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_role_max_nesting_depth_env_override() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__ROLE__MAX_NESTING_DEPTH", "3");
+            let config = get_config();
+            assert_eq!(config.role.max_nesting_depth, 3);
             Ok(())
         });
     }
