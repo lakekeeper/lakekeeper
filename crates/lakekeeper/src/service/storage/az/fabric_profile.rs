@@ -356,7 +356,7 @@ impl FabricAdlsProfile {
 
     /// The full Blob host — the DFS host with the `dfs.` label rewritten to
     /// `blob.`. Published to clients as `adls.account-host` so that pyiceberg
-    /// / `adlfs.AzureBlobFileSystem` constructs requests against the OneLake
+    /// / `adlfs.AzureBlobFileSystem` constructs requests against the `OneLake`
     /// blob surface (`*.blob.fabric.microsoft.com`) instead of defaulting to
     /// the regular Azure Storage suffix `<account>.blob.core.windows.net`.
     fn blob_host(&self) -> String {
@@ -398,7 +398,7 @@ impl FabricAdlsProfile {
 
     /// Cloud location used for the Get-User-Delegation-Key call when minting
     /// SAS tokens. The workspace-FQDN private-link host rejects this call with
-    /// `DeniedByPolicy`; the global OneLake host serves it. The resulting SAS
+    /// `DeniedByPolicy`; the global `OneLake` host serves it. The resulting SAS
     /// is signed against the canonical resource `/blob/onelake/<workspace>/...`
     /// and remains valid for clients that subsequently hit the private-link host.
     fn sas_cloud_location(&self) -> CloudLocation {
@@ -527,15 +527,20 @@ impl FabricAdlsProfile {
     }
 
     /// Two Fabric profiles overlap if they reference the same workspace +
-    /// lakehouse + top-level folder + endpoint mode + authority host, and one
-    /// `directory_rel_path` is a (directory-bounded) prefix of the other.
+    /// lakehouse + top-level folder, and one `directory_rel_path` is a
+    /// (directory-bounded) prefix of the other.
+    ///
+    /// `endpoint_mode` and `authority_host` are intentionally NOT part of the
+    /// overlap check: they pick the DNS hostname / AAD authority used to
+    /// reach the same lakehouse, but the resolved storage location (the
+    /// abfss path under `workspace/lakehouse/top_level_folder/directory_rel_path`)
+    /// is identical regardless. Two profiles addressing the same on-storage
+    /// path through different endpoints overlap.
     #[must_use]
     pub fn is_overlapping_location(&self, other: &Self) -> bool {
         if self.workspace_id != other.workspace_id
             || self.lakehouse_id != other.lakehouse_id
             || self.top_level_folder != other.top_level_folder
-            || self.endpoint_mode != other.endpoint_mode
-            || self.authority_host != other.authority_host
         {
             return false;
         }
@@ -1070,5 +1075,35 @@ mod tests {
         let mut p2 = sample_profile();
         p2.top_level_folder = TopLevelFolder::Tables;
         assert!(!p1.is_overlapping_location(&p2));
+    }
+
+    #[test]
+    fn test_is_overlapping_different_endpoint_mode_still_overlaps() {
+        // endpoint_mode picks the DNS host to reach the lakehouse; the
+        // resolved on-storage path is identical. Two profiles addressing
+        // the same workspace+lakehouse+folder+dir overlap regardless of
+        // which endpoint they use.
+        let p1 = sample_profile();
+        let mut p2 = sample_profile();
+        p2.endpoint_mode = EndpointMode::Regional {
+            region: "westus".to_string(),
+        };
+        assert!(p1.is_overlapping_location(&p2));
+
+        let mut p3 = sample_profile();
+        p3.endpoint_mode = EndpointMode::PrivateLink;
+        assert!(p1.is_overlapping_location(&p3));
+        assert!(p2.is_overlapping_location(&p3));
+    }
+
+    #[test]
+    fn test_is_overlapping_different_authority_host_still_overlaps() {
+        // authority_host picks the AAD instance for token issuance; it
+        // doesn't affect where data lands on storage.
+        let mut p1 = sample_profile();
+        p1.authority_host = Some("https://login.microsoftonline.com".parse().unwrap());
+        let mut p2 = sample_profile();
+        p2.authority_host = Some("https://login.microsoftonline.us".parse().unwrap());
+        assert!(p1.is_overlapping_location(&p2));
     }
 }

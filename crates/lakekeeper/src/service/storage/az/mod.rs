@@ -57,23 +57,71 @@ const MAX_GENERIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS: i64 = 60 * 60;
 const SAS_TOKEN_DEFAULT_VALIDITY_SECONDS: i64 = 3600;
 
-/// Floor for the effective SAS lifetime sent to Azure. Combined with the 60s
-/// backshift on `signed_start`, this guarantees a freshly-minted SAS has at
-/// least 60s of wall-clock validity from "now".
-const MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS: i64 = 120;
-
 /// Backshift applied to `signed_start` to tolerate clock skew across machines.
-/// The SAS is technically valid for `BACKSHIFT_SECONDS` in the past.
+/// The SAS is technically valid for `SAS_TOKEN_START_BACKSHIFT_SECONDS` in the
+/// past. Bump this if observed clock drift grows.
 const SAS_TOKEN_START_BACKSHIFT_SECONDS: i64 = 60;
 
+/// Minimum wall-clock validity we want a freshly-minted SAS to have from
+/// "now" — i.e. the smallest window between the moment Lakekeeper hands the
+/// SAS to the caller and its `signed_expiry`. Independent of clock drift.
+const MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS: i64 = 60;
+
+/// Floor for the effective SAS lifetime sent to Azure. Derived: the
+/// `signed_start` is backshifted, so to give the caller
+/// `MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS` of wall-clock validity from
+/// "now" we have to mint at least that plus the backshift window.
+const MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS: i64 =
+    MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS + SAS_TOKEN_START_BACKSHIFT_SECONDS;
+
 /// User-supplied TTL strictly below this value triggers a warning log
-/// (not a rejection — the value is silently floored at mint time).
+/// (not a rejection — the value is silently floored at
+/// [`MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS`] at mint time).
 const SAS_TOKEN_WARN_THRESHOLD_SECONDS: i64 = 60;
 
 /// Floor for the cache `valid_until` window — prevents an unusually short
 /// user TTL from collapsing the cache lifetime to zero (which would disable
-/// caching). The `StcExpiry` cache policy further halves this and caps at 1h.
+/// caching). The `StcExpiry` cache policy further halves this and caps at
+/// [`MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS`].
 const MIN_CACHE_VALID_FOR_SECONDS: i64 = 10;
+
+// Compile-time invariants: catch a future tweak (e.g. raising
+// `SAS_TOKEN_START_BACKSHIFT_SECONDS` to 3 minutes to tolerate more drift)
+// from silently producing a configuration where the floor exceeds a backend
+// cap, the cache outlives the SAS, or a freshly-minted token has zero
+// wall-clock validity. If any of these fire, re-tune the surrounding
+// constants — don't just disable the assertion.
+const _: () = {
+    // Floor must be positive — `effective_ttl_seconds().max(floor)` would
+    // otherwise be a no-op and our minimum-validity guarantee evaporates.
+    assert!(
+        MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS > 0,
+        "MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS must be positive",
+    );
+    // The floor must not exceed Fabric's hard 1-hour cap; otherwise
+    // `effective_ttl_seconds()` could return a value that
+    // `validate_sas_token_validity_seconds` would have rejected on input.
+    assert!(
+        MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS <= MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
+        "MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS must not exceed the Fabric cap",
+    );
+    assert!(
+        MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS <= MAX_GENERIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS,
+        "MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS must not exceed the generic ADLS cap",
+    );
+    // The cache must not outlive the SAS — otherwise a cache hit could
+    // return a token that's already expired wall-clock-wise.
+    assert!(
+        MIN_CACHE_VALID_FOR_SECONDS < MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS,
+        "MIN_CACHE_VALID_FOR_SECONDS must be smaller than the wall-clock validity floor",
+    );
+    // The default TTL must clear the floor; otherwise a user with no
+    // override gets bumped up implicitly, which we'd rather make explicit.
+    assert!(
+        SAS_TOKEN_DEFAULT_VALIDITY_SECONDS >= MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS,
+        "SAS_TOKEN_DEFAULT_VALIDITY_SECONDS must clear the floor",
+    );
+};
 
 impl From<StoragePermissions> for BlobSasPermissions {
     fn from(value: StoragePermissions) -> Self {
@@ -123,9 +171,10 @@ fn iceberg_expiration_property_key(account_name: &str, endpoint_suffix: &str) ->
 }
 
 /// Validate the user-supplied SAS-token TTL against the backend's allowed
-/// maximum. Logs a warning (does not reject) for non-zero values below 60s —
-/// such tokens are accepted, but at mint time they are floored at the minimum
-/// effective TTL (see [`effective_ttl_seconds`]).
+/// maximum. Logs a warning (does not reject) for non-zero values below
+/// [`SAS_TOKEN_WARN_THRESHOLD_SECONDS`] — such tokens are accepted, but at
+/// mint time they are floored at the minimum effective TTL (see
+/// [`effective_ttl_seconds`]).
 ///
 /// `max_ttl` is in seconds; both the value and the max are passed as the
 /// stored profile's `Option<u64>` (so the caller doesn't need to coerce).
@@ -158,7 +207,9 @@ fn validate_sas_token_validity_seconds(
     if n < warn_threshold {
         tracing::warn!(
             sas_token_validity_seconds = n,
-            "Token lifetime less than 60 seconds (provided value: {n}). Generated tokens will use minimum lifetime of at least 60s."
+            "Token lifetime less than {warn_threshold} seconds (provided value: {n}). Generated tokens will use minimum lifetime of at least {min_ttl}s.",
+            warn_threshold = SAS_TOKEN_WARN_THRESHOLD_SECONDS,
+            min_ttl = MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS,
         );
     }
     Ok(())
@@ -168,9 +219,10 @@ fn validate_sas_token_validity_seconds(
 /// SAS.
 ///
 /// Floored at [`MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS`] so that, combined with
-/// the 60s backshift on `signed_start`, the resulting SAS has at least 60s of
-/// wall-clock validity from "now". Callers are expected to have validated the
-/// user-supplied value against the backend's max via
+/// the [`SAS_TOKEN_START_BACKSHIFT_SECONDS`] backshift on `signed_start`, the
+/// resulting SAS has at least [`MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS`]
+/// of wall-clock validity from "now". Callers are expected to have validated
+/// the user-supplied value against the backend's max via
 /// [`validate_sas_token_validity_seconds`], so out-of-range values are not
 /// re-checked here.
 fn effective_ttl_seconds(user_ttl: Option<u64>) -> i64 {
@@ -183,8 +235,9 @@ fn effective_ttl_seconds(user_ttl: Option<u64>) -> i64 {
 /// Compute the SAS validity window `(signed_start, signed_expiry)`.
 ///
 /// `signed_start` is set [`SAS_TOKEN_START_BACKSHIFT_SECONDS`] in the past to
-/// tolerate clock skew. `signed_expiry = signed_start + effective_ttl`, so the
-/// wall-clock validity from "now" is `effective_ttl - 60s`.
+/// tolerate clock skew. `signed_expiry = signed_start + effective_ttl`, so
+/// the wall-clock validity from "now" is
+/// `effective_ttl - SAS_TOKEN_START_BACKSHIFT_SECONDS`.
 fn sas_validity_window(effective_ttl: i64) -> (OffsetDateTime, OffsetDateTime) {
     let start =
         OffsetDateTime::now_utc() - time::Duration::seconds(SAS_TOKEN_START_BACKSHIFT_SECONDS);
@@ -194,11 +247,12 @@ fn sas_validity_window(effective_ttl: i64) -> (OffsetDateTime, OffsetDateTime) {
 
 /// Compute the cache eviction time for a freshly-minted SAS.
 ///
-/// The cache is set to expire 60s before the SAS itself does, so any token
-/// returned from a cache hit still has wall-clock validity left. Floored at
-/// [`MIN_CACHE_VALID_FOR_SECONDS`] so an unusually short user TTL doesn't
-/// collapse the cache window to zero. The `StcExpiry` policy in the cache
-/// layer further halves this and caps at 1h.
+/// The cache is set to expire [`SAS_TOKEN_START_BACKSHIFT_SECONDS`] before
+/// the SAS itself does, so any token returned from a cache hit still has
+/// wall-clock validity left. Floored at [`MIN_CACHE_VALID_FOR_SECONDS`] so
+/// an unusually short user TTL doesn't collapse the cache window to zero.
+/// The `StcExpiry` policy in the cache layer further halves this and caps at
+/// [`MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS`].
 fn cache_valid_until(effective_ttl: i64) -> Option<Instant> {
     let cache_secs =
         (effective_ttl - SAS_TOKEN_START_BACKSHIFT_SECONDS).max(MIN_CACHE_VALID_FOR_SECONDS);
@@ -559,57 +613,77 @@ pub(crate) mod test {
     #[test]
     fn test_sas_validity_window_wall_clock() {
         // Effective TTL = 3600s → wall-clock validity from "now" = 3540s
-        // (signed_start is 60s in the past, signed_expiry = signed_start + 3600).
+        // (signed_start is SAS_TOKEN_START_BACKSHIFT_SECONDS in the past,
+        // signed_expiry = signed_start + 3600).
         let (start, end) = sas_validity_window(3600);
         let now = OffsetDateTime::now_utc();
         let from_start = (now - start).whole_seconds();
+        let backshift = SAS_TOKEN_START_BACKSHIFT_SECONDS;
         assert!(
-            (59..=61).contains(&from_start),
-            "start ≈ now - 60s, got {from_start}"
+            (backshift - 1..=backshift + 1).contains(&from_start),
+            "start ≈ now - {backshift}s, got {from_start}"
         );
         let remaining = (end - now).whole_seconds();
+        let expected = 3600 - backshift;
         assert!(
-            (3539..=3541).contains(&remaining),
-            "wall-clock validity ≈ 3540s, got {remaining}"
+            (expected - 1..=expected + 1).contains(&remaining),
+            "wall-clock validity ≈ {expected}s, got {remaining}"
         );
     }
 
     #[test]
     fn test_sas_validity_window_at_floor() {
-        // Effective TTL = 120s (the floor) → wall-clock validity ≈ 60s.
+        // Effective TTL at the floor → wall-clock validity =
+        // MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS by construction.
         let (_start, end) = sas_validity_window(MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS);
         let now = OffsetDateTime::now_utc();
         let remaining = (end - now).whole_seconds();
+        let target = MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS;
         assert!(
-            (59..=61).contains(&remaining),
-            "wall-clock validity at floor ≈ 60s, got {remaining}"
+            (target - 1..=target + 1).contains(&remaining),
+            "wall-clock validity at floor ≈ {target}s, got {remaining}"
         );
+    }
+
+    /// Read the cache-window remaining-seconds as `i64` for direct comparison
+    /// against the surrounding `i64` constants. The values involved are
+    /// always small (≤ [`MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS`] = 3600),
+    /// so the conversion never wraps in practice.
+    fn cache_remaining_secs(until: Instant) -> i64 {
+        i64::try_from(until.duration_since(Instant::now()).as_secs())
+            .expect("cache remaining seconds fit in i64")
     }
 
     #[test]
     fn test_cache_valid_until_subtracts_backshift() {
-        // Effective TTL = 3600 → cache valid for 3540s (≈ SAS expiry minus 60s).
+        // Cache window = effective_ttl - SAS_TOKEN_START_BACKSHIFT_SECONDS.
         let until = cache_valid_until(3600).unwrap();
-        let remaining = until.duration_since(Instant::now()).as_secs();
-        assert!((3539..=3541).contains(&remaining), "got {remaining}");
+        let remaining = cache_remaining_secs(until);
+        let expected = 3600 - SAS_TOKEN_START_BACKSHIFT_SECONDS;
+        assert!(
+            (expected - 1..=expected + 1).contains(&remaining),
+            "got {remaining}"
+        );
     }
 
     #[test]
     fn test_cache_valid_until_floors_at_min() {
-        // At the effective-TTL floor (120s), cache = 60s — well above the
-        // MIN_CACHE_VALID_FOR_SECONDS floor.
+        // At the effective-TTL floor, cache ≈
+        // MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS — well above
+        // MIN_CACHE_VALID_FOR_SECONDS.
         let until = cache_valid_until(MIN_SAS_TOKEN_EFFECTIVE_TTL_SECONDS).unwrap();
-        let remaining = until.duration_since(Instant::now()).as_secs();
-        assert!((59..=61).contains(&remaining));
+        let remaining = cache_remaining_secs(until);
+        let target = MIN_SAS_TOKEN_WALL_CLOCK_VALIDITY_SECONDS;
+        assert!((target - 1..=target + 1).contains(&remaining));
 
         // Defensive: if an effective TTL ever fell *below* the backshift, the
-        // floor protects us (the production path's `effective_ttl_seconds`
-        // floor at 120 prevents this, but the helper must still be safe).
-        let until = cache_valid_until(30).unwrap();
-        let remaining = until.duration_since(Instant::now()).as_secs();
+        // floor protects us (`effective_ttl_seconds()` won't actually return
+        // such a value, but the helper must still be safe).
+        let until = cache_valid_until(SAS_TOKEN_START_BACKSHIFT_SECONDS - 30).unwrap();
+        let remaining = cache_remaining_secs(until);
         assert!(
-            remaining >= 9,
-            "expected ≥ MIN_CACHE_VALID_FOR_SECONDS, got {remaining}"
+            remaining >= MIN_CACHE_VALID_FOR_SECONDS - 1,
+            "expected ≥ MIN_CACHE_VALID_FOR_SECONDS ({MIN_CACHE_VALID_FOR_SECONDS}), got {remaining}"
         );
     }
 
@@ -650,9 +724,10 @@ pub(crate) mod test {
     fn test_validate_sas_token_validity_seconds_below_threshold_warns() {
         validate_sas_token_validity_seconds(Some(30), MAX_FABRIC_ADLS_SAS_TOKEN_VALIDITY_SECONDS)
             .unwrap();
-        assert!(logs_contain(
-            "Token lifetime less than 60 seconds (provided value: 30)"
-        ));
+        let expected = format!(
+            "Token lifetime less than {SAS_TOKEN_WARN_THRESHOLD_SECONDS} seconds (provided value: 30)",
+        );
+        assert!(logs_contain(&expected), "expected substring: {expected}");
     }
 
     /// Regression test for the `OneLake` SAS canonical-resource bug that
