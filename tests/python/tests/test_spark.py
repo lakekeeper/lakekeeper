@@ -752,7 +752,8 @@ def test_drop_with_shared_prefix(spark, namespace, warehouse: conftest.Warehouse
     # the shared (session-scoped) warehouse root — a constant segment would
     # collide across namespaces.
     custom_location = (
-        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
     )
 
     # Create a table with a custom location
@@ -803,7 +804,8 @@ def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
     # the shared (session-scoped) warehouse root — a constant segment would
     # collide across namespaces.
     custom_location = (
-        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
     )
 
     # Create a table with a custom location
@@ -843,7 +845,8 @@ def test_cannot_create_table_at_same_location(
     # the shared (session-scoped) warehouse root — a constant segment would
     # collide across namespaces.
     custom_location = (
-        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
     )
 
     # Create a table with a custom location
@@ -892,7 +895,8 @@ def test_cannot_create_table_at_sub_location(
     # the shared (session-scoped) warehouse root — a constant segment would
     # collide across namespaces.
     custom_location = (
-        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
     )
 
     # Create a table with a custom location
