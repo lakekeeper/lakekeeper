@@ -1,7 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use iceberg::TableIdent;
 use itertools::izip;
+use lakekeeper_io::Location;
 use lakekeeper::{
     CONFIG, WarehouseId,
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
@@ -695,7 +696,19 @@ pub(crate) async fn drop_namespace(
             ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
-            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
+            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
+            ARRAY(
+                SELECT n.namespace_id FROM namespace n
+                WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
+                AND n.namespace_properties->>'location' IS NOT NULL
+                ORDER BY n.namespace_id
+            ) AS "dropped_ns_ids!",
+            ARRAY(
+                SELECT n.namespace_properties->>'location' FROM namespace n
+                WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
+                AND n.namespace_properties->>'location' IS NOT NULL
+                ORDER BY n.namespace_id
+            ) AS "dropped_ns_locations!"
         FROM namespace_info ni
 "#,
         *warehouse_id,
@@ -817,8 +830,18 @@ pub(crate) async fn drop_namespace(
             .into_iter()
             .map(TaskId::from)
             .collect(),
-        // TODO(step2): populate from SQL query once namespace locations are fetched
-        namespace_locations: Vec::new(),
+        namespace_locations: info
+            .dropped_ns_ids
+            .into_iter()
+            .zip(info.dropped_ns_locations.into_iter())
+            .map(|(ns_id, loc)| {
+                Ok::<_, CatalogNamespaceDropError>((
+                    NamespaceId::from(ns_id),
+                    Location::from_str(&loc)
+                        .map_err(InternalParseLocationError::from)?,
+                ))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?,
     })
 }
 
