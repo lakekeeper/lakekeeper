@@ -350,7 +350,7 @@ def storage_config(request) -> dict:
                 "directory-rel-path": test_id,
                 "endpoint-mode": endpoint_mode_json,
                 "sas-token-validity-seconds": 60,
-                # "storage-layout": layout, # onelake only supports "default" because flat and full-hierarchy allow templates with {name}, which can get us into problems with %enooded path segments
+                # "storage-layout": layout, # onelake only supports "default" because flat and full-hierarchy allow templates with {name}, which can get us into problems with %encoded path segments
             },
             "storage-credential": {
                 "type": "az",
@@ -369,7 +369,7 @@ def storage_config(request) -> dict:
                 "type": "gcs",
                 "bucket": settings.gcs_bucket,
                 "key-prefix": test_id,
-                "layout": layout,
+                "storage-layout": layout,
             },
             "storage-credential": {
                 "type": "gcs",
