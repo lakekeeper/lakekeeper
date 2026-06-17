@@ -27,6 +27,14 @@ pub struct LoadCredentialsResponse {
     pub storage_credentials: Vec<StorageCredential>,
 }
 
+/// Catalog-scoped labels for API-level metadata enrichment.
+/// Not part of Iceberg table state — ephemeral annotations only.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Labels {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<HashMap<String, String>>,
+}
+
 /// Result used when a table is successfully loaded.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -38,6 +46,8 @@ pub struct LoadTableResult {
     pub config: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credentials: Option<Vec<StorageCredential>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Labels>,
 }
 
 impl LoadTableResult {
@@ -238,6 +248,7 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            labels: None,
         };
 
         let response = load_table_result.into_response();
@@ -257,6 +268,7 @@ mod tests {
             metadata: table_metadata,
             config: None,
             storage_credentials: None,
+            labels: None,
         };
 
         let response = load_table_result.into_response();
@@ -275,6 +287,7 @@ mod tests {
             metadata: table_metadata.clone(),
             config: None,
             storage_credentials: None,
+            labels: None,
         };
 
         let response = load_table_result.clone().into_response();
