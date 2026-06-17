@@ -817,6 +817,8 @@ pub(crate) async fn drop_namespace(
             .into_iter()
             .map(TaskId::from)
             .collect(),
+        // TODO(step2): populate from SQL query once namespace locations are fetched
+        namespace_locations: Vec::new(),
     })
 }
 
