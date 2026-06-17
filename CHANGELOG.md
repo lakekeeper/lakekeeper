@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.12.4](https://github.com/lakekeeper/lakekeeper/compare/v0.12.3...v0.12.4) (2026-06-17)
+
+
+### Features
+
+* **authn:** support multiple OIDC providers via LAKEKEEPER__OPENID_PROVIDERS ([#1760](https://github.com/lakekeeper/lakekeeper/issues/1760)) ([c54a991](https://github.com/lakekeeper/lakekeeper/commit/c54a991776613711812b93566560d08dd59efe33))
+* Support for Onelake/Fabric and Private Endpoints (ADLS/Onelake) ([#1852](https://github.com/lakekeeper/lakekeeper/issues/1852)) ([b07a40c](https://github.com/lakekeeper/lakekeeper/commit/b07a40c30099adb9d6d073d20ed90b875d6ac103))
+
+
+### Bug Fixes
+
+* return 503 for unhealthy health endpoint ([#1802](https://github.com/lakekeeper/lakekeeper/issues/1802)) ([1a63df9](https://github.com/lakekeeper/lakekeeper/commit/1a63df965058eea1e4afec1bb135cea63bc9e750))
+
+
+### Documentation
+
+* **authorization-cedar:** map Cedar actions to audit log action_names ([7ad1cd9](https://github.com/lakekeeper/lakekeeper/commit/7ad1cd91c40739e3619086f8116f0ac31ba1a0c7))
+
+
+### Miscellaneous Chores
+
+* **docs:** Add note for multi-oidc availability ([66105e9](https://github.com/lakekeeper/lakekeeper/commit/66105e992712bb853b4b4e76fc1cb5d2b6ee76a7))
+* **docs:** Remove plans ([38fd5ac](https://github.com/lakekeeper/lakekeeper/commit/38fd5ac20b06338077a2497c2d4935200495635b))
+* **ui:** Update UI to v0.14.3 - Add support for OneLake ([8143e0a](https://github.com/lakekeeper/lakekeeper/commit/8143e0a65081dc3b404567389d849aec942c0d69))
+
 ## [0.12.3](https://github.com/lakekeeper/lakekeeper/compare/v0.12.2...v0.12.3) (2026-05-26)
 
 
