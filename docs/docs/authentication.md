@@ -454,6 +454,8 @@ We are now able to login and bootstrap Lakekeeper.
 
 ## Multiple OIDC Providers
 
+*Available since Lakekeeper 0.12.4.*
+
 For scenarios where you need to authenticate tokens from multiple identity providers simultaneously—such as Okta for human users and EKS OIDC for Kubernetes service accounts—Lakekeeper supports configuring multiple OIDC providers.
 
 When multiple providers are configured, each provider fetches its own JWKS keys independently. Incoming tokens are checked against each provider in order until one successfully validates the token.
