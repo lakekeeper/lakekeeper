@@ -1250,7 +1250,8 @@ mod tests {
             uuid: tabular_uuid,
         };
 
-        let target_location = format!("s3://my-bucket/subfolder/{ns_uuid}/{tabular_uuid}");
+        // Default layout is flat: no namespace directory under the base location.
+        let target_location = format!("s3://my-bucket/subfolder/{tabular_uuid}");
 
         let namespace_location = profile.default_namespace_location(&namespace_path).unwrap();
         let tabular_location =

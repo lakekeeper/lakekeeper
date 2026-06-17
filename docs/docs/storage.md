@@ -42,7 +42,7 @@ The storage layout controls how namespace and tabular directories are structured
 
 | Type                       | JSON `"type"` value            | Description    |
 |----------------------------|--------------------------------|----------------|
-| Default                    | `"default"`                    | One directory for the direct parent namespace, one for the tabular, both with `{uuid}` templates. Used when `storage-layout` is omitted. |
+| Default                    | `"default"`                    | Flat: no namespace directories; all tabulars are placed directly under the base location with a `{uuid}` segment. Used when `storage-layout` is omitted. **Changed in 0.13** — see [Default](#default). |
 | Full hierarchy             | `"full-hierarchy"`             | One directory per namespace level in the full ancestry, one for the tabular. |
 | Tabular-only (flat)          | `"tabular-only"`                 | No namespace directories; all tabulars are placed directly under the base location. |
 
@@ -51,18 +51,18 @@ The storage layout controls how namespace and tabular directories are structured
 
 ### Default
 
-The default layout emits one directory for the **direct parent namespace** and one for the tabular. Ancestor namespaces beyond the immediate parent are not reflected in the path.
+The default layout is **flat**: tabulars are placed directly under the warehouse base location with no namespace directories, using a `{uuid}` segment.
 
-For a tabular `orders` in namespace `europe` / `production` the path is:
+For a tabular `orders` in any namespace the path is:
 
 ```text
-<base>/<production-namespace>/<orders-tabular>
+<base>/<orders-tabular>
 ```
 
-With the default `{uuid}`-only templates this looks like:
+With the default `{uuid}` template this looks like:
 
 ```text
-s3://my-bucket/warehouse/<uuid-of-production-namespace>/<uuid-of-tabular>/
+s3://my-bucket/warehouse/<uuid-of-tabular>/
 ```
 
 To use the default layout explicitly:
@@ -77,6 +77,17 @@ To use the default layout explicitly:
   }
 }
 ```
+
+!!! warning "The default layout changed in 0.13"
+    Before 0.13, the default layout emitted a directory for the **direct parent namespace** (`<base>/<parent-namespace-uuid>/<tabular-uuid>`). As of 0.13 the default is flat (`<base>/<tabular-uuid>`).
+
+    The change is **not retroactive** — storage paths are assigned once, at creation time, and are never recomputed:
+
+    - **Existing tabulars** keep their current locations.
+    - **Existing namespaces** keep their persisted `location` property, so new tabulars created in them remain nested under the old `<parent-namespace-uuid>/` directory (see [Namespace Location Property](#namespace-location-property)).
+    - Only **namespaces created on or after 0.13** use the flat default.
+
+    A warehouse spanning the upgrade can therefore hold a mix of nested (pre-0.13 namespaces) and flat (new namespaces) tabular paths. If you want namespace directories in new tabular paths, set `storage-layout` to [`full-hierarchy`](#full-hierarchy) — note that this nests *every* ancestor level, whereas the pre-0.13 default nested only the direct parent.
 
 ### Full Hierarchy
 
@@ -731,6 +742,8 @@ Use `regional` when data residency requires the request to stay within a specifi
 
 !!! warning "Only the `default` storage layout is supported"
     The OneLake profile currently rejects `tabular-only` and `full-hierarchy` storage layouts at warehouse-creation time. These layouts can embed namespace and table **names** into the storage path via `{name}` templates, and Lakekeeper URL-percent-encodes those segments — but OneLake silently decodes `%XX` sequences server-side (see the percent-encoding warning above), so two distinct names whose encoded form differs only by a `%XX` would land at the same blob and overwrite each other. Until we land a layout that side-steps this encoding mismatch, only the default `{uuid}`-only layout is supported. Set `storage-layout` to `{"type": "default"}` or omit it.
+
+    Since 0.13 the default layout is **flat** — it has no `{name}` segments to percent-decode, so it is OneLake-safe. OneLake warehouses therefore place new tabulars directly under the base location (`<base>/<tabular-uuid>`); see [Default](#default), including the note on how this affects namespaces created before 0.13.
 
 ### Credentials
 

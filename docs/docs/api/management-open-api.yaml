@@ -8734,9 +8734,14 @@ components:
       description: |-
         Controls how namespace and tabular paths are constructed under the warehouse base location.
 
-        - `default` / omitted: one directory per direct-parent namespace, one per tabular, both with `"{uuid}"` segments.
+        - `default` / omitted: flat — no namespace directories; all tabulars are placed directly under
+          the base location with a fixed `"{uuid}"` segment. (Changed in 0.13; before 0.13 the default
+          emitted a `"{uuid}"` directory for the direct-parent namespace. Existing namespaces created
+          before 0.13 keep their persisted location, so only namespaces created on/after 0.13 use the
+          flat default.)
         - `full-hierarchy`: one directory per namespace level, one per tabular.
-        - `tabular-only`: no namespace directories; all tabulars are placed directly under the base location.
+        - `tabular-only`: no namespace directories; all tabulars are placed directly under the base
+          location, with a configurable tabular template (which must contain `{uuid}`).
 
         Segment templates may use `{uuid}` and `{name}` as placeholders.
       example:

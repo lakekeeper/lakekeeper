@@ -1607,9 +1607,10 @@ pub(crate) mod test {
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        // Default layout is flat: no namespace directory under the base location.
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/test_prefix/{namespace_uuid}/{tabular_uuid}")
+            format!("s3://test-bucket/test_prefix/{tabular_uuid}")
         );
 
         let mut profile = profile.clone();
@@ -1620,7 +1621,7 @@ pub(crate) mod test {
         let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/{namespace_uuid}/{tabular_uuid}")
+            format!("s3://test-bucket/{tabular_uuid}")
         );
     }
 

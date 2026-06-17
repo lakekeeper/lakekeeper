@@ -1038,11 +1038,10 @@ pub(crate) mod test {
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        // Default layout is flat: no namespace directory under the base location.
         assert_eq!(
             location.to_string(),
-            format!(
-                "abfss://filesystem@account.dfs.core.windows.net/test_prefix/{namespace_uuid}/{tabular_uuid}"
-            )
+            format!("abfss://filesystem@account.dfs.core.windows.net/test_prefix/{tabular_uuid}")
         );
 
         let mut profile = profile.clone();
@@ -1054,7 +1053,7 @@ pub(crate) mod test {
         let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("abfss://filesystem@account.blob.com/{namespace_uuid}/{tabular_uuid}")
+            format!("abfss://filesystem@account.blob.com/{tabular_uuid}")
         );
     }
 
