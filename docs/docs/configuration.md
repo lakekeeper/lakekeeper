@@ -356,7 +356,7 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 | Variable                                        | Example | Description      |
 |-------------------------------------------------|---------|------------------|
 | <nobr>`LAKEKEEPER__CACHE__STC__ENABLED`</nobr>  | `true`  | Enable or disable the short-term credentials cache. Default: `true` |
-| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache. Default: `10000` |
+| <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. Default: `10000` |
 
 *Expiry Mechanism*: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 

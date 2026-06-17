@@ -41,10 +41,23 @@ jobs:
   test-example-minimal:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -59,13 +72,21 @@ jobs:
         run: |
           docker load -i artifacts/lakekeeper-local-amd64.tar
 
+      # Retry: `docker compose` pulls base images from Docker Hub, which flakily
+      # times out on shared CI IPs. A retry re-pulls; `down -v` resets state.
       - name: Test Minimal
-        run: |
-          cd examples/minimal
-          sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\" && jupyter execute DuckDB.ipynb"
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+        with:
+          max_attempts: 3
+          timeout_minutes: 25
+          retry_wait_seconds: 30
+          command: |
+            cd examples/minimal
+            sed -i '/pull_policy: always/d' docker-compose.yaml
+            docker compose down -v 2>/dev/null || true
+            docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute Pyiceberg.ipynb && jupyter execute Spark.ipynb && jupyter execute Trino.ipynb && jupyter execute Starrocks.ipynb && jupyter execute \"Multiple Warehouses.ipynb\" && jupyter execute DuckDB.ipynb"
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
@@ -73,10 +94,23 @@ jobs:
   test-example-access-control-simple:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -91,13 +125,21 @@ jobs:
         run: |
           docker load -i artifacts/lakekeeper-local-amd64.tar
 
+      # Retry: `docker compose` pulls base images from Docker Hub, which flakily
+      # times out on shared CI IPs. A retry re-pulls; `down -v` resets state.
       - name: Test Aeccess Control Simple
-        run: |
-          cd examples/access-control-simple
-          sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb && jupyter execute 03-05-DuckDB.ipynb"
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+        with:
+          max_attempts: 3
+          timeout_minutes: 25
+          retry_wait_seconds: 30
+          command: |
+            cd examples/access-control-simple
+            sed -i '/pull_policy: always/d' docker-compose.yaml
+            docker compose down -v 2>/dev/null || true
+            docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb && jupyter execute 03-01-Spark.ipynb && jupyter execute 03-02-Trino.ipynb && jupyter execute 03-03-Starrocks.ipynb && jupyter execute 03-04-PyIceberg.ipynb && jupyter execute 03-05-DuckDB.ipynb"
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
@@ -105,15 +147,35 @@ jobs:
   test-example-access-control-advanced:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      # Retry: `make all` brings up a docker compose stack, pulling base images
+      # from Docker Hub which flakily times out on shared CI IPs.
       - name: Test Make all
-        run: |
-          cd examples/kafka-connect-iceberg-sink
-          make all
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
+        with:
+          max_attempts: 3
+          timeout_minutes: 20
+          retry_wait_seconds: 30
+          command: |
+            cd examples/kafka-connect-iceberg-sink
+            make all
 
       - name: Test Make all
         run: |
@@ -123,10 +185,23 @@ jobs:
   test-example-kafka-connect-iceberg-sink:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -141,13 +216,21 @@ jobs:
         run: |
           docker load -i artifacts/lakekeeper-local-amd64.tar
 
+      # Retry: `docker compose` pulls base images from Docker Hub, which flakily
+      # times out on shared CI IPs. A retry re-pulls; `down -v` resets state.
       - name: Test Access Control Advanced
-        run: |
-          cd examples/access-control-advanced
-          sed -i '/pull_policy: always/d' docker-compose.yaml
-          docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         env:
           LAKEKEEPER_TEST__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+        with:
+          max_attempts: 3
+          timeout_minutes: 25
+          retry_wait_seconds: 30
+          command: |
+            cd examples/access-control-advanced
+            sed -i '/pull_policy: always/d' docker-compose.yaml
+            docker compose down -v 2>/dev/null || true
+            docker compose run jupyter bash -c "cd /home/jovyan/examples/ && jupyter execute 01-Bootstrap.ipynb && jupyter execute 02-Create-Warehouse.ipynb"
       - name: Dump docker logs on failure
         if: failure()
         uses: jwalton/gh-docker-logs@2741064ab9d7af54b0b1ffb6076cf64c16f0220e # v2.2.2
@@ -155,10 +238,23 @@ jobs:
   test-docker-compose-with-keycloak:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners, which otherwise surface as image-pull connect
+      # timeouts (registry-1.docker.io). Skipped when the secret is absent
+      # (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Restore binary
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
@@ -173,13 +269,21 @@ jobs:
         run: |
           docker load -i artifacts/lakekeeper-local-amd64.tar
 
+      # Retry: `docker compose up` pulls base images from Docker Hub, which
+      # flakily times out on shared CI IPs. A retry re-pulls; `down -v` resets.
       - name: Launch Docker Compose with Keycloak
-        run: |
-          cd docker-compose
-          sed -i '/pull_policy: /d' docker-compose.yaml
-          docker compose -f docker-compose.yaml -f keycloak-overlay.yaml up -d --wait
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
         env:
           LAKEKEEPER__SERVER_IMAGE: localhost/lakekeeper-local:amd64
+        with:
+          max_attempts: 3
+          timeout_minutes: 15
+          retry_wait_seconds: 30
+          command: |
+            cd docker-compose
+            sed -i '/pull_policy: /d' docker-compose.yaml
+            docker compose -f docker-compose.yaml -f keycloak-overlay.yaml down -v 2>/dev/null || true
+            docker compose -f docker-compose.yaml -f keycloak-overlay.yaml up -d --wait
 
       - name: Test Docker Compose with Keycloak
         run: |

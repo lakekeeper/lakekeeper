@@ -6,17 +6,18 @@ Currently, we support the following storages:
 
 - S3 (tested with AWS & Minio)
 - Azure Data Lake Storage Gen 2
+- OneLake (Microsoft Fabric)
 - Google Cloud Storage (with and without Hierarchical Namespaces)
+
 When creating a Warehouse or updating storage information, Lakekeeper validates the configuration.
 
 By default, Lakekeeper Warehouses enforce specific URI schemas for tables and views to ensure compatibility with most query engines:
 
-* **S3 / AWS Warehouses**: Must start with `s3://`
-* **Azure / ADLS Warehouses**: Must start with `abfss://`
-* **GCP Warehouses**: Must start with `gs://`
+- **S3 / AWS Warehouses**: Must start with `s3://`
+- **Azure / ADLS Warehouses**: Must start with `abfss://`
+- **GCP Warehouses**: Must start with `gs://`
 
 When a new table is created without an explicitly specified location, Lakekeeper automatically assigns the appropriate protocol based on the storage type. If a location is explicitly provided by the client, it must adhere to the required schema.
-
 
 ## Disabling Credential Vending & Remote Signing
 
@@ -30,8 +31,8 @@ Clients can also control credential delegation per request using the `X-Iceberg-
 
 For S3 / AWS and Azure / ADLS Warehouses, Lakekeeper optionally supports additional protocols. To enable these, activate the "Allow Alternative Protocols" flag in the storage profile of the Warehouse. When enabled, the following additional protocols are accepted for table creation or registration:
 
-* **S3 / AWS Warehouses**: Supports `s3a://` and `s3n://` in addition to `s3://`
-* **Azure Warehouses**: Supports `wasbs://` in addition to `abfss://`
+- **S3 / AWS Warehouses**: Supports `s3a://` and `s3n://` in addition to `s3://`
+- **Azure Warehouses**: Supports `wasbs://` in addition to `abfss://`
 
 ## Storage Layout
 
@@ -44,6 +45,9 @@ The storage layout controls how namespace and tabular directories are structured
 | Default                    | `"default"`                    | One directory for the direct parent namespace, one for the tabular, both with `{uuid}` templates. Used when `storage-layout` is omitted. |
 | Full hierarchy             | `"full-hierarchy"`             | One directory per namespace level in the full ancestry, one for the tabular. |
 | Tabular-only (flat)          | `"tabular-only"`                 | No namespace directories; all tabulars are placed directly under the base location. |
+
+!!! note "OneLake supports only the default layout"
+    The [OneLake](#onelake-microsoft-fabric) storage profile currently rejects `tabular-only` and `full-hierarchy` at warehouse-creation time because OneLake silently percent-decodes `%XX` in blob paths, which would alias `{name}` segments that differ only by URL-encoding. See the [OneLake storage-layout note](#onelake-microsoft-fabric) for details.
 
 ### Default
 
@@ -153,13 +157,12 @@ Namespaces have a `location` property that determines where their tabulars are s
 - **With location property**: New tabulars always use the namespace's persisted location, regardless of storage layout changes.
 - **Without location property**: These namespaces compute locations from the current storage layout. Layout changes affect new tabular placement.
 
-
 ## S3
 
 We support remote signing and vended-credentials with S3-compatible storages & AWS. Both provide a secure way to access data on S3:
 
-* **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
-* **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
+- **Remote Signing**: The client prepares an S3 request and sends its headers to the sign endpoint of Lakekeeper. Lakekeeper checks if the request is allowed, if so, it signs the request with its own credentials, creating additional headers during the process. These additional signing headers are returned to the client, which then contacts S3 directly to perform the operation on files.
+- **Vended Credentials**: Lakekeeper uses the "STS" Endpoint of S3 to generate temporary credentials which are then returned to clients.
 
 Remote signing works natively with all S3 storages that support the default `AWS Signature Version 4`. This includes almost all S3 solutions on the market today, including Rook Ceph Rados, NetApp StorageGRID 12.0 or newer, Minio and others. Vended credentials in turn depend on an additional "STS" Endpoint, that is not supported by all S3 implementations. We run our integration tests for vended credentials against Minio and AWS. We recommend to setup vended credentials for all supported stores, remote signing is not supported by all clients.
 
@@ -200,10 +203,10 @@ The following table describes all configuration parameters for an S3 storage pro
 | `legacy-md5-behavior`         | Boolean | No       | `false`                    | A flag to enable the legacy behavior of using MD5 checksums for operations that require checksums. |
 | `storage-layout`              | Object  | No       | `{"type": "default"}`      | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
-
 ### AWS
 
 ###### Direct File-Access with Access Key
+
 First create a new S3 bucket for the warehouse. Buckets can be re-used for multiple Warehouses as long as the `key-prefix` is different. We recommend to block all public access.
 
 Secondly we need to create an AWS role that can access and delegate access to the bucket. We start by creating a new Policy that allows access to data in the bucket. We call this policy `LakekeeperWarehouseDev`:
@@ -248,6 +251,7 @@ Secondly we need to create an AWS role that can access and delegate access to th
 Now create a new user, we call the user `LakekeeperWarehouseDev`, and attach the previously created policy. When the user is created, click on "Security credentials" and "Create access key". Note down the access key and secret key for later use.
 
 We are done if we only rely on remote signing. For vended credentials, we need to perform one more step. Create a new role that we call `LakekeeperWarehouseDevRole`. This role needs to be trusted by the user, which is achieved via with the following trust policy:
+
 ```json
 {
     "Version": "2012-10-17",
@@ -291,9 +295,11 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
     }
 }
 ```
+
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
 
 ##### System Identities / Managed Identities
+
 Since Lakekeeper version 0.8, credentials for S3 access can also be loaded directly from the environment. Lakekeeper integrates with the AWS SDK to support standard environment-based authentication, including all common configuration options through AWS_* environment variables.
 
 !!! note
@@ -345,6 +351,7 @@ When creating a warehouse, users must configure an IAM role with an appropriate 
 ```
 
 The role also needs S3 access, so attach a policy like this:
+
 ```json
 {
     "Version": "2012-10-17",
@@ -375,6 +382,7 @@ The role also needs S3 access, so attach a policy like this:
 ```
 
 We are now ready to create the Warehouse using the system identity:
+
 ```json
 {
     "warehouse-name": "aws_docs_managed_identity",
@@ -406,11 +414,11 @@ For browser-based access to S3 buckets (required for [DuckDB WASM](engines.md#-d
 
 To configure CORS for your S3 bucket:
 
-3. In the AWS S3 Configuration Menu, klick on the name of your bucket
-4. Choose **Permissions** Tab
-5. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
-6. In the CORS configuration editor text box, type or copy and paste a new CORS configuration, or edit an existing configuration. The CORS configuration is a JSON file. The text that you type in the editor must be valid JSON. See below for an example.
-7. Choose **Save changes**
+1. In the AWS S3 Configuration Menu, click on the name of your bucket
+2. Choose **Permissions** Tab
+3. In the **Cross-origin resource sharing (CORS)** section, choose **Edit**
+4. In the CORS configuration editor text box, type or copy and paste a new CORS configuration, or edit an existing configuration. The CORS configuration is a JSON file. The text that you type in the editor must be valid JSON. See below for an example.
+5. Choose **Save changes**
 
 Example CORS policy:
 
@@ -441,6 +449,7 @@ Example CORS policy:
 Replace `https://lakekeeper.example.com` with the origin where your Lakekeeper instance is hosted.
 
 ##### STS Session Tags
+
 The optional `sts-session-tags` setting can be used to provide Session Tags when assuming roles via STS. Doing so requires that the IAM Role's Trust Relationship also allow `sts:TagSession`. Here's the above example with this addition:
 
 ```json
@@ -473,6 +482,7 @@ The optional `sts-session-tags` setting can be used to provide Session Tags when
 ```
 
 If wanting to use a session tag in an ABAC policy, one can reference that tag via `${aws:PrincipalTag/<tag name>}`. For example, here's a policy that dynamically sets the S3 path based on a `tenant` tag:
+
 ```json
 {
     "Version": "2012-10-17",
@@ -537,6 +547,7 @@ An warehouse create call could look like this:
 ```
 
 ### Cloudflare R2
+
 Lakekeeper supports Cloudflare R2 storage with all S3 compatible clients, including vended credentials via the `/accounts/{account_id}/r2/temp-access-credentials` Endpoint.
 
 First we create a new Bucket. In the cloudflare UI, Select "R2 Object Storage" -> "Overview" and select "+ Create Bucket". We call our bucket `lakekeeper-dev`. Click on the bucket, select the "Settings" tab, and note down the "S3 API" displayed.
@@ -574,9 +585,9 @@ Finally, we can create the Warehouse in Lakekeeper via the UI or API. A POST req
 
 For cloudflare R2 credentials, the following parameters are automatically set:
 
-* `assume-role-arn` is set to None, as this is not supported
-* `sts-enabled` is set to `true`
-* `flavor` is set to `s3-compat`
+- `assume-role-arn` is set to None, as this is not supported
+- `sts-enabled` is set to `true`
+- `flavor` is set to `s3-compat`
 
 It is required to specify the `endpoint`. Use a [Data Location Hint](https://developers.cloudflare.com/r2/reference/data-location/#available-hints) as region.
 
@@ -600,7 +611,6 @@ The following table describes all configuration parameters for an ADLS storage p
 | `sas-token-validity-seconds`  | Integer | No       | `3600`                              | The validity period of the SAS token in seconds. |
 | `storage-layout`              | Object  | No       | `{"type": "default"}`               | Controls how namespace and tabular directories are structured under the warehouse base location. See [Storage Layout](#storage-layout) for details. |
 
-
 Lets start by creating a new "App Registration":
 
 1. Create a new "App Registration"
@@ -616,11 +626,11 @@ Next, we create a new Storage Account. Make sure to select "Enable hierarchical 
 
 We are now ready to create the Warehouse via the UI or the REST API. Use the following information:
 
-* **client-id**: The `Application (client) ID` of the `Lakekeeper Warehouse (Development)` App Registration.
-* **client-secret**: The "Value" of the client secret that we noted down previously.
-* **tenant-id**: The `Directory (tenant) ID` from the Applications Overview page.
-* **account-name**: Name of the Storage Account
-* **filesystem**: Name of the container (that Azure also calls filesystem) previously created. In our example its `warehouse-dev`.
+- **client-id**: The `Application (client) ID` of the `Lakekeeper Warehouse (Development)` App Registration.
+- **client-secret**: The "Value" of the client secret that we noted down previously.
+- **tenant-id**: The `Directory (tenant) ID` from the Applications Overview page.
+- **account-name**: Name of the Storage Account
+- **filesystem**: Name of the container (that Azure also calls filesystem) previously created. In our example its `warehouse-dev`.
 
 A POST request to `/management/v1/warehouse` would expects the following body:
 
@@ -658,6 +668,115 @@ LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true
 
 When enabled, Lakekeeper will use the managed identity of the virtual machine or application it is running on to access ADLS. Ensure that the managed identity has the necessary permissions to access the storage account and container. For example, assign the `Storage Blob Data Contributor` and `Storage Blob Delegator` roles to the managed identity for the relevant storage account as described above.
 
+## OneLake (Microsoft Fabric)
+
+Microsoft Fabric exposes its OneLake data lake through ADLS Gen2-compatible APIs, so Lakekeeper can back warehouses directly with a Fabric lakehouse using a dedicated `onelake` storage profile. The OneLake profile is a convenience layer over the generic ADLS profile: instead of asking you to encode the OneLake URL conventions yourself (`account_name = "onelake"`, container = workspace ID, key prefix = `<lakehouse>/Files/<dir>`), it derives those from the workspace and lakehouse UUIDs you provide. It also knows how to compute the workspace-scoped private-link endpoint host.
+
+!!! note
+    The generic `adls` profile also works against OneLake if you set the fields manually (`account-name: "onelake"`, `host: "dfs.fabric.microsoft.com"`, `filesystem: <workspace-id>`, `key-prefix: <lakehouse-id>/Files/<dir>`). The `onelake` profile is the recommended path because it validates the OneLake-specific constraints (SAS lifetime cap, supported credentials, endpoint shapes) for you and computes private-link FQDNs automatically.
+
+### Client compatibility
+
+OneLake's blob surface is API-compatible with regular ADLS Gen2 for the operations Lakekeeper's vended-credentials path uses, but client libraries need to be OneLake-aware (specifically: they have to honour `adls.account-host` so they target `*.fabric.microsoft.com` instead of defaulting to `<account>.blob.core.windows.net`). Lakekeeper emits the right property in the catalog response; the engine still has to be on a version that consumes it.
+
+| Client | Minimum version | Notes |
+|---|---|---|
+| **PyIceberg** | `0.10.0` | First release that ships both [`adls.account-host`](https://github.com/apache/iceberg-python/pull/2016) and [`adls.credential`](https://github.com/apache/iceberg-python/pull/2299). Earlier versions don't construct OneLake URLs correctly even when Lakekeeper hands them the right properties. Transitively requires `adlfs >= 2024.7.0`. |
+| **Spark + Iceberg (Java)** | `iceberg-spark-runtime` ≥ `1.5` on Spark 3.5 *or* ≥ `1.10` on Spark 4 | The Java Iceberg ADLS file IO parses the host from `abfss://<fs>@<host>/...` directly, so it's transparently OneLake-compatible for any version that supports vended ADLS credentials. |
+
+Lakekeeper's own OneLake integration tests are run against:
+
+- **Spark** `4.0.2` (`apache/spark:4.0.2-scala2.13-java21-python3-ubuntu`) with `iceberg-spark-runtime` `1.10.1`
+- **PyIceberg** `0.10.0` (with the `adlfs` extra)
+
+Older Spark 3 / Iceberg < 1.10 combinations are exercised by other suites in the same harness (`apache/spark:3.5.6-java17-python3`); the OneLake-specific paths in vended credentials don't depend on the Spark major version.
+
+### Configuration Parameters
+
+| Parameter                      | Type    | Required | Default                             | Description |
+|--------------------------------|---------|----------|-------------------------------------|-------------|
+| `workspace-id`                 | UUID    | Yes      | -                                   | UUID of the Fabric workspace this warehouse lives in. |
+| `lakehouse-id`                 | UUID    | Yes      | -                                   | UUID of the lakehouse within the workspace. |
+| `directory-rel-path`           | String  | Yes      | -                                   | Subpath beneath `<top-level-folder>/` inside the lakehouse — the root directory under which Lakekeeper writes all warehouse data. |
+| `top-level-folder`             | String  | No       | `"Files"`                           | Top-level managed folder. Either `"Files"` (recommended, Iceberg-managed data area) or `"Tables"`. Writing Iceberg metadata under `Tables/` conflicts with Fabric's automatic Delta/Iceberg virtualization — choose only with care. |
+| `endpoint-mode`                | Object  | No       | `{"type": "default"}`               | OneLake endpoint selection. See [Endpoint modes](#endpoint-modes) below. |
+| `sas-enabled`                  | Boolean | No       | `true`                              | Enable SAS-token vending. Disable to force clients to use their own credentials. |
+| `sas-token-validity-seconds`   | Integer | No       | `3600`                              | SAS-token validity in seconds. **Max: 3600 (OneLake hard cap).** Lakekeeper rejects values above 3600 and below 1; values below 60 are accepted with a warning and floored at mint time. |
+| `authority-host`               | URL     | No       | `https://login.microsoftonline.com` | Microsoft Entra authority host. |
+| `storage-layout`               | Object  | No       | `{"type": "default"}`               | **Must be `{"type": "default"}` or omitted.** OneLake silently percent-decodes `%XX` sequences in blob paths, so layouts that embed `{name}` segments (`tabular-only`, `full-hierarchy`) would alias to the same blob after server-side decoding. Only the default `{uuid}`-only layout is currently supported. See [Storage Layout](#storage-layout). |
+
+### Endpoint modes
+
+OneLake exposes three DFS endpoint shapes; the `endpoint-mode` field picks one.
+
+| Type                   | JSON                                                    | Resulting host                                                          |
+|------------------------|---------------------------------------------------------|-------------------------------------------------------------------------|
+| Default                | `{"type": "default"}`                                   | `onelake.dfs.fabric.microsoft.com`                                      |
+| Regional               | `{"type": "regional", "region": "westus"}`              | `westus-onelake.dfs.fabric.microsoft.com`                               |
+| Workspace private link | `{"type": "workspace-private-link"}`                    | `<workspace-id-no-dashes>.z<xy>.dfs.fabric.microsoft.com` (host derived from `workspace-id` automatically; `<xy>` is the first two hex characters of the un-dashed workspace UUID) |
+
+Use `regional` when data residency requires the request to stay within a specific Azure region. Use `workspace-private-link` when the workspace is fronted by a Fabric workspace-level private endpoint.
+
+!!! info "Tenant-level vs workspace-level private link"
+    Fabric supports two distinct private-link scopes, and only one of them needs a dedicated `endpoint-mode`:
+
+    - **Tenant-level private link**: traffic to the global host `onelake.dfs.fabric.microsoft.com` is routed privately via DNS that points the global FQDN at a tenant-PE NIC. From Lakekeeper's perspective this is indistinguishable from public traffic — use `default`. (Same shape as a private endpoint sitting in front of a regular ADLS Gen2 storage account: the URL Lakekeeper builds doesn't change, only DNS does.)
+    - **Workspace-level private link**: each workspace gets its own `<wsId>.z<xy>.dfs.fabric.microsoft.com` FQDN routed via a workspace-scoped PE. Lakekeeper has to build that FQDN — use `workspace-private-link`.
+
+!!! note
+    Even when `endpoint-mode` is set to `workspace-private-link`, the Lakekeeper server itself must retain DNS resolution and outbound TLS connectivity to the global host `onelake.dfs.fabric.microsoft.com`. SAS token minting (the `Get User Delegation Key` call) is not served by the workspace-FQDN private-link endpoint — Fabric returns `DeniedByPolicy` there — so Lakekeeper issues that single call against the global OneLake host. Vended client traffic (read/write of table data) still flows through the workspace private link.
+
+!!! warning "OneLake path names cannot contain `%`"
+    OneLake's request pipeline silently collapses any `%XX` percent-escape in a blob path to its decoded character before SAS validation, so a path that stores the *literal* three-character sequence `%3F` is indistinguishable from one that stores the single character `?`. Lakekeeper otherwise treats every byte in a path literally (`%41bc` is a different blob from `Abc`); on OneLake that guarantee can't hold, so the OneLake storage profile **rejects any table location whose path segments contain a literal `%`** at create time. Use a different character or strip the `%` before submitting the location.
+
+!!! warning "Only the `default` storage layout is supported"
+    The OneLake profile currently rejects `tabular-only` and `full-hierarchy` storage layouts at warehouse-creation time. These layouts can embed namespace and table **names** into the storage path via `{name}` templates, and Lakekeeper URL-percent-encodes those segments — but OneLake silently decodes `%XX` sequences server-side (see the percent-encoding warning above), so two distinct names whose encoded form differs only by a `%XX` would land at the same blob and overwrite each other. Until we land a layout that side-steps this encoding mismatch, only the default `{uuid}`-only layout is supported. Set `storage-layout` to `{"type": "default"}` or omit it.
+
+### Credentials
+
+OneLake does not have a storage-account key. Only Microsoft Entra credentials are accepted:
+
+- `client-credentials` (service principal): the standard option.
+- `azure-system-identity` (managed identity): if `LAKEKEEPER__ENABLE_AZURE_SYSTEM_CREDENTIALS=true` is set server-wide.
+
+Supplying `shared-access-key` to a OneLake warehouse is rejected at validation time.
+
+The OneLake tenant setting **"Authenticate with OneLake user-delegated SAS tokens"** must be enabled for the workspace before vended credentials work. This is a Fabric-side setting and cannot be configured from Lakekeeper.
+
+### Example
+
+A POST request to `/management/v1/warehouse` to create a OneLake-backed warehouse:
+
+```json
+{
+  "warehouse-name": "onelake_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential": {
+    "type": "az",
+    "credential-type": "client-credentials",
+    "client-id": "...",
+    "client-secret": "...",
+    "tenant-id": "..."
+  },
+  "storage-profile": {
+    "type": "onelake",
+    "workspace-id": "0388d6cb-27fd-4dc5-948b-32ab7aab9577",
+    "lakehouse-id": "eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac",
+    "directory-rel-path": "my_warehouse",
+    "endpoint-mode": { "type": "default" }
+  }
+}
+```
+
+This produces the abfss base location:
+
+```text
+abfss://0388d6cb-27fd-4dc5-948b-32ab7aab9577@onelake.dfs.fabric.microsoft.com/eb2b7644-2ae4-43ed-ad08-8cc295ffa7ac/Files/my_warehouse/
+```
+
+### Immutability
+
+Most fields are immutable on `update-storage-profile` because changing them would orphan every table previously written to the warehouse: `workspace-id`, `lakehouse-id`, `top-level-folder`, `directory-rel-path`, and `endpoint-mode`. The following fields can be updated: `sas-token-validity-seconds`, `sas-enabled`, `authority-host`, `storage-layout`.
 
 ## Google Cloud Storage
 
@@ -724,4 +843,5 @@ GCP system identities allow Lakekeeper to authenticate using the service account
 ```bash
 LAKEKEEPER__ENABLE_GCP_SYSTEM_CREDENTIALS=true
 ```
+
 When using system identity, Lakekeeper will use the service account associated with the application or virtual machine to access Google Cloud Storage (GCS). Ensure that the service account has the necessary permissions, such as the Storage Admin role on the target bucket.
