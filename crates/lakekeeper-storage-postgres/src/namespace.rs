@@ -2,7 +2,6 @@ use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use iceberg::TableIdent;
 use itertools::izip;
-use lakekeeper_io::Location;
 use lakekeeper::{
     CONFIG, WarehouseId,
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
@@ -19,6 +18,7 @@ use lakekeeper::{
         SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
+use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -833,12 +833,11 @@ pub(crate) async fn drop_namespace(
         namespace_locations: info
             .dropped_ns_ids
             .into_iter()
-            .zip(info.dropped_ns_locations.into_iter())
+            .zip(info.dropped_ns_locations)
             .map(|(ns_id, loc)| {
                 Ok::<_, CatalogNamespaceDropError>((
                     NamespaceId::from(ns_id),
-                    Location::from_str(&loc)
-                        .map_err(InternalParseLocationError::from)?,
+                    Location::from_str(&loc).map_err(InternalParseLocationError::from)?,
                 ))
             })
             .collect::<std::result::Result<Vec<_>, _>>()?,

@@ -12,13 +12,11 @@ mod test {
     use bytes::Bytes;
     use iceberg::NamespaceIdent;
     use lakekeeper::{
-        api::{
-            iceberg::{
-                types::Prefix,
-                v1::{
-                    NamespaceParameters,
-                    namespace::{NamespaceDropFlags, NamespaceService},
-                },
+        api::iceberg::{
+            types::Prefix,
+            v1::{
+                NamespaceParameters,
+                namespace::{NamespaceDropFlags, NamespaceService},
             },
         },
         server::CatalogServer,
@@ -157,18 +155,11 @@ mod test {
         let prefix = warehouse.warehouse_id.to_string();
 
         // Create a namespace with a table
-        let _ns =
-            create_ns(ctx.clone(), prefix.clone(), "recursive-ns".to_string()).await;
+        let _ns = create_ns(ctx.clone(), prefix.clone(), "recursive-ns".to_string()).await;
 
-        let _ = create_table(
-            ctx.clone(),
-            &prefix,
-            "recursive-ns",
-            "test-table",
-            false,
-        )
-        .await
-        .unwrap();
+        let _ = create_table(ctx.clone(), &prefix, "recursive-ns", "test-table", false)
+            .await
+            .unwrap();
 
         // Recursive drop with purge
         drop_namespace(

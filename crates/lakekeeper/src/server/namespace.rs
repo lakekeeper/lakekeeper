@@ -461,6 +461,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 
     /// Drop a namespace from the catalog. Namespace must be empty.
+    #[allow(clippy::too_many_lines)]
     async fn drop_namespace(
         parameters: NamespaceParameters,
         flags: NamespaceDropFlags,
