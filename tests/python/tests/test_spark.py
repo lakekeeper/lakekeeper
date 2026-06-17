@@ -747,8 +747,13 @@ def test_drop_with_shared_prefix(spark, namespace, warehouse: conftest.Warehouse
         (*namespace.name, str(table_id))
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     first_table_id = str(uuid.uuid4()).replace("-", "_")
@@ -793,8 +798,13 @@ def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
         (*namespace.name, "my_table")
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     spark.sql(
@@ -828,8 +838,13 @@ def test_cannot_create_table_at_same_location(
         (*namespace.name, "my_table")
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     spark.sql(
@@ -872,8 +887,13 @@ def test_cannot_create_table_at_sub_location(
         (*namespace.name, "my_table")
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rsplit("/", 1)[0] + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     spark.sql(
