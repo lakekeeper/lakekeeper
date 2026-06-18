@@ -978,9 +978,9 @@ impl S3Profile {
                 "Action": actions,
                 // `{key}*` already matches the exact key `{key}` (IAM `*` is
                 // zero-or-more chars), so a single wildcard ARN is sufficient.
-                // Keeping it to one entry also shrinks the inline session
-                // policy, which AWS STS caps at 2048 packed bytes — long
-                // `full-hierarchy` paths can otherwise overflow it.
+                // Keeping it to one entry also keeps the policy smaller, which
+                // matters because AWS STS enforces a (small, undocumented)
+                // limit on the *packed* size of the session policy.
                 "Resource": format!("{bucket_arn}/{key_wildcard}"),
             }),
             json!({
@@ -2335,22 +2335,19 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn policy_string_stays_within_aws_packed_policy_limit() {
-        // AWS STS rejects an inline session policy whose packed size exceeds
-        // 2048 bytes (`PackedPolicyTooLarge`). With the `full-hierarchy`
-        // storage layout each namespace level and the tabular contribute a
-        // `{name}-{uuid}` path segment, and special characters are
-        // percent-encoded — so deeply nested, special-character paths produce
-        // very long keys. This is the exact scenario that overflowed the
-        // limit (integration tests `test_hierarchical_namespaces` /
-        // `test_special_characters_in_names` on AWS STS). The policy embeds
-        // the key, so keeping it to a single object ARN must keep us under the
-        // cap with margin even in this worst case.
+    fn policy_string_stays_within_aws_plaintext_policy_limit() {
+        // AWS STS caps the *plaintext* inline session policy at 2048 chars.
+        // (There is a second, tighter limit on the *packed* size that is not
+        // publicly documented and also counts session tags / injected context;
+        // that one cannot be asserted reliably here. We keep the policy minimal
+        // — a single object ARN — and, for vended-credential storage layouts
+        // that embed long paths, avoid pathological keys at the test/config
+        // level rather than relying on this assertion.)
         //
-        // Path below mirrors a 4-level nested namespace + tabular, each
-        // segment `{name}-{uuid}` (uuid = 36 chars), with the worst-case
-        // special-character names percent-encoded, a maximal 63-char bucket
-        // name, and a long key-prefix.
+        // Path below is a deliberately long key — a 4-level nested namespace +
+        // tabular, each segment `{name}-{uuid}` (uuid = 36 chars), worst-case
+        // special-character names percent-encoded, a maximal 63-char bucket,
+        // and a long key-prefix — to guard against gross plaintext blowup.
         let bucket = "a-very-long-but-valid-integration-test-bucket-name-us-east-1-xy";
         assert_eq!(bucket.len(), 63, "bucket should be at AWS max length");
         let table_location = format!(
@@ -2375,11 +2372,11 @@ pub(crate) mod test {
                 StoragePermissions::ReadWriteDelete,
             )
             .unwrap();
-        // Must be valid JSON and comfortably under the 2048-byte AWS limit.
+        // Must be valid JSON and within the 2048-char plaintext AWS limit.
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
         assert!(
             policy.len() <= 2048,
-            "downscoped policy exceeds AWS STS 2048-byte limit ({} bytes): {policy}",
+            "downscoped policy exceeds AWS STS 2048-char plaintext limit ({} chars): {policy}",
             policy.len()
         );
     }
