@@ -5512,7 +5512,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperNamespaceAction'
+            $ref: '#/components/schemas/LakekeeperNamespaceActionKind'
     GetLakekeeperProjectActionsResponse:
       type: object
       required:
@@ -5521,7 +5521,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperProjectAction'
+            $ref: '#/components/schemas/LakekeeperProjectActionKind'
     GetLakekeeperRoleActionsResponse:
       type: object
       required:
@@ -5530,7 +5530,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperRoleAction'
+            $ref: '#/components/schemas/LakekeeperRoleActionKind'
     GetLakekeeperServerActionsResponse:
       type: object
       required:
@@ -5539,7 +5539,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperServerAction'
+            $ref: '#/components/schemas/LakekeeperServerActionKind'
     GetLakekeeperTableActionsResponse:
       type: object
       required:
@@ -5548,7 +5548,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperTableAction'
+            $ref: '#/components/schemas/LakekeeperTableActionKind'
     GetLakekeeperUserActionsResponse:
       type: object
       required:
@@ -5566,7 +5566,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperViewAction'
+            $ref: '#/components/schemas/LakekeeperViewActionKind'
     GetLakekeeperWarehouseActionsResponse:
       type: object
       required:
@@ -5575,7 +5575,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperWarehouseAction'
+            $ref: '#/components/schemas/LakekeeperWarehouseActionKind'
     GetNamespaceAccessResponse:
       type: object
       required:
@@ -6127,6 +6127,20 @@ components:
               type: string
               enum:
                 - delete
+            force:
+              type: boolean
+              description: |-
+                Whether the warehouse-configured soft-deletion is bypassed, i.e.
+                contained tabulars are hard-deleted immediately instead of being
+                recoverable for the configured grace period.
+            purge:
+              type: boolean
+              description: Whether the underlying data/metadata files are physically purged.
+            recursive:
+              type: boolean
+              description: |-
+                Whether the drop recurses into child namespaces, tables and views,
+                deleting the entire subtree rooted at this namespace.
         - type: object
           required:
             - action
@@ -6240,6 +6254,120 @@ components:
                 type: string
               propertyNames:
                 type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_generic_tables
+    LakekeeperNamespaceActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_table
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_view
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_properties
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_tables
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_views
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_generic_table
         - type: object
           required:
             - action
@@ -6372,7 +6500,121 @@ components:
               type: string
               enum:
                 - control_project_tasks
-    LakekeeperRoleAction:
+    LakekeeperProjectActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_warehouse
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_warehouses
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_role
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - search_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_project_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_project_tasks
+    LakekeeperRoleActionKind:
       oneOf:
         - type: object
           required:
@@ -6407,7 +6649,6 @@ components:
               enum:
                 - update
         - type: object
-          description: Can add/remove members (user or role) of this role.
           required:
             - action
           properties:
@@ -6416,7 +6657,6 @@ components:
               enum:
                 - manage_role_assignments
         - type: object
-          description: Can list members / parents / assignments of this role.
           required:
             - action
           properties:
@@ -6425,31 +6665,13 @@ components:
               enum:
                 - read_role_assignments
         - type: object
-          description: |-
-            Can rebind this role's external identity (provider + source id) to a
-            different source system. `target` is the rebind destination, surfaced as
-            action context (`target_provider_id` / `target_source_id`) so policy-based
-            authorizers can gate it (e.g. forbid moving a role onto a particular
-            provider). The catalog backend treats this the same as
-            `ManageRoleAssignments`.
-
-            The destination is explicit: [`SourceSystemTarget::To`] on the actual write
-            (the handler builds it from the request) and [`SourceSystemTarget::Any`] in
-            the `GET /role/{id}/actions` introspection enumeration / any "may this
-            principal rebind at all?" query. `Any` is a named base-capability marker, not
-            a permissive default: a per-destination policy gates the concrete `To` target
-            and never matches `Any`, and a `/check` caller chooses `To`/`Any`
-            deliberately.
           required:
-            - target
             - action
           properties:
             action:
               type: string
               enum:
                 - update_source_system
-            target:
-              $ref: '#/components/schemas/SourceSystemTarget'
     LakekeeperServerAction:
       oneOf:
         - type: object
@@ -6507,6 +6729,48 @@ components:
               type: string
               enum:
                 - provision_users
+    LakekeeperServerActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_project
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - provision_users
     LakekeeperTableAction:
       oneOf:
         - type: object
@@ -6517,6 +6781,15 @@ components:
               type: string
               enum:
                 - drop
+            force:
+              type: boolean
+              description: |-
+                Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+                table is hard-deleted immediately instead of being recoverable for the
+                configured grace period. Extra destructive — irreversible right away.
+            purge:
+              type: boolean
+              description: Whether the underlying data files are physically purged from storage.
         - type: object
           required:
             - action
@@ -6559,6 +6832,96 @@ components:
                 type: string
               propertyNames:
                 type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+    LakekeeperTableActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - write_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
         - type: object
           required:
             - action
@@ -6651,6 +7014,15 @@ components:
               type: string
               enum:
                 - drop
+            force:
+              type: boolean
+              description: |-
+                Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+                view is hard-deleted immediately instead of being recoverable for the
+                configured grace period. Extra destructive — irreversible right away.
+            purge:
+              type: boolean
+              description: Whether the underlying metadata files are physically purged from storage.
         - type: object
           required:
             - action
@@ -6733,6 +7105,88 @@ components:
               type: string
               enum:
                 - set_protection
+    LakekeeperViewActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - select
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperWarehouseAction:
       oneOf:
         - type: object
@@ -6754,6 +7208,184 @@ components:
                 type: string
               propertyNames:
                 type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage_credential
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - use
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - deactivate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - activate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_deleted_tabulars
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_soft_deletion
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_format_version_policy
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
+    LakekeeperWarehouseActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
         - type: object
           required:
             - action
@@ -7910,23 +8542,6 @@ components:
       enum:
         - assignee
         - ownership
-    RoleSourceSystem:
-      type: object
-      description: |-
-        The external identity (source system) a role is bound to: a `(provider_id,
-        source_id)` pair. An external identity is always both parts together, so this
-        type makes a partial binding unrepresentable. Used as the rebind destination
-        in [`CatalogRoleAction::UpdateSourceSystem`].
-      required:
-        - provider_id
-        - source_id
-      properties:
-        provider_id:
-          type: string
-          description: Provider that owns the role (e.g. `oidc`, `ldap`).
-        source_id:
-          type: string
-          description: Identifier of the role within the provider.
     S3AccessKeyCredential:
       type: object
       title: S3CredentialAccessKey
@@ -8488,29 +9103,6 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
-    SourceSystemTarget:
-      oneOf:
-        - type: object
-          description: Concrete rebind destination.
-          required:
-            - to
-          properties:
-            to:
-              $ref: '#/components/schemas/RoleSourceSystem'
-              description: Concrete rebind destination.
-        - type: string
-          description: No specific destination — base-capability / introspection marker.
-          enum:
-            - any
-      description: |-
-        The destination of a [`CatalogRoleAction::UpdateSourceSystem`] rebind.
-
-        `To` names a concrete external identity (the real authorization check); `Any`
-        is the destination-less base-capability marker used for permission
-        introspection and "can this principal rebind at all?" queries. Keeping the base
-        case an explicit, named variant — rather than an absent/`None` value — means an
-        authorizer is never silently asked to allow an unspecified rebind: a
-        per-destination policy gates the concrete `To` target and never matches `Any`.
     StorageCredential:
       oneOf:
         - allOf:
