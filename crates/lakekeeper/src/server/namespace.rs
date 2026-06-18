@@ -508,7 +508,11 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.events,
             warehouse_id,
             parameters.namespace.clone(),
-            CatalogNamespaceAction::Delete,
+            CatalogNamespaceAction::Delete {
+                force: flags.force,
+                purge: flags.purge,
+                recursive: flags.recursive,
+            },
         );
 
         let authz_result = authorizer

@@ -1309,7 +1309,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CreateTable { .. } => NamespaceRelation::CanCreateTable,
             CatalogNamespaceAction::CreateView { .. } => NamespaceRelation::CanCreateView,
             CatalogNamespaceAction::CreateNamespace { .. } => NamespaceRelation::CanCreateNamespace,
-            CatalogNamespaceAction::Delete => NamespaceRelation::CanDelete,
+            CatalogNamespaceAction::Delete { .. } => NamespaceRelation::CanDelete,
             CatalogNamespaceAction::UpdateProperties { .. } => {
                 NamespaceRelation::CanUpdateProperties
             }
@@ -1578,7 +1578,7 @@ impl ReducedRelation for CatalogTableAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogTableAction::Drop => TableRelation::CanDrop,
+            CatalogTableAction::Drop { .. } => TableRelation::CanDrop,
             CatalogTableAction::WriteData => TableRelation::CanWriteData,
             CatalogTableAction::ReadData => TableRelation::CanReadData,
             CatalogTableAction::GetMetadata => TableRelation::CanGetMetadata,
@@ -1840,7 +1840,7 @@ impl ReducedRelation for CatalogViewAction {
 
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
-            CatalogViewAction::Drop => ViewRelation::CanDrop,
+            CatalogViewAction::Drop { .. } => ViewRelation::CanDrop,
             CatalogViewAction::Commit { .. } => ViewRelation::CanCommit,
             CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
             CatalogViewAction::Select => ViewRelation::CanSelect,

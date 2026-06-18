@@ -77,6 +77,12 @@ where
     Ok(Arc::new(string_map))
 }
 
+/// `serde` `skip_serializing_if` helper for `bool` fields that default to `false`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Assignees to a role
 pub struct RoleAssignee(ArcRole);
@@ -792,7 +798,20 @@ pub enum CatalogNamespaceAction {
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
     },
-    Delete,
+    Delete {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e.
+        /// contained tabulars are hard-deleted immediately instead of being
+        /// recoverable for the configured grace period.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying data/metadata files are physically purged.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+        /// Whether the drop recurses into child namespaces, tables and views,
+        /// deleting the entire subtree rooted at this namespace.
+        #[serde(default, skip_serializing_if = "is_false")]
+        recursive: bool,
+    },
     UpdateProperties {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed_properties: Arc<Vec<String>>,
@@ -844,7 +863,11 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyL
             name: None,
             properties: Arc::new(BTreeMap::new()),
         },
-        CatalogNamespaceAction::Delete,
+        CatalogNamespaceAction::Delete {
+            force: false,
+            purge: false,
+            recursive: false,
+        },
         CatalogNamespaceAction::UpdateProperties {
             removed_properties: Arc::new(Vec::new()),
             updated_properties: Arc::new(BTreeMap::new()),
@@ -933,6 +956,21 @@ impl CatalogAction for CatalogNamespaceAction {
                     b = b.context_list("removed-properties", removed_properties.as_ref().clone());
                 }
             }
+            Self::Delete {
+                force,
+                purge,
+                recursive,
+            } => {
+                if *force {
+                    b = b.context_string("force", "true");
+                }
+                if *purge {
+                    b = b.context_string("purge", "true");
+                }
+                if *recursive {
+                    b = b.context_string("recursive", "true");
+                }
+            }
             _ => {}
         }
         b.build()
@@ -955,7 +993,16 @@ impl CatalogAction for CatalogNamespaceAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
-    Drop,
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        /// table is hard-deleted immediately instead of being recoverable for the
+        /// configured grace period. Extra destructive — irreversible right away.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying data files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
     WriteData,
     ReadData,
     GetMetadata,
@@ -975,7 +1022,10 @@ pub enum CatalogTableAction {
 }
 static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new(|| {
     [
-        CatalogTableAction::Drop,
+        CatalogTableAction::Drop {
+            force: false,
+            purge: false,
+        },
         CatalogTableAction::WriteData,
         CatalogTableAction::ReadData,
         CatalogTableAction::GetMetadata,
@@ -1000,17 +1050,27 @@ impl CatalogTableAction {
 impl CatalogAction for CatalogTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::Commit {
-            updated_properties,
-            removed_properties,
-        } = self
-        {
-            if !updated_properties.is_empty() {
-                b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+        match self {
+            Self::Commit {
+                updated_properties,
+                removed_properties,
+            } => {
+                if !updated_properties.is_empty() {
+                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                }
+                if !removed_properties.is_empty() {
+                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                }
             }
-            if !removed_properties.is_empty() {
-                b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+            Self::Drop { force, purge } => {
+                if *force {
+                    b = b.context_string("force", "true");
+                }
+                if *purge {
+                    b = b.context_string("purge", "true");
+                }
             }
+            _ => {}
         }
         b.build()
     }
@@ -1032,7 +1092,16 @@ impl CatalogAction for CatalogTableAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
-    Drop,
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        /// view is hard-deleted immediately instead of being recoverable for the
+        /// configured grace period. Extra destructive — irreversible right away.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying metadata files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
     GetMetadata,
     Select,
     Commit {
@@ -1051,7 +1120,10 @@ pub enum CatalogViewAction {
 }
 static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|| {
     [
-        CatalogViewAction::Drop,
+        CatalogViewAction::Drop {
+            force: false,
+            purge: false,
+        },
         CatalogViewAction::GetMetadata,
         CatalogViewAction::Select,
         CatalogViewAction::Commit {
@@ -1075,17 +1147,27 @@ impl CatalogViewAction {
 impl CatalogAction for CatalogViewAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::Commit {
-            updated_properties,
-            removed_properties,
-        } = self
-        {
-            if !updated_properties.is_empty() {
-                b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+        match self {
+            Self::Commit {
+                updated_properties,
+                removed_properties,
+            } => {
+                if !updated_properties.is_empty() {
+                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                }
+                if !removed_properties.is_empty() {
+                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                }
             }
-            if !removed_properties.is_empty() {
-                b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+            Self::Drop { force, purge } => {
+                if *force {
+                    b = b.context_string("force", "true");
+                }
+                if *purge {
+                    b = b.context_string("purge", "true");
+                }
             }
+            _ => {}
         }
         b.build()
     }
@@ -1657,7 +1739,11 @@ pub mod tests {
                 serde_json::json!({"action": "list_everything"}),
             ),
             (
-                CatalogNamespaceAction::Delete,
+                CatalogNamespaceAction::Delete {
+                    force: false,
+                    purge: false,
+                    recursive: false,
+                },
                 serde_json::json!({"action": "delete"}),
             ),
             (
@@ -1841,7 +1927,10 @@ pub mod tests {
     fn test_catalog_view_action_serde_no_properties() {
         for (action, expected) in [
             (
-                CatalogViewAction::Drop,
+                CatalogViewAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 serde_json::json!({"action": "drop"}),
             ),
             (
@@ -1899,7 +1988,10 @@ pub mod tests {
     fn test_catalog_table_action_serde_no_properties() {
         for (action, expected) in [
             (
-                CatalogTableAction::Drop,
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 serde_json::json!({"action": "drop"}),
             ),
             (
@@ -2627,7 +2719,10 @@ pub mod tests {
     );
     test_block_action!(
         table,
-        CatalogTableAction::Drop,
+        CatalogTableAction::Drop {
+            force: false,
+            purge: false,
+        },
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -2650,7 +2745,10 @@ pub mod tests {
     );
     test_block_action!(
         view,
-        CatalogViewAction::Drop,
+        CatalogViewAction::Drop {
+            force: false,
+            purge: false,
+        },
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -2810,7 +2908,16 @@ pub mod tests {
         // Drop (control-plane) — also block it, and verify instance admin STILL
         // bypasses it. This confirms that the bypass applies selectively within
         // a single batch.
-        authz.block_action(format!("table:{:?}", CatalogTableAction::Drop).as_str());
+        authz.block_action(
+            format!(
+                "table:{:?}",
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }
+            )
+            .as_str(),
+        );
         let allowed = authz
             .is_allowed_table_action(
                 &md,
@@ -2818,7 +2925,10 @@ pub mod tests {
                 &warehouse,
                 &hierarchy,
                 &table_info,
-                CatalogTableAction::Drop,
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
             )
             .await
             .unwrap()
