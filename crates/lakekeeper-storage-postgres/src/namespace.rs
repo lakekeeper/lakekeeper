@@ -834,13 +834,18 @@ pub(crate) async fn drop_namespace(
             .dropped_ns_ids
             .into_iter()
             .zip(info.dropped_ns_locations)
-            .map(|(ns_id, loc)| {
-                Ok::<_, CatalogNamespaceDropError>((
-                    NamespaceId::from(ns_id),
-                    Location::from_str(&loc).map_err(InternalParseLocationError::from)?,
-                ))
+            .filter_map(|(ns_id, loc)| {
+                match Location::from_str(&loc) {
+                    Ok(location) => Some((NamespaceId::from(ns_id), location)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse namespace location '{loc}' for cleanup, skipping: {e}"
+                        );
+                        None
+                    }
+                }
             })
-            .collect::<std::result::Result<Vec<_>, _>>()?,
+            .collect(),
     })
 }
 
