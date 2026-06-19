@@ -78,6 +78,8 @@ pub(crate) mod role_assignments_cache;
 pub use idempotency::*;
 pub mod generic_table;
 pub use generic_table::*;
+mod tag;
+pub use tag::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
