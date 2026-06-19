@@ -423,6 +423,27 @@ pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<Migra
         }
     };
 
+    // Downgrade guard: if the DB carries an applied version this binary's
+    // migrator doesn't contain, the DB was migrated by a newer Lakekeeper.
+    // Compared on version alone — a known-version-but-changed-checksum is
+    // drift (handled by `migrate()` via VersionMismatch / sha_patch), not a
+    // newer DB. Reported before the "missing" check because an older binary's
+    // migrations are a subset of applied, so it would otherwise look Complete.
+    let binary_versions: HashSet<i64> = m.migrations.iter().map(|mig| mig.version).collect();
+    let ahead: Vec<i64> = applied_migrations
+        .iter()
+        .map(|mig| mig.version)
+        .filter(|v| !binary_versions.contains(v))
+        .collect();
+    if !ahead.is_empty() {
+        tracing::warn!(
+            ?ahead,
+            "Database has applied migrations unknown to this binary — it was migrated by a newer \
+             Lakekeeper. This binary is too old to run against it."
+        );
+        return Ok(MigrationState::Ahead);
+    }
+
     let to_be_applied = m
         .migrations
         .iter()
@@ -450,6 +471,11 @@ pub enum MigrationState {
     Complete,
     Missing,
     NoMigrationsTable,
+    /// The database has applied migrations whose versions this binary's
+    /// migrator does not know — it was migrated by a *newer* Lakekeeper.
+    /// Running this (older) binary against it is unsafe; callers must refuse
+    /// to start rather than retry (waiting never resolves a newer DB).
+    Ahead,
 }
 
 pub trait MigrationHook: Send + Sync + 'static {
@@ -518,7 +544,9 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{ExtensionMigrations, migrate, migrate_core_only};
+    use super::{
+        ExtensionMigrations, MigrationState, check_migration_status, migrate, migrate_core_only,
+    };
 
     async fn table_exists(pool: &PgPool, name: &str) -> bool {
         sqlx::query_scalar::<_, bool>(
@@ -529,6 +557,49 @@ mod tests {
         .fetch_one(pool)
         .await
         .unwrap()
+    }
+
+    /// Downgrade guard: a database migrated by a *newer* Lakekeeper — its
+    /// `_sqlx_migrations` carries versions this binary's migrator does not know
+    /// — must be reported as `Ahead`, not `Complete`. The one-directional
+    /// "are all my migrations applied?" check missed this: an older binary's
+    /// migrations are a subset of what's applied, so nothing looks missing.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_migration_status_detects_newer_db(pool: PgPool) {
+        migrate_core_only(&pool)
+            .await
+            .expect("core-only migrate must succeed");
+
+        // Freshly migrated by this same binary → up to date.
+        assert!(
+            matches!(
+                check_migration_status(&pool).await.unwrap(),
+                MigrationState::Complete
+            ),
+            "freshly migrated DB should be Complete"
+        );
+
+        // Simulate a newer binary having migrated this DB: a tracker row whose
+        // version is beyond anything this binary's migrator contains.
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations \
+               (version, description, installed_on, success, checksum, execution_time) \
+             VALUES ($1, $2, now(), true, $3, 0)",
+        )
+        .bind(99_999_999_999_999_i64)
+        .bind("future migration from a newer binary")
+        .bind(vec![0_u8; 32])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(
+                check_migration_status(&pool).await.unwrap(),
+                MigrationState::Ahead
+            ),
+            "DB with a migration unknown to this binary must report Ahead"
+        );
     }
 
     /// An operator runs upstream OSS by itself for a while (their
