@@ -976,10 +976,12 @@ impl S3Profile {
                 "Sid": "TableAccess",
                 "Effect": "Allow",
                 "Action": actions,
-                "Resource": [
-                    format!("{bucket_arn}/{key}"),
-                    format!("{bucket_arn}/{key_wildcard}"),
-                ],
+                // `{key}*` already matches the exact key `{key}` (IAM `*` is
+                // zero-or-more chars), so a single wildcard ARN is sufficient.
+                // Keeping it to one entry also keeps the policy smaller, which
+                // matters because AWS STS enforces a (small, undocumented)
+                // limit on the *packed* size of the session policy.
+                "Resource": format!("{bucket_arn}/{key_wildcard}"),
             }),
             json!({
                 "Sid": "ListBucketForFolder",
@@ -2266,12 +2268,10 @@ pub(crate) mod test {
             "expected `\\\\` in serialized policy, got: {policy}"
         );
         // And the parsed JSON must contain a single literal backslash.
-        let resources = parsed["Statement"][0]["Resource"].as_array().unwrap();
+        let resource = parsed["Statement"][0]["Resource"].as_str().unwrap();
         assert!(
-            resources
-                .iter()
-                .any(|r| r.as_str().unwrap().contains(r"back\slash")),
-            "expected literal backslash in parsed Resource, got: {resources:?}"
+            resource.contains(r"back\slash"),
+            "expected literal backslash in parsed Resource, got: {resource:?}"
         );
     }
 
@@ -2303,6 +2303,82 @@ pub(crate) mod test {
             "raw `?` leaked into policy: {policy}"
         );
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    #[test]
+    fn policy_string_table_access_is_single_wildcard_resource() {
+        // The downscoped policy must grant object access via a single
+        // `{key}*` wildcard ARN. IAM `*` matches zero-or-more characters, so
+        // `{key}*` already covers the exact key `{key}` — a second exact-key
+        // ARN would be redundant and only inflate the inline session policy.
+        let table_location = "s3://bucket-name/wh/ns/table";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        let resource = &parsed["Statement"][0]["Resource"];
+        // Single scalar ARN (not an array), ending in the trailing wildcard.
+        let resource = resource.as_str().unwrap_or_else(|| {
+            panic!("TableAccess Resource must be a scalar string, got: {resource}")
+        });
+        assert_eq!(resource, "arn:aws:s3:::bucket-name/wh/ns/table/*");
+    }
+
+    #[test]
+    fn policy_string_stays_within_aws_plaintext_policy_limit() {
+        // AWS STS caps the *plaintext* inline session policy at 2048 chars.
+        // (There is a second, tighter limit on the *packed* size that is not
+        // publicly documented and also counts session tags / injected context;
+        // that one cannot be asserted reliably here. We keep the policy minimal
+        // — a single object ARN — and, for vended-credential storage layouts
+        // that embed long paths, avoid pathological keys at the test/config
+        // level rather than relying on this assertion.)
+        //
+        // Path below is a deliberately long key — a 4-level nested namespace +
+        // tabular, each segment `{name}-{uuid}` (uuid = 36 chars), worst-case
+        // special-character names percent-encoded, a maximal 63-char bucket,
+        // and a long key-prefix — to guard against gross plaintext blowup.
+        let bucket = "a-very-long-but-valid-integration-test-bucket-name-us-east-1-xy";
+        assert_eq!(bucket.len(), 63, "bucket should be at AWS max length");
+        let table_location = format!(
+            "s3://{bucket}/\
+             lakekeeper-integration-tests/0123456789abcdef0123456789abcdef/\
+             namespace-11111111-1111-1111-1111-111111111111/\
+             specialns%2C-1_%C3%A4-22222222-2222-2222-2222-222222222222/\
+             nest_%E4%B8%AD%E6%96%87_2-33333333-3333-3333-3333-333333333333/\
+             l%C3%ABvel_3_%F0%9F%9A%80-44444444-4444-4444-4444-444444444444/\
+             t%C3%A5ble_%C3%A9moji_%F0%9F%8E%AF-55555555-5555-5555-5555-555555555555"
+        );
+        let profile = S3Profile::builder()
+            .bucket(bucket.to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws:iam::123456789012:role/lakekeeper-sts".to_string())
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        // Must be valid JSON and within the 2048-char plaintext AWS limit.
+        let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+        assert!(
+            policy.len() <= 2048,
+            "downscoped policy exceeds AWS STS 2048-char plaintext limit ({} chars): {policy}",
+            policy.len()
+        );
     }
 
     #[test]

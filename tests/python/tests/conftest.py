@@ -189,7 +189,7 @@ def storage_config(request) -> dict:
     layout = {
         "type": "full-hierarchy",
         "namespace": "{name}-{uuid}",
-        "table": "{name}-{uuid}",
+        "tabular": "{name}-{uuid}",
     }
 
     if request.param["type"] == "s3":
@@ -221,7 +221,7 @@ def storage_config(request) -> dict:
                 "flavor": "minio",
                 "sts-enabled": request.param["sts-enabled"],
                 "legacy-md5-behavior": legacy_md5_behavior,
-                "layout": layout,
+                "storage-layout": layout,
                 **extra_config,
             },
             "storage-credential": {
@@ -256,7 +256,7 @@ def storage_config(request) -> dict:
             "sts-role-arn": (
                 aws_s3_sts_role_arn if request.param["sts-enabled"] else None
             ),
-            "layout": layout,
+            "storage-layout": layout,
         }
 
         if settings.aws_s3_use_system_identity:
@@ -302,7 +302,7 @@ def storage_config(request) -> dict:
                 **extra_config,
                 "key-prefix": test_id,
                 "sas-token-validity-seconds": 60,
-                "layout": layout,
+                "storage-layout": layout,
             },
             "storage-credential": {
                 "type": "az",
@@ -350,7 +350,7 @@ def storage_config(request) -> dict:
                 "directory-rel-path": test_id,
                 "endpoint-mode": endpoint_mode_json,
                 "sas-token-validity-seconds": 60,
-                "layout": layout,
+                # "storage-layout": layout, # onelake only supports "default" because flat and full-hierarchy allow templates with {name}, which can get us into problems with %encoded path segments
             },
             "storage-credential": {
                 "type": "az",
@@ -369,7 +369,7 @@ def storage_config(request) -> dict:
                 "type": "gcs",
                 "bucket": settings.gcs_bucket,
                 "key-prefix": test_id,
-                "layout": layout,
+                "storage-layout": layout,
             },
             "storage-credential": {
                 "type": "gcs",

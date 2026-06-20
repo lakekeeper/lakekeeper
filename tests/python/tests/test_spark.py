@@ -1049,6 +1049,22 @@ def test_special_characters_in_names(
         "table,with,commas",
     ]
 
+    # This test exercises special-character *identifiers* (namespace/table
+    # names) in the catalog. Under the full-hierarchy storage layout those
+    # names also land in the storage path, and real AWS STS caps the *packed*
+    # size of the vended session policy (PackedPolicyTooLarge) — the long
+    # percent-encoded names overflow that budget. So pin each table to a short
+    # location under the warehouse base: the catalog still stores the special
+    # identifiers, but the vended-credential policy stays small. Special
+    # characters *in the storage path* (and the STS policy escaping for them)
+    # are covered separately by test_special_char_locations.py.
+    base_location = namespace.pyiceberg_catalog.load_namespace_properties(
+        namespace.name
+    )["location"].rstrip("/")
+
+    def short_location() -> str:
+        return f"{base_location}/sc-{uuid.uuid4().hex}"
+
     # Test creating nested namespaces with special characters
     for i, special_name in enumerate(special_namespace_names):
         full_namespace = f"{namespace.spark_name}.`{special_name}`"
@@ -1066,6 +1082,7 @@ def test_special_characters_in_names(
         # Create table in the special namespace
         spark.sql(
             f"CREATE TABLE {full_namespace}.my_table (id INT, value STRING) USING iceberg"
+            f" LOCATION '{short_location()}'"
         )
         spark.sql(f"INSERT INTO {full_namespace}.my_table VALUES ({i + 1}, 'test_{i}')")
 
@@ -1079,6 +1096,7 @@ def test_special_characters_in_names(
     for i, special_table_name in enumerate(special_table_names):
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.`{special_table_name}` (id INT, value STRING) USING iceberg"
+            f" LOCATION '{short_location()}'"
         )
         spark.sql(
             f"INSERT INTO {namespace.spark_name}.`{special_table_name}` VALUES ({i}, 'value_{i}')"
@@ -1112,6 +1130,7 @@ def test_special_characters_in_names(
         full_ns = ".".join(this_namespace)
         spark.sql(
             f"CREATE TABLE {full_ns}.`tåble_émoji_🎯` (id INT, data STRING) USING iceberg"
+            f" LOCATION '{short_location()}'"
         )
         spark.sql(
             f"INSERT INTO {full_ns}.`tåble_émoji_🎯` VALUES ({i}, 'nested_level_{i}')"
