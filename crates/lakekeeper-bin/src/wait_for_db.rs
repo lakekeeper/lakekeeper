@@ -1,7 +1,7 @@
 use lakekeeper::{tokio, tracing};
 use lakekeeper_storage_postgres::{
     config::CONFIG as PG_CONFIG,
-    get_reader_pool,
+    get_writer_pool,
     migrations::{MigrationState, check_migration_status},
 };
 
@@ -37,8 +37,13 @@ pub(crate) async fn wait_for_db(
     if check_migrations {
         let mut counter = 0;
         loop {
-            let read_pool = get_reader_pool(PG_CONFIG.to_pool_opts()).await?;
-            let migrations = check_migration_status(&read_pool).await;
+            // Read migration status from the PRIMARY, not a read replica: a
+            // lagging replica may not yet carry the `_sqlx_migrations` rows a
+            // newer binary just committed to the primary, which would hide an
+            // `Ahead` database (and mis-report `Complete`) and let an older
+            // binary start against an incompatible schema.
+            let write_pool = get_writer_pool(PG_CONFIG.to_pool_opts()).await?;
+            let migrations = check_migration_status(&write_pool).await;
             match migrations {
                 Ok(MigrationState::Complete) => {
                     tracing::info!("Database is up to date with binary.");
