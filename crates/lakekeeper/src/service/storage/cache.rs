@@ -97,8 +97,7 @@ impl<V> Expiry<STCCacheKey, CachedStc<V>> for StcExpiry {
         let Some(valid_for_duration) = valid_until.checked_duration_since(created_at) else {
             return Some(Duration::from_secs(0));
         };
-        // Cache until half the validity duration, capped at 1 hour.
-        Some((valid_for_duration / 2).min(Duration::from_hours(1)))
+        Some(super::credential_serve_window(valid_for_duration))
     }
 }
 
