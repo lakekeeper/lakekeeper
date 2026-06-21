@@ -324,7 +324,7 @@ mod etag_tests {
 
     const LOC: &str = "s3://bucket/table/metadata.json";
     const NOW: i64 = 1_750_000_000_000;
-    /// Build a client-supplied ETag (quotes stripped, as `parse_etags` yields).
+    /// Build a client-supplied `ETag` (quotes stripped, as `parse_etags` yields).
     /// `revalidate_after` = `None` for a metadata-only cached response.
     fn client_etag(loc: &str, revalidate_after: Option<i64>) -> ETag {
         let quoted = TableETag::new(loc, revalidate_after).into_etag();
@@ -354,7 +354,7 @@ mod etag_tests {
     #[test]
     fn no_match_when_metadata_differs() {
         let other = client_etag("s3://bucket/table/metadata-2.json", Some(NOW + 60_000));
-        assert!(!matches(&[other.clone()], false));
+        assert!(!matches(std::slice::from_ref(&other), false));
         assert!(!matches(&[other], true));
     }
 
@@ -379,7 +379,8 @@ mod etag_tests {
             let etag = client_etag(LOC, Some(revalidate_after_at(expiry, vend_now)));
             for check_now in [expiry, expiry + 1, expiry + 60_000] {
                 assert!(
-                    match_not_modified(&[etag.clone()], Some(LOC), check_now, true).is_none(),
+                    match_not_modified(std::slice::from_ref(&etag), Some(LOC), check_now, true)
+                        .is_none(),
                     "served a 304 at/after expiry (expiry={expiry}, check_now={check_now})"
                 );
             }
