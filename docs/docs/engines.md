@@ -114,7 +114,7 @@ Basic setup in trino:
 
 === "Azure"
 
-    Trino does not support vended-credentials for Azure, so that Storage Account credentials must be specified in Trino. If you are interested in vended-credentials for Azure, please up-vote the [Trino Issue](https://github.com/trinodb/trino/issues/23238).
+    Trino supports vended-credentials from Iceberg REST Catalogs for Azure, so that no Storage Account credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Trino docs](https://trino.io/docs/current/object-storage/file-system-azure.html#object-storage-file-system-azure--page-root).
 
@@ -143,7 +143,7 @@ Basic setup in trino:
 
 === "GCS"
 
-    Trino does not support vended-credentials for GCS, so that GCS credentials must be specified in Trino. If you are interested in vended-credentials for GCS, please up-vote the [Trino Issue](https://github.com/trinodb/trino/issues/24518).
+    Trino supports vended-credentials from Iceberg REST Catalogs for GCS, so that no GCS credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Trino docs](https://trino.io/docs/current/object-storage/file-system-gcs.html).
 
@@ -207,7 +207,7 @@ Basic setup in Starburst:
 
 === "Azure"
 
-    Starburst does not support vended-credentials for Azure, so that Storage Account credentials must be specified in Starburst.
+    Starburst supports vended-credentials from Iceberg REST Catalogs for Azure, so that no Storage Account credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-azure.html).
 
@@ -236,7 +236,7 @@ Basic setup in Starburst:
 
 === "GCS"
 
-    Starburst does not support vended-credentials for GCS, so that GCS credentials must be specified in the connector.
+    Starburst supports vended-credentials from Iceberg REST Catalogs for GCS, so that no GCS credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-gcs.html).
 
