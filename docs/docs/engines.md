@@ -99,7 +99,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
         "s3.region" = '<AWS Region to use. For S3-compatible storage use a non-existent AWS region, such as local>',
-        "fs.native-s3.enabled" = 'true'
+        "fs.s3.enabled" = 'true'
         -- Required for some S3-compatible storages:
         "s3.path-style-access" = 'true',
         "s3.endpoint" = '<Custom S3 endpoint>',
@@ -126,7 +126,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-azure.enabled" = 'true',
+        "fs.azure.enabled" = 'true',
         "azure.auth-type" = 'OAUTH',
         "azure.oauth.client-id" = '<Client-ID for an Application with Storage Account access>',
         "azure.oauth.secret" = '<Client-Secret>',
@@ -156,7 +156,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-gcs.enabled" = 'true',
+        "fs.gcs.enabled" = 'true',
         "gcs.project-id" = '<Identifier for the project on Google Cloud Storage>',
         "gcs.json-key" = '<Your Google Cloud service account key in JSON format>',
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
@@ -192,7 +192,7 @@ Basic setup in Starburst:
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
         "s3.region" = '<AWS Region to use. For S3-compatible storage use a non-existent AWS region, such as local>',
-        "fs.native-s3.enabled" = 'true'
+        "fs.s3.enabled" = 'true'
         -- Required for some S3-compatible storages:
         "s3.path-style-access" = 'true',
         "s3.endpoint" = '<Custom S3 endpoint>',
@@ -219,7 +219,7 @@ Basic setup in Starburst:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-azure.enabled" = 'true',
+        "fs.azure.enabled" = 'true',
         "azure.auth-type" = 'OAUTH',
         "azure.oauth.client-id" = '<Client-ID for an Application with Storage Account access>',
         "azure.oauth.secret" = '<Client-Secret>',
@@ -249,7 +249,7 @@ Basic setup in Starburst:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-gcs.enabled" = 'true',
+        "fs.gcs.enabled" = 'true',
         "gcs.project-id" = '<Identifier for the project on Google Cloud Storage>',
         "gcs.json-key" = '<Your Google Cloud service account key in JSON format>',
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
