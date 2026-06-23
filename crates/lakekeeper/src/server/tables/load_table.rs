@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ETag, StorageCredential, create_etag};
+use iceberg_ext::catalog::rest::{ETag, StorageCredential, TableETag};
 
 use crate::{
     WarehouseId,
@@ -17,7 +17,7 @@ use crate::{
     },
     service::{
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
-        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId, TabularInfo,
+        LoadTableResponse as CatalogLoadTableResult, State, TableId, TableIdentOrId,
         TabularListFlags, TabularNotFound, Transaction, WarehouseStatus,
         authz::{Authorizer, AuthzWarehouseOps, CatalogTableAction},
         events::{
@@ -25,20 +25,9 @@ use crate::{
             context::{ResolvedTable, authz_to_error_no_audit},
         },
         secrets::SecretStore,
+        storage::{credential_revalidate_after_ms, now_epoch_ms},
     },
 };
-
-fn get_etag(table_info: &TabularInfo<TableId>) -> Option<ETag> {
-    table_info
-        .metadata_location
-        .as_ref()
-        .map(lakekeeper_io::Location::as_str)
-        .map(create_etag)
-}
-
-fn etag_already_present(etags: &[ETag], etag: &ETag) -> bool {
-    etags.iter().any(|e| e == etag || e == &ETag::from("*"))
-}
 
 /// Load a table from the catalog.
 ///
@@ -104,16 +93,29 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     });
 
     // ------------------- ETAG CHECK -------------------
-    let etag = get_etag(&event_ctx.resolved().table);
-    if let Some(etag_value) = etag
-        .as_ref()
-        .map(|e| e.as_str().trim_matches('"'))
-        .map(ETag::from)
-        && etag_already_present(&etags, &etag_value)
-    {
-        return Ok(LoadTableResultOrNotModified::NotModifiedResponse(
-            etag.unwrap(),
-        ));
+    // The 304 decision rides on the client-echoed ETag's revalidation point; this
+    // flag only governs the cases where the ETag carries none (metadata-only /
+    // wildcard). Not the raw `vended-credentials` flag, since backends vend
+    // expiring credentials even for the default request (S3 auto-promotes;
+    // GCS/Azure vend for any delegated access).
+    let vends_credentials = storage_permissions.is_some()
+        && event_ctx
+            .resolved()
+            .warehouse
+            .storage_profile
+            .vends_expiring_credentials(data_access);
+    if let Some(etag) = match_not_modified(
+        &etags,
+        event_ctx
+            .resolved()
+            .table
+            .metadata_location
+            .as_ref()
+            .map(lakekeeper_io::Location::as_str),
+        now_epoch_ms(),
+        vends_credentials,
+    ) {
+        return Ok(LoadTableResultOrNotModified::NotModifiedResponse(etag));
     }
 
     // ------------------- BUSINESS LOGIC -------------------
@@ -183,6 +185,10 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             }]
         })
     });
+    let credentials_revalidate_after_ms = storage_config
+        .as_ref()
+        .and_then(|c| c.credentials_expiration_ms)
+        .map(credential_revalidate_after_ms);
 
     let metadata_ref = Arc::new(table_metadata);
     let metadata_location_ref = metadata_location.map(Arc::new);
@@ -194,6 +200,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
+        credentials_revalidate_after_ms,
     };
 
     Ok(LoadTableResultOrNotModified::LoadTableResult(
@@ -255,4 +262,164 @@ fn require_not_staged<T>(
     }
 
     Ok(())
+}
+
+/// Decide whether a conditional `loadTable` may return `304 Not Modified`,
+/// returning the [`ETag`] to echo back if so.
+///
+/// When the client-echoed [`ETag`] carries a revalidation point (it cached a
+/// credential-bearing response), a 304 is served only while `now` is before it.
+/// When it carries none (metadata-only / wildcard), a 304 is served only if this
+/// load also vends no expiring credentials (`!vends_credentials`). Anything we
+/// can't parse isn't matched, so the client reloads — never a 304 with stale
+/// credentials.
+fn match_not_modified(
+    client_etags: &[ETag],
+    metadata_location: Option<&str>,
+    now_ms: i64,
+    vends_credentials: bool,
+) -> Option<ETag> {
+    let metadata_location = metadata_location?;
+    let current = TableETag::new(metadata_location, None);
+
+    for client in client_etags {
+        let value = client.as_str();
+
+        // Wildcard matches the metadata, but carries no revalidation point.
+        if value == "*" {
+            if vends_credentials {
+                continue;
+            }
+            return Some(current.clone().into_etag());
+        }
+
+        // Not parseable as one of our ETags → reload.
+        let Some(parsed) = TableETag::parse(value) else {
+            continue;
+        };
+        if parsed.metadata_hash() != current.metadata_hash() {
+            continue;
+        }
+        match parsed.revalidate_after_ms() {
+            // Client holds credentials: 304 only while still within their window.
+            Some(revalidate_after) => {
+                if now_ms < revalidate_after {
+                    return Some(parsed.into_etag());
+                }
+            }
+            // Metadata-only cached response: 304 only if we'd add no creds now.
+            None => {
+                if !vends_credentials {
+                    return Some(parsed.into_etag());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod etag_tests {
+    use super::*;
+
+    const LOC: &str = "s3://bucket/table/metadata.json";
+    const NOW: i64 = 1_750_000_000_000;
+    /// Build a client-supplied `ETag` (quotes stripped, as `parse_etags` yields).
+    /// `revalidate_after` = `None` for a metadata-only cached response.
+    fn client_etag(loc: &str, revalidate_after: Option<i64>) -> ETag {
+        let quoted = TableETag::new(loc, revalidate_after).into_etag();
+        ETag::from(quoted.as_str().trim_matches('"'))
+    }
+
+    fn matches(etags: &[ETag], vends_credentials: bool) -> bool {
+        match_not_modified(etags, Some(LOC), NOW, vends_credentials).is_some()
+    }
+
+    #[test]
+    fn metadata_only_load_returns_304_for_matching_etags() {
+        // A metadata-only ETag and the wildcard match when this load vends no creds.
+        assert!(matches(&[client_etag(LOC, None)], false));
+        assert!(matches(&[ETag::from("*")], false));
+    }
+
+    #[test]
+    fn unparseable_etag_triggers_reload() {
+        // A pre-upgrade bare-hash ETag (or any non-`lk1` value) can't be parsed,
+        // so it never yields a 304. The client reloads once and re-primes.
+        let legacy = ETag::from(TableETag::new(LOC, None).metadata_hash());
+        assert!(!matches(&[legacy], false));
+        assert!(!matches(&[ETag::from("not-our-etag")], false));
+    }
+
+    #[test]
+    fn no_match_when_metadata_differs() {
+        let other = client_etag("s3://bucket/table/metadata-2.json", Some(NOW + 60_000));
+        assert!(!matches(std::slice::from_ref(&other), false));
+        assert!(!matches(&[other], true));
+    }
+
+    #[test]
+    fn no_match_when_metadata_location_absent() {
+        assert!(match_not_modified(&[ETag::from("*")], None, NOW, false).is_none());
+    }
+
+    #[test]
+    fn never_304s_at_or_after_credential_expiry() {
+        // The safety invariant, end-to-end: compose the producer
+        // (`revalidate_after_at`, including its clamp) with the checker. Whatever
+        // revalidation point we mint for a credential, a conditional request at or
+        // after the real expiry must never be answered with a 304.
+        use crate::service::storage::revalidate_after_at;
+        for (expiry, vend_now) in [
+            (NOW + 600_000, NOW),       // 10-min credential
+            (NOW + 4 * 3_600_000, NOW), // long credential (1h cap)
+            (NOW + 1, NOW),             // about to expire
+            (NOW, NOW),                 // already at expiry
+        ] {
+            let etag = client_etag(LOC, Some(revalidate_after_at(expiry, vend_now)));
+            for check_now in [expiry, expiry + 1, expiry + 60_000] {
+                assert!(
+                    match_not_modified(std::slice::from_ref(&etag), Some(LOC), check_now, true)
+                        .is_none(),
+                    "served a 304 at/after expiry (expiry={expiry}, check_now={check_now})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn credential_load_honors_embedded_revalidate_after() {
+        // Revalidation point still in the future → 304.
+        assert!(matches(&[client_etag(LOC, Some(NOW + 1))], true));
+        // Reached/passed → must re-vend (200).
+        assert!(!matches(&[client_etag(LOC, Some(NOW))], true));
+        assert!(!matches(&[client_etag(LOC, Some(NOW - 60_000))], true));
+        // No revalidation point (client cached a metadata-only response) while we
+        // now vend creds → must re-vend so the client gets them.
+        assert!(!matches(&[client_etag(LOC, None)], true));
+    }
+
+    #[test]
+    fn future_revalidate_after_serves_304_even_for_metadata_only_load() {
+        // The decision rides on the echoed ETag, not the current load's flag.
+        assert!(matches(&[client_etag(LOC, Some(NOW + 60_000))], false));
+    }
+
+    #[test]
+    fn credential_load_rejects_unparseable_and_wildcard() {
+        // Unparseable ETag and wildcard carry no revalidation point → reload.
+        let legacy = ETag::from(TableETag::new(LOC, None).metadata_hash());
+        assert!(!matches(&[legacy], true));
+        assert!(!matches(&[ETag::from("*")], true));
+    }
+
+    #[test]
+    fn credential_load_picks_valid_etag_among_several() {
+        let etags = vec![
+            client_etag("s3://other/metadata.json", Some(NOW + 60_000)),
+            client_etag(LOC, Some(NOW - 1)),      // passed
+            client_etag(LOC, Some(NOW + 60_000)), // valid
+        ];
+        assert!(matches(&etags, true));
+    }
 }

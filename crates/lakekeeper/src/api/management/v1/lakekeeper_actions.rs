@@ -20,12 +20,14 @@ use crate::{
             AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
             AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
-            CatalogTableAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
-            RequireProjectActionError, RequireRoleActionError, RoleAssignee, UserOrRole,
-            UserOrRoleId, fetch_warehouse_namespace_generic_table_by_id,
-            fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
-            refresh_warehouse_and_namespace_if_needed,
+            CatalogNamespaceAction, CatalogNamespaceActionKind, CatalogProjectAction,
+            CatalogProjectActionKind, CatalogRoleAction, CatalogRoleActionKind,
+            CatalogServerAction, CatalogServerActionKind, CatalogTableAction,
+            CatalogTableActionKind, CatalogUserAction, CatalogViewAction, CatalogViewActionKind,
+            CatalogWarehouseAction, CatalogWarehouseActionKind, RequireProjectActionError,
+            RequireRoleActionError, RoleAssignee, UserOrRole, UserOrRoleId,
+            fetch_warehouse_namespace_generic_table_by_id, fetch_warehouse_namespace_table_by_id,
+            fetch_warehouse_namespace_view_by_id, refresh_warehouse_and_namespace_if_needed,
         },
         events::{
             APIEventContext,
@@ -113,20 +115,25 @@ fn set_for_user<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
     }
 }
 
-// Generate response structs for all action types
-action_response!(GetLakekeeperRoleActionsResponse, CatalogRoleAction);
-action_response!(GetLakekeeperServerActionsResponse, CatalogServerAction);
-action_response!(GetLakekeeperProjectActionsResponse, CatalogProjectAction);
+// Generate response structs for all action types. Permission-introspection
+// responses carry the fieldless `*Kind` form (no per-operation context); User and
+// GenericTable actions are already fieldless and used directly.
+action_response!(GetLakekeeperRoleActionsResponse, CatalogRoleActionKind);
+action_response!(GetLakekeeperServerActionsResponse, CatalogServerActionKind);
+action_response!(
+    GetLakekeeperProjectActionsResponse,
+    CatalogProjectActionKind
+);
 action_response!(
     GetLakekeeperWarehouseActionsResponse,
-    CatalogWarehouseAction
+    CatalogWarehouseActionKind
 );
 action_response!(
     GetLakekeeperNamespaceActionsResponse,
-    CatalogNamespaceAction
+    CatalogNamespaceActionKind
 );
-action_response!(GetLakekeeperTableActionsResponse, CatalogTableAction);
-action_response!(GetLakekeeperViewActionsResponse, CatalogViewAction);
+action_response!(GetLakekeeperTableActionsResponse, CatalogTableActionKind);
+action_response!(GetLakekeeperViewActionsResponse, CatalogViewActionKind);
 action_response!(
     GetLakekeeperGenericTableActionsResponse,
     CatalogGenericTableAction
@@ -162,7 +169,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     query: GetAccessQuery,
-) -> Result<Vec<CatalogServerAction>, ErrorModel> {
+) -> Result<Vec<CatalogServerActionKind>, ErrorModel> {
     let for_user_api = query.try_parse()?.principal;
     let actions = CatalogServerAction::variants();
 
@@ -193,11 +200,13 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
     let allowed_actions = results
         .iter()
         .zip(actions)
-        .filter_map(
-            |(allowed, action)| {
-                if *allowed { Some(action.clone()) } else { None }
-            },
-        )
+        .filter_map(|(allowed, action)| {
+            if *allowed {
+                Some(CatalogServerActionKind::from(action))
+            } else {
+                None
+            }
+        })
         .collect();
 
     Ok(allowed_actions)
@@ -284,7 +293,7 @@ pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: 
     request_metadata: RequestMetadata,
     query: GetAccessQuery,
     role_id: RoleId,
-) -> Result<Vec<CatalogRoleAction>> {
+) -> Result<Vec<CatalogRoleActionKind>> {
     let authorizer = context.v1_state.authz;
     let for_user_api = query.try_parse()?.principal;
     let project_id = request_metadata.require_project_id(None)?;
@@ -308,7 +317,7 @@ pub(super) async fn get_allowed_role_actions<A: Authorizer, C: CatalogStore, S: 
     .await;
     let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
 
-    Ok(allowed_actions)
+    Ok(allowed_actions.iter().map(Into::into).collect())
 }
 
 async fn authorize_get_role_actions<C: CatalogStore>(
@@ -380,7 +389,7 @@ pub(super) async fn get_allowed_project_actions<C: CatalogStore, A: Authorizer, 
     request_metadata: RequestMetadata,
     query: GetAccessQuery,
     object: &ArcProjectId,
-) -> Result<Vec<CatalogProjectAction>> {
+) -> Result<Vec<CatalogProjectActionKind>> {
     let for_user_api = query.try_parse()?.principal;
 
     let mut event_ctx = APIEventContext::for_project_arc(
@@ -401,7 +410,7 @@ pub(super) async fn get_allowed_project_actions<C: CatalogStore, A: Authorizer, 
     .await;
     let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
 
-    Ok(allowed_actions)
+    Ok(allowed_actions.iter().map(Into::into).collect())
 }
 
 async fn authorize_get_project_actions<C: CatalogStore>(
@@ -461,7 +470,7 @@ pub(super) async fn get_allowed_warehouse_actions<
     request_metadata: RequestMetadata,
     query: GetAccessQuery,
     object: WarehouseId,
-) -> Result<Vec<CatalogWarehouseAction>> {
+) -> Result<Vec<CatalogWarehouseActionKind>> {
     let for_user_api = query.try_parse()?.principal;
 
     let mut event_ctx = APIEventContext::for_warehouse(
@@ -482,7 +491,7 @@ pub(super) async fn get_allowed_warehouse_actions<
     .await;
     let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
 
-    Ok(allowed_actions)
+    Ok(allowed_actions.iter().map(Into::into).collect())
 }
 
 async fn authorize_get_warehouse_actions<C: CatalogStore>(
@@ -550,7 +559,7 @@ pub(super) async fn get_allowed_namespace_actions<
     query: GetAccessQuery,
     warehouse_id: WarehouseId,
     provided_namespace_id: NamespaceId,
-) -> Result<Vec<CatalogNamespaceAction>> {
+) -> Result<Vec<CatalogNamespaceActionKind>> {
     let for_user_api = query.try_parse()?.principal;
 
     let mut event_ctx = APIEventContext::for_namespace(
@@ -573,7 +582,7 @@ pub(super) async fn get_allowed_namespace_actions<
     .await;
     let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
 
-    Ok(allowed_actions)
+    Ok(allowed_actions.iter().map(Into::into).collect())
 }
 
 async fn authorize_get_namespace_actions<C: CatalogStore>(
@@ -650,7 +659,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
     query: GetAccessQuery,
     warehouse_id: WarehouseId,
     table_id: TableId,
-) -> Result<Vec<CatalogTableAction>> {
+) -> Result<Vec<CatalogTableActionKind>> {
     let for_user_api = query.try_parse()?.principal;
 
     let mut event_ctx = APIEventContext::for_table(
@@ -673,7 +682,7 @@ pub(super) async fn get_allowed_table_actions<A: Authorizer, C: CatalogStore, S:
     .await;
     let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
 
-    Ok(allowed_actions)
+    Ok(allowed_actions.iter().map(Into::into).collect())
 }
 
 async fn authorize_get_table_actions<C: CatalogStore>(
@@ -766,7 +775,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
     query: GetAccessQuery,
     warehouse_id: WarehouseId,
     view_id: ViewId,
-) -> Result<Vec<CatalogViewAction>> {
+) -> Result<Vec<CatalogViewActionKind>> {
     let for_user_api = query.try_parse()?.principal;
 
     let mut event_ctx = APIEventContext::for_view(
@@ -789,7 +798,7 @@ pub(super) async fn get_allowed_view_actions<A: Authorizer, C: CatalogStore, S: 
     .await;
     let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
 
-    Ok(allowed_actions)
+    Ok(allowed_actions.iter().map(Into::into).collect())
 }
 
 async fn authorize_get_view_actions<C: CatalogStore>(

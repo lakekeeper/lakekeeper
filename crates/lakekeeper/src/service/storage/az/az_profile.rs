@@ -249,6 +249,7 @@ impl GenericAdlsProfile {
             return Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
+                credentials_expiration_ms: None,
             });
         }
 

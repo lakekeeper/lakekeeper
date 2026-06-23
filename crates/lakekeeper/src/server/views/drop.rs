@@ -60,7 +60,10 @@ pub async fn drop_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         state.v1_state.events,
         warehouse_id,
         view.clone(),
-        CatalogViewAction::Drop,
+        CatalogViewAction::Drop {
+            force,
+            purge: purge_requested,
+        },
     );
 
     let authz_context = authorizer

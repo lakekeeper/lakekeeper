@@ -598,6 +598,7 @@ Authorizers such as `Cedar` support pluggable role providers that resolve a user
 |----------------------------------------------------------------------|---------|-----|
 | <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_UNHANDLED_USERS`</nobr>  | `true`  | When `true`, an audit event is emitted whenever a user is not matched by any configured role provider. Useful for detecting misconfigured domain filters. Set to `false` to suppress these events for deployments where some users are intentionally not covered by any provider. |
 | <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__LOG_ROLE_ASSIGNMENTS`</nobr> | `false` | When `true`, an audit event listing every resolved role name is emitted after each successful role resolution. Very noisy — intended for debugging role-provider configuration only. See [Logging — Operational Audit Events](./logging.md) for the event schema. |
+| <nobr>`LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES`</nobr>  | `false` | When `true`, roles extracted from OIDC tokens are persisted to the catalog database so they can be reused when the user is not the live caller — see [Token role provider](#token-role-provider) below. |
 
 ##### Token role provider
 
@@ -606,6 +607,12 @@ When `LAKEKEEPER__OPENID_ROLES_CLAIM` is set, Lakekeeper extracts roles directly
 The token role provider only applies to OIDC-authenticated users (those whose identity was established via the configured OpenID Connect provider). It is a no-op for users authenticated through other mechanisms (e.g. Kubernetes service accounts).
 
 The provider uses the reserved identifier `oidc`. If you declare a role provider with this identifier in your configuration, the automatic provider is suppressed and your custom provider takes its place.
+
+By default, token roles live only for the duration of the request — they are read from the JWT and never stored. This means they are unavailable for authorization decisions about a user who is **not** the current caller, most notably [DEFINER views](./view-security.md), where access is evaluated as the view's owner rather than the querying user.
+
+Set `LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES=true` to mirror each user's token roles into the catalog database. Persisted roles are then served whenever that user's permissions are evaluated while they are not the requesting caller — including DEFINER views.
+
+On each request, the caller's token roles are compared against the stored set and written only when they differ; requests carrying unchanged roles do not write. A definer's roles are therefore as current as the most recent token that user presented. Roles are scoped to the project they were issued for: in multi-project deployments the owner must have presented a token for the project where the view lives. An empty roles claim is ignored rather than clearing the stored set.
 
 ##### LDAP role provider
 

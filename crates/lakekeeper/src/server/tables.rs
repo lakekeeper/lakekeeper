@@ -403,7 +403,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     event_ctx.dispatcher().clone(),
                     warehouse_id,
                     table_ident.clone(),
-                    CatalogTableAction::Drop,
+                    CatalogTableAction::Drop {
+                        force: false,
+                        purge: false,
+                    },
                 );
                 drop_tbl_event_ctx.push_extra_context("invoked-by", "register_table_overwrite");
 
@@ -541,6 +544,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata: table_metadata,
             config: Some(config.config.into()),
             storage_credentials: None,
+            // No credentials are vended in the register response.
+            credentials_revalidate_after_ms: None,
         })
     }
 
@@ -746,7 +751,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             state.v1_state.events,
             warehouse_id,
             table.clone(),
-            CatalogTableAction::Drop,
+            CatalogTableAction::Drop {
+                force,
+                purge: purge_requested,
+            },
         );
 
         let authz_result = authorizer
