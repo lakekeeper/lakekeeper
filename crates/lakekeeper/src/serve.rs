@@ -17,6 +17,7 @@ use crate::{
     },
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, RoleProviderId, SecretStore, ServerInfo, State,
+        admission::AdmissionGates,
         authz::{AllowAllAuthorizer, Authorizer, ConfiguredInstanceAdmins},
         contract_verification::ContractVerifiers,
         endpoint_statistics::{
@@ -133,6 +134,12 @@ pub struct ServeConfiguration<
     #[builder(default)]
     /// Contract verifiers that can prohibit invalid table changes
     pub contract_verification: ContractVerifiers,
+    #[builder(default)]
+    /// Post-authentication admission gates. Empty by default (admits every
+    /// request). Downstream binaries may register gates that reject already
+    /// authenticated principals before they reach any handler — e.g. an
+    /// external control-plane permission check.
+    pub admission_gates: AdmissionGates,
     #[builder(default)]
     /// A function to modify the router before serving
     pub modify_router_fn: Option<fn(axum::Router) -> axum::Router>,
@@ -348,6 +355,7 @@ async fn serve_inner<
         authenticator,
         stats,
         contract_verification,
+        admission_gates,
         modify_router_fn,
         cloud_event_sinks,
         enable_built_in_task_queues: enable_built_in_queues,
@@ -500,6 +508,7 @@ async fn serve_inner<
         metrics_layer: Some(layer),
         endpoint_statistics_tracker_tx: endpoint_statistics_tracker_tx.clone(),
         instance_admin_membership: Arc::new(ConfiguredInstanceAdmins::from_config()),
+        admission_gates,
     })
     .await?;
 

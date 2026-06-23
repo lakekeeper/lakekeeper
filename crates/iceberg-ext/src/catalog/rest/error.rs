@@ -257,6 +257,22 @@ impl ErrorModel {
         )
     }
 
+    /// 503 Service Unavailable: a dependency this request relies on is
+    /// temporarily unreachable. Callers that want clients to back off and
+    /// retry should pair this with a `Retry-After` header on the response.
+    pub fn service_unavailable(
+        message: impl Into<String>,
+        r#type: impl Into<String>,
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        Self::new(
+            message,
+            r#type,
+            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            source,
+        )
+    }
+
     pub fn new(
         message: impl Into<String>,
         r#type: impl Into<String>,
