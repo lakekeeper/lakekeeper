@@ -28,7 +28,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use iceberg_ext::catalog::rest::ErrorModel;
 
-use crate::request_metadata::RequestMetadata;
+use crate::request_metadata::{RequestMetadata, TokenRoles};
 
 /// Why an [`AdmissionGate`] rejected a request.
 ///
@@ -91,6 +91,39 @@ impl AdmissionRejection {
     }
 }
 
+/// What a gate returns when it admits a request: an opt-in enrichment payload
+/// merged into the request's [`RequestMetadata`] for downstream authorization
+/// and audit. A gate that only allows/denies returns [`Admission::admit`].
+///
+/// Non-exhaustive so further enrichment can be added without a breaking change;
+/// construct it with [`Admission::admit`] / [`Admission::with_roles`].
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct Admission {
+    /// Roles the gate resolved for the principal in the same call (for example
+    /// from an external entitlement service). Merged into
+    /// [`RequestMetadata::admission_roles`] by the auth middleware, kept
+    /// separate from token-claim roles so the provenance stays explicit.
+    /// `None` when the gate resolves no roles.
+    pub resolved_roles: Option<TokenRoles>,
+}
+
+impl Admission {
+    /// Admit the request without contributing any enrichment.
+    #[must_use]
+    pub fn admit() -> Self {
+        Self::default()
+    }
+
+    /// Admit the request and contribute the roles the gate resolved.
+    #[must_use]
+    pub fn with_roles(roles: TokenRoles) -> Self {
+        Self {
+            resolved_roles: Some(roles),
+        }
+    }
+}
+
 /// A single post-authentication admission check.
 ///
 /// Implementations are expected to be cheap and to cache aggressively: `admit`
@@ -102,13 +135,15 @@ pub trait AdmissionGate: std::fmt::Debug + Send + Sync {
 
     /// Decide whether the (already authenticated) request may proceed.
     ///
-    /// Return `Ok(())` to admit, or `Err(..)` to reject the request before it
-    /// reaches any handler. The implementation owns the fail-open vs
+    /// Return `Ok(`[`Admission`]`)` to admit — use [`Admission::admit`] for a
+    /// plain allow, or [`Admission::with_roles`] to also contribute roles
+    /// resolved in the same call. Return `Err(..)` to reject the request before
+    /// it reaches any handler. The implementation owns the fail-open vs
     /// fail-closed policy by choosing the [`AdmissionRejection`] variant:
     /// [`AdmissionRejection::forbidden`] for an authoritative deny, or
     /// [`AdmissionRejection::unavailable`] to fail closed when an upstream the
     /// gate depends on is unreachable.
-    async fn admit(&self, metadata: &RequestMetadata) -> Result<(), AdmissionRejection>;
+    async fn admit(&self, metadata: &RequestMetadata) -> Result<Admission, AdmissionRejection>;
 }
 
 /// An ordered collection of [`AdmissionGate`]s.
@@ -135,27 +170,48 @@ impl AdmissionGates {
         self.gates.is_empty()
     }
 
-    /// Run every gate in order, returning the first rejection.
+    /// Run every gate in order, returning the first rejection. On success the
+    /// returned [`Admission`] carries the union of every gate's resolved roles.
     ///
     /// # Errors
     /// Returns the [`AdmissionRejection`] from the first gate that rejects the
     /// request.
-    pub async fn admit(&self, metadata: &RequestMetadata) -> Result<(), AdmissionRejection> {
+    pub async fn admit(&self, metadata: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+        let mut resolved_roles: Option<TokenRoles> = None;
         for gate in &self.gates {
-            if let Err(rejection) = gate.admit(metadata).await {
-                let error = rejection.error();
-                tracing::info!(
-                    gate = gate.name(),
-                    status = error.code,
-                    error_type = %error.r#type,
-                    request_id = %metadata.request_id(),
-                    "Request rejected by admission gate"
-                );
-                return Err(rejection);
+            match gate.admit(metadata).await {
+                Ok(admission) => {
+                    if let Some(roles) = admission.resolved_roles {
+                        resolved_roles = Some(match resolved_roles {
+                            None => roles,
+                            Some(existing) => merge_roles(existing, roles),
+                        });
+                    }
+                }
+                Err(rejection) => {
+                    let error = rejection.error();
+                    tracing::info!(
+                        gate = gate.name(),
+                        status = error.code,
+                        error_type = %error.r#type,
+                        request_id = %metadata.request_id(),
+                        "Request rejected by admission gate"
+                    );
+                    return Err(rejection);
+                }
             }
         }
-        Ok(())
+        Ok(Admission { resolved_roles })
     }
+}
+
+/// Union two project-scoped role sets, keeping the first set's project. Gates
+/// are expected to resolve roles for the request's project, so the project ids
+/// normally match; if they differ, the first gate's project wins.
+fn merge_roles(a: TokenRoles, b: TokenRoles) -> TokenRoles {
+    let mut roles = a.roles().clone();
+    roles.extend(b.roles().iter().cloned());
+    TokenRoles::new(a.project_id().clone(), roles)
 }
 
 #[cfg(test)]
@@ -163,6 +219,28 @@ mod tests {
     use http::StatusCode;
 
     use super::*;
+    use crate::service::{ProjectId, RoleIdent};
+
+    /// Build a project-scoped role set from role source-id names.
+    fn token_roles(names: &[&str]) -> TokenRoles {
+        let roles = names
+            .iter()
+            .map(|n| Arc::new(RoleIdent::new_unchecked("test", *n)))
+            .collect();
+        TokenRoles::new(Arc::new(ProjectId::new_random()), roles)
+    }
+
+    #[derive(Debug)]
+    struct RolesGate(&'static [&'static str]);
+    #[async_trait]
+    impl AdmissionGate for RolesGate {
+        fn name(&self) -> &'static str {
+            "roles"
+        }
+        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+            Ok(Admission::with_roles(token_roles(self.0)))
+        }
+    }
 
     #[derive(Debug)]
     struct AllowGate;
@@ -171,8 +249,8 @@ mod tests {
         fn name(&self) -> &'static str {
             "allow"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<(), AdmissionRejection> {
-            Ok(())
+        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+            Ok(Admission::admit())
         }
     }
 
@@ -183,7 +261,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "deny"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<(), AdmissionRejection> {
+        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
             Err(AdmissionRejection::forbidden("nope", "TestDenied", None))
         }
     }
@@ -195,7 +273,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "unavailable"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<(), AdmissionRejection> {
+        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
             Err(AdmissionRejection::unavailable(
                 "upstream down",
                 "TestUnavailable",
@@ -213,7 +291,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "panic"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<(), AdmissionRejection> {
+        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
             panic!("gate after a rejection must not be evaluated");
         }
     }
@@ -276,5 +354,32 @@ mod tests {
         .await
         .expect_err("DenyGate rejects before PanicGate is reached");
         assert_eq!(rejection.error().r#type, "TestDenied");
+    }
+
+    #[tokio::test]
+    async fn resolved_roles_surface_on_admit() {
+        let md = RequestMetadata::new_unauthenticated();
+        let admission = gates(vec![Arc::new(RolesGate(&["a", "b"]))])
+            .admit(&md)
+            .await
+            .expect("RolesGate admits");
+        let roles = admission.resolved_roles.expect("roles were resolved");
+        assert_eq!(roles.roles().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolved_roles_are_unioned_across_gates() {
+        let md = RequestMetadata::new_unauthenticated();
+        // Overlapping ("b") plus distinct roles: union is {a, b, c}.
+        let admission = gates(vec![
+            Arc::new(AllowGate),
+            Arc::new(RolesGate(&["a", "b"])),
+            Arc::new(RolesGate(&["b", "c"])),
+        ])
+        .admit(&md)
+        .await
+        .expect("all gates admit");
+        let roles = admission.resolved_roles.expect("roles were resolved");
+        assert_eq!(roles.roles().len(), 3);
     }
 }

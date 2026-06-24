@@ -94,6 +94,11 @@ pub struct RequestMetadata {
     project_id: Option<ArcProjectId>,
     authentication: Option<Authentication>,
     token_roles: Option<TokenRoles>,
+    /// Roles resolved by a post-authentication admission gate (see
+    /// [`AdmissionGate`](crate::service::admission::AdmissionGate)) — e.g. from
+    /// an external entitlement service. Kept separate from `token_roles` so the
+    /// provenance (token claim vs externally resolved) stays explicit.
+    admission_roles: Option<TokenRoles>,
     base_url: String,
     actor: InternalActor,
     matched_path: Option<Arc<str>>,
@@ -213,6 +218,21 @@ impl RequestMetadata {
         self
     }
 
+    /// Set the roles resolved by a post-authentication admission gate. Written
+    /// by the auth middleware after the gates run; kept separate from
+    /// [`set_token_roles`](Self::set_token_roles) to preserve provenance.
+    #[cfg_attr(not(feature = "router"), allow(dead_code))]
+    pub(crate) fn set_admission_roles(&mut self, admission_roles: TokenRoles) -> &mut Self {
+        self.admission_roles = Some(admission_roles);
+        self
+    }
+
+    /// Roles resolved by a post-authentication admission gate, if any.
+    #[must_use]
+    pub fn admission_roles(&self) -> Option<&TokenRoles> {
+        self.admission_roles.as_ref()
+    }
+
     #[must_use]
     pub fn user_agent(&self) -> Option<&UserAgent> {
         self.user_agent.as_ref()
@@ -257,6 +277,7 @@ impl RequestMetadata {
             user_agent: None,
             engines: MatchedEngines::default(),
             token_roles: None,
+            admission_roles: None,
             idempotency_key: None,
             is_instance_admin: false,
         }
@@ -321,6 +342,7 @@ impl RequestMetadata {
             user_agent: None,
             engines: MatchedEngines::default(),
             token_roles: None,
+            admission_roles: None,
             idempotency_key: None,
             is_instance_admin: false,
         }
@@ -562,6 +584,7 @@ impl From<RequestMetadataTestBuilder> for RequestMetadata {
             user_agent: None,
             engines: MatchedEngines::default(),
             token_roles: b.token_roles,
+            admission_roles: None,
             idempotency_key: None,
             is_instance_admin: b.is_instance_admin,
         }
@@ -639,6 +662,7 @@ pub(crate) async fn create_request_metadata_with_trace_and_project_fn(
         request_id,
         authentication: None,
         token_roles: None,
+        admission_roles: None,
         base_url: base_uri,
         actor: Actor::Anonymous.into(),
         project_id: project_id.map(Arc::new),
