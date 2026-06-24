@@ -573,10 +573,15 @@ pub(crate) async fn auth_middleware_fn<
             return match rejection {
                 AdmissionRejection::Forbidden(error) => error.into_response(),
                 AdmissionRejection::Unavailable { error, retry_after } => {
+                    // `Retry-After` is whole seconds; round any sub-second
+                    // remainder up so a sub-second Duration still asks for at
+                    // least 1s of backoff rather than truncating to 0 ("retry
+                    // immediately").
+                    let secs = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
                     let mut response = error.into_response();
                     response.headers_mut().insert(
                         axum::http::header::RETRY_AFTER,
-                        axum::http::HeaderValue::from(retry_after.as_secs()),
+                        axum::http::HeaderValue::from(secs),
                     );
                     response
                 }

@@ -35,7 +35,11 @@ use crate::request_metadata::RequestMetadata;
 /// The variant — not an inferred status code — determines the HTTP response, so
 /// a gate states its intent explicitly rather than encoding it in an
 /// [`ErrorModel`] the middleware has to interpret.
+///
+/// Non-exhaustive: further rejection kinds may be added without a breaking
+/// change, so external matches must include a wildcard arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AdmissionRejection {
     /// The principal is authenticated but not entitled to this instance. This
     /// is an authoritative decision and is **terminal**: returned as
