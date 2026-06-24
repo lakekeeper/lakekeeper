@@ -206,19 +206,20 @@ def test_drop_table(
             if not exists:
                 break
 
-        assert (
-            not exists
-        ), f"Table location {table_location} still exists after waiting for {i} seconds"
+        assert not exists, (
+            f"Table location {table_location} still exists after waiting for {i} seconds"
+        )
 
 
 def test_drop_table_purge_spark(spark, warehouse: conftest.Warehouse, storage_config):
-    if storage_config["storage-profile"]["type"] == "adls":
-        # for adls with vended credentials enabled spark tries to refresh the credentials
-        # for purge after the table is dropped, which fails as the table no longer exists.
-        # Set f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled": "false"
-        # in the catalog session to make client side purge work.
+    if storage_config["storage-profile"]["type"] in ("adls", "onelake"):
+        # For ADLS / OneLake with vended credentials enabled, Spark tries to
+        # refresh the credentials for purge after the table is dropped, which
+        # fails as the table no longer exists. Set
+        # f"spark.sql.catalog.{catalog_name}.adls.refresh-credentials-enabled":
+        # "false" in the catalog session to make client side purge work.
         pytest.skip(
-            "ADLS currently doesn't work with spark PURGE and refresh credentials."
+            "ADLS / Onelake currently don't work with spark PURGE and refresh credentials."
         )
     spark.sql("CREATE NAMESPACE test_drop_table_purge_spark")
     spark.sql(
@@ -308,12 +309,12 @@ def drop_table_and_assert_that_table_is_gone(
     file_io = io._infer_file_io_from_scheme(table_0.location(), properties)
     # sleep to give time for the table to be gone
     time.sleep(5)
-    # On filesystems with hierarchies like HDFS and ADLS we might leave
+    # On filesystems with hierarchies like HDFS and ADLS/Onelake we might leave
     # empty directories. This is a known issue:
     # https://github.com/lakekeeper/lakekeeper/issues/1064
     location = table_0.location().rstrip("/") + "/"
     inp = file_io.new_input(location)
-    if storage_config["storage-profile"]["type"] != "adls":
+    if storage_config["storage-profile"]["type"] not in ("adls", "onelake"):
         assert not inp.exists(), f"Table location {location} still exists"
     tables = warehouse.pyiceberg_catalog.list_tables(namespace)
     assert len(tables) == 1
@@ -746,8 +747,14 @@ def test_drop_with_shared_prefix(spark, namespace, warehouse: conftest.Warehouse
         (*namespace.name, str(table_id))
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     first_table_id = str(uuid.uuid4()).replace("-", "_")
@@ -792,8 +799,14 @@ def test_custom_location(spark, namespace, warehouse: conftest.Warehouse):
         (*namespace.name, "my_table")
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     spark.sql(
@@ -827,8 +840,14 @@ def test_cannot_create_table_at_same_location(
         (*namespace.name, "my_table")
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     spark.sql(
@@ -871,8 +890,14 @@ def test_cannot_create_table_at_sub_location(
         (*namespace.name, "my_table")
     ).location()
 
-    # Replace element behind the last slash with "custom_location"
-    custom_location = default_location.rsplit("/", 1)[0] + "/custom_location"
+    # Sibling of the default table location, kept unique per test namespace.
+    # The default layout is flat (no per-namespace directory), so the parent is
+    # the shared (session-scoped) warehouse root — a constant segment would
+    # collide across namespaces.
+    custom_location = (
+        default_location.rstrip("/").rsplit("/", 1)[0]
+        + f"/{namespace.name[-1]}-custom-location"
+    )
 
     # Create a table with a custom location
     spark.sql(
@@ -1024,6 +1049,22 @@ def test_special_characters_in_names(
         "table,with,commas",
     ]
 
+    # This test exercises special-character *identifiers* (namespace/table
+    # names) in the catalog. Under the full-hierarchy storage layout those
+    # names also land in the storage path, and real AWS STS caps the *packed*
+    # size of the vended session policy (PackedPolicyTooLarge) — the long
+    # percent-encoded names overflow that budget. So pin each table to a short
+    # location under the warehouse base: the catalog still stores the special
+    # identifiers, but the vended-credential policy stays small. Special
+    # characters *in the storage path* (and the STS policy escaping for them)
+    # are covered separately by test_special_char_locations.py.
+    base_location = namespace.pyiceberg_catalog.load_namespace_properties(
+        namespace.name
+    )["location"].rstrip("/")
+
+    def short_location() -> str:
+        return f"{base_location}/sc-{uuid.uuid4().hex}"
+
     # Test creating nested namespaces with special characters
     for i, special_name in enumerate(special_namespace_names):
         full_namespace = f"{namespace.spark_name}.`{special_name}`"
@@ -1041,6 +1082,7 @@ def test_special_characters_in_names(
         # Create table in the special namespace
         spark.sql(
             f"CREATE TABLE {full_namespace}.my_table (id INT, value STRING) USING iceberg"
+            f" LOCATION '{short_location()}'"
         )
         spark.sql(f"INSERT INTO {full_namespace}.my_table VALUES ({i + 1}, 'test_{i}')")
 
@@ -1054,6 +1096,7 @@ def test_special_characters_in_names(
     for i, special_table_name in enumerate(special_table_names):
         spark.sql(
             f"CREATE TABLE {namespace.spark_name}.`{special_table_name}` (id INT, value STRING) USING iceberg"
+            f" LOCATION '{short_location()}'"
         )
         spark.sql(
             f"INSERT INTO {namespace.spark_name}.`{special_table_name}` VALUES ({i}, 'value_{i}')"
@@ -1087,6 +1130,7 @@ def test_special_characters_in_names(
         full_ns = ".".join(this_namespace)
         spark.sql(
             f"CREATE TABLE {full_ns}.`tåble_émoji_🎯` (id INT, data STRING) USING iceberg"
+            f" LOCATION '{short_location()}'"
         )
         spark.sql(
             f"INSERT INTO {full_ns}.`tåble_émoji_🎯` VALUES ({i}, 'nested_level_{i}')"
@@ -1663,9 +1707,7 @@ def test_view_case_insensitivity(spark, namespace):
 
 def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
     ns_name = f"Mixed_Case_Ns_{uuid.uuid4().hex[:8]}"
-    spark.sql(
-        f"CREATE NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
-    )
+    spark.sql(f"CREATE NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`")
 
     # Create table using lowercase namespace
     spark.sql(
@@ -1684,16 +1726,12 @@ def test_namespace_case_insensitivity(spark, warehouse: conftest.Warehouse):
     # Cleanup: the warehouse uses soft-deletion, so DROP TABLE only marks the
     # table as deleted. Retry DROP NAMESPACE until the soft-deleted entry has
     # expired from the namespace's child set.
-    spark.sql(
-        f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test"
-    )
+    spark.sql(f"DROP TABLE {warehouse.normalized_catalog_name}.`{ns_name}`.case_test")
     deadline = time.time() + 15
     last_err = None
     while time.time() < deadline:
         try:
-            spark.sql(
-                f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`"
-            )
+            spark.sql(f"DROP NAMESPACE {warehouse.normalized_catalog_name}.`{ns_name}`")
             last_err = None
             break
         except Exception as e:

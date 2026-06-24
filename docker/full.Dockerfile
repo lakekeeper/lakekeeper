@@ -3,6 +3,12 @@ FROM rust:1.95-slim-trixie AS chef
 ARG NO_CHEF=false
 ENV NO_CHEF=${NO_CHEF}
 
+# Make crate downloads resilient to transient crates.io blips in CI. Force
+# HTTP/1.1 (libcurl's HTTP/2 multiplexing intermittently fails with
+# "[16] Error in the HTTP2 framing layer") and retry more before giving up.
+ENV CARGO_HTTP_MULTIPLEXING=false
+ENV CARGO_NET_RETRY=10
+
 ENV NODE_VERSION=24.14.0
 ENV NVM_DIR=/root/.nvm
 
@@ -41,7 +47,7 @@ RUN cargo build --release --all-features --locked --bin lakekeeper
 FROM gcr.io/distroless/cc-debian13:nonroot AS base
 
 
-FROM busybox:1.37.0 AS cleaner
+FROM busybox:1.38.0 AS cleaner
 # small diversion through busybox to remove some files
 # (no rm in distroless)
 

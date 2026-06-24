@@ -13,8 +13,8 @@ use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
     CatalogCreateWarehouseRequest, ManagedBy, WarehouseStatus,
     storage::{
-        AdlsProfile, AzCredential, GcsCredential, GcsProfile, GcsServiceKey, S3Credential,
-        S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
+        AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile, OneLakeProfile,
+        S3Credential, S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
     },
 };
 use crate::{
@@ -567,7 +567,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await
             .map_err(authz_to_error_no_audit)?
-            .into_inner()
+            .into_allowed()
             .into_iter()
             .zip(warehouses)
             .filter_map(|(allowed, warehouse)| if allowed { Some(warehouse) } else { None })
@@ -1566,7 +1566,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                             )
                             .await
                             .map_err(authz_to_error_no_audit)?
-                            .into_inner()
+                            .into_allowed()
                     };
 
                     let (next_idents, next_uuids, next_page_tokens, mask): (

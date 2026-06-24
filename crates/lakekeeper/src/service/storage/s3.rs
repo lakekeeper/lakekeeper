@@ -12,7 +12,10 @@ use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
     catalog::rest::ErrorModel,
-    configs::table::{TableProperties, client, creds, custom, s3, signer},
+    configs::{
+        ConfigProperty as _,
+        table::{TableProperties, client, creds, custom, s3, signer},
+    },
 };
 use lakekeeper_io::{
     InvalidLocationError, Location,
@@ -409,6 +412,14 @@ impl S3Profile {
             defaults.insert("s3.delete-enabled".to_string(), "false".to_string());
         }
 
+        // Advertise SSE-KMS catalog-wide so FileIO created from the catalog config (not just the
+        // per-table load config) encrypts client-side writes with the configured key. Per-table
+        // `generate_table_config` emits the same keys and takes precedence.
+        if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            defaults.insert(s3::SseType::KEY.to_string(), "kms".to_string());
+            defaults.insert(s3::SseKey::KEY.to_string(), kms_key_arn.clone());
+        }
+
         CatalogConfig {
             defaults,
             overrides: HashMap::new(),
@@ -503,6 +514,18 @@ impl S3Profile {
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));
             creds.insert(&s3::Endpoint(endpoint.clone()));
+        }
+
+        // When the warehouse is configured with a KMS key, advertise SSE-KMS to clients so
+        // their own writes (vended credentials or remote signing) encrypt with the same key,
+        // independent of any S3 bucket-default-encryption configuration. Lakekeeper's own writes
+        // already set this header via lakekeeper-io. Mirrors region/endpoint by emitting into both
+        // the load config and the credential-refresh properties.
+        if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
+            config.insert(&s3::SseType("kms".to_string()));
+            config.insert(&s3::SseKey(kms_key_arn.clone()));
+            creds.insert(&s3::SseType("kms".to_string()));
+            creds.insert(&s3::SseKey(kms_key_arn.clone()));
         }
 
         if vended_credentials {
@@ -953,10 +976,12 @@ impl S3Profile {
                 "Sid": "TableAccess",
                 "Effect": "Allow",
                 "Action": actions,
-                "Resource": [
-                    format!("{bucket_arn}/{key}"),
-                    format!("{bucket_arn}/{key_wildcard}"),
-                ],
+                // `{key}*` already matches the exact key `{key}` (IAM `*` is
+                // zero-or-more chars), so a single wildcard ARN is sufficient.
+                // Keeping it to one entry also keeps the policy smaller, which
+                // matters because AWS STS enforces a (small, undocumented)
+                // limit on the *packed* size of the session policy.
+                "Resource": format!("{bucket_arn}/{key_wildcard}"),
             }),
             json!({
                 "Sid": "ListBucketForFolder",
@@ -1584,9 +1609,10 @@ pub(crate) mod test {
         let namespace_location = sp.default_namespace_location(&namespace_path).unwrap();
 
         let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
+        // Default layout is flat: no namespace directory under the base location.
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/test_prefix/{namespace_uuid}/{tabular_uuid}")
+            format!("s3://test-bucket/test_prefix/{tabular_uuid}")
         );
 
         let mut profile = profile.clone();
@@ -1597,7 +1623,7 @@ pub(crate) mod test {
         let location = sp.default_tabular_location(&namespace_location, &tabular_name_context);
         assert_eq!(
             location.to_string(),
-            format!("s3://test-bucket/{namespace_uuid}/{tabular_uuid}")
+            format!("s3://test-bucket/{tabular_uuid}")
         );
     }
 
@@ -2041,6 +2067,110 @@ pub(crate) mod test {
         }
     }
 
+    fn client_managed_table_config(profile: &S3Profile) -> TableConfig {
+        let warehouse_id = WarehouseId::new_random();
+        let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
+        let table_location: Location = "s3://bucket-name/path/to/table".parse().unwrap();
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: table_location.clone(),
+            storage_permissions: StoragePermissions::ReadWriteDelete,
+            warehouse_id,
+            tabular_id: tabular_info.tabular_id(),
+        };
+        test_block_on(
+            profile.generate_table_config(
+                DataAccessMode::ClientManaged,
+                None,
+                stc_request,
+                &tabular_info,
+                &RequestMetadata::new_unauthenticated(),
+            ),
+            false,
+        )
+        .expect("generate_table_config failed")
+    }
+
+    #[test]
+    fn table_config_emits_sse_kms_when_arn_set() {
+        let arn = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .aws_kms_key_arn(arn.to_string())
+            .build();
+        let config = client_managed_table_config(&profile);
+        // Emitted into both the load config and the credential-refresh properties.
+        assert_eq!(
+            config.config.get_prop_opt::<s3::SseType>(),
+            Some("kms".to_string())
+        );
+        assert_eq!(
+            config.config.get_prop_opt::<s3::SseKey>(),
+            Some(arn.to_string())
+        );
+        assert_eq!(
+            config.creds.get_prop_opt::<s3::SseType>(),
+            Some("kms".to_string())
+        );
+        assert_eq!(
+            config.creds.get_prop_opt::<s3::SseKey>(),
+            Some(arn.to_string())
+        );
+    }
+
+    #[test]
+    fn catalog_config_emits_sse_kms_when_arn_set() {
+        let arn = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .aws_kms_key_arn(arn.to_string())
+            .build();
+        let config = profile.generate_catalog_config(
+            WarehouseId::new_random(),
+            &RequestMetadata::new_unauthenticated(),
+            crate::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        );
+        assert_eq!(config.defaults.get("s3.sse.type"), Some(&"kms".to_string()));
+        assert_eq!(config.defaults.get("s3.sse.key"), Some(&arn.to_string()));
+    }
+
+    #[test]
+    fn catalog_config_omits_sse_when_no_kms_arn() {
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .build();
+        let config = profile.generate_catalog_config(
+            WarehouseId::new_random(),
+            &RequestMetadata::new_unauthenticated(),
+            crate::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        );
+        assert!(!config.defaults.contains_key("s3.sse.type"));
+        assert!(!config.defaults.contains_key("s3.sse.key"));
+    }
+
+    #[test]
+    fn table_config_omits_sse_when_no_kms_arn() {
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("path/to/table".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(false)
+            .build();
+        let config = client_managed_table_config(&profile);
+        assert_eq!(config.config.get_prop_opt::<s3::SseType>(), None);
+        assert_eq!(config.config.get_prop_opt::<s3::SseKey>(), None);
+    }
+
     #[test]
     fn policy_string_is_json() {
         let table_location = "s3://bucket-name/path/to/table";
@@ -2138,12 +2268,10 @@ pub(crate) mod test {
             "expected `\\\\` in serialized policy, got: {policy}"
         );
         // And the parsed JSON must contain a single literal backslash.
-        let resources = parsed["Statement"][0]["Resource"].as_array().unwrap();
+        let resource = parsed["Statement"][0]["Resource"].as_str().unwrap();
         assert!(
-            resources
-                .iter()
-                .any(|r| r.as_str().unwrap().contains(r"back\slash")),
-            "expected literal backslash in parsed Resource, got: {resources:?}"
+            resource.contains(r"back\slash"),
+            "expected literal backslash in parsed Resource, got: {resource:?}"
         );
     }
 
@@ -2175,6 +2303,82 @@ pub(crate) mod test {
             "raw `?` leaked into policy: {policy}"
         );
         let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+    }
+
+    #[test]
+    fn policy_string_table_access_is_single_wildcard_resource() {
+        // The downscoped policy must grant object access via a single
+        // `{key}*` wildcard ARN. IAM `*` matches zero-or-more characters, so
+        // `{key}*` already covers the exact key `{key}` — a second exact-key
+        // ARN would be redundant and only inflate the inline session policy.
+        let table_location = "s3://bucket-name/wh/ns/table";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .key_prefix("wh".to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::S3Compat)
+            .sts_enabled(true)
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        let resource = &parsed["Statement"][0]["Resource"];
+        // Single scalar ARN (not an array), ending in the trailing wildcard.
+        let resource = resource.as_str().unwrap_or_else(|| {
+            panic!("TableAccess Resource must be a scalar string, got: {resource}")
+        });
+        assert_eq!(resource, "arn:aws:s3:::bucket-name/wh/ns/table/*");
+    }
+
+    #[test]
+    fn policy_string_stays_within_aws_plaintext_policy_limit() {
+        // AWS STS caps the *plaintext* inline session policy at 2048 chars.
+        // (There is a second, tighter limit on the *packed* size that is not
+        // publicly documented and also counts session tags / injected context;
+        // that one cannot be asserted reliably here. We keep the policy minimal
+        // — a single object ARN — and, for vended-credential storage layouts
+        // that embed long paths, avoid pathological keys at the test/config
+        // level rather than relying on this assertion.)
+        //
+        // Path below is a deliberately long key — a 4-level nested namespace +
+        // tabular, each segment `{name}-{uuid}` (uuid = 36 chars), worst-case
+        // special-character names percent-encoded, a maximal 63-char bucket,
+        // and a long key-prefix — to guard against gross plaintext blowup.
+        let bucket = "a-very-long-but-valid-integration-test-bucket-name-us-east-1-xy";
+        assert_eq!(bucket.len(), 63, "bucket should be at AWS max length");
+        let table_location = format!(
+            "s3://{bucket}/\
+             lakekeeper-integration-tests/0123456789abcdef0123456789abcdef/\
+             namespace-11111111-1111-1111-1111-111111111111/\
+             specialns%2C-1_%C3%A4-22222222-2222-2222-2222-222222222222/\
+             nest_%E4%B8%AD%E6%96%87_2-33333333-3333-3333-3333-333333333333/\
+             l%C3%ABvel_3_%F0%9F%9A%80-44444444-4444-4444-4444-444444444444/\
+             t%C3%A5ble_%C3%A9moji_%F0%9F%8E%AF-55555555-5555-5555-5555-555555555555"
+        );
+        let profile = S3Profile::builder()
+            .bucket(bucket.to_string())
+            .region("us-east-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws:iam::123456789012:role/lakekeeper-sts".to_string())
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        // Must be valid JSON and within the 2048-char plaintext AWS limit.
+        let _ = serde_json::from_str::<serde_json::Value>(&policy).unwrap();
+        assert!(
+            policy.len() <= 2048,
+            "downscoped policy exceeds AWS STS 2048-char plaintext limit ({} chars): {policy}",
+            policy.len()
+        );
     }
 
     #[test]

@@ -67,6 +67,8 @@ pub mod s3 {
             Region, String, "s3.region", "s3_region";
             Endpoint, Url, "s3.endpoint", "s3_endpoint";
             PathStyleAccess, bool, "s3.path-style-access", "s3_path_style_access";
+            SseType, String, "s3.sse.type", "s3_sse_type";
+            SseKey, String, "s3.sse.key", "s3_sse_key";
             AccessKeyId, String, "s3.access-key-id", "s3_access_key_id";
             SecretAccessKey, String, "s3.secret-access-key", "s3_secret_access_key";
             SessionToken, String, "s3.session-token", "s3_session_token";

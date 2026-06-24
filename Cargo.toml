@@ -61,20 +61,25 @@ axum = { version = "0.8.1" }
 axum-extra = { version = "0.12.0", features = ["middleware"] }
 axum-macros = { version = "0.5.0" }
 axum-prometheus = { version = "0.9.0", features = ["http-listener"] }
-azure_core = { version = "0.21.0", default-features = false, features = [
+azure_core = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
     "hmac_rust",
+    "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_identity = { version = "0.21.0", default-features = false, features = [
+azure_identity = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+    "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage = { version = "0.21.0", default-features = false, features = [
+azure_storage = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+    "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
+azure_storage_blobs = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+    "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
-azure_storage_datalake = { version = "0.21.0", default-features = false, features = [
+azure_storage_datalake = { git = "https://github.com/lakekeeper/azure-sdk-for-rust.git", rev = "f12d268cf04ea668d0224a1a55fc120591e50b9d", default-features = false, features = [
+    "enable_reqwest",
     "enable_reqwest_rustls",
 ] }
 base64 = "0.22.1"
@@ -133,7 +138,7 @@ rdkafka = { version = "0.38.0", default-features = false, features = [
     "libz-static",
     "cmake-build",
 ] }
-reqwest = { version = "0.12.23", default-features = false, features = [
+reqwest = { version = "0.12.28", default-features = false, features = [
     "json",
     "rustls-tls",
     "rustls-tls-native-roots",

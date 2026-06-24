@@ -4,7 +4,7 @@ use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
 use crate::service::{
     authn::{Actor, InternalActor},
-    authz::{ActionDescriptor, ContextValue, UserOrRoleId},
+    authz::{ActionDescriptor, ContextValue, DeterminingFactor, UserOrRoleId},
     events::{
         Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
         context::EntityDescriptor,
@@ -52,6 +52,10 @@ impl Valuable for Authorization {
         if let Some(allowed) = self.allowed {
             visit.visit_entry(Value::String("allowed"), Value::Bool(allowed));
         }
+        if !self.determined_by.is_empty() {
+            let determined_by = DeterminingFactorsList(&self.determined_by);
+            visit.visit_entry(Value::String("determined_by"), determined_by.as_value());
+        }
     }
 }
 
@@ -60,8 +64,32 @@ impl Mappable for Authorization {
         let len = 2
             + usize::from(self.id.is_some())
             + usize::from(self.for_principal.is_some())
-            + usize::from(self.allowed.is_some());
+            + usize::from(self.allowed.is_some())
+            + usize::from(!self.determined_by.is_empty());
         (len, Some(len))
+    }
+}
+
+/// Newtype around `[DeterminingFactor]` so we can implement `Valuable` /
+/// `Listable` for it without an orphan-rule violation, mirroring
+/// [`AuthorizationsList`].
+struct DeterminingFactorsList<'a>(&'a [DeterminingFactor]);
+
+impl Valuable for DeterminingFactorsList<'_> {
+    fn as_value(&self) -> Value<'_> {
+        Value::Listable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        for entry in self.0 {
+            visit.visit_value(entry.as_value());
+        }
+    }
+}
+
+impl Listable for DeterminingFactorsList<'_> {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.0.len(), Some(self.0.len()))
     }
 }
 
@@ -487,4 +515,67 @@ macro_rules! audit_operation {
             $msg
         )
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use valuable::{Valuable, Value, Visit};
+
+    use super::*;
+    use crate::service::authz::{ActionDescriptor, DeterminingFactor, PolicyEffect};
+
+    /// Records the top-level map keys an `Authorization` emits when visited.
+    #[derive(Default)]
+    struct KeyCollector {
+        keys: Vec<String>,
+    }
+
+    impl Visit for KeyCollector {
+        fn visit_value(&mut self, _value: Value<'_>) {}
+        fn visit_entry(&mut self, key: Value<'_>, _value: Value<'_>) {
+            if let Value::String(k) = key {
+                self.keys.push(k.to_string());
+            }
+        }
+    }
+
+    fn sample(determined_by: Vec<DeterminingFactor>) -> Authorization {
+        Authorization {
+            id: None,
+            for_principal: None,
+            action: ActionDescriptor {
+                action_name: "read",
+                context: Vec::new(),
+            },
+            entity: EntityDescriptor::new("table"),
+            allowed: Some(true),
+            determined_by,
+        }
+    }
+
+    #[test]
+    fn determined_by_emitted_when_present() {
+        let auth = sample(vec![DeterminingFactor::Policy {
+            policy_id: "policy0".to_string(),
+            name: Some("allow-read".to_string()),
+            effect: PolicyEffect::Permit,
+            source: None,
+        }]);
+        let mut collector = KeyCollector::default();
+        auth.visit(&mut collector);
+        assert_eq!(
+            collector.keys,
+            vec!["action", "entity", "allowed", "determined_by"],
+        );
+        assert_eq!(auth.size_hint().0, collector.keys.len());
+    }
+
+    #[test]
+    fn determined_by_absent_when_empty() {
+        let auth = sample(Vec::new());
+        let mut collector = KeyCollector::default();
+        auth.visit(&mut collector);
+        assert_eq!(collector.keys, vec!["action", "entity", "allowed"]);
+        assert_eq!(auth.size_hint().0, collector.keys.len());
+    }
 }

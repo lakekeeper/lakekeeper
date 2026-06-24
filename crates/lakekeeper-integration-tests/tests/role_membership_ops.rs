@@ -997,3 +997,109 @@ async fn transitive_role_member_of(pool: PgPool) {
         ["A".to_string(), "B".to_string()].into_iter().collect()
     );
 }
+
+// ==================== source-system rebind invalidates closures ====================
+
+/// Rebinding a role's source system changes its `RoleIdent`, which is cached per
+/// row in every assignee's USER_ASSIGNMENTS closure and in the role's ROLE_MEMBERS
+/// entry. The handler must evict both (mirroring `delete_role`), or external
+/// authorizers evaluate the stale ident until TTL. Behavioral assertion: after the
+/// rebind, the cached reads reflect the NEW ident (and return a fresh `Arc`),
+/// proving eviction. The eviction is synchronous (post-commit in the handler), so
+/// no sleep is needed.
+#[sqlx::test]
+async fn source_system_rebind_evicts_user_assignment_and_member_closures(pool: PgPool) {
+    use lakekeeper::{
+        api::management::v1::role::{Service as _, UpdateRoleSourceSystemRequest},
+        service::CatalogRoleAssignmentOps as _,
+    };
+
+    let (ctx, project_id) = setup(pool).await;
+    let role = make_role(&ctx, &project_id, "rebind-role", "old-src").await;
+    let alice = UserId::new_unchecked("oidc", "alice");
+    provision_user(&ctx, &alice, "Alice").await;
+
+    // Alice is a direct member of the role → she effectively holds it.
+    ApiServer::add_role_members(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        AddRoleMembersRequest {
+            members: vec![user_member(&alice)],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Warm both closures so they cache the OLD ident ("old-src").
+    let warmed_user =
+        PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    assert_eq!(
+        warmed_user
+            .roles
+            .iter()
+            .find(|r| r.role_id == role)
+            .expect("alice has the role")
+            .role_ident
+            .source_id(),
+        &RoleSourceId::try_new("old-src").unwrap(),
+    );
+    let warmed_members =
+        PostgresBackend::list_role_assignments_for_role(role, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .expect("role has a member list");
+    assert_eq!(
+        warmed_members.role_ident.source_id(),
+        &RoleSourceId::try_new("old-src").unwrap(),
+    );
+
+    // Rebind the role's source system (changes its RoleIdent's source_id).
+    ApiServer::update_role_source_system(
+        ctx.clone(),
+        metadata(&project_id),
+        role,
+        UpdateRoleSourceSystemRequest {
+            provider_id: RoleProviderId::try_new("lakekeeper").unwrap(),
+            source_id: RoleSourceId::try_new("new-src").unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // USER_ASSIGNMENTS closure must reflect the rebound ident, not the stale one,
+    // and be a fresh Arc (i.e. it was evicted and reloaded).
+    let after_user =
+        PostgresBackend::list_role_assignments_for_user(&alice, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    assert_eq!(
+        after_user
+            .roles
+            .iter()
+            .find(|r| r.role_id == role)
+            .expect("alice still has the role")
+            .role_ident
+            .source_id(),
+        &RoleSourceId::try_new("new-src").unwrap(),
+        "user-assignments closure served the stale ident after a source-system rebind",
+    );
+    assert!(
+        !std::sync::Arc::ptr_eq(&warmed_user, &after_user),
+        "user-assignments entry was not evicted by the rebind",
+    );
+
+    // ROLE_MEMBERS entry must likewise reflect the rebound ident.
+    let after_members =
+        PostgresBackend::list_role_assignments_for_role(role, ctx.v1_state.catalog.clone())
+            .await
+            .unwrap()
+            .expect("role still has a member list");
+    assert_eq!(
+        after_members.role_ident.source_id(),
+        &RoleSourceId::try_new("new-src").unwrap(),
+        "role-members entry served the stale ident after a source-system rebind",
+    );
+}

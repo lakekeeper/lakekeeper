@@ -185,7 +185,7 @@ pub(super) async fn get_allowed_server_actions<C: CatalogStore, A: Authorizer, S
                 actions,
             )
             .await?
-            .into_inner())
+            .into_allowed())
     }
     .await;
     let (_event_ctx, results) = event_ctx.emit_authz(authz_result)?;
@@ -254,7 +254,7 @@ async fn authorize_get_user_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -320,7 +320,7 @@ async fn authorize_get_role_actions<C: CatalogStore>(
     catalog_state: C::State,
 ) -> Result<Vec<CatalogRoleAction>, AuthZError> {
     let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
-    let actions = CatalogRoleAction::VARIANTS;
+    let actions = CatalogRoleAction::variants();
     let can_see_permission = CatalogRoleAction::Read;
 
     // Short-circuit: if resolve_principal already fetched the target role (i.e.
@@ -344,11 +344,11 @@ async fn authorize_get_role_actions<C: CatalogStore>(
             for_user.as_ref(),
             &actions
                 .iter()
-                .map(|action| (&*role, *action))
+                .map(|action| (&*role, action.clone()))
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -359,7 +359,7 @@ async fn authorize_get_role_actions<C: CatalogStore>(
                 if action == &can_see_permission {
                     can_see = true;
                 }
-                Some(*action)
+                Some(action.clone())
             } else {
                 None
             }
@@ -425,7 +425,7 @@ async fn authorize_get_project_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -515,7 +515,7 @@ async fn authorize_get_warehouse_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -617,7 +617,7 @@ async fn authorize_get_namespace_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -735,7 +735,7 @@ async fn authorize_get_table_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -851,7 +851,7 @@ async fn authorize_get_view_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results
@@ -970,7 +970,7 @@ async fn authorize_get_generic_table_actions<C: CatalogStore>(
                 .collect::<Vec<_>>(),
         )
         .await?
-        .into_inner();
+        .into_allowed();
 
     let mut can_see = false;
     let allowed_actions = results

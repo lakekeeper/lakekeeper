@@ -42,9 +42,6 @@ pub static DEFAULT_LAYOUT: LazyLock<StorageLayout> = LazyLock::new(StorageLayout
 pub static DEFAULT_TABULAR_TEMPLATE: LazyLock<StorageLayoutTabularTemplate> =
     LazyLock::new(StorageLayoutTabularTemplate::default);
 
-pub static DEFAULT_NAMESPACE_TEMPLATE: LazyLock<StorageLayoutNamespaceTemplate> =
-    LazyLock::new(StorageLayoutNamespaceTemplate::default);
-
 /// One directory per direct-parent namespace, one per tabular.
 ///
 /// For a tabular `my_tabular` (uuid `…002`) in namespace `my_ns` (uuid `…001`) the path is:
@@ -206,9 +203,14 @@ fn has_template_parameter(template: &str) -> bool {
 
 /// Controls how namespace and tabular paths are constructed under the warehouse base location.
 ///
-/// - `default` / omitted: one directory per direct-parent namespace, one per tabular, both with `"{uuid}"` segments.
+/// - `default` / omitted: flat — no namespace directories; all tabulars are placed directly under
+///   the base location with a fixed `"{uuid}"` segment. (Changed in 0.13; before 0.13 the default
+///   emitted a `"{uuid}"` directory for the direct-parent namespace. Existing namespaces created
+///   before 0.13 keep their persisted location, so only namespaces created on/after 0.13 use the
+///   flat default.)
 /// - `full-hierarchy`: one directory per namespace level, one per tabular.
-/// - `tabular-only`: no namespace directories; all tabulars are placed directly under the base location.
+/// - `tabular-only`: no namespace directories; all tabulars are placed directly under the base
+///   location, with a configurable tabular template (which must contain `{uuid}`).
 ///
 /// Segment templates may use `{uuid}` and `{name}` as placeholders.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, Default, derive_more::From)]
@@ -266,7 +268,9 @@ impl StorageLayout {
     #[must_use]
     pub fn render_namespace_path(&self, path_context: &NamespacePath) -> Vec<String> {
         match self {
-            StorageLayout::Flat(_) => vec![],
+            // Flat layouts — including the default since 0.13 — place tabulars
+            // directly under the base location, so no namespace directories are emitted.
+            StorageLayout::Flat(_) | StorageLayout::Default => vec![],
             StorageLayout::Parent(layout) => {
                 render_parent_namespace_path(path_context, &layout.namespace)
             }
@@ -274,9 +278,6 @@ impl StorageLayout {
                 .into_iter()
                 .map(|path| layout.namespace.render(path))
                 .collect(),
-            StorageLayout::Default => {
-                render_parent_namespace_path(path_context, &DEFAULT_NAMESPACE_TEMPLATE)
-            }
         }
     }
 }
@@ -550,8 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_render_tabular_segment_in_default_layout_uses_parent_layout_with_uuid_only()
-     {
+    fn test_storage_layout_render_tabular_segment_in_default_layout_renders_uuid_only() {
         let layout = StorageLayout::Default;
         let context = TabularNameContext {
             name: "my_tabular".to_string(),
@@ -727,7 +727,10 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_layout_render_namespace_segment_in_default_layout_should_render_only_parent() {
+    fn test_storage_layout_render_namespace_segment_in_default_layout_renders_no_namespace_directories()
+     {
+        // The default layout is flat: tabulars live directly under the base
+        // location, so no namespace path segments are emitted.
         let layout = StorageLayout::Default;
         let grand_parent_namespace = NamespaceNameContext {
             name: "grand_parent_namespace".to_string(),
@@ -742,10 +745,7 @@ mod tests {
             parent_namespace.clone(),
         ]);
 
-        assert_eq!(
-            *layout.render_namespace_path(&path),
-            vec![format!("{}", parent_namespace.uuid),]
-        );
+        assert!(layout.render_namespace_path(&path).is_empty());
     }
 
     #[test]
@@ -881,10 +881,8 @@ mod tests {
 
         let namespace_path_rendered = layout.render_namespace_path(&namespace_path);
 
-        assert_eq!(
-            namespace_path_rendered,
-            vec![format!("{}", parent_namespace.uuid),]
-        );
+        // Default is flat — no namespace directories.
+        assert!(namespace_path_rendered.is_empty());
 
         let tabular_name_rendered = layout.render_tabular_segment(&tabular);
         assert_eq!(tabular_name_rendered, format!("{}", tabular.uuid));
