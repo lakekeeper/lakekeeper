@@ -322,7 +322,13 @@ async fn test_are_allowed_tabular_actions_vec_mixed_order(pool: PgPool) {
         "table:{}/{}",
         warehouse_resp.warehouse_id, table2_info.tabular_id
     ));
-    authz.block_action(&format!("view:{:?}", CatalogViewAction::Drop));
+    authz.block_action(&format!(
+        "view:{:?}",
+        CatalogViewAction::Drop {
+            force: false,
+            purge: false,
+        }
+    ));
 
     let warehouse = PostgresBackend::get_active_warehouse_by_id(
         warehouse_resp.warehouse_id,
@@ -360,7 +366,10 @@ async fn test_are_allowed_tabular_actions_vec_mixed_order(pool: PgPool) {
             &ns_hierarchy.namespace,
             ActionOnTableOrView::View(ActionOnView {
                 info: &view1_info,
-                action: CatalogViewAction::Drop,
+                action: CatalogViewAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 user: None,
                 is_delegated_execution: false,
             }), // Blocked

@@ -77,6 +77,12 @@ where
     Ok(Arc::new(string_map))
 }
 
+/// `serde` `skip_serializing_if` helper for `bool` fields that default to `false`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Assignees to a role
 pub struct RoleAssignee(ArcRole);
@@ -792,7 +798,20 @@ pub enum CatalogNamespaceAction {
         #[serde(deserialize_with = "deserialize_string_map")]
         properties: Arc<BTreeMap<String, String>>,
     },
-    Delete,
+    Delete {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e.
+        /// contained tabulars are hard-deleted immediately instead of being
+        /// recoverable for the configured grace period.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying data/metadata files are physically purged.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+        /// Whether the drop recurses into child namespaces, tables and views,
+        /// deleting the entire subtree rooted at this namespace.
+        #[serde(default, skip_serializing_if = "is_false")]
+        recursive: bool,
+    },
     UpdateProperties {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed_properties: Arc<Vec<String>>,
@@ -844,7 +863,11 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyL
             name: None,
             properties: Arc::new(BTreeMap::new()),
         },
-        CatalogNamespaceAction::Delete,
+        CatalogNamespaceAction::Delete {
+            force: false,
+            purge: false,
+            recursive: false,
+        },
         CatalogNamespaceAction::UpdateProperties {
             removed_properties: Arc::new(Vec::new()),
             updated_properties: Arc::new(BTreeMap::new()),
@@ -933,6 +956,21 @@ impl CatalogAction for CatalogNamespaceAction {
                     b = b.context_list("removed-properties", removed_properties.as_ref().clone());
                 }
             }
+            Self::Delete {
+                force,
+                purge,
+                recursive,
+            } => {
+                if *force {
+                    b = b.context_string("force", "true");
+                }
+                if *purge {
+                    b = b.context_string("purge", "true");
+                }
+                if *recursive {
+                    b = b.context_string("recursive", "true");
+                }
+            }
             _ => {}
         }
         b.build()
@@ -955,7 +993,16 @@ impl CatalogAction for CatalogNamespaceAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogTableAction {
-    Drop,
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        /// table is hard-deleted immediately instead of being recoverable for the
+        /// configured grace period. Extra destructive — irreversible right away.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying data files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
     WriteData,
     ReadData,
     GetMetadata,
@@ -975,7 +1022,10 @@ pub enum CatalogTableAction {
 }
 static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new(|| {
     [
-        CatalogTableAction::Drop,
+        CatalogTableAction::Drop {
+            force: false,
+            purge: false,
+        },
         CatalogTableAction::WriteData,
         CatalogTableAction::ReadData,
         CatalogTableAction::GetMetadata,
@@ -1000,17 +1050,27 @@ impl CatalogTableAction {
 impl CatalogAction for CatalogTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::Commit {
-            updated_properties,
-            removed_properties,
-        } = self
-        {
-            if !updated_properties.is_empty() {
-                b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+        match self {
+            Self::Commit {
+                updated_properties,
+                removed_properties,
+            } => {
+                if !updated_properties.is_empty() {
+                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                }
+                if !removed_properties.is_empty() {
+                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                }
             }
-            if !removed_properties.is_empty() {
-                b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+            Self::Drop { force, purge } => {
+                if *force {
+                    b = b.context_string("force", "true");
+                }
+                if *purge {
+                    b = b.context_string("purge", "true");
+                }
             }
+            _ => {}
         }
         b.build()
     }
@@ -1032,7 +1092,16 @@ impl CatalogAction for CatalogTableAction {
 #[serde(rename_all = "snake_case", tag = "action")]
 #[strum(serialize_all = "snake_case")]
 pub enum CatalogViewAction {
-    Drop,
+    Drop {
+        /// Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        /// view is hard-deleted immediately instead of being recoverable for the
+        /// configured grace period. Extra destructive — irreversible right away.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+        /// Whether the underlying metadata files are physically purged from storage.
+        #[serde(default, skip_serializing_if = "is_false")]
+        purge: bool,
+    },
     GetMetadata,
     Select,
     Commit {
@@ -1051,7 +1120,10 @@ pub enum CatalogViewAction {
 }
 static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|| {
     [
-        CatalogViewAction::Drop,
+        CatalogViewAction::Drop {
+            force: false,
+            purge: false,
+        },
         CatalogViewAction::GetMetadata,
         CatalogViewAction::Select,
         CatalogViewAction::Commit {
@@ -1075,17 +1147,27 @@ impl CatalogViewAction {
 impl CatalogAction for CatalogViewAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
-        if let Self::Commit {
-            updated_properties,
-            removed_properties,
-        } = self
-        {
-            if !updated_properties.is_empty() {
-                b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+        match self {
+            Self::Commit {
+                updated_properties,
+                removed_properties,
+            } => {
+                if !updated_properties.is_empty() {
+                    b = b.context_map("updated-properties", updated_properties.as_ref().clone());
+                }
+                if !removed_properties.is_empty() {
+                    b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                }
             }
-            if !removed_properties.is_empty() {
-                b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+            Self::Drop { force, purge } => {
+                if *force {
+                    b = b.context_string("force", "true");
+                }
+                if *purge {
+                    b = b.context_string("purge", "true");
+                }
             }
+            _ => {}
         }
         b.build()
     }
@@ -1142,6 +1224,277 @@ impl CatalogGenericTableAction {
 impl CatalogAction for CatalogGenericTableAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fieldless "action kind" enums.
+//
+// The `Catalog*Action` enums above carry per-operation context (e.g. `Drop {
+// force, purge }`, `Commit { .. }`, `CreateTable { .. }`) used by authorization
+// checks and the `/check` request body. That context has no place in the
+// permission-introspection RESPONSE (`GET …/actions`), which only answers *which
+// kinds of action* a principal may perform. These stateless companions are what
+// those responses serialize — `{"action":"drop"}` and nothing more.
+//
+// Only resources whose actions carry context need a companion; `CatalogUserAction`
+// and `CatalogGenericTableAction` are already fieldless and are used directly.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperServerActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogServerActionKind {
+    CreateProject,
+    UpdateUsers,
+    DeleteUsers,
+    ListUsers,
+    ProvisionUsers,
+}
+impl From<&CatalogServerAction> for CatalogServerActionKind {
+    fn from(action: &CatalogServerAction) -> Self {
+        match action {
+            CatalogServerAction::CreateProject { .. } => Self::CreateProject,
+            CatalogServerAction::UpdateUsers => Self::UpdateUsers,
+            CatalogServerAction::DeleteUsers => Self::DeleteUsers,
+            CatalogServerAction::ListUsers => Self::ListUsers,
+            CatalogServerAction::ProvisionUsers => Self::ProvisionUsers,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperProjectActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogProjectActionKind {
+    CreateWarehouse,
+    Delete,
+    Rename,
+    GetMetadata,
+    ListWarehouses,
+    IncludeInList,
+    CreateRole,
+    ListRoles,
+    SearchRoles,
+    GetEndpointStatistics,
+    ModifyTaskQueueConfig,
+    GetTaskQueueConfig,
+    GetProjectTasks,
+    ControlProjectTasks,
+}
+impl From<&CatalogProjectAction> for CatalogProjectActionKind {
+    fn from(action: &CatalogProjectAction) -> Self {
+        match action {
+            CatalogProjectAction::CreateWarehouse { .. } => Self::CreateWarehouse,
+            CatalogProjectAction::Delete => Self::Delete,
+            CatalogProjectAction::Rename => Self::Rename,
+            CatalogProjectAction::GetMetadata => Self::GetMetadata,
+            CatalogProjectAction::ListWarehouses => Self::ListWarehouses,
+            CatalogProjectAction::IncludeInList => Self::IncludeInList,
+            CatalogProjectAction::CreateRole { .. } => Self::CreateRole,
+            CatalogProjectAction::ListRoles => Self::ListRoles,
+            CatalogProjectAction::SearchRoles => Self::SearchRoles,
+            CatalogProjectAction::GetEndpointStatistics => Self::GetEndpointStatistics,
+            CatalogProjectAction::ModifyTaskQueueConfig => Self::ModifyTaskQueueConfig,
+            CatalogProjectAction::GetTaskQueueConfig => Self::GetTaskQueueConfig,
+            CatalogProjectAction::GetProjectTasks => Self::GetProjectTasks,
+            CatalogProjectAction::ControlProjectTasks => Self::ControlProjectTasks,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperRoleActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogRoleActionKind {
+    Read,
+    ReadMetadata,
+    Delete,
+    Update,
+    ManageRoleAssignments,
+    ReadRoleAssignments,
+    UpdateSourceSystem,
+}
+impl From<&CatalogRoleAction> for CatalogRoleActionKind {
+    fn from(action: &CatalogRoleAction) -> Self {
+        match action {
+            CatalogRoleAction::Read => Self::Read,
+            CatalogRoleAction::ReadMetadata => Self::ReadMetadata,
+            CatalogRoleAction::Delete => Self::Delete,
+            CatalogRoleAction::Update => Self::Update,
+            CatalogRoleAction::ManageRoleAssignments => Self::ManageRoleAssignments,
+            CatalogRoleAction::ReadRoleAssignments => Self::ReadRoleAssignments,
+            CatalogRoleAction::UpdateSourceSystem { .. } => Self::UpdateSourceSystem,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperWarehouseActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogWarehouseActionKind {
+    CreateNamespace,
+    Delete,
+    UpdateStorage,
+    UpdateStorageCredential,
+    GetMetadata,
+    GetConfig,
+    ListNamespaces,
+    ListEverything,
+    Use,
+    IncludeInList,
+    Deactivate,
+    Activate,
+    Rename,
+    ListDeletedTabulars,
+    ModifySoftDeletion,
+    GetTaskQueueConfig,
+    ModifyTaskQueueConfig,
+    GetAllTasks,
+    ControlAllTasks,
+    SetProtection,
+    SetFormatVersionPolicy,
+    GetEndpointStatistics,
+}
+impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
+    fn from(action: &CatalogWarehouseAction) -> Self {
+        match action {
+            CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
+            CatalogWarehouseAction::Delete => Self::Delete,
+            CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
+            CatalogWarehouseAction::UpdateStorageCredential => Self::UpdateStorageCredential,
+            CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
+            CatalogWarehouseAction::GetConfig => Self::GetConfig,
+            CatalogWarehouseAction::ListNamespaces => Self::ListNamespaces,
+            CatalogWarehouseAction::ListEverything => Self::ListEverything,
+            CatalogWarehouseAction::Use => Self::Use,
+            CatalogWarehouseAction::IncludeInList => Self::IncludeInList,
+            CatalogWarehouseAction::Deactivate => Self::Deactivate,
+            CatalogWarehouseAction::Activate => Self::Activate,
+            CatalogWarehouseAction::Rename => Self::Rename,
+            CatalogWarehouseAction::ListDeletedTabulars => Self::ListDeletedTabulars,
+            CatalogWarehouseAction::ModifySoftDeletion => Self::ModifySoftDeletion,
+            CatalogWarehouseAction::GetTaskQueueConfig => Self::GetTaskQueueConfig,
+            CatalogWarehouseAction::ModifyTaskQueueConfig => Self::ModifyTaskQueueConfig,
+            CatalogWarehouseAction::GetAllTasks => Self::GetAllTasks,
+            CatalogWarehouseAction::ControlAllTasks => Self::ControlAllTasks,
+            CatalogWarehouseAction::SetProtection => Self::SetProtection,
+            CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
+            CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperNamespaceActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogNamespaceActionKind {
+    CreateTable,
+    CreateView,
+    CreateNamespace,
+    Delete,
+    UpdateProperties,
+    GetMetadata,
+    ListTables,
+    ListViews,
+    ListNamespaces,
+    ListEverything,
+    SetProtection,
+    IncludeInList,
+    CreateGenericTable,
+    ListGenericTables,
+}
+impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
+    fn from(action: &CatalogNamespaceAction) -> Self {
+        match action {
+            CatalogNamespaceAction::CreateTable { .. } => Self::CreateTable,
+            CatalogNamespaceAction::CreateView { .. } => Self::CreateView,
+            CatalogNamespaceAction::CreateNamespace { .. } => Self::CreateNamespace,
+            CatalogNamespaceAction::Delete { .. } => Self::Delete,
+            CatalogNamespaceAction::UpdateProperties { .. } => Self::UpdateProperties,
+            CatalogNamespaceAction::GetMetadata => Self::GetMetadata,
+            CatalogNamespaceAction::ListTables => Self::ListTables,
+            CatalogNamespaceAction::ListViews => Self::ListViews,
+            CatalogNamespaceAction::ListNamespaces => Self::ListNamespaces,
+            CatalogNamespaceAction::ListEverything => Self::ListEverything,
+            CatalogNamespaceAction::SetProtection => Self::SetProtection,
+            CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
+            CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
+            CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperTableActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogTableActionKind {
+    Drop,
+    WriteData,
+    ReadData,
+    GetMetadata,
+    Commit,
+    Rename,
+    IncludeInList,
+    Undrop,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
+}
+impl From<&CatalogTableAction> for CatalogTableActionKind {
+    fn from(action: &CatalogTableAction) -> Self {
+        match action {
+            CatalogTableAction::Drop { .. } => Self::Drop,
+            CatalogTableAction::WriteData => Self::WriteData,
+            CatalogTableAction::ReadData => Self::ReadData,
+            CatalogTableAction::GetMetadata => Self::GetMetadata,
+            CatalogTableAction::Commit { .. } => Self::Commit,
+            CatalogTableAction::Rename => Self::Rename,
+            CatalogTableAction::IncludeInList => Self::IncludeInList,
+            CatalogTableAction::Undrop => Self::Undrop,
+            CatalogTableAction::GetTasks => Self::GetTasks,
+            CatalogTableAction::ControlTasks => Self::ControlTasks,
+            CatalogTableAction::SetProtection => Self::SetProtection,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperViewActionKind))]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogViewActionKind {
+    Drop,
+    GetMetadata,
+    Select,
+    Commit,
+    IncludeInList,
+    Rename,
+    Undrop,
+    GetTasks,
+    ControlTasks,
+    SetProtection,
+}
+impl From<&CatalogViewAction> for CatalogViewActionKind {
+    fn from(action: &CatalogViewAction) -> Self {
+        match action {
+            CatalogViewAction::Drop { .. } => Self::Drop,
+            CatalogViewAction::GetMetadata => Self::GetMetadata,
+            CatalogViewAction::Select => Self::Select,
+            CatalogViewAction::Commit { .. } => Self::Commit,
+            CatalogViewAction::IncludeInList => Self::IncludeInList,
+            CatalogViewAction::Rename => Self::Rename,
+            CatalogViewAction::Undrop => Self::Undrop,
+            CatalogViewAction::GetTasks => Self::GetTasks,
+            CatalogViewAction::ControlTasks => Self::ControlTasks,
+            CatalogViewAction::SetProtection => Self::SetProtection,
+        }
     }
 }
 
@@ -1657,7 +2010,11 @@ pub mod tests {
                 serde_json::json!({"action": "list_everything"}),
             ),
             (
-                CatalogNamespaceAction::Delete,
+                CatalogNamespaceAction::Delete {
+                    force: false,
+                    purge: false,
+                    recursive: false,
+                },
                 serde_json::json!({"action": "delete"}),
             ),
             (
@@ -1841,7 +2198,10 @@ pub mod tests {
     fn test_catalog_view_action_serde_no_properties() {
         for (action, expected) in [
             (
-                CatalogViewAction::Drop,
+                CatalogViewAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 serde_json::json!({"action": "drop"}),
             ),
             (
@@ -1899,7 +2259,10 @@ pub mod tests {
     fn test_catalog_table_action_serde_no_properties() {
         for (action, expected) in [
             (
-                CatalogTableAction::Drop,
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
                 serde_json::json!({"action": "drop"}),
             ),
             (
@@ -1980,6 +2343,72 @@ pub mod tests {
         let deserialized: CatalogTableAction =
             serde_json::from_value(serialized).expect("Failed to deserialize");
         assert_eq!(deserialized, action);
+    }
+
+    /// The fieldless `*ActionKind` enums (used in permission-introspection
+    /// responses) must serialize to just `{"action": "<name>"}` — no per-operation
+    /// state — and `From<&operational>` must preserve the action name while
+    /// stripping context. Driving the assertion from each operational `variants()`
+    /// also guarantees the `From` mapping stays exhaustive.
+    #[test]
+    fn test_action_kind_is_stateless_and_matches_operational_name() {
+        fn assert_stateless<'a, Op, Kind>(op: &'a Op)
+        where
+            Kind: From<&'a Op> + Serialize,
+            Op: Serialize,
+        {
+            let op_json = serde_json::to_value(op).expect("serialize operational");
+            let kind_json = serde_json::to_value(Kind::from(op)).expect("serialize kind");
+            // Kind carries only the action discriminant.
+            assert_eq!(
+                kind_json,
+                serde_json::json!({ "action": op_json["action"].clone() }),
+                "kind must be {{action}}-only; operational was {op_json}"
+            );
+        }
+
+        for a in CatalogServerAction::variants() {
+            assert_stateless::<_, CatalogServerActionKind>(a);
+        }
+        for a in CatalogProjectAction::variants() {
+            assert_stateless::<_, CatalogProjectActionKind>(a);
+        }
+        for a in CatalogRoleAction::variants() {
+            assert_stateless::<_, CatalogRoleActionKind>(a);
+        }
+        for a in CatalogWarehouseAction::variants() {
+            assert_stateless::<_, CatalogWarehouseActionKind>(a);
+        }
+        for a in CatalogNamespaceAction::variants() {
+            assert_stateless::<_, CatalogNamespaceActionKind>(a);
+        }
+        for a in CatalogTableAction::variants() {
+            assert_stateless::<_, CatalogTableActionKind>(a);
+        }
+        for a in CatalogViewAction::variants() {
+            assert_stateless::<_, CatalogViewActionKind>(a);
+        }
+
+        // Spot-check that context-bearing variants collapse to the bare action.
+        assert_eq!(
+            serde_json::to_value(CatalogTableActionKind::from(&CatalogTableAction::Drop {
+                force: true,
+                purge: true,
+            }))
+            .unwrap(),
+            serde_json::json!({ "action": "drop" }),
+        );
+        assert_eq!(
+            serde_json::to_value(CatalogNamespaceActionKind::from(
+                &CatalogNamespaceAction::Delete {
+                    force: true,
+                    purge: true,
+                    recursive: true,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({ "action": "delete" }),
+        );
     }
 
     #[test]
@@ -2627,7 +3056,10 @@ pub mod tests {
     );
     test_block_action!(
         table,
-        CatalogTableAction::Drop,
+        CatalogTableAction::Drop {
+            force: false,
+            purge: false,
+        },
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -2650,7 +3082,10 @@ pub mod tests {
     );
     test_block_action!(
         view,
-        CatalogViewAction::Drop,
+        CatalogViewAction::Drop {
+            force: false,
+            purge: false,
+        },
         &ResolvedWarehouse::new_with_id(Uuid::nil().into()),
         &NamespaceHierarchy {
             namespace: NamespaceWithParent {
@@ -2810,7 +3245,16 @@ pub mod tests {
         // Drop (control-plane) — also block it, and verify instance admin STILL
         // bypasses it. This confirms that the bypass applies selectively within
         // a single batch.
-        authz.block_action(format!("table:{:?}", CatalogTableAction::Drop).as_str());
+        authz.block_action(
+            format!(
+                "table:{:?}",
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                }
+            )
+            .as_str(),
+        );
         let allowed = authz
             .is_allowed_table_action(
                 &md,
@@ -2818,7 +3262,10 @@ pub mod tests {
                 &warehouse,
                 &hierarchy,
                 &table_info,
-                CatalogTableAction::Drop,
+                CatalogTableAction::Drop {
+                    force: false,
+                    purge: false,
+                },
             )
             .await
             .unwrap()
