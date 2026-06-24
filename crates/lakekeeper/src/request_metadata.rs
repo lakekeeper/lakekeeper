@@ -132,6 +132,13 @@ impl TokenRoles {
     pub fn roles(&self) -> &XXHashSet<Arc<RoleIdent>> {
         &self.roles
     }
+
+    /// Union `other`'s roles into this set, consuming it (no cloning). Keeps
+    /// `self`'s project id; callers resolve roles for the request's single
+    /// project, so the ids normally match, and if they differ the first wins.
+    pub(crate) fn merge(&mut self, other: TokenRoles) {
+        self.roles.extend(other.roles);
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]

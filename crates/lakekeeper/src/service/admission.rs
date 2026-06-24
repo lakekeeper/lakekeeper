@@ -182,10 +182,12 @@ impl AdmissionGates {
             match gate.admit(metadata).await {
                 Ok(admission) => {
                     if let Some(roles) = admission.resolved_roles {
-                        resolved_roles = Some(match resolved_roles {
-                            None => roles,
-                            Some(existing) => merge_roles(existing, roles),
-                        });
+                        // Common case is a single role-resolving gate: just move
+                        // the set in. Extra gates union in place (no cloning).
+                        match resolved_roles.as_mut() {
+                            Some(acc) => acc.merge(roles),
+                            None => resolved_roles = Some(roles),
+                        }
                     }
                 }
                 Err(rejection) => {
@@ -203,15 +205,6 @@ impl AdmissionGates {
         }
         Ok(Admission { resolved_roles })
     }
-}
-
-/// Union two project-scoped role sets, keeping the first set's project. Gates
-/// are expected to resolve roles for the request's project, so the project ids
-/// normally match; if they differ, the first gate's project wins.
-fn merge_roles(a: TokenRoles, b: TokenRoles) -> TokenRoles {
-    let mut roles = a.roles().clone();
-    roles.extend(b.roles().iter().cloned());
-    TokenRoles::new(a.project_id().clone(), roles)
 }
 
 #[cfg(test)]
