@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod authn;
 pub mod authz;
 pub(crate) mod cache_metrics;
@@ -13,6 +14,7 @@ pub mod secrets;
 pub mod storage;
 pub mod task_configs;
 pub mod tasks;
+pub use admission::{AdmissionGate, AdmissionGates, AdmissionRejection};
 pub use authn::{Actor, UserId};
 pub use catalog_store::*;
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;

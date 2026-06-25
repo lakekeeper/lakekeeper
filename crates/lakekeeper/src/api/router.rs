@@ -35,6 +35,7 @@ use crate::{
     request_tracing::{MakeRequestUuid7, RestMakeSpan},
     service::{
         CatalogStore, EndpointStatisticsTrackerTx, SecretStore, State,
+        admission::AdmissionGates,
         authn::{AuthMiddlewareState, auth_middleware_fn},
         authz::{Authorizer, InstanceAdminMembership},
         health::{HealthState, HealthStatus, ServiceHealthProvider},
@@ -67,6 +68,10 @@ pub struct RouterArgs<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N:
     ///
     /// [`ConfiguredInstanceAdmins`]: crate::service::authz::ConfiguredInstanceAdmins
     pub instance_admin_membership: Arc<dyn InstanceAdminMembership>,
+    /// Post-authentication admission gates. Empty by default (admits every
+    /// request); host binaries may register gates that reject already
+    /// authenticated principals before they reach any handler.
+    pub admission_gates: AdmissionGates,
 }
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + Debug> Debug
@@ -88,6 +93,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore, N: Authenticator + 
                 &self.endpoint_statistics_tracker_tx,
             )
             .field("instance_admin_membership", &self.instance_admin_membership)
+            .field("admission_gates", &self.admission_gates)
             .finish()
     }
 }
@@ -110,6 +116,7 @@ pub async fn new_full_router<
         metrics_layer,
         endpoint_statistics_tracker_tx,
         instance_admin_membership,
+        admission_gates,
         // registered_task_queues,
     }: RouterArgs<C, A, S, N>,
 ) -> anyhow::Result<Router> {
@@ -132,6 +139,7 @@ pub async fn new_full_router<
                 events: state.v1_state.events.clone(),
                 catalog_state: state.v1_state.catalog.clone(),
                 instance_admin_membership,
+                admission_gates,
             },
             auth_middleware_fn::<C, _, _>,
         )))

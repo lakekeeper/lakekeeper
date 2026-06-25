@@ -24,7 +24,12 @@ use crate::{CONFIG, api, service::ArcRole};
 use crate::{
     XXHashSet,
     request_metadata::{RequestMetadata, TokenRoles},
-    service::{RoleIdent, authz::InstanceAdminMembership, events::EventDispatcher},
+    service::{
+        RoleIdent,
+        admission::{AdmissionGates, AdmissionRejection},
+        authz::InstanceAdminMembership,
+        events::EventDispatcher,
+    },
 };
 
 pub const IDP_SEPARATOR: char = '~';
@@ -63,6 +68,10 @@ pub(crate) struct AuthMiddlewareState<
     /// binary `RequestMetadata::is_instance_admin` flag. Defaults to
     /// [`ConfiguredInstanceAdmins`](super::authz::ConfiguredInstanceAdmins).
     pub instance_admin_membership: Arc<dyn InstanceAdminMembership>,
+    /// Post-authentication admission gates, evaluated once per authenticated
+    /// request after actor/instance-admin resolution and before the request
+    /// reaches any handler. Empty by default (admits everything).
+    pub admission_gates: AdmissionGates,
 }
 
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
@@ -547,6 +556,46 @@ pub(crate) async fn auth_middleware_fn<
         // Ensure assume role, if present, is allowed
         if let Err(err) = check_result {
             return err.into_response();
+        }
+
+        // Post-authentication admission gates: a coarse, pluggable rejection of
+        // an already-authenticated principal that must not be admitted to this
+        // instance at all (e.g. an external control-plane permission service).
+        // Runs after instance-admin and assumed-role resolution so a gate can
+        // honor the instance-admin break-glass and see the resolved actor.
+        // No-op unless the host binary registered at least one gate.
+        if !state.admission_gates.is_empty() {
+            match state.admission_gates.admit(request_metadata).await {
+                // On admit, fold any roles the gate(s) resolved into the request
+                // metadata for downstream authorization and audit.
+                Ok(admission) => {
+                    if let Some(roles) = admission.resolved_roles {
+                        request_metadata.set_admission_roles(roles);
+                    }
+                }
+                // The rejection variant carries its own HTTP semantics: an
+                // authoritative deny is a plain 403, while a fail-closed
+                // `Unavailable` is a 503 with the gate's chosen `Retry-After`.
+                Err(rejection) => {
+                    return match rejection {
+                        AdmissionRejection::Forbidden(error) => error.into_response(),
+                        AdmissionRejection::Unavailable { error, retry_after } => {
+                            // `Retry-After` is whole seconds; round any
+                            // sub-second remainder up so a sub-second Duration
+                            // still asks for at least 1s of backoff rather than
+                            // truncating to 0 ("retry immediately").
+                            let secs =
+                                retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
+                            let mut response = error.into_response();
+                            response.headers_mut().insert(
+                                axum::http::header::RETRY_AFTER,
+                                axum::http::HeaderValue::from(secs),
+                            );
+                            response
+                        }
+                    };
+                }
+            }
         }
     }
 

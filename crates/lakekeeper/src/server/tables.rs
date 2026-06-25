@@ -544,6 +544,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             metadata: table_metadata,
             config: Some(config.config.into()),
             storage_credentials: None,
+            // No credentials are vended in the register response.
+            credentials_revalidate_after_ms: None,
         })
     }
 

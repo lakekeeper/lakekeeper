@@ -364,6 +364,7 @@ impl GcsProfile {
             return Ok(TableConfig {
                 creds: table_properties.clone(),
                 config: table_properties,
+                credentials_expiration_ms: None,
             });
         }
 
@@ -404,6 +405,7 @@ impl GcsProfile {
             table_properties.insert(&gcs::ProjectId(project_id));
         }
 
+        let mut credentials_expiration_ms: Option<i64> = None;
         if let Some(expiry) = response.expires_at_system_time {
             match expiry.duration_since(std::time::UNIX_EPOCH) {
                 Ok(expiry_since_epoch) => {
@@ -413,6 +415,7 @@ impl GcsProfile {
                     match i64::try_from(expiry_since_epoch.as_millis()) {
                         Ok(expiration) => {
                             table_properties.insert(&creds::ExpirationTimeMs(expiration));
+                            credentials_expiration_ms = Some(expiration);
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -440,6 +443,7 @@ impl GcsProfile {
             // Due to backwards compat reasons we still return creds within config too
             config: table_properties.clone(),
             creds: table_properties,
+            credentials_expiration_ms,
         })
     }
 
