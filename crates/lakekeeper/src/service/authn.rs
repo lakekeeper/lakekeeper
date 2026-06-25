@@ -26,7 +26,7 @@ use crate::{
     request_metadata::{RequestMetadata, TokenRoles},
     service::{
         RoleIdent,
-        admission::{AdmissionGates, AdmissionRejection},
+        admission::{AdmissionContext, AdmissionGates, AdmissionRejection},
         authz::InstanceAdminMembership,
         events::EventDispatcher,
     },
@@ -565,7 +565,15 @@ pub(crate) async fn auth_middleware_fn<
         // honor the instance-admin break-glass and see the resolved actor.
         // No-op unless the host binary registered at least one gate.
         if !state.admission_gates.is_empty() {
-            match state.admission_gates.admit(request_metadata).await {
+            // The raw bearer is handed to gates via a transient context, never
+            // stored on `RequestMetadata`, so a gate can relay it to an external
+            // service without it leaking into metadata/audit.
+            let bearer_token = authorization.token();
+            match state
+                .admission_gates
+                .admit(AdmissionContext::new(request_metadata, Some(bearer_token)))
+                .await
+            {
                 // On admit, fold any roles the gate(s) resolved into the request
                 // metadata for downstream authorization and audit.
                 Ok(admission) => {
