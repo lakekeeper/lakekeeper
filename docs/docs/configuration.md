@@ -588,9 +588,11 @@ LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__OIDC__AUDIENCES=[trino_dev, trin
 LAKEKEEPER__TRUSTED_ENGINES__TRINO__IDENTITIES__KUBERNETES__SUBJECTS=[trino-sa]
 ```
 
-### Role Provider
+### Role Provider <span class="lkp"></span>
 
 Authorizers such as `Cedar` support pluggable role providers that resolve a user's group memberships from an external directory (e.g. LDAP / Active Directory). Multiple providers can be configured in parallel, each with a unique identifier. `OpenFGA` does not use role providers — roles are stored directly in OpenFGA.
+
+Role providers that resolve groups over HTTPS — the Microsoft Graph (Entra ID) provider — honor the standard `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` environment variables for outbound requests. There is no per-provider proxy setting.
 
 ##### Chain settings
 
@@ -769,6 +771,84 @@ LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__DOMAINS=["corp.example.com"]
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__USER_BASE_DN=ou=people,dc=corp,dc=example,dc=com
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_DN=cn=svc-lakekeeper,ou=service-accounts,dc=corp,dc=example,dc=com
 LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-password
+```
+
+##### Microsoft Graph (Entra ID) role provider
+
+Resolves a user's **transitive** Microsoft Entra ID group memberships via the Microsoft Graph API and maps each group to a role — keyed by the group's object id, with the group `displayName` as the role name. Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
+
+The app registration this provider authenticates as needs the Microsoft Graph **application** permissions `GroupMember.Read.All` and `User.Read.All`, admin-consented.
+
+**Required fields:**
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <nobr>`…__TYPE`</nobr>              | `entra-graph` | Provider type. Must be `entra-graph` (aliases: `entra_graph`, `azure-ad`). |
+| <nobr>`…__CREDENTIAL__METHOD`</nobr> | `secret`      | Azure credential type — one of `secret`, `certificate`, `managed_identity`, `workload_identity`. Selects the remaining `…__CREDENTIAL__*` fields below. |
+
+**Credential** — the `…__CREDENTIAL__*` fields depend on `…__CREDENTIAL__METHOD`:
+
+| Method | Fields |
+|--------|--------|
+| `secret`            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
+| `certificate`       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
+| `managed_identity`  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
+| `workload_identity` | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
+
+**Cloud / endpoints:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__CLOUD`</nobr>          | `public`       | Sovereign cloud: `public`, `us_government`, `china`, or `custom`. Drives the default Graph endpoint and the token authority. |
+| <nobr>`…__GRAPH_BASE`</nobr>     | *(per cloud)*  | Microsoft Graph endpoint base. Overrides the cloud default; **required** for `custom`. |
+| <nobr>`…__AUTHORITY_HOST`</nobr> | *(per cloud)*  | Entra ID token authority. Overrides the cloud default (e.g. a national-cloud proxy); **required** for `custom`. |
+
+Built-in cloud endpoints:
+
+| Cloud | Graph base | Authority |
+|-------|------------|-----------|
+| `public`        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
+| `us_government` | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
+| `china`         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
+| `custom`        | *(none — set `…__GRAPH_BASE`)*             | *(none — set `…__AUTHORITY_HOST`)*  |
+
+**HTTP timeouts:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `10` | Seconds to wait when establishing a connection to Graph. |
+| <nobr>`…__REQUEST_TIMEOUT_SECS`</nobr> | `30` | Seconds to wait for a Graph response. |
+
+Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connection/timeout errors) are retried a few times with exponential backoff before the request fails and the cache falls back to the last good result. Outbound requests honor the standard `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables.
+
+**Caching:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Graph. Uses the same two-layer (in-memory + database) cache as the LDAP provider, including stale-fallback on a Graph outage. |
+
+**Startup:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire a Graph token on startup. |
+
+**IDP filtering (optional):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
+
+**Example — client-secret credential (env vars):**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__ENTRA__TYPE=entra-graph
+LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__METHOD=secret
+LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__TENANT_ID=<tenant-guid>
+LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__CLIENT_ID=<app-client-id>
+LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__CLIENT_SECRET=<app-client-secret>
+# Only resolve users who logged in via the OIDC provider with id `oidc`
+# (the default provider's reserved id; a multi-OIDC provider uses its own id).
+LAKEKEEPER__ROLE_PROVIDER__ENTRA__IDP_IDS=["oidc"]
 ```
 
 ##### File-based configuration
