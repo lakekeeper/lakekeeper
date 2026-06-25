@@ -8,7 +8,7 @@
           "secretKey": "seaweedfs-root-password"
         }
       ],
-      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+      "actions": ["Read", "List", "Tagging", "Write"]
     }
   ],
   "sts": {
