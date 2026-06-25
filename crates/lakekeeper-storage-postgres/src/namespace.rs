@@ -701,13 +701,13 @@ pub(crate) async fn drop_namespace(
                 SELECT n.namespace_id FROM namespace n
                 WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
                 AND n.namespace_properties->>'location' IS NOT NULL
-                ORDER BY n.namespace_id
+                ORDER BY length(n.namespace_properties->>'location') DESC, n.namespace_id
             ) AS "dropped_ns_ids!: Vec<Uuid>",
             ARRAY(
                 SELECT n.namespace_properties->>'location' FROM namespace n
                 WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
                 AND n.namespace_properties->>'location' IS NOT NULL
-                ORDER BY n.namespace_id
+                ORDER BY length(n.namespace_properties->>'location') DESC, n.namespace_id
             ) AS "dropped_ns_locations!: Vec<String>"
         FROM namespace_info ni
 "#,

@@ -865,9 +865,20 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
 }
 
 /// Best-effort cleanup of namespace storage folders after a namespace drop.
+///
 /// For each namespace location, checks if the folder is empty on storage
-/// and removes it if so. Errors are logged and swallowed — storage cleanup
-/// must not fail the drop operation.
+/// and removes it if so. Only acts on locations strictly below the warehouse
+/// base to prevent accidental deletion of the warehouse root (on flat layouts
+/// the persisted namespace location equals the warehouse base).
+///
+/// # Limitations
+/// - Only removes folders already empty at drop time. Table-data purge is
+///   asynchronous, so dropping a namespace soon after its tables (and any
+///   recursive drop that still contains live tables) will find the folder
+///   non-empty and skip it. In practice it cleans up namespaces whose data
+///   was purged earlier.
+/// - Single attempt with no retry — a skipped folder is not revisited.
+/// - Errors are logged and swallowed — storage cleanup must not fail the drop.
 async fn try_cleanup_namespace_locations<S: SecretStore>(
     warehouse: &ResolvedWarehouse,
     secret_store: &S,
@@ -876,6 +887,18 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
     if namespace_locations.is_empty() {
         return;
     }
+
+    // Get the warehouse base location so we never delete it.
+    let base = match warehouse.storage_profile.base_location() {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to get base location for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
 
     let secret = match super::maybe_get_secret(warehouse.storage_secret_id, secret_store).await {
         Ok(s) => s,
@@ -901,6 +924,16 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
     };
 
     for (ns_id, location) in namespace_locations {
+        // Guard: never delete the warehouse base itself or locations outside it.
+        // On flat/default layouts the persisted location equals the base, and on
+        // layout switches the snapshot may no longer match the current layout.
+        if *location == base || !location.as_str().starts_with(base.as_str()) {
+            tracing::debug!(
+                "Skipping cleanup for namespace {ns_id}: location {location} is at or outside warehouse base"
+            );
+            continue;
+        }
+
         match crate::service::storage::is_empty(&file_io, location).await {
             Ok(true) => {
                 if let Err(e) = super::io::remove_all(&file_io, location).await {

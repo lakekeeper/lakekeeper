@@ -30,6 +30,9 @@ mod test {
     use super::setup_cleanup_test;
 
     /// Test that dropping an empty namespace cleans up the storage folder.
+    /// Uses the shared thread-local MemoryStorage (same backing store the
+    /// cleanup code path uses via `file_io()`) to write a marker file, delete
+    /// it so the folder is empty, then verifies the folder is gone after drop.
     #[sqlx::test]
     async fn test_drop_empty_namespace_cleans_up_folder(pool: PgPool) {
         let setup = setup_cleanup_test(pool).await;
@@ -46,16 +49,28 @@ mod test {
             .expect("namespace should have a location property")
             .clone();
 
-        // Write a file to the namespace location so it exists on storage
+        // Use the shared thread-local MemoryStorage — same store the server uses.
         let storage = lakekeeper_io::memory::MemoryStorage::new();
+
+        // Write then delete a marker so the folder exists but is empty.
         let file_path = format!("{}marker.txt", ns_location);
         storage
             .write(&file_path, Bytes::from("marker"))
             .await
             .unwrap();
-
-        // Delete the marker file so the folder is empty
         storage.delete(&file_path).await.unwrap();
+
+        // Confirm the namespace location is empty before drop.
+        let files: Vec<_> = {
+            use futures::StreamExt;
+            let mut stream = storage.list(&ns_location, Some(10)).await.unwrap();
+            let mut all = vec![];
+            while let Some(batch) = stream.next().await {
+                all.extend(batch.unwrap());
+            }
+            all
+        };
+        assert!(files.is_empty(), "Folder should be empty before drop");
 
         // Drop the namespace
         drop_namespace(
@@ -73,10 +88,7 @@ mod test {
         .await
         .unwrap();
 
-        // Give async cleanup time to run
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // Verify the namespace no longer exists
+        // Verify the namespace no longer exists in the catalog.
         let e = CatalogServer::namespace_exists(
             NamespaceParameters {
                 prefix: Some(Prefix(prefix)),
@@ -88,6 +100,22 @@ mod test {
         .await
         .unwrap_err();
         assert_eq!(e.error.code, 404);
+
+        // Verify storage: the namespace folder should have been cleaned up.
+        // Listing the location should return no entries.
+        let files_after: Vec<_> = {
+            use futures::StreamExt;
+            let mut stream = storage.list(&ns_location, Some(10)).await.unwrap();
+            let mut all = vec![];
+            while let Some(batch) = stream.next().await {
+                all.extend(batch.unwrap());
+            }
+            all
+        };
+        assert!(
+            files_after.is_empty(),
+            "Empty namespace folder should have been cleaned up after drop"
+        );
     }
 
     /// Test that dropping a namespace with a non-empty folder does NOT delete
@@ -108,8 +136,10 @@ mod test {
             .expect("namespace should have a location property")
             .clone();
 
-        // Write a file to the namespace location so the folder is non-empty
+        // Use the shared thread-local MemoryStorage.
         let storage = lakekeeper_io::memory::MemoryStorage::new();
+
+        // Write a file so the folder is non-empty.
         let file_path = format!("{}leftover-data.parquet", ns_location);
         storage
             .write(&file_path, Bytes::from("data"))
@@ -132,10 +162,7 @@ mod test {
         .await
         .unwrap();
 
-        // Give async cleanup time to run
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // The file should still exist — folder was not cleaned up
+        // The file should still exist — cleanup skipped because folder was non-empty.
         let content = storage.read(&file_path).await;
         assert!(
             content.is_ok(),
@@ -144,9 +171,10 @@ mod test {
     }
 
     /// Test that recursive drop removes namespace from catalog.
-    /// Note: Storage cleanup of the namespace folder is best-effort and depends
+    /// Storage cleanup of the namespace folder is best-effort and depends
     /// on the async TabularPurgeTask completing first (to empty the folder).
-    /// We only verify catalog state here, not storage state.
+    /// We verify catalog state here; the folder will likely still contain
+    /// table data since purge is async.
     #[sqlx::test]
     async fn test_recursive_drop_removes_namespace(pool: PgPool) {
         let setup = setup_cleanup_test(pool).await;
@@ -176,9 +204,6 @@ mod test {
         )
         .await
         .unwrap();
-
-        // Give async cleanup time to run
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // Verify the namespace no longer exists in the catalog
         let e = CatalogServer::namespace_exists(
