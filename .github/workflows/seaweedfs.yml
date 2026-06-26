@@ -115,14 +115,14 @@ jobs:
         shell: bash
 
       - name: Setup Rust toolchain and cache
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
         env:
           RUST_CACHE_KEY_OS: rust-${{ env.RUST_TOOLCHAIN }}-cache-ubuntu-24.04
 
       - name: Setup cargo nextest
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-nextest
 
