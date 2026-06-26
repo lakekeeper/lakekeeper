@@ -135,15 +135,15 @@ impl Admission {
 /// Non-exhaustive so further per-request inputs can be added without a breaking
 /// change. The auth middleware is the only constructor; gates read the fields
 /// they need.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, veil::Redact)]
 #[non_exhaustive]
 pub struct AdmissionContext<'a> {
     /// Resolved metadata for the request (actor, project, instance-admin, …).
     pub metadata: &'a RequestMetadata,
     /// The caller's raw bearer token — the value after `Bearer `. Present for
     /// every authenticated request (anonymous requests are rejected before any
-    /// gate runs). A gate that relays it to an external service MUST use TLS and
-    /// MUST NOT log it.
+    /// gate runs). A gate that relays it to an external service MUST use TLS.
+    #[redact]
     pub bearer_token: Option<&'a str>,
 }
 
