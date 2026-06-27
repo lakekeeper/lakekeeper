@@ -582,13 +582,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 })
                 .ok();
 
-            // Best-effort cleanup of namespace storage folders
-            try_cleanup_namespace_locations(
-                &warehouse,
-                &state.v1_state.secrets,
-                &drop_info.namespace_locations,
-            )
-            .await;
+            // Best-effort cleanup of namespace storage folders (only on purge)
+            if flags.purge {
+                try_cleanup_namespace_locations(
+                    &warehouse,
+                    &state.v1_state.secrets,
+                    &drop_info.namespace_locations,
+                )
+                .await;
+            }
         }
 
         event_ctx.emit_namespace_dropped_async();
@@ -849,9 +851,15 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
                 .ok();
         }
 
-        // Best-effort cleanup of namespace storage folders
-        try_cleanup_namespace_locations(warehouse, secret_store, &drop_info.namespace_locations)
+        // Best-effort cleanup of namespace storage folders (only on purge)
+        if flags.purge {
+            try_cleanup_namespace_locations(
+                warehouse,
+                secret_store,
+                &drop_info.namespace_locations,
+            )
             .await;
+        }
 
         Ok(())
     } else {
@@ -866,10 +874,15 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
 
 /// Best-effort cleanup of namespace storage folders after a namespace drop.
 ///
+/// Only runs on hierarchical storage backends (ADLS, `OneLake`) where empty
+/// directory entities persist after all objects are deleted. Object stores
+/// (S3, GCS) have no real directories, so this is a no-op for them.
+///
 /// For each namespace location, checks if the folder is empty on storage
 /// and removes it if so. Only acts on locations strictly below the warehouse
-/// base to prevent accidental deletion of the warehouse root (on flat layouts
-/// the persisted namespace location equals the warehouse base).
+/// base (via [`Location::is_sublocation_of`]) to prevent accidental deletion
+/// of the warehouse root (on flat layouts the persisted namespace location
+/// equals the warehouse base).
 ///
 /// # Limitations
 /// - Only removes folders already empty at drop time. Table-data purge is
@@ -885,6 +898,17 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
     namespace_locations: &[(NamespaceId, Location)],
 ) {
     if namespace_locations.is_empty() {
+        return;
+    }
+
+    // Only clean up on hierarchical storages (ADLS, OneLake) where empty
+    // directory entities persist. Object stores (S3, GCS) have no real
+    // directories — prefixes vanish automatically when all keys are gone.
+    if !warehouse.storage_profile.is_hierarchical() {
+        tracing::debug!(
+            "Skipping namespace folder cleanup for non-hierarchical storage in warehouse {}",
+            warehouse.warehouse_id
+        );
         return;
     }
 
@@ -927,7 +951,7 @@ async fn try_cleanup_namespace_locations<S: SecretStore>(
         // Guard: never delete the warehouse base itself or locations outside it.
         // On flat/default layouts the persisted location equals the base, and on
         // layout switches the snapshot may no longer match the current layout.
-        if *location == base || !location.as_str().starts_with(base.as_str()) {
+        if *location == base || !location.is_sublocation_of(&base) {
             tracing::debug!(
                 "Skipping cleanup for namespace {ns_id}: location {location} is at or outside warehouse base"
             );
