@@ -8,7 +8,7 @@
           "secretKey": "some_secret_key1"
         }
       ],
-      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+      "actions": ["Read", "List", "Tagging", "Write"]
     }
   ],
   "sts": {

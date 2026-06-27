@@ -3844,8 +3844,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.15.1"
-source = "git+https://github.com/lakekeeper/console?rev=v0.15.1#b559f3f9d80153ecc25f5481600a8d7e056deae1"
+version = "0.18.1"
+source = "git+https://github.com/lakekeeper/console?rev=v0.18.1#0e5af87f796aa7b352c41cd813f76eb2b5da16d7"
 dependencies = [
  "flate2",
  "fs_extra",
@@ -5341,9 +5341,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "aws-lc-rs",
  "bytes",

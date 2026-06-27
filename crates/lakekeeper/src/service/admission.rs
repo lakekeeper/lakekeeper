@@ -124,6 +124,40 @@ impl Admission {
     }
 }
 
+/// Per-request inputs handed to an [`AdmissionGate`].
+///
+/// Carries borrowed request state for the duration of the [`AdmissionGate::admit`]
+/// call only. Nothing here is persisted onto [`RequestMetadata`] or logged — in
+/// particular the raw bearer token is exposed to gates that must relay it to an
+/// external service, without it leaking into the request's metadata or audit
+/// trail (which are cloned, debugged, and serialized).
+///
+/// Non-exhaustive so further per-request inputs can be added without a breaking
+/// change. The auth middleware is the only constructor; gates read the fields
+/// they need.
+#[derive(Clone, Copy, veil::Redact)]
+#[non_exhaustive]
+pub struct AdmissionContext<'a> {
+    /// Resolved metadata for the request (actor, project, instance-admin, …).
+    pub metadata: &'a RequestMetadata,
+    /// The caller's raw bearer token — the value after `Bearer `. Present for
+    /// every authenticated request (anonymous requests are rejected before any
+    /// gate runs). A gate that relays it to an external service MUST use TLS.
+    #[redact]
+    pub bearer_token: Option<&'a str>,
+}
+
+impl<'a> AdmissionContext<'a> {
+    /// Construct a context for a request. Called by the auth middleware.
+    #[must_use]
+    pub fn new(metadata: &'a RequestMetadata, bearer_token: Option<&'a str>) -> Self {
+        Self {
+            metadata,
+            bearer_token,
+        }
+    }
+}
+
 /// A single post-authentication admission check.
 ///
 /// Implementations are expected to be cheap and to cache aggressively: `admit`
@@ -135,15 +169,17 @@ pub trait AdmissionGate: std::fmt::Debug + Send + Sync {
 
     /// Decide whether the (already authenticated) request may proceed.
     ///
-    /// Return `Ok(`[`Admission`]`)` to admit — use [`Admission::admit`] for a
-    /// plain allow, or [`Admission::with_roles`] to also contribute roles
+    /// [`AdmissionContext`] carries the resolved [`RequestMetadata`] and the
+    /// caller's raw `bearer_token` (for gates that relay it to an external
+    /// service). Return `Ok(`[`Admission`]`)` to admit — use [`Admission::admit`]
+    /// for a plain allow, or [`Admission::with_roles`] to also contribute roles
     /// resolved in the same call. Return `Err(..)` to reject the request before
     /// it reaches any handler. The implementation owns the fail-open vs
     /// fail-closed policy by choosing the [`AdmissionRejection`] variant:
     /// [`AdmissionRejection::forbidden`] for an authoritative deny, or
     /// [`AdmissionRejection::unavailable`] to fail closed when an upstream the
     /// gate depends on is unreachable.
-    async fn admit(&self, metadata: &RequestMetadata) -> Result<Admission, AdmissionRejection>;
+    async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection>;
 }
 
 /// An ordered collection of [`AdmissionGate`]s.
@@ -176,10 +212,10 @@ impl AdmissionGates {
     /// # Errors
     /// Returns the [`AdmissionRejection`] from the first gate that rejects the
     /// request.
-    pub async fn admit(&self, metadata: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+    pub async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
         let mut resolved_roles: Option<TokenRoles> = None;
         for gate in &self.gates {
-            match gate.admit(metadata).await {
+            match gate.admit(ctx).await {
                 Ok(admission) => {
                     if let Some(roles) = admission.resolved_roles {
                         // Common case is a single role-resolving gate: just move
@@ -196,7 +232,7 @@ impl AdmissionGates {
                         gate = gate.name(),
                         status = error.code,
                         error_type = %error.r#type,
-                        request_id = %metadata.request_id(),
+                        request_id = %ctx.metadata.request_id(),
                         "Request rejected by admission gate"
                     );
                     return Err(rejection);
@@ -230,7 +266,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "roles"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
             Ok(Admission::with_roles(token_roles(self.0)))
         }
     }
@@ -242,7 +278,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "allow"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
             Ok(Admission::admit())
         }
     }
@@ -254,7 +290,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "deny"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
             Err(AdmissionRejection::forbidden("nope", "TestDenied", None))
         }
     }
@@ -266,7 +302,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "unavailable"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
             Err(AdmissionRejection::unavailable(
                 "upstream down",
                 "TestUnavailable",
@@ -284,8 +320,30 @@ mod tests {
         fn name(&self) -> &'static str {
             "panic"
         }
-        async fn admit(&self, _: &RequestMetadata) -> Result<Admission, AdmissionRejection> {
+        async fn admit(&self, _: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
             panic!("gate after a rejection must not be evaluated");
+        }
+    }
+
+    /// Admits only when the caller's bearer token is threaded through to the
+    /// gate and matches the expected value; otherwise denies.
+    #[derive(Debug)]
+    struct ExpectTokenGate(&'static str);
+    #[async_trait]
+    impl AdmissionGate for ExpectTokenGate {
+        fn name(&self) -> &'static str {
+            "expect-token"
+        }
+        async fn admit(&self, ctx: AdmissionContext<'_>) -> Result<Admission, AdmissionRejection> {
+            if ctx.bearer_token == Some(self.0) {
+                Ok(Admission::admit())
+            } else {
+                Err(AdmissionRejection::forbidden(
+                    "missing or wrong token",
+                    "TestNoToken",
+                    None,
+                ))
+            }
         }
     }
 
@@ -294,23 +352,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bearer_token_is_threaded_to_gates() {
+        let md = RequestMetadata::new_unauthenticated();
+        assert!(
+            gates(vec![Arc::new(ExpectTokenGate("tok-123"))])
+                .admit(AdmissionContext::new(&md, Some("tok-123")))
+                .await
+                .is_ok()
+        );
+        // A gate that needs the token rejects when it is absent.
+        assert!(
+            gates(vec![Arc::new(ExpectTokenGate("tok-123"))])
+                .admit(AdmissionContext::new(&md, None))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn empty_admits() {
         let md = RequestMetadata::new_unauthenticated();
         assert!(AdmissionGates::default().is_empty());
-        assert!(AdmissionGates::default().admit(&md).await.is_ok());
+        assert!(
+            AdmissionGates::default()
+                .admit(AdmissionContext::new(&md, None))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn single_allow_admits() {
         let md = RequestMetadata::new_unauthenticated();
-        assert!(gates(vec![Arc::new(AllowGate)]).admit(&md).await.is_ok());
+        assert!(
+            gates(vec![Arc::new(AllowGate)])
+                .admit(AdmissionContext::new(&md, None))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn forbidden_is_403() {
         let md = RequestMetadata::new_unauthenticated();
         let rejection = gates(vec![Arc::new(DenyGate)])
-            .admit(&md)
+            .admit(AdmissionContext::new(&md, None))
             .await
             .expect_err("DenyGate rejects");
         assert!(matches!(rejection, AdmissionRejection::Forbidden(_)));
@@ -322,7 +408,7 @@ mod tests {
     async fn unavailable_is_503_with_gate_chosen_retry_after() {
         let md = RequestMetadata::new_unauthenticated();
         let rejection = gates(vec![Arc::new(UnavailableGate)])
-            .admit(&md)
+            .admit(AdmissionContext::new(&md, None))
             .await
             .expect_err("UnavailableGate rejects");
         match rejection {
@@ -343,7 +429,7 @@ mod tests {
             Arc::new(DenyGate),
             Arc::new(PanicGate),
         ])
-        .admit(&md)
+        .admit(AdmissionContext::new(&md, None))
         .await
         .expect_err("DenyGate rejects before PanicGate is reached");
         assert_eq!(rejection.error().r#type, "TestDenied");
@@ -353,7 +439,7 @@ mod tests {
     async fn resolved_roles_surface_on_admit() {
         let md = RequestMetadata::new_unauthenticated();
         let admission = gates(vec![Arc::new(RolesGate(&["a", "b"]))])
-            .admit(&md)
+            .admit(AdmissionContext::new(&md, None))
             .await
             .expect("RolesGate admits");
         let roles = admission.resolved_roles.expect("roles were resolved");
@@ -369,7 +455,7 @@ mod tests {
             Arc::new(RolesGate(&["a", "b"])),
             Arc::new(RolesGate(&["b", "c"])),
         ])
-        .admit(&md)
+        .admit(AdmissionContext::new(&md, None))
         .await
         .expect("all gates admit");
         let roles = admission.resolved_roles.expect("roles were resolved");
