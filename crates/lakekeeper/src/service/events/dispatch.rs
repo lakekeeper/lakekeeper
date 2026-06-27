@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum_prometheus::metrics;
-use futures::TryFutureExt;
+use futures::FutureExt;
 use tokio::sync::RwLock;
 
 use super::types;
@@ -44,13 +44,14 @@ fn record_listener_duration(
 /// awaiting any futures, so no lock guard is held across an `.await` point.
 ///
 /// Each listener call is timed and recorded in
-/// [`METRIC_EVENT_LISTENER_DURATION_SECONDS`]. Listeners are timed
-/// concurrently within single task (`join_all` does not spawn), so recorded
-/// duration for each listener is its wall-clock contribution to response
-/// latency, not isolated execution time. Listener that blocks executor stalls
-/// sibling polling and inflates their recorded durations too. This is
-/// acceptable: such listener violates light-weight [`EventListener`] contract,
-/// and error logs still name offending listener.
+/// [`METRIC_EVENT_LISTENER_DURATION_SECONDS`]. Listeners are timed concurrently
+/// within a single task (`join_all` does not spawn), so the duration recorded
+/// for each listener is its wall-clock *contribution to the response latency*,
+/// not its isolated execution time. A listener that blocks the executor —
+/// synchronous CPU work or a blocking call instead of `.await` — stalls its
+/// siblings' polling and inflates their recorded durations too. This is
+/// acceptable: such a listener violates the light-weight [`EventListener`]
+/// contract, and the per-listener `warn!` still names the offender.
 macro_rules! dispatch_event {
     ($self:ident, $method:ident, $event:expr) => {{
         // Ensure the histogram metric description is registered.
@@ -62,31 +63,22 @@ macro_rules! dispatch_event {
         futures::future::join_all(listeners.iter().map(|listener| {
             let start = Instant::now();
             let listener_name = listener.to_string();
-            let ok_listener_name = listener_name.clone();
-            listener
-                .$method($event.clone())
-                .map_ok(move |_| {
-                    let elapsed = start.elapsed();
-                    $crate::service::events::dispatch::record_listener_duration(
-                        event_type,
-                        ok_listener_name,
-                        elapsed,
-                    );
-                })
-                .map_err(move |e| {
-                    let elapsed = start.elapsed();
-                    $crate::service::events::dispatch::record_listener_duration(
-                        event_type,
-                        listener_name.clone(),
-                        elapsed,
-                    );
+            listener.$method($event.clone()).map(move |result| {
+                let elapsed = start.elapsed();
+                if let Err(e) = &result {
                     tracing::warn!(
                         "Listener '{}' encountered error on {} (took {:.1?}): {e:?}",
                         listener_name,
                         event_type,
                         elapsed,
                     );
-                })
+                }
+                $crate::service::events::dispatch::record_listener_duration(
+                    event_type,
+                    listener_name,
+                    elapsed,
+                );
+            })
         }))
         .await;
     }};
