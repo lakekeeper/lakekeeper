@@ -2218,6 +2218,350 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/member-of:
+    get:
+      tags:
+        - role
+      summary: List Roles a Role Is a Member Of
+      description: Lists the roles that the given role is a direct member of, keyset-paginated.
+      operationId: list_role_member_of
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Roles the role is a member of
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/member-of/transitive:
+    get:
+      tags:
+        - role
+      summary: List Transitive Role Member-Of
+      description: |-
+        Lists the full transitive member-of set of a role — every role it
+        effectively belongs to, reachable upward through membership — keyset-
+        paginated. Supported only when assignments are catalog-managed; an
+        assignment-managing authorizer (e.g. OpenFGA) returns `501`.
+      operationId: list_role_transitive_member_of
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive roles the role belongs to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members:
+    get:
+      tags:
+        - role
+      summary: List Role Members
+      description: |-
+        Lists the direct members of a role — users and member roles — as one merged,
+        keyset-paginated page. Optionally filtered to a single member kind via `?type=`.
+      operationId: list_role_members
+      parameters:
+        - name: type
+          in: query
+          description: Restrict to one member kind (`user` or `role`). Both kinds when omitted.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RoleMemberType'
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Direct members of the role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - role
+      summary: Add Role Members
+      description: |-
+        Adds one or more members (users and/or roles) to a role in a single atomic
+        (all-or-nothing) batch. Idempotent — already-present members are accepted.
+        Returns the requested members confirmed present.
+
+        Handling of a not-yet-provisioned member depends on the configured
+        authorization backend: a backend that stores assignments itself accepts the
+        member by id, whereas catalog-backed authorization requires the member to
+        exist first and otherwise returns `404` — provision the user (via
+        `POST /user`) or create the role before assigning. Behavior is consistent
+        within a deployment.
+      operationId: add_role_members
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddRoleMembersRequest'
+        required: true
+      responses:
+        '200':
+          description: Members added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members/transitive:
+    get:
+      tags:
+        - role
+      summary: List Transitive Role Members
+      description: |-
+        Lists the role's transitive members — users assigned to the role or any role
+        in its downward membership closure, plus every role in that closure — as one
+        keyset-paginated page, optionally filtered to one kind. Supported only when
+        assignments are catalog-managed; an assignment-managing authorizer (e.g.
+        OpenFGA) returns `501`.
+      operationId: list_role_transitive_members
+      parameters:
+        - name: type
+          in: query
+          description: Restrict to one member kind (`user` or `role`). Both kinds when omitted.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/RoleMemberType'
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive members of the role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembersResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/role/{role_id}/members/{member_type}/{member_id}:
+    delete:
+      tags:
+        - role
+      summary: Remove Role Member
+      description: |-
+        Removes a single member (a user or a role) from a role. Idempotent — removing
+        an absent member is a no-op and still returns `204`.
+      operationId: remove_role_member
+      parameters:
+        - name: role_id
+          in: path
+          description: Role ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: member_type
+          in: path
+          description: 'Member kind: `user` or `role`'
+          required: true
+          schema:
+            $ref: '#/components/schemas/RoleMemberType'
+        - name: member_id
+          in: path
+          description: User id or role UUID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Member removed (or already absent)
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/role/{role_id}/metadata:
     get:
       tags:
@@ -2585,6 +2929,118 @@ paths:
                 $ref: '#/components/schemas/GetLakekeeperUserActionsResponse'
         4XX:
           description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/roles:
+    get:
+      tags:
+        - user
+      summary: List User Roles
+      description: Lists the roles a user is directly assigned to, keyset-paginated.
+      operationId: list_user_roles
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: user_id
+          in: path
+          description: User ID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Roles the user is assigned to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/user/{user_id}/roles/transitive:
+    get:
+      tags:
+        - user
+      summary: List Transitive User Roles
+      description: |-
+        Lists the full effective (transitive) role set a user holds — direct
+        assignments plus every role reachable upward through membership — keyset-
+        paginated. Supported only when assignments are catalog-managed; an
+        assignment-managing authorizer (e.g. OpenFGA) returns `501`.
+      operationId: list_user_transitive_roles
+      parameters:
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: 'Upper bound on the number of results returned. Default: 100.'
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: user_id
+          in: path
+          description: User ID
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Transitive roles the user holds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListRoleMembershipsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Transitive listing is not supported under the configured authorizer backend
           content:
             application/json:
               schema:
@@ -3068,6 +3524,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/managed-by:
+    post:
+      tags:
+        - warehouse
+      summary: Set Warehouse Managed-By
+      description: |-
+        Sets (or clears) the managed-by marker on a warehouse. When set, the
+        warehouse spec becomes mutable only by the managing control plane
+        (instance admins). Requires instance-admin privilege.
+      operationId: set_warehouse_managed_by
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetWarehouseManagedByRequest'
+        required: true
+      responses:
+        '200':
+          description: Warehouse managed-by marker set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -4143,11 +4635,11 @@ paths:
       operationId: whoami
       responses:
         '200':
-          description: User details
+          description: Current user and instance-admin status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/WhoamiResponse'
         4XX:
           description: ''
           content:
@@ -4156,8 +4648,44 @@ paths:
                 $ref: '#/components/schemas/IcebergErrorResponse'
 components:
   schemas:
+    AddRoleMembersRequest:
+      type: object
+      description: |-
+        Request body for `POST /role/{id}/members`. Batch: adds every listed member to
+        the role atomically (all-or-nothing).
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMemberRef'
+    AddRoleMembersResponse:
+      type: object
+      description: |-
+        Response for `POST /role/{id}/members`: the requested members confirmed present
+        (idempotent — already-present members are included). Echoes identity
+        [`RoleMemberRef`]s, not hydrated [`RoleMember`]s — use `GET /role/{id}/members`
+        for display names.
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMemberRef'
     AdlsProfile:
       type: object
+      description: |-
+        Storage profile for a generic Azure Data Lake Storage Gen2 account.
+
+        This profile speaks ADLS Gen2 against any storage account (including
+        Microsoft Fabric / `OneLake`, if you configure `account_name = "onelake"`,
+        `host = "dfs.fabric.microsoft.com"`, and a `key_prefix` like
+        `<lakehouse>/Files/<sub>`). Lakekeeper offers `OneLakeProfile` as a
+        convenience layer that knows how to compute those values from
+        workspace + lakehouse IDs and that supports `OneLake`'s private-link endpoint
+        pattern.
       required:
         - filesystem
         - account-name
@@ -4201,7 +4729,7 @@ components:
             - integer
             - 'null'
           format: int64
-          description: 'The validity of the sas token in seconds. Default: 3600.'
+          description: 'The validity of the sas token in seconds. Default: 3600. Max: 7 days.'
           minimum: 0
         storage-layout:
           oneOf:
@@ -5073,6 +5601,12 @@ components:
         delete-profile:
           $ref: '#/components/schemas/TabularDeleteProfile'
           description: 'Profile to determine behavior upon dropping of tabulars. Default: hard deletion.'
+        managed-by:
+          $ref: '#/components/schemas/ManagedBy'
+          description: |-
+            Which control plane, if any, exclusively manages this warehouse's spec.
+            Defaults to `self-managed`. Creating a managed warehouse (e.g. `instance-admin`)
+            requires instance-admin privilege.
         project-id:
           type:
             - string
@@ -5138,6 +5672,75 @@ components:
           type: string
           format: uuid
           description: Warehouse ID where the tabular is stored
+    EndpointMode:
+      oneOf:
+        - type: object
+          description: |-
+            Use the global `OneLake` endpoint `onelake.dfs.fabric.microsoft.com`. Default.
+
+            Also the correct choice for tenant-level private link — tenant PE
+            only changes DNS resolution, not the URL Lakekeeper constructs.
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - default
+        - type: object
+          description: |-
+            Use a region-pinned endpoint `<region>-onelake.dfs.fabric.microsoft.com`.
+            Use this when data residency requires the request to stay within a
+            specific Azure region.
+          required:
+            - region
+            - type
+          properties:
+            region:
+              type: string
+              description: |-
+                Azure region slug, e.g. `westus`, `centralus`, `northeurope`.
+                Trimmed and lowercased at validation time, then pattern-checked to
+                match the Azure region-slug shape (lowercase ASCII letter followed
+                by lowercase letters or digits) so a stray `.` or `-` can't smuggle
+                an extra host segment into the resolved DFS host. An unknown but
+                well-shaped slug still surfaces as a DNS-resolution failure at
+                access time. See `normalize_endpoint_mode` for the exact rule.
+            type:
+              type: string
+              enum:
+                - regional
+        - type: object
+          description: |-
+            Use a workspace-scoped private-link endpoint
+            `<workspaceId>.z<xy>.dfs.fabric.microsoft.com`. The host is computed
+            from the workspace ID at runtime; users only opt in via this variant.
+
+            For *tenant*-level private link, stay on [`Default`] — the global
+            onelake FQDN is what gets routed through a tenant PE.
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - workspace-private-link
+      description: |-
+        How Lakekeeper connects to the `OneLake` DFS endpoint.
+
+        Fabric supports two kinds of Azure Private Link configurations, and only
+        one of them maps to a dedicated variant here:
+
+        - **Tenant-level private link**: traffic to the global host
+          `onelake.dfs.fabric.microsoft.com` is routed privately via DNS that
+          points the global FQDN at a tenant-PE NIC. From Lakekeeper's
+          perspective this is indistinguishable from public traffic — use
+          `Default`. (Same shape as a private endpoint in front of a regular
+          ADLS Gen2 storage account.)
+        - **Workspace-level private link**: each workspace gets its own
+          `<wsId>.z<xy>.dfs.fabric.microsoft.com` FQDN routed via a
+          workspace-scoped PE. Lakekeeper needs to build that FQDN — use
+          [`WorkspacePrivateLink`].
     EndpointStatistic:
       type: object
       required:
@@ -5645,7 +6248,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperNamespaceAction'
+            $ref: '#/components/schemas/LakekeeperNamespaceActionKind'
     GetLakekeeperProjectActionsResponse:
       type: object
       required:
@@ -5654,7 +6257,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperProjectAction'
+            $ref: '#/components/schemas/LakekeeperProjectActionKind'
     GetLakekeeperRoleActionsResponse:
       type: object
       required:
@@ -5663,7 +6266,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperRoleAction'
+            $ref: '#/components/schemas/LakekeeperRoleActionKind'
     GetLakekeeperServerActionsResponse:
       type: object
       required:
@@ -5672,7 +6275,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperServerAction'
+            $ref: '#/components/schemas/LakekeeperServerActionKind'
     GetLakekeeperTableActionsResponse:
       type: object
       required:
@@ -5681,7 +6284,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperTableAction'
+            $ref: '#/components/schemas/LakekeeperTableActionKind'
     GetLakekeeperUserActionsResponse:
       type: object
       required:
@@ -5699,7 +6302,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperViewAction'
+            $ref: '#/components/schemas/LakekeeperViewActionKind'
     GetLakekeeperWarehouseActionsResponse:
       type: object
       required:
@@ -5708,7 +6311,7 @@ components:
         allowed-actions:
           type: array
           items:
-            $ref: '#/components/schemas/LakekeeperWarehouseAction'
+            $ref: '#/components/schemas/LakekeeperWarehouseActionKind'
     GetNamespaceAccessResponse:
       type: object
       required:
@@ -5862,6 +6465,14 @@ components:
                 - object
                 - 'null'
               description: Execution details for the current attempt
+            message:
+              type:
+                - string
+                - 'null'
+              description: |-
+                Message for the current attempt: success result details if it
+                succeeded, or the failure reason if it failed. `null` while the
+                attempt is still running or scheduled.
             task-data:
               type: object
               description: Task-specific data
@@ -5974,6 +6585,14 @@ components:
                 - object
                 - 'null'
               description: Execution details for the current attempt
+            message:
+              type:
+                - string
+                - 'null'
+              description: |-
+                Message for the current attempt: success result details if it
+                succeeded, or the failure reason if it failed. `null` while the
+                attempt is still running or scheduled.
             task-data:
               type: object
               description: Task-specific data
@@ -6070,6 +6689,11 @@ components:
           format: uuid
           description: ID of the warehouse.
           deprecated: true
+        managed-by:
+          $ref: '#/components/schemas/ManagedBy'
+          description: |-
+            Which control plane, if any, exclusively manages this warehouse's spec.
+            When not `self-managed`, spec mutations are restricted to that control plane.
         name:
           type: string
           description: Name of the warehouse.
@@ -6267,6 +6891,20 @@ components:
               type: string
               enum:
                 - delete
+            force:
+              type: boolean
+              description: |-
+                Whether the warehouse-configured soft-deletion is bypassed, i.e.
+                contained tabulars are hard-deleted immediately instead of being
+                recoverable for the configured grace period.
+            purge:
+              type: boolean
+              description: Whether the underlying data/metadata files are physically purged.
+            recursive:
+              type: boolean
+              description: |-
+                Whether the drop recurses into child namespaces, tables and views,
+                deleting the entire subtree rooted at this namespace.
         - type: object
           required:
             - action
@@ -6380,6 +7018,120 @@ components:
                 type: string
               propertyNames:
                 type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_generic_tables
+    LakekeeperNamespaceActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_table
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_view
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_properties
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_tables
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_views
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_generic_table
         - type: object
           required:
             - action
@@ -6512,7 +7264,121 @@ components:
               type: string
               enum:
                 - control_project_tasks
-    LakekeeperRoleAction:
+    LakekeeperProjectActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_warehouse
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_warehouses
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_role
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - search_roles
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_project_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_project_tasks
+    LakekeeperRoleActionKind:
       oneOf:
         - type: object
           required:
@@ -6546,6 +7412,30 @@ components:
               type: string
               enum:
                 - update
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_role_assignments
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_role_assignments
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_source_system
     LakekeeperServerAction:
       oneOf:
         - type: object
@@ -6603,6 +7493,48 @@ components:
               type: string
               enum:
                 - provision_users
+    LakekeeperServerActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_project
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - provision_users
     LakekeeperTableAction:
       oneOf:
         - type: object
@@ -6613,6 +7545,15 @@ components:
               type: string
               enum:
                 - drop
+            force:
+              type: boolean
+              description: |-
+                Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+                table is hard-deleted immediately instead of being recoverable for the
+                configured grace period. Extra destructive — irreversible right away.
+            purge:
+              type: boolean
+              description: Whether the underlying data files are physically purged from storage.
         - type: object
           required:
             - action
@@ -6703,6 +7644,96 @@ components:
               type: string
               enum:
                 - set_protection
+    LakekeeperTableActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - write_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_data
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperUserAction:
       oneOf:
         - type: object
@@ -6729,6 +7760,14 @@ components:
               type: string
               enum:
                 - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_role_assignments
     LakekeeperViewAction:
       oneOf:
         - type: object
@@ -6739,6 +7778,15 @@ components:
               type: string
               enum:
                 - drop
+            force:
+              type: boolean
+              description: |-
+                Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+                view is hard-deleted immediately instead of being recoverable for the
+                configured grace period. Extra destructive — irreversible right away.
+            purge:
+              type: boolean
+              description: Whether the underlying metadata files are physically purged from storage.
         - type: object
           required:
             - action
@@ -6821,6 +7869,88 @@ components:
               type: string
               enum:
                 - set_protection
+    LakekeeperViewActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - drop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - select
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - commit
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - undrop
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
     LakekeeperWarehouseAction:
       oneOf:
         - type: object
@@ -6842,6 +7972,184 @@ components:
                 type: string
               propertyNames:
                 type: string
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update_storage_credential
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_metadata
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_namespaces
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_everything
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - use
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - include_in_list
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - deactivate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - activate
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - rename
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_deleted_tabulars
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_soft_deletion
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - modify_task_queue_config
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - control_all_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - set_format_version_policy
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - get_endpoint_statistics
+    LakekeeperWarehouseActionKind:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_namespace
         - type: object
           required:
             - action
@@ -7213,6 +8521,46 @@ components:
           items:
             $ref: '#/components/schemas/GetProjectResponse'
           description: List of projects
+    ListRoleMembersResponse:
+      type: object
+      description: One page of a role's direct members (users ∪ member roles).
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMember'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Token for the next page; `null`/absent once the listing is exhausted.
+            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            final page of results may itself return a null token, so don't rely on
+            receiving a separate trailing empty page — keep requesting until the token
+            is null.
+    ListRoleMembershipsResponse:
+      type: object
+      description: One page of roles (the `member-of` set, or a user's directly-assigned roles).
+      required:
+        - roles
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Token for the next page; `null`/absent once the listing is exhausted.
+            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            final page of results may itself return a null token, so don't rely on
+            receiving a separate trailing empty page — keep requesting until the token
+            is null.
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleMembership'
     ListRolesResponse:
       type: object
       required:
@@ -7316,6 +8664,21 @@ components:
           items:
             $ref: '#/components/schemas/GetWarehouseResponse'
           description: List of warehouses in the project.
+    ManagedBy:
+      type: string
+      description: |-
+        Which control plane, if any, exclusively manages a warehouse's spec.
+
+        `self-managed` (the default) leaves the spec mutable by the warehouse's own
+        owners through the usual grants. When set to `instance-admin`, spec changes —
+        storage profile, credentials, delete profile, rename, status, protection,
+        format-version policy, and deletion — are accepted only from instance
+        administrators; other callers are rejected even when their grants would
+        otherwise allow it. Child resources (namespaces, tables, grants), task-queue
+        configuration, and data access are unaffected.
+      enum:
+        - self-managed
+        - instance-admin
     NamespaceAction:
       type: string
       enum:
@@ -7449,6 +8812,63 @@ components:
         - select
         - create
         - modify
+    OneLakeProfile:
+      type: object
+      description: |-
+        Storage profile for a Microsoft Fabric / `OneLake` lakehouse.
+
+        Convenience wrapper around the ADLS Gen2 surface that derives the
+        account name (`onelake`), container (workspace ID), key prefix
+        (`<lakehouse>/Files/<sub>`), and endpoint host from the supplied workspace
+        and lakehouse UUIDs and endpoint mode.
+      required:
+        - workspace-id
+        - lakehouse-id
+      properties:
+        authority-host:
+          type:
+            - string
+            - 'null'
+          format: uri
+          description: |-
+            The authority host to use for authentication.
+            Default: `https://login.microsoftonline.com`.
+        directory-rel-path:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Subpath beneath `<top-level-folder>/` inside the lakehouse — the root
+            directory under which Lakekeeper writes all warehouse data.
+        endpoint-mode:
+          $ref: '#/components/schemas/EndpointMode'
+          description: Endpoint connection mode. Defaults to the global endpoint.
+        lakehouse-id:
+          type: string
+          format: uuid
+          description: UUID of the lakehouse within the workspace.
+        sas-enabled:
+          type: boolean
+          description: Enable SAS-token generation. Defaults to true.
+        sas-token-validity-seconds:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: 'SAS-token validity in seconds. Default: 3600. Max: 3600 (`OneLake` cap).'
+          minimum: 0
+        storage-layout:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/StorageLayout'
+              description: Storage layout for namespace and tabular paths.
+        top-level-folder:
+          $ref: '#/components/schemas/TopLevelFolder'
+          description: Top-level managed folder. Defaults to `Files`.
+        workspace-id:
+          type: string
+          format: uuid
+          description: UUID of the Fabric workspace this warehouse lives in.
     OpenFGAGenericTableAction:
       type: string
       enum:
@@ -7952,6 +9372,96 @@ components:
                   enum:
                     - ownership
           title: RoleAssignmentOwnership
+    RoleMember:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserMembership'
+              description: A user assigned to the role.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - user
+          description: A user assigned to the role.
+        - allOf:
+            - $ref: '#/components/schemas/RoleMembership'
+              description: Another role that is a member of the role.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - role
+          description: Another role that is a member of the role.
+      description: |-
+        A member of a role, returned by `GET /role/{id}/members`. Discriminated by
+        `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
+        Identity is hydrated; for requests and add/remove confirmations use the
+        un-hydrated [`RoleMemberRef`] instead.
+    RoleMemberRef:
+      oneOf:
+        - type: object
+          description: A user, by `IdP` subject id.
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+            type:
+              type: string
+              enum:
+                - user
+        - type: object
+          description: A role, by id.
+          required:
+            - id
+            - type
+          properties:
+            id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - role
+      description: |-
+        An identity reference to a role member — a `user` or a `role`, by typed id.
+        Sent in `POST /role/{id}/members` requests and echoed by the add/remove
+        confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
+        it names *which* principal, not its display identity.
+    RoleMemberType:
+      type: string
+      description: Kind of a role member. Serializes as `"user"` / `"role"`.
+      enum:
+        - user
+        - role
+    RoleMembership:
+      type: object
+      description: |-
+        A role's display identity in a membership listing: the role-member variant of
+        [`RoleMember`], and the item type of `/member-of` and `/user/{id}/roles`.
+        `ident` (`provider/source-id`) is the stable external handle a client references
+        the role by; `id` is the internal UUID. All fields are always present — a role
+        whose id no longer resolves in the catalog (a dangling authorizer edge) is
+        dropped from the listing and logged, never surfaced with a null identity.
+      required:
+        - id
+        - ident
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+        ident:
+          type: string
+        name:
+          type: string
     RoleMetadata:
       type: object
       description: |-
@@ -8608,6 +10118,16 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/TaskLogCleanupConfig'
+    SetWarehouseManagedByRequest:
+      type: object
+      required:
+        - managed-by
+      properties:
+        managed-by:
+          $ref: '#/components/schemas/ManagedBy'
+          description: |-
+            New managed-by marker. Use `self-managed` to clear. Setting or clearing the
+            marker requires instance-admin privilege.
     StorageCredential:
       oneOf:
         - allOf:
@@ -8831,9 +10351,14 @@ components:
       description: |-
         Controls how namespace and tabular paths are constructed under the warehouse base location.
 
-        - `default` / omitted: one directory per direct-parent namespace, one per tabular, both with `"{uuid}"` segments.
+        - `default` / omitted: flat — no namespace directories; all tabulars are placed directly under
+          the base location with a fixed `"{uuid}"` segment. (Changed in 0.13; before 0.13 the default
+          emitted a `"{uuid}"` directory for the direct-parent namespace. Existing namespaces created
+          before 0.13 keep their persisted location, so only namespaces created on/after 0.13 use the
+          flat default.)
         - `full-hierarchy`: one directory per namespace level, one per tabular.
-        - `tabular-only`: no namespace directories; all tabulars are placed directly under the base location.
+        - `tabular-only`: no namespace directories; all tabulars are placed directly under the base
+          location, with a configurable tabular template (which must contain `{uuid}`).
 
         Segment templates may use `{uuid}` and `{name}` as placeholders.
       example:
@@ -8884,7 +10409,9 @@ components:
       oneOf:
         - allOf:
             - $ref: '#/components/schemas/AdlsProfile'
-              description: Azure storage profile
+              description: |-
+                Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
+                any storage account.
             - type: object
               required:
                 - type
@@ -8894,7 +10421,28 @@ components:
                   enum:
                     - adls
           title: StorageProfileAdls
-          description: Azure storage profile
+          description: |-
+            Generic Azure Data Lake Storage Gen2 profile. Speaks ADLS Gen2 against
+            any storage account.
+        - allOf:
+            - $ref: '#/components/schemas/OneLakeProfile'
+              description: |-
+                `OneLake` (Microsoft Fabric) profile. Knows how to construct `OneLake`
+                URLs from workspace + lakehouse IDs and how to derive the
+                workspace-private-link endpoint host.
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - onelake
+          title: StorageProfileOneLake
+          description: |-
+            `OneLake` (Microsoft Fabric) profile. Knows how to construct `OneLake`
+            URLs from workspace + lakehouse IDs and how to derive the
+            workspace-private-link endpoint host.
         - allOf:
             - $ref: '#/components/schemas/S3Profile'
               description: S3 storage profile
@@ -9247,6 +10795,18 @@ components:
           example:
             type: page-token
             token: xyz
+    TopLevelFolder:
+      type: string
+      description: |-
+        Top-level managed folder within a Fabric lakehouse.
+
+        Fabric reserves `Files/` and `Tables/` as managed folders directly under
+        each lakehouse item. `Files/` is the default for Lakekeeper-managed Iceberg
+        tables; `Tables/` is supported for completeness but writing Iceberg metadata
+        there conflicts with Fabric's automatic Delta/Iceberg virtualization.
+      enum:
+        - Files
+        - Tables
     UndropTabularsRequest:
       type: object
       required:
@@ -9490,6 +11050,37 @@ components:
         - config-call-creation
         - update-endpoint
         - role-provider
+    UserMembership:
+      type: object
+      description: |-
+        A user's identity in a membership listing (the `user` variant of
+        [`RoleMember`]). All identity fields are nullable: under an assignment-managing
+        authorizer (e.g. OpenFGA) a member may be assigned but not yet provisioned in
+        the catalog, so only the `id` is known. `name`/`email` are also `null` for a
+        provisioned-but-nameless user.
+      required:
+        - id
+      properties:
+        email:
+          type:
+            - string
+            - 'null'
+          description: Email; `null` if unknown.
+        id:
+          type: string
+          description: '`IdP` subject id of the user.'
+        name:
+          type:
+            - string
+            - 'null'
+          description: Display name; `null` when the user has no name.
+        user-type:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/UserType'
+              description: |-
+                Whether the principal is a human or an application; `null` when the user
+                is assigned but not provisioned in the catalog (the id is all that's known).
     UserOrRole:
       oneOf:
         - type: object
@@ -9990,6 +11581,23 @@ components:
           type: string
           format: uuid
           description: Warehouse ID associated with the task
+    WhoamiResponse:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          required:
+            - is-instance-admin
+          properties:
+            is-instance-admin:
+              type: boolean
+              description: |-
+                Whether the authenticated principal is an instance admin (configured via
+                `LAKEKEEPER__INSTANCE_ADMINS`). Instance admins may modify the spec of
+                warehouses marked `managed-by: instance-admin`. Only ever `true` for a
+                principal acting directly; role-assumed requests do not inherit it.
+      description: |-
+        Response of the `whoami` endpoint: the catalog user for the current token,
+        plus request-scoped privilege not stored on the user record.
   securitySchemes:
     bearerAuth:
       type: http
