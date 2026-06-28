@@ -5729,6 +5729,14 @@ components:
                 - object
                 - 'null'
               description: Execution details for the current attempt
+            message:
+              type:
+                - string
+                - 'null'
+              description: |-
+                Message for the current attempt: success result details if it
+                succeeded, or the failure reason if it failed. `null` while the
+                attempt is still running or scheduled.
             task-data:
               type: object
               description: Task-specific data
@@ -5829,6 +5837,14 @@ components:
                 - object
                 - 'null'
               description: Execution details for the current attempt
+            message:
+              type:
+                - string
+                - 'null'
+              description: |-
+                Message for the current attempt: success result details if it
+                succeeded, or the failure reason if it failed. `null` while the
+                attempt is still running or scheduled.
             task-data:
               type: object
               description: Task-specific data

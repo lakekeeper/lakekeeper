@@ -262,6 +262,10 @@ pub struct GetTaskDetailsResponse {
     /// Execution details for the current attempt
     #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
+    /// Message for the current attempt: success result details if it
+    /// succeeded, or the failure reason if it failed. `null` while the
+    /// attempt is still running or scheduled.
+    pub message: Option<String>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
 }
@@ -275,12 +279,14 @@ impl TryFrom<TaskDetails> for GetTaskDetailsResponse {
             data,
             execution_details,
             attempts,
+            message,
         } = value;
 
         Ok(Self {
             task: WarehouseTaskInfo::try_from(task)?,
             task_data: data,
             execution_details,
+            message,
             attempts,
         })
     }
@@ -299,6 +305,10 @@ pub struct GetProjectTaskDetailsResponse {
     /// Execution details for the current attempt
     #[cfg_attr(feature = "open-api", schema(value_type = Option<Object>))]
     pub execution_details: Option<serde_json::Value>,
+    /// Message for the current attempt: success result details if it
+    /// succeeded, or the failure reason if it failed. `null` while the
+    /// attempt is still running or scheduled.
+    pub message: Option<String>,
     /// History of past attempts
     pub attempts: Vec<TaskAttempt>,
 }
@@ -318,12 +328,14 @@ impl TryFrom<TaskDetails> for GetProjectTaskDetailsResponse {
             data,
             execution_details,
             attempts,
+            message,
         } = value;
 
         Ok(Self {
             task: ProjectTaskInfo::try_from(task)?,
             task_data: data,
             execution_details,
+            message,
             attempts,
         })
     }

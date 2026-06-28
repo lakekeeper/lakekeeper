@@ -70,6 +70,10 @@ pub struct TaskDetails {
     pub execution_details: Option<serde_json::Value>,
     pub data: serde_json::Value,
     pub attempts: Vec<TaskAttempt>,
+    /// Message of the most-recent attempt: success result details if it
+    /// succeeded, or the failure reason if it failed. `None` while the
+    /// current attempt is still running.
+    pub message: Option<String>,
 }
 
 #[derive(thiserror::Error, Debug, PartialEq)]

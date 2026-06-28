@@ -142,11 +142,11 @@ async fn instrumented_expire<C: CatalogStore, A: Authorizer>(
             tracing::error!(
                 "Error in `{QN_STR}` worker. Expiration of {entity_id_str} failed. Error: {err}"
             );
-            task.record_failure::<C>(
-                catalog_state,
-                &format!("Failed to expire soft-deleted {entity_id_str}.\n{err}"),
-            )
-            .await;
+            let detail = format!(
+                "Failed to expire soft-deleted {entity_id_str}.\nError: {}",
+                err.error
+            );
+            task.record_failure::<C>(catalog_state, &detail).await;
         }
     }
 }
