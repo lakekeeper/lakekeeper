@@ -7701,7 +7701,9 @@ components:
           description: List of projects
     ListRoleMembersResponse:
       type: object
-      description: One page of a role's direct members (users ∪ member roles).
+      description: |-
+        One page of a role's members (users ∪ member roles) — direct for `/members`,
+        transitive for `/members/transitive`.
       required:
         - members
       properties:
@@ -7715,13 +7717,15 @@ components:
             - 'null'
           description: |-
             Token for the next page; `null`/absent once the listing is exhausted.
-            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            Note for SDK authors: **stop when `next-page-token` is null/absent.** The
             final page of results may itself return a null token, so don't rely on
             receiving a separate trailing empty page — keep requesting until the token
             is null.
     ListRoleMembershipsResponse:
       type: object
-      description: One page of roles (the `member-of` set, or a user's directly-assigned roles).
+      description: |-
+        One page of roles — the `member-of` set or a user's roles, direct or transitive
+        depending on the endpoint.
       required:
         - roles
       properties:
@@ -7731,7 +7735,7 @@ components:
             - 'null'
           description: |-
             Token for the next page; `null`/absent once the listing is exhausted.
-            Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+            Note for SDK authors: **stop when `next-page-token` is null/absent.** The
             final page of results may itself return a null token, so don't rely on
             receiving a separate trailing empty page — keep requesting until the token
             is null.
@@ -8460,7 +8464,7 @@ components:
       description: |-
         A member of a role, returned by `GET /role/{id}/members`. Discriminated by
         `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
-        Identity is hydrated; for requests and add/remove confirmations use the
+        Identity is hydrated; for requests and add confirmations use the
         un-hydrated [`RoleMemberRef`] instead.
     RoleMemberRef:
       oneOf:
@@ -8491,9 +8495,9 @@ components:
                 - role
       description: |-
         An identity reference to a role member — a `user` or a `role`, by typed id.
-        Sent in `POST /role/{id}/members` requests and echoed by the add/remove
-        confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
-        it names *which* principal, not its display identity.
+        Sent in `POST /role/{id}/members` requests and echoed by the add confirmation
+        (remove returns `204` with no body). Unlike [`RoleMember`] it is never hydrated
+        (no display name): it names *which* principal, not its display identity.
     RoleMemberType:
       type: string
       description: Kind of a role member. Serializes as `"user"` / `"role"`.
