@@ -3844,8 +3844,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.18.2"
-source = "git+https://github.com/lakekeeper/console?rev=v0.18.2#43dd2de6726e185b8078b91543fc91de7d4df561"
+version = "0.18.3"
+source = "git+https://github.com/lakekeeper/console?rev=v0.18.3#edac9b2b54d3951ae0321adb69d75c40ffa9dc8a"
 dependencies = [
  "flate2",
  "fs_extra",
