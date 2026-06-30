@@ -114,7 +114,7 @@ iso8601 = "0.6.2"
 itertools = "0.14.0"
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = [
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "1619c0154c9a3886d1bc5f2bc7216891a6a2c5c4", features = [
     "kubernetes",
     "axum",
     "rustls-tls",
