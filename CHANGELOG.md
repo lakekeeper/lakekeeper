@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/lakekeeper/lakekeeper/compare/v0.13.0...v0.13.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **UI:** Update Console to 0.19.0 / remove leading slash for default client_id ([ac1094a](https://github.com/lakekeeper/lakekeeper/commit/ac1094a52e51da586c60a27159f9720784eb66e7))
+
 ## [0.13.0](https://github.com/lakekeeper/lakekeeper/compare/v0.12.3...v0.13.0) (2026-06-30)
 
 
