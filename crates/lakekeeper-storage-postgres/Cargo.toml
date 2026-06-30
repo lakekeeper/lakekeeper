@@ -58,6 +58,7 @@ sqlx = { workspace = true, features = [
 strum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+thiserror = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }

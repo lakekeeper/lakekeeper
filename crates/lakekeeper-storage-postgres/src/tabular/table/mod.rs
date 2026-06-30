@@ -1,6 +1,10 @@
 mod commit;
 mod common;
 mod create;
+// Data-model layer; public items are consumed by the write/read paths in later tasks,
+// so dead_code is expected until then.
+#[allow(dead_code)]
+pub(crate) mod normalized_schema;
 
 use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
 

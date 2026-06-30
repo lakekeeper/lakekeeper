@@ -1,0 +1,1128 @@
+//! Normalized schema storage: flatten `Schema` → `FlatField` rows; assemble rows → `Schema`.
+//! Flatten/assemble are pure Rust (no DB); used by the write path (flatten) and read path
+//! (assemble). One `#[sqlx::test]` guards that the PG `iceberg_type_kind` enum covers every kind.
+
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
+
+use iceberg::spec::{
+    ListType, MapType, NestedField, NestedFieldRef, PrimitiveType, Schema, SchemaId, StructType,
+    Type, VariantType,
+};
+use serde_json::Value;
+
+// ─── errors ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaNormError {
+    #[error("non-null default is invalid for {kind} field_id={field_id} (must default to null)")]
+    NonNullDefaultUnsupported { field_id: i32, kind: &'static str },
+    #[error("schema assembly failed: {detail}")]
+    Assembly { detail: String },
+}
+
+// ─── IcebergTypeKind ─────────────────────────────────────────────────────────
+
+/// Discriminator matching the PG `iceberg_type_kind` enum labels exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcebergTypeKind {
+    Boolean,
+    Int,
+    Long,
+    Float,
+    Double,
+    Decimal,
+    Date,
+    Time,
+    Timestamp,
+    Timestamptz,
+    TimestampNs,
+    TimestamptzNs,
+    String,
+    Uuid,
+    Fixed,
+    Binary,
+    Variant,
+    Struct,
+    List,
+    Map,
+}
+
+impl IcebergTypeKind {
+    /// Every variant. A new variant must be added here and to `as_str`; the wildcard-free
+    /// `match`es force the variant to exist, and `pg_enum_db_test` checks PG carries its label.
+    pub const ALL: [IcebergTypeKind; 20] = [
+        IcebergTypeKind::Boolean,
+        IcebergTypeKind::Int,
+        IcebergTypeKind::Long,
+        IcebergTypeKind::Float,
+        IcebergTypeKind::Double,
+        IcebergTypeKind::Decimal,
+        IcebergTypeKind::Date,
+        IcebergTypeKind::Time,
+        IcebergTypeKind::Timestamp,
+        IcebergTypeKind::Timestamptz,
+        IcebergTypeKind::TimestampNs,
+        IcebergTypeKind::TimestamptzNs,
+        IcebergTypeKind::String,
+        IcebergTypeKind::Uuid,
+        IcebergTypeKind::Fixed,
+        IcebergTypeKind::Binary,
+        IcebergTypeKind::Variant,
+        IcebergTypeKind::Struct,
+        IcebergTypeKind::List,
+        IcebergTypeKind::Map,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IcebergTypeKind::Boolean => "boolean",
+            IcebergTypeKind::Int => "int",
+            IcebergTypeKind::Long => "long",
+            IcebergTypeKind::Float => "float",
+            IcebergTypeKind::Double => "double",
+            IcebergTypeKind::Decimal => "decimal",
+            IcebergTypeKind::Date => "date",
+            IcebergTypeKind::Time => "time",
+            IcebergTypeKind::Timestamp => "timestamp",
+            IcebergTypeKind::Timestamptz => "timestamptz",
+            IcebergTypeKind::TimestampNs => "timestamp_ns",
+            IcebergTypeKind::TimestamptzNs => "timestamptz_ns",
+            IcebergTypeKind::String => "string",
+            IcebergTypeKind::Uuid => "uuid",
+            IcebergTypeKind::Fixed => "fixed",
+            IcebergTypeKind::Binary => "binary",
+            IcebergTypeKind::Variant => "variant",
+            IcebergTypeKind::Struct => "struct",
+            IcebergTypeKind::List => "list",
+            IcebergTypeKind::Map => "map",
+        }
+    }
+
+    /// Per the Iceberg spec, `unknown`/`variant`/`geometry`/`geography` columns must default to
+    /// null — a non-null initial/write-default is invalid. Every other kind permits one.
+    /// Exhaustive (no wildcard) so a future kind forces a decision here, like `type_kind_and_params`.
+    fn permits_non_null_default(self) -> bool {
+        match self {
+            IcebergTypeKind::Variant => false,
+            IcebergTypeKind::Boolean
+            | IcebergTypeKind::Int
+            | IcebergTypeKind::Long
+            | IcebergTypeKind::Float
+            | IcebergTypeKind::Double
+            | IcebergTypeKind::Decimal
+            | IcebergTypeKind::Date
+            | IcebergTypeKind::Time
+            | IcebergTypeKind::Timestamp
+            | IcebergTypeKind::Timestamptz
+            | IcebergTypeKind::TimestampNs
+            | IcebergTypeKind::TimestamptzNs
+            | IcebergTypeKind::String
+            | IcebergTypeKind::Uuid
+            | IcebergTypeKind::Fixed
+            | IcebergTypeKind::Binary
+            | IcebergTypeKind::Struct
+            | IcebergTypeKind::List
+            | IcebergTypeKind::Map => true,
+        }
+    }
+}
+
+// ─── FlatField ───────────────────────────────────────────────────────────────
+
+/// One row per field node (including list element, map key/value nodes).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlatField {
+    pub field_id: i32,
+    pub parent_field_id: Option<i32>,
+    pub ordinal: i32,
+    pub name: std::string::String,
+    pub required: bool,
+    pub doc: Option<std::string::String>,
+    pub type_kind: IcebergTypeKind,
+    pub type_params: Option<Value>,
+    pub initial_default: Option<Value>,
+    pub write_default: Option<Value>,
+    /// Whether this field is in the schema's identifier_field_ids set.
+    pub is_identifier: bool,
+}
+
+// ─── SchemaFieldRow ──────────────────────────────────────────────────────────
+
+/// DB row shape returned from `schema_field`. One row per field; `is_identifier`
+/// marks membership in the schema's identifier set, collected back into
+/// identifier_field_ids on assembly.
+#[derive(Debug, Clone)]
+pub struct SchemaFieldRow {
+    pub schema_id: i32,
+    pub field_id: i32,
+    pub parent_field_id: Option<i32>,
+    pub ordinal: i32,
+    pub name: std::string::String,
+    pub required: bool,
+    pub doc: Option<std::string::String>,
+    pub type_kind: std::string::String,
+    pub type_params: Option<Value>,
+    pub initial_default: Option<Value>,
+    pub write_default: Option<Value>,
+    pub is_identifier: bool,
+}
+
+// ─── flatten_schema ──────────────────────────────────────────────────────────
+
+/// Walk `schema` and emit one `FlatField` per node (struct fields, list
+/// elements, map keys, map values — all included).
+pub fn flatten_schema(schema: &Schema) -> Result<Vec<FlatField>, SchemaNormError> {
+    // identifier_field_ids is schema-level; pass it down so each field sets its own flag in one
+    // pass. Referential integrity is free: an identifier can only be an existing field row.
+    let identifiers: std::collections::HashSet<i32> = schema.identifier_field_ids().collect();
+    let mut out = Vec::new();
+    flatten_struct(schema.as_struct(), None, &identifiers, &mut out)?;
+    Ok(out)
+}
+
+fn flatten_struct(
+    s: &StructType,
+    parent_field_id: Option<i32>,
+    identifiers: &std::collections::HashSet<i32>,
+    out: &mut Vec<FlatField>,
+) -> Result<(), SchemaNormError> {
+    for (ordinal, field) in s.fields().iter().enumerate() {
+        flatten_field(field, parent_field_id, ordinal as i32, identifiers, out)?;
+    }
+    Ok(())
+}
+
+fn flatten_field(
+    field: &NestedFieldRef,
+    parent_field_id: Option<i32>,
+    ordinal: i32,
+    identifiers: &std::collections::HashSet<i32>,
+    out: &mut Vec<FlatField>,
+) -> Result<(), SchemaNormError> {
+    let (type_kind, type_params) = type_kind_and_params(&field.field_type);
+    let initial_default = match &field.initial_default {
+        None => None,
+        Some(lit) => {
+            if !type_kind.permits_non_null_default() {
+                return Err(SchemaNormError::NonNullDefaultUnsupported {
+                    field_id: field.id,
+                    kind: type_kind.as_str(),
+                });
+            }
+            let json = lit
+                .clone()
+                .try_into_json(&field.field_type)
+                .map_err(|e| SchemaNormError::Assembly {
+                    detail: format!(
+                        "initial_default serialize failed for field_id={}: {e}",
+                        field.id
+                    ),
+                })?;
+            Some(json)
+        }
+    };
+    let write_default = match &field.write_default {
+        None => None,
+        Some(lit) => {
+            if !type_kind.permits_non_null_default() {
+                return Err(SchemaNormError::NonNullDefaultUnsupported {
+                    field_id: field.id,
+                    kind: type_kind.as_str(),
+                });
+            }
+            let json = lit
+                .clone()
+                .try_into_json(&field.field_type)
+                .map_err(|e| SchemaNormError::Assembly {
+                    detail: format!(
+                        "write_default serialize failed for field_id={}: {e}",
+                        field.id
+                    ),
+                })?;
+            Some(json)
+        }
+    };
+
+    out.push(FlatField {
+        field_id: field.id,
+        parent_field_id,
+        ordinal,
+        name: field.name.clone(),
+        required: field.required,
+        doc: field.doc.clone(),
+        type_kind,
+        type_params,
+        initial_default,
+        write_default,
+        is_identifier: identifiers.contains(&field.id),
+    });
+
+    // Recurse into children
+    match field.field_type.as_ref() {
+        Type::Struct(s) => {
+            flatten_struct(s, Some(field.id), identifiers, out)?;
+        }
+        Type::List(list) => {
+            flatten_field(&list.element_field, Some(field.id), 0, identifiers, out)?;
+        }
+        Type::Map(map) => {
+            flatten_field(&map.key_field, Some(field.id), 0, identifiers, out)?;
+            flatten_field(&map.value_field, Some(field.id), 1, identifiers, out)?;
+        }
+        // Primitives and Variant have no children
+        Type::Primitive(_) | Type::Variant(_) => {}
+    }
+
+    Ok(())
+}
+
+/// Exhaustive match — a future new `Type` or `PrimitiveType` arm **must** fail the build.
+fn type_kind_and_params(ty: &Type) -> (IcebergTypeKind, Option<Value>) {
+    match ty {
+        Type::Primitive(p) => match p {
+            PrimitiveType::Boolean => (IcebergTypeKind::Boolean, None),
+            PrimitiveType::Int => (IcebergTypeKind::Int, None),
+            PrimitiveType::Long => (IcebergTypeKind::Long, None),
+            PrimitiveType::Float => (IcebergTypeKind::Float, None),
+            PrimitiveType::Double => (IcebergTypeKind::Double, None),
+            PrimitiveType::Decimal { precision, scale } => (
+                IcebergTypeKind::Decimal,
+                Some(serde_json::json!({ "precision": precision, "scale": scale })),
+            ),
+            PrimitiveType::Date => (IcebergTypeKind::Date, None),
+            PrimitiveType::Time => (IcebergTypeKind::Time, None),
+            PrimitiveType::Timestamp => (IcebergTypeKind::Timestamp, None),
+            PrimitiveType::Timestamptz => (IcebergTypeKind::Timestamptz, None),
+            PrimitiveType::TimestampNs => (IcebergTypeKind::TimestampNs, None),
+            PrimitiveType::TimestamptzNs => (IcebergTypeKind::TimestamptzNs, None),
+            PrimitiveType::String => (IcebergTypeKind::String, None),
+            PrimitiveType::Uuid => (IcebergTypeKind::Uuid, None),
+            PrimitiveType::Fixed(length) => (
+                IcebergTypeKind::Fixed,
+                Some(serde_json::json!({ "length": length })),
+            ),
+            PrimitiveType::Binary => (IcebergTypeKind::Binary, None),
+        },
+        Type::Struct(_) => (IcebergTypeKind::Struct, None),
+        Type::List(_) => (IcebergTypeKind::List, None),
+        Type::Map(_) => (IcebergTypeKind::Map, None),
+        Type::Variant(_) => (IcebergTypeKind::Variant, None),
+    }
+}
+
+// ─── assemble_schemas ────────────────────────────────────────────────────────
+
+/// Reconstruct `Schema` values from flat `SchemaFieldRow`s. Groups by `schema_id`,
+/// builds the field tree bottom-up, then calls `Schema::builder().build()`.
+pub fn assemble_schemas(
+    rows: Vec<SchemaFieldRow>,
+) -> Result<HashMap<SchemaId, Arc<Schema>>, SchemaNormError> {
+    // Group rows by schema_id
+    let mut by_schema: HashMap<i32, Vec<SchemaFieldRow>> = HashMap::new();
+    let mut identifier_ids_by_schema: HashMap<i32, Vec<i32>> = HashMap::new();
+
+    for row in rows {
+        let schema_id = row.schema_id;
+        // identifier_field_ids = the field_ids flagged is_identifier in this schema.
+        if row.is_identifier {
+            identifier_ids_by_schema
+                .entry(schema_id)
+                .or_default()
+                .push(row.field_id);
+        }
+        by_schema.entry(schema_id).or_default().push(row);
+    }
+
+    let mut result = HashMap::with_capacity(by_schema.len());
+
+    for (schema_id, rows) in by_schema {
+        // One pass: bucket children by parent (top-level under None), each bucket ordinal-sorted.
+        let children = build_children_index(&rows);
+        let top_level = children.get(&None).map(Vec::as_slice).unwrap_or_default();
+
+        let mut fields = Vec::with_capacity(top_level.len());
+        for &row in top_level {
+            fields.push(build_field(row, &children)?);
+        }
+
+        // remove (not get + clone): each schema_id is assembled once, so move the Vec out.
+        let ident_ids = identifier_ids_by_schema
+            .remove(&schema_id)
+            .unwrap_or_default();
+
+        let schema = Schema::builder()
+            .with_schema_id(schema_id)
+            .with_identifier_field_ids(ident_ids)
+            .with_fields(fields)
+            .build()
+            .map_err(|e| SchemaNormError::Assembly {
+                detail: format!("Schema::builder().build() failed for schema_id={schema_id}: {e}"),
+            })?;
+
+        result.insert(schema_id, Arc::new(schema));
+    }
+
+    Ok(result)
+}
+
+/// `parent_field_id → that parent's children, ordinal-sorted` (top-level fields under `None`).
+/// Built once per schema so tree assembly is O(N), not O(N²) repeated scans.
+type ChildrenIndex<'a> = HashMap<Option<i32>, Vec<&'a SchemaFieldRow>>;
+
+fn build_children_index(rows: &[SchemaFieldRow]) -> ChildrenIndex<'_> {
+    let mut idx: HashMap<Option<i32>, Vec<&SchemaFieldRow>> = HashMap::with_capacity(rows.len());
+    for r in rows {
+        idx.entry(r.parent_field_id).or_default().push(r);
+    }
+    for kids in idx.values_mut() {
+        kids.sort_by_key(|r| r.ordinal);
+    }
+    idx
+}
+
+fn children_of<'idx, 'row>(
+    index: &'idx ChildrenIndex<'row>,
+    parent_field_id: i32,
+) -> &'idx [&'row SchemaFieldRow] {
+    index
+        .get(&Some(parent_field_id))
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+}
+
+fn build_field<'row>(
+    row: &'row SchemaFieldRow,
+    children: &ChildrenIndex<'row>,
+) -> Result<NestedFieldRef, SchemaNormError> {
+    let field_type = build_type(row, children)?;
+    let mut field = if row.required {
+        NestedField::required(row.field_id, row.name.clone(), field_type)
+    } else {
+        NestedField::optional(row.field_id, row.name.clone(), field_type)
+    };
+
+    if let Some(doc) = &row.doc {
+        field = field.with_doc(doc.clone());
+    }
+
+    if let Some(json_val) = &row.initial_default {
+        let lit = iceberg::spec::Literal::try_from_json(json_val.clone(), &field.field_type)
+            .map_err(|e| SchemaNormError::Assembly {
+                detail: format!(
+                    "initial_default parse failed for field_id={}: {e}",
+                    row.field_id
+                ),
+            })?
+            .ok_or_else(|| SchemaNormError::Assembly {
+                detail: format!(
+                    "initial_default was null JSON for field_id={}",
+                    row.field_id
+                ),
+            })?;
+        field = field.with_initial_default(lit);
+    }
+
+    if let Some(json_val) = &row.write_default {
+        let lit = iceberg::spec::Literal::try_from_json(json_val.clone(), &field.field_type)
+            .map_err(|e| SchemaNormError::Assembly {
+                detail: format!(
+                    "write_default parse failed for field_id={}: {e}",
+                    row.field_id
+                ),
+            })?
+            .ok_or_else(|| SchemaNormError::Assembly {
+                detail: format!(
+                    "write_default was null JSON for field_id={}",
+                    row.field_id
+                ),
+            })?;
+        field = field.with_write_default(lit);
+    }
+
+    Ok(Arc::new(field))
+}
+
+fn build_type<'row>(
+    row: &'row SchemaFieldRow,
+    children: &ChildrenIndex<'row>,
+) -> Result<Type, SchemaNormError> {
+    // A node's children play roles fixed by THIS node's type_kind, in ordinal order:
+    // struct → fields; list → its single element; map → key (ordinal 0) + value (ordinal 1).
+    // So no stored `role` is needed — the parent's type dictates it.
+    match row.type_kind.as_str() {
+        "struct" => {
+            let kids = children_of(children, row.field_id);
+            let mut fields = Vec::with_capacity(kids.len());
+            for &child_row in kids {
+                fields.push(build_field(child_row, children)?);
+            }
+            Ok(Type::Struct(StructType::new(fields)))
+        }
+        "list" => {
+            let kids = children_of(children, row.field_id);
+            if kids.len() != 1 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "list field_id={} must have exactly 1 child, found {}",
+                        row.field_id,
+                        kids.len()
+                    ),
+                });
+            }
+            let elem_field = build_field(kids[0], children)?;
+            Ok(Type::List(ListType::new(elem_field)))
+        }
+        "map" => {
+            let kids = children_of(children, row.field_id);
+            if kids.len() != 2 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "map field_id={} must have exactly 2 children (key, value), found {}",
+                        row.field_id,
+                        kids.len()
+                    ),
+                });
+            }
+            // buckets are ordinal-sorted: [0] = key, [1] = value (set by flatten).
+            let key_field = build_field(kids[0], children)?;
+            let val_field = build_field(kids[1], children)?;
+            Ok(Type::Map(MapType::new(key_field, val_field)))
+        }
+        "variant" => Ok(Type::Variant(VariantType)),
+        kind => primitive_from_row(row, kind),
+    }
+}
+
+fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNormError> {
+    let p = match kind {
+        "boolean" => PrimitiveType::Boolean,
+        "int" => PrimitiveType::Int,
+        "long" => PrimitiveType::Long,
+        "float" => PrimitiveType::Float,
+        "double" => PrimitiveType::Double,
+        "decimal" => {
+            let params =
+                row.type_params
+                    .as_ref()
+                    .ok_or_else(|| SchemaNormError::Assembly {
+                        detail: format!("decimal field_id={} missing type_params", row.field_id),
+                    })?;
+            let precision = params
+                .get("precision")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!(
+                        "decimal field_id={} missing precision in type_params",
+                        row.field_id
+                    ),
+                })? as u32;
+            let scale = params
+                .get("scale")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!(
+                        "decimal field_id={} missing scale in type_params",
+                        row.field_id
+                    ),
+                })? as u32;
+            PrimitiveType::Decimal { precision, scale }
+        }
+        "date" => PrimitiveType::Date,
+        "time" => PrimitiveType::Time,
+        "timestamp" => PrimitiveType::Timestamp,
+        "timestamptz" => PrimitiveType::Timestamptz,
+        "timestamp_ns" => PrimitiveType::TimestampNs,
+        "timestamptz_ns" => PrimitiveType::TimestamptzNs,
+        "string" => PrimitiveType::String,
+        "uuid" => PrimitiveType::Uuid,
+        "fixed" => {
+            let params =
+                row.type_params
+                    .as_ref()
+                    .ok_or_else(|| SchemaNormError::Assembly {
+                        detail: format!("fixed field_id={} missing type_params", row.field_id),
+                    })?;
+            let length = params
+                .get("length")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!(
+                        "fixed field_id={} missing length in type_params",
+                        row.field_id
+                    ),
+                })?;
+            PrimitiveType::Fixed(length)
+        }
+        "binary" => PrimitiveType::Binary,
+        other => {
+            return Err(SchemaNormError::Assembly {
+                detail: format!("unknown type_kind '{other}' for field_id={}", row.field_id),
+            });
+        }
+    };
+    Ok(Type::Primitive(p))
+}
+
+// ─── Helper: FlatField → SchemaFieldRow ──────────────────────────────────────
+
+/// Convert a `FlatField` into a `SchemaFieldRow` for a given `schema_id`.
+/// Test-only bridge: production flattens to write, and assembles from DB rows; nothing
+/// converts Flat→Row outside round-trip tests.
+#[cfg(test)]
+pub fn flat_to_row(flat: &FlatField, schema_id: i32) -> SchemaFieldRow {
+    SchemaFieldRow {
+        schema_id,
+        field_id: flat.field_id,
+        parent_field_id: flat.parent_field_id,
+        ordinal: flat.ordinal,
+        name: flat.name.clone(),
+        required: flat.required,
+        doc: flat.doc.clone(),
+        type_kind: flat.type_kind.as_str().to_string(),
+        type_params: flat.type_params.clone(),
+        initial_default: flat.initial_default.clone(),
+        write_default: flat.write_default.clone(),
+        is_identifier: flat.is_identifier,
+    }
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iceberg::spec::{
+        ListType, MapType, NestedField, PrimitiveType, Schema, StructType, Type, VariantType,
+    };
+
+    fn flat_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(1)
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                NestedField::optional(2, "name", Type::Primitive(PrimitiveType::String)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn nested_struct_schema() -> Schema {
+        // struct with two sibling nested structs each with children
+        let address_struct = Type::Struct(StructType::new(vec![
+            NestedField::required(10, "street", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::optional(11, "city", Type::Primitive(PrimitiveType::String)).into(),
+        ]));
+        let contact_struct = Type::Struct(StructType::new(vec![
+            NestedField::required(20, "email", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::optional(21, "phone", Type::Primitive(PrimitiveType::String)).into(),
+        ]));
+        Schema::builder()
+            .with_schema_id(2)
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::required(2, "address", address_struct).into(),
+                NestedField::optional(3, "contact", contact_struct).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn list_schema() -> Schema {
+        let list_type = Type::List(ListType::new(
+            NestedField::list_element(5, Type::Primitive(PrimitiveType::String), true).into(),
+        ));
+        Schema::builder()
+            .with_schema_id(3)
+            .with_fields(vec![
+                NestedField::required(1, "tags", list_type).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn two_maps_schema() -> Schema {
+        // Two maps in one schema
+        let map1 = Type::Map(MapType::new(
+            NestedField::map_key_element(10, Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::map_value_element(11, Type::Primitive(PrimitiveType::Long), true).into(),
+        ));
+        let map2 = Type::Map(MapType::new(
+            NestedField::map_key_element(12, Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::map_value_element(13, Type::Primitive(PrimitiveType::Int), false).into(),
+        ));
+        Schema::builder()
+            .with_schema_id(4)
+            .with_fields(vec![
+                NestedField::required(1, "props", map1).into(),
+                NestedField::optional(2, "counts", map2).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn decimal_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(5)
+            .with_fields(vec![
+                NestedField::required(
+                    1,
+                    "amount",
+                    Type::Primitive(PrimitiveType::Decimal {
+                        precision: 10,
+                        scale: 2,
+                    }),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn uuid_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(6)
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Uuid)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn identifier_fields_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(7)
+            .with_identifier_field_ids(vec![1, 2])
+            .with_fields(vec![
+                NestedField::required(1, "pk1", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::required(2, "pk2", Type::Primitive(PrimitiveType::String)).into(),
+                NestedField::optional(3, "value", Type::Primitive(PrimitiveType::Double)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn variant_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(8)
+            .with_fields(vec![
+                NestedField::required(1, "data", Type::Variant(VariantType)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn fixed_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(9)
+            .with_fields(vec![
+                NestedField::required(1, "hash", Type::Primitive(PrimitiveType::Fixed(32))).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    fn default_schema() -> Schema {
+        // Schema with integer default value
+        let field = NestedField::optional(1, "count", Type::Primitive(PrimitiveType::Int))
+            .with_write_default(iceberg::spec::Literal::Primitive(
+                iceberg::spec::PrimitiveLiteral::Int(0),
+            ));
+        Schema::builder()
+            .with_schema_id(10)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+            .unwrap()
+    }
+
+    fn doc_schema() -> Schema {
+        let field = NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long))
+            .with_doc("The primary key");
+        Schema::builder()
+            .with_schema_id(11)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+            .unwrap()
+    }
+
+    fn round_trip(schema: &Schema) {
+        let flat = flatten_schema(schema).expect("flatten failed");
+        let schema_id = schema.schema_id();
+        let rows: Vec<SchemaFieldRow> = flat
+            .iter()
+            .map(|f| flat_to_row(f, schema_id))
+            .collect();
+        let assembled = assemble_schemas(rows).expect("assemble failed");
+        let got = assembled
+            .get(&schema_id)
+            .expect("assembled schema not found");
+        assert_eq!(
+            got.as_ref(),
+            schema,
+            "round-trip failed for schema_id={schema_id}"
+        );
+        // Fidelity is semantic, not byte-identical (design §5): identifier-field-ids is a set,
+        // so serialized array order isn't stable. Assert the assembled schema serializes and
+        // PARSES BACK equal.
+        let json = serde_json::to_value(got.as_ref()).expect("serialize assembled failed");
+        let reparsed: Schema = serde_json::from_value(json).expect("parse-back failed");
+        assert_eq!(&reparsed, schema, "JSON parse-back failed for schema_id={schema_id}");
+    }
+
+    #[test]
+    fn test_flat_round_trip() {
+        round_trip(&flat_schema());
+    }
+
+    #[test]
+    fn test_nested_struct_round_trip() {
+        round_trip(&nested_struct_schema());
+    }
+
+    #[test]
+    fn test_list_round_trip() {
+        round_trip(&list_schema());
+    }
+
+    #[test]
+    fn test_two_maps_round_trip() {
+        round_trip(&two_maps_schema());
+    }
+
+    #[test]
+    fn test_decimal_round_trip() {
+        round_trip(&decimal_schema());
+    }
+
+    #[test]
+    fn test_uuid_round_trip() {
+        round_trip(&uuid_schema());
+    }
+
+    #[test]
+    fn test_identifier_fields_round_trip() {
+        round_trip(&identifier_fields_schema());
+    }
+
+    #[test]
+    fn test_variant_round_trip() {
+        round_trip(&variant_schema());
+    }
+
+    #[test]
+    fn test_fixed_round_trip() {
+        round_trip(&fixed_schema());
+    }
+
+    #[test]
+    fn test_write_default_round_trip() {
+        round_trip(&default_schema());
+    }
+
+    #[test]
+    fn test_doc_round_trip() {
+        round_trip(&doc_schema());
+    }
+
+    #[test]
+    fn test_variant_default_rejected() {
+        // A variant field carrying a default must be rejected by flatten.
+        let field = NestedField::required(1, "data", Type::Variant(VariantType))
+            .with_initial_default(iceberg::spec::Literal::Primitive(
+                iceberg::spec::PrimitiveLiteral::Int(0),
+            ));
+        // If iceberg-rust's builder already rejects a variant default, rejection is enforced
+        // upstream and there's nothing for flatten to catch — either outcome is acceptable.
+        let Ok(schema) = Schema::builder()
+            .with_schema_id(1)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+        else {
+            return;
+        };
+        let err = flatten_schema(&schema).unwrap_err();
+        assert!(
+            matches!(err, SchemaNormError::NonNullDefaultUnsupported { field_id: 1, .. }),
+            "expected NonNullDefaultUnsupported, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_type_kind_errors() {
+        let row = SchemaFieldRow {
+            schema_id: 1,
+            field_id: 99,
+            parent_field_id: None,
+            ordinal: 0,
+            name: "x".to_string(),
+            required: true,
+            doc: None,
+            type_kind: "unknown_type_xyz".to_string(),
+            type_params: None,
+            initial_default: None,
+            write_default: None,
+            is_identifier: false,
+        };
+        let err = assemble_schemas(vec![row]).unwrap_err();
+        assert!(matches!(err, SchemaNormError::Assembly { .. }));
+    }
+
+    #[test]
+    fn test_multi_version() {
+        // Assemble two schema versions at once
+        let s1 = flat_schema();
+        let s2 = nested_struct_schema();
+        let flat1 = flatten_schema(&s1).unwrap();
+        let flat2 = flatten_schema(&s2).unwrap();
+        let mut rows: Vec<SchemaFieldRow> = flat1
+            .iter()
+            .map(|f| flat_to_row(f, s1.schema_id()))
+            .collect();
+        rows.extend(flat2.iter().map(|f| flat_to_row(f, s2.schema_id())));
+        let assembled = assemble_schemas(rows).unwrap();
+        assert_eq!(assembled.len(), 2);
+        assert_eq!(assembled.get(&s1.schema_id()).unwrap().as_ref(), &s1);
+        assert_eq!(assembled.get(&s2.schema_id()).unwrap().as_ref(), &s2);
+    }
+
+    #[test]
+    fn test_field_row_count_flat() {
+        let schema = flat_schema();
+        let flat = flatten_schema(&schema).unwrap();
+        // 2 top-level fields, no nesting
+        assert_eq!(flat.len(), 2);
+    }
+
+    #[test]
+    fn test_field_row_count_nested_struct() {
+        let schema = nested_struct_schema();
+        let flat = flatten_schema(&schema).unwrap();
+        // Top-level: id(1), address(1), contact(1) = 3
+        // address children: street(1), city(1) = 2
+        // contact children: email(1), phone(1) = 2
+        // Total = 7
+        assert_eq!(flat.len(), 7);
+    }
+
+    #[test]
+    fn test_field_row_count_list() {
+        let schema = list_schema();
+        let flat = flatten_schema(&schema).unwrap();
+        // top-level list field + element = 2
+        assert_eq!(flat.len(), 2);
+    }
+
+    #[test]
+    fn test_field_row_count_two_maps() {
+        let schema = two_maps_schema();
+        let flat = flatten_schema(&schema).unwrap();
+        // map1 field + key + value = 3; map2 field + key + value = 3 → total 6
+        assert_eq!(flat.len(), 6);
+    }
+
+    #[test]
+    fn test_type_kind_as_str() {
+        assert_eq!(IcebergTypeKind::Boolean.as_str(), "boolean");
+        assert_eq!(IcebergTypeKind::Int.as_str(), "int");
+        assert_eq!(IcebergTypeKind::Long.as_str(), "long");
+        assert_eq!(IcebergTypeKind::Float.as_str(), "float");
+        assert_eq!(IcebergTypeKind::Double.as_str(), "double");
+        assert_eq!(IcebergTypeKind::Decimal.as_str(), "decimal");
+        assert_eq!(IcebergTypeKind::Date.as_str(), "date");
+        assert_eq!(IcebergTypeKind::Time.as_str(), "time");
+        assert_eq!(IcebergTypeKind::Timestamp.as_str(), "timestamp");
+        assert_eq!(IcebergTypeKind::Timestamptz.as_str(), "timestamptz");
+        assert_eq!(IcebergTypeKind::TimestampNs.as_str(), "timestamp_ns");
+        assert_eq!(IcebergTypeKind::TimestamptzNs.as_str(), "timestamptz_ns");
+        assert_eq!(IcebergTypeKind::String.as_str(), "string");
+        assert_eq!(IcebergTypeKind::Uuid.as_str(), "uuid");
+        assert_eq!(IcebergTypeKind::Fixed.as_str(), "fixed");
+        assert_eq!(IcebergTypeKind::Binary.as_str(), "binary");
+        assert_eq!(IcebergTypeKind::Variant.as_str(), "variant");
+        assert_eq!(IcebergTypeKind::Struct.as_str(), "struct");
+        assert_eq!(IcebergTypeKind::List.as_str(), "list");
+        assert_eq!(IcebergTypeKind::Map.as_str(), "map");
+    }
+
+    // ─── nested-container + nested-default coverage (design §11) ───────────────
+
+    fn list_of_structs_schema() -> Schema {
+        // list<struct<a:int, b:string>>
+        let elem = Type::Struct(StructType::new(vec![
+            NestedField::required(3, "a", Type::Primitive(PrimitiveType::Int)).into(),
+            NestedField::optional(4, "b", Type::Primitive(PrimitiveType::String)).into(),
+        ]));
+        let list = Type::List(ListType::new(NestedField::list_element(2, elem, true).into()));
+        Schema::builder()
+            .with_schema_id(12)
+            .with_fields(vec![NestedField::required(1, "items", list).into()])
+            .build()
+            .unwrap()
+    }
+
+    fn map_of_lists_schema() -> Schema {
+        // map<string, list<int>>
+        let value_list = Type::List(ListType::new(
+            NestedField::list_element(4, Type::Primitive(PrimitiveType::Int), true).into(),
+        ));
+        let map = Type::Map(MapType::new(
+            NestedField::map_key_element(2, Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::map_value_element(3, value_list, true).into(),
+        ));
+        Schema::builder()
+            .with_schema_id(13)
+            .with_fields(vec![NestedField::required(1, "by_key", map).into()])
+            .build()
+            .unwrap()
+    }
+
+    fn deeply_nested_schema() -> Schema {
+        // struct<inner: list<map<string,int>>> — struct → list → map → key/value
+        let inner_map = Type::Map(MapType::new(
+            NestedField::map_key_element(4, Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::map_value_element(5, Type::Primitive(PrimitiveType::Int), true).into(),
+        ));
+        let inner_list =
+            Type::List(ListType::new(NestedField::list_element(3, inner_map, true).into()));
+        let outer = Type::Struct(StructType::new(vec![
+            NestedField::required(2, "inner", inner_list).into(),
+        ]));
+        Schema::builder()
+            .with_schema_id(14)
+            .with_fields(vec![NestedField::required(1, "outer", outer).into()])
+            .build()
+            .unwrap()
+    }
+
+    fn nested_default_schema() -> Schema {
+        // struct<count: int = 0> — write_default on a NESTED field
+        let count = NestedField::optional(2, "count", Type::Primitive(PrimitiveType::Int))
+            .with_write_default(iceberg::spec::Literal::Primitive(
+                iceberg::spec::PrimitiveLiteral::Int(0),
+            ));
+        let s = Type::Struct(StructType::new(vec![Arc::new(count)]));
+        Schema::builder()
+            .with_schema_id(15)
+            .with_fields(vec![NestedField::required(1, "wrap", s).into()])
+            .build()
+            .unwrap()
+    }
+
+    fn initial_default_schema() -> Schema {
+        let field = NestedField::optional(1, "x", Type::Primitive(PrimitiveType::Int))
+            .with_initial_default(iceberg::spec::Literal::Primitive(
+                iceberg::spec::PrimitiveLiteral::Int(5),
+            ));
+        Schema::builder()
+            .with_schema_id(16)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_list_of_structs_round_trip() {
+        round_trip(&list_of_structs_schema());
+    }
+
+    #[test]
+    fn test_map_of_lists_round_trip() {
+        round_trip(&map_of_lists_schema());
+    }
+
+    #[test]
+    fn test_deeply_nested_round_trip() {
+        round_trip(&deeply_nested_schema());
+    }
+
+    #[test]
+    fn test_nested_default_round_trip() {
+        round_trip(&nested_default_schema());
+    }
+
+    #[test]
+    fn test_initial_default_round_trip() {
+        round_trip(&initial_default_schema());
+    }
+
+    // ─── container-VALUED defaults (design §11; deferred verification) ─────────
+    // A list/map-valued default exercises the same flatten(try_into_json) /
+    // assemble(try_from_json) path as scalar defaults, but over a non-primitive
+    // Literal. iceberg-rust supports both directions for List/Map literals.
+
+    #[test]
+    fn test_list_valued_default_round_trip() {
+        // list<int> with write_default [1, 2]
+        let list = Type::List(ListType::new(
+            NestedField::list_element(2, Type::Primitive(PrimitiveType::Int), true).into(),
+        ));
+        let field = NestedField::required(1, "nums", list).with_write_default(
+            iceberg::spec::Literal::List(vec![
+                Some(iceberg::spec::Literal::int(1)),
+                Some(iceberg::spec::Literal::int(2)),
+            ]),
+        );
+        let schema = Schema::builder()
+            .with_schema_id(17)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+            .expect("builder rejected list-valued default");
+        round_trip(&schema);
+    }
+
+    #[test]
+    fn test_map_valued_default_round_trip() {
+        use iceberg::spec::{Literal, Map, PrimitiveLiteral};
+        // map<string,int> with write_default {"a": 1}
+        let map = Type::Map(MapType::new(
+            NestedField::map_key_element(2, Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::map_value_element(3, Type::Primitive(PrimitiveType::Int), true).into(),
+        ));
+        let field = NestedField::required(1, "by_key", map).with_write_default(Literal::Map(
+            Map::from([(
+                Literal::Primitive(PrimitiveLiteral::String("a".to_string())),
+                Some(Literal::Primitive(PrimitiveLiteral::Int(1))),
+            )]),
+        ));
+        let schema = Schema::builder()
+            .with_schema_id(18)
+            .with_fields(vec![Arc::new(field)])
+            .build()
+            .expect("builder rejected map-valued default");
+        round_trip(&schema);
+    }
+}
+
+#[cfg(test)]
+mod pg_enum_db_test {
+    use super::*;
+
+    // PG-side guard (DB test): the `iceberg_type_kind` enum must contain every kind Rust can
+    // emit. It is a SUPERSET — it also pre-includes released v3 types (geometry/geography/unknown)
+    // not yet in iceberg-rust, so adopting those is a pure-Rust change with no enum migration.
+    #[sqlx::test]
+    async fn pg_enum_covers_all_type_kinds(pool: sqlx::PgPool) {
+        let labels: Vec<String> = sqlx::query_scalar(
+            "SELECT enumlabel FROM pg_enum e JOIN pg_type t ON e.enumtypid = t.oid \
+             WHERE t.typname = 'iceberg_type_kind'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("query pg_enum");
+        for kind in IcebergTypeKind::ALL {
+            assert!(
+                labels.iter().any(|l| l == kind.as_str()),
+                "PG iceberg_type_kind enum is missing '{}' — add it via migration",
+                kind.as_str()
+            );
+        }
+        for pre in ["geometry", "geography", "unknown"] {
+            assert!(
+                labels.iter().any(|l| l == pre),
+                "pre-added v3 label '{pre}' missing from iceberg_type_kind"
+            );
+        }
+    }
+}
