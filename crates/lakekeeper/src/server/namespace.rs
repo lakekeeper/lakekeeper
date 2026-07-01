@@ -461,6 +461,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 
     /// Drop a namespace from the catalog. Namespace must be empty.
+    #[allow(clippy::too_many_lines)]
     async fn drop_namespace(
         parameters: NamespaceParameters,
         flags: NamespaceDropFlags,
@@ -539,17 +540,19 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if flags.recursive {
             // recursive drop manages its own transaction
-            try_recursive_drop::<_, C>(
+            try_recursive_drop::<_, C, _>(
                 flags,
                 authorizer,
                 &warehouse,
                 t,
                 namespace_id,
                 &request_metadata,
+                &state.v1_state.secrets,
             )
             .await?;
         } else {
-            C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
+            let drop_info =
+                C::drop_namespace(warehouse_id, namespace_id, flags, t.transaction()).await?;
             if let Some(ref key) = idempotency_key
                 && !C::try_insert_idempotency_key(
                     warehouse_id,
@@ -578,6 +581,16 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     tracing::warn!("Failed to delete namespace from authorizer: {}", e.error);
                 })
                 .ok();
+
+            // Best-effort cleanup of namespace storage folders (only on purge)
+            if flags.purge {
+                try_cleanup_namespace_locations(
+                    &warehouse,
+                    &state.v1_state.secrets,
+                    &drop_info.namespace_locations,
+                )
+                .await;
+            }
         }
 
         event_ctx.emit_namespace_dropped_async();
@@ -710,13 +723,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 }
 
 #[allow(clippy::too_many_lines)]
-async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
+async fn try_recursive_drop<A: Authorizer, C: CatalogStore, S: SecretStore>(
     flags: NamespaceDropFlags,
     authorizer: A,
     warehouse: &ResolvedWarehouse,
     mut t: <C as CatalogStore>::Transaction,
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
+    secret_store: &S,
 ) -> Result<()> {
     if matches!(
         warehouse.tabular_delete_profile,
@@ -837,6 +851,16 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                 .ok();
         }
 
+        // Best-effort cleanup of namespace storage folders (only on purge)
+        if flags.purge {
+            try_cleanup_namespace_locations(
+                warehouse,
+                secret_store,
+                &drop_info.namespace_locations,
+            )
+            .await;
+        }
+
         Ok(())
     } else {
         Err(ErrorModel::bad_request(
@@ -845,6 +869,118 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
             None,
         )
         .into())
+    }
+}
+
+/// Best-effort cleanup of namespace storage folders after a namespace drop.
+///
+/// Only runs on hierarchical storage backends (ADLS, `OneLake`) where empty
+/// directory entities persist after all objects are deleted. Object stores
+/// (S3, GCS) have no real directories, so this is a no-op for them.
+///
+/// For each namespace location, checks if the folder is empty on storage
+/// and removes it if so. Only acts on locations strictly below the warehouse
+/// base (via [`Location::is_sublocation_of`]) to prevent accidental deletion
+/// of the warehouse root (on flat layouts the persisted namespace location
+/// equals the warehouse base).
+///
+/// # Limitations
+/// - Only removes folders already empty at drop time. Table-data purge is
+///   asynchronous, so dropping a namespace soon after its tables (and any
+///   recursive drop that still contains live tables) will find the folder
+///   non-empty and skip it. In practice it cleans up namespaces whose data
+///   was purged earlier.
+/// - Single attempt with no retry — a skipped folder is not revisited.
+/// - Errors are logged and swallowed — storage cleanup must not fail the drop.
+async fn try_cleanup_namespace_locations<S: SecretStore>(
+    warehouse: &ResolvedWarehouse,
+    secret_store: &S,
+    namespace_locations: &[(NamespaceId, Location)],
+) {
+    if namespace_locations.is_empty() {
+        return;
+    }
+
+    // Only clean up on hierarchical storages (ADLS, OneLake) where empty
+    // directory entities persist. Object stores (S3, GCS) have no real
+    // directories — prefixes vanish automatically when all keys are gone.
+    if !warehouse.storage_profile.is_hierarchical() {
+        tracing::debug!(
+            "Skipping namespace folder cleanup for non-hierarchical storage in warehouse {}",
+            warehouse.warehouse_id
+        );
+        return;
+    }
+
+    // Get the warehouse base location so we never delete it.
+    let base = match warehouse.storage_profile.base_location() {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to get base location for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
+
+    let secret = match super::maybe_get_secret(warehouse.storage_secret_id, secret_store).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to get storage secret for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
+    let secret_ref = secret.as_deref();
+
+    let file_io = match warehouse.storage_profile.file_io(secret_ref).await {
+        Ok(io) => io,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to initialize IO for namespace cleanup in warehouse {}: {e}",
+                warehouse.warehouse_id
+            );
+            return;
+        }
+    };
+
+    for (ns_id, location) in namespace_locations {
+        // Guard: never delete the warehouse base itself or locations outside it.
+        // On flat/default layouts the persisted location equals the base, and on
+        // layout switches the snapshot may no longer match the current layout.
+        if *location == base || !location.is_sublocation_of(&base) {
+            tracing::debug!(
+                "Skipping cleanup for namespace {ns_id}: location {location} is at or outside warehouse base"
+            );
+            continue;
+        }
+
+        match crate::service::storage::is_empty(&file_io, location).await {
+            Ok(true) => {
+                if let Err(e) = super::io::remove_all(&file_io, location).await {
+                    tracing::warn!(
+                        "Failed to remove empty namespace folder for namespace {ns_id} at {location}: {e}"
+                    );
+                } else {
+                    tracing::info!(
+                        "Cleaned up empty namespace folder for namespace {ns_id} at {location}"
+                    );
+                }
+            }
+            Ok(false) => {
+                tracing::debug!(
+                    "Namespace folder for {ns_id} at {location} is not empty, skipping cleanup"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to check if namespace folder for {ns_id} at {location} is empty: {e}"
+                );
+            }
+        }
     }
 }
 

@@ -206,6 +206,19 @@ impl StorageProfile {
         }
     }
 
+    /// Returns `true` for storage backends that have real directory entities
+    /// (e.g. ADLS, `OneLake`). Object stores like S3 and GCS use key prefixes
+    /// instead, so empty "directories" disappear automatically.
+    #[must_use]
+    pub fn is_hierarchical(&self) -> bool {
+        match self {
+            StorageProfile::Adls(_) | StorageProfile::OneLake(_) => true,
+            StorageProfile::S3(_) | StorageProfile::Gcs(_) => false,
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => false,
+        }
+    }
+
     /// Update this profile with the other profile.
     /// Fails if this is an incompatible update, such as changing the location.
     ///
