@@ -38,7 +38,7 @@ use crate::{
             TaskResolveScope, WarehouseTaskEntityId,
             tabular_expiration_queue::{
                 LEGACY_QUEUE_NAME as SOFT_DELETION_LEGACY_QUEUE_NAME,
-                QUEUE_NAME as TABULAR_EXPIRATION_QUEUE_NAME,
+                QUEUE_NAME as SOFT_DELETION_QUEUE_NAME,
             },
         },
     },
@@ -1556,7 +1556,7 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
             // Match the current name and the pre-rename alias so cancelling a
             // soft-deletion task enqueued before the rename still triggers the
             // tabular undrop (clear `deleted_at`).
-            if resolved_task.queue_name == *TABULAR_EXPIRATION_QUEUE_NAME
+            if resolved_task.queue_name == *SOFT_DELETION_QUEUE_NAME
                 || resolved_task.queue_name == *SOFT_DELETION_LEGACY_QUEUE_NAME
             {
                 let resolved_task = &resolved_task.entity;

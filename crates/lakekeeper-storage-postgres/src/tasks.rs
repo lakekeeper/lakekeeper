@@ -335,21 +335,31 @@ pub(crate) async fn pick_task(
     let x = sqlx::query!(
         r#"
         WITH picked_task AS (
-            SELECT t.*, config
+            SELECT t.*, tc.config
             FROM task t
-            LEFT JOIN task_config tc
-                ON tc.queue_name = t.queue_name
-                    AND ((tc.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (tc.warehouse_id = t.warehouse_id))
-                    AND tc.project_id = t.project_id
+            -- Config belongs to the queue, not to a row's (possibly legacy)
+            -- name. Prefer the canonical queue's config ($3) and fall back to a
+            -- legacy-named config row only when the canonical one is unset, so a
+            -- row enqueued under an old name still loads the right config.
+            LEFT JOIN LATERAL (
+                SELECT cfg.config, cfg.max_time_since_last_heartbeat
+                FROM task_config cfg
+                WHERE cfg.queue_name = ANY($1)
+                    AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))
+                    AND cfg.project_id = t.project_id
+                ORDER BY (cfg.queue_name = $3) DESC
+                LIMIT 1
+            ) tc ON true
             WHERE (t.queue_name = ANY($1) AND scheduled_for <= now())
                 AND (
                     (status = 'scheduled') OR
                     (status != 'scheduled' AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
                 )
-            -- Oldest-due first. Also makes pickup order deterministic now that
-            -- the queue match is a set (`= ANY`) rather than a single name,
-            -- which would otherwise leave row order at the planner's discretion.
-            ORDER BY scheduled_for
+            -- Oldest-due first, then task_id as a unique tiebreaker so pickup
+            -- order is fully deterministic when scheduled_for ties (the queue
+            -- match is a set via `= ANY`, so row order is otherwise at the
+            -- planner's discretion).
+            ORDER BY scheduled_for, task_id
             -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
             -- transactions locked
             FOR UPDATE OF t SKIP LOCKED
@@ -426,7 +436,8 @@ pub(crate) async fn pick_task(
             task.project_id
             "#,
         &queue_names,
-        max_time_since_last_heartbeat
+        max_time_since_last_heartbeat,
+        queue_name
     )
     .fetch_optional(pool)
     .await
