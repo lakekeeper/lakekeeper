@@ -9,12 +9,13 @@ pub(crate) mod normalized_schema;
 use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
 
 pub(crate) use commit::commit_table_transaction;
+pub(crate) use common::write_normalized_schema;
 pub(crate) use create::create_table;
 use iceberg::{
     TableUpdate,
     spec::{
-        BlobMetadata, EncryptedKey, FormatVersion, MAIN_BRANCH, PartitionSpec, Schema, SchemaId,
-        SnapshotRetention, SortOrder, Summary,
+        BlobMetadata, EncryptedKey, FormatVersion, MAIN_BRANCH, PartitionSpec, SnapshotRetention,
+        SortOrder, Summary,
     },
 };
 use iceberg_ext::spec::TableMetadata;
@@ -156,8 +157,6 @@ struct TableQueryStruct {
     partition_spec_ids: Option<Vec<i32>>,
     partition_specs: Option<Vec<Json<PartitionSpec>>>,
     current_schema: Option<i32>,
-    schemas: Option<Vec<Json<Schema>>>,
-    schema_ids: Option<Vec<i32>>,
     table_format_version: DbTableFormatVersion,
     next_row_id: i64,
     last_sequence_number: i64,
@@ -181,7 +180,10 @@ struct TableQueryStruct {
 
 impl TableQueryStruct {
     #[expect(clippy::too_many_lines)]
-    fn into_table_metadata(self) -> Result<TableMetadata, LoadTableError> {
+    fn into_table_metadata(
+        self,
+        schema_rows: Vec<normalized_schema::SchemaFieldRow>,
+    ) -> Result<TableMetadata, LoadTableError> {
         fn expect<T>(
             field: Option<T>,
             field_name: &str,
@@ -199,10 +201,13 @@ impl TableQueryStruct {
         let table_id = self.table_id.into();
         let info = (warehouse_id, table_id);
 
-        let schemas = expect(self.schemas, "Schemas", &info)?
-            .into_iter()
-            .map(|s| (s.0.schema_id(), Arc::new(s.0)))
-            .collect::<HashMap<SchemaId, _>>();
+        // Schemas are assembled from the normalized `schema_field` rows (one row per field,
+        // fetched separately and grouped per table), not from a JSONB blob.
+        let schemas = normalized_schema::assemble_schemas(schema_rows).map_err(|e| {
+            RequiredTableComponentMissing::new(warehouse_id, table_id).append_detail(format!(
+                "Failed to assemble schemas from schema_field rows: {e}"
+            ))
+        })?;
 
         let partition_specs = expect(self.partition_spec_ids, "Partition Spec IDs", &info)?
             .into_iter()
@@ -540,10 +545,8 @@ pub(crate) async fn load_tables(
             ti.namespace_id,
             ti."metadata_location",
             w.version as "warehouse_version",
-            ts.schema_ids,
             tcs.schema_id as "current_schema",
             tdps.partition_spec_id as "default_partition_spec_id",
-            ts.schemas as "schemas: Vec<Json<Schema>>",
             tsnap.snapshot_ids,
             tsnap.parent_snapshot_ids as "snapshot_parent_snapshot_id: Vec<Option<i64>>",
             tsnap.sequence_numbers as "snapshot_sequence_number",
@@ -590,11 +593,6 @@ pub(crate) async fn load_tables(
             ON tdps.warehouse_id = $1 AND tdps.table_id = t.table_id
         LEFT JOIN table_default_sort_order tdsort
             ON tdsort.warehouse_id = $1 AND tdsort.table_id = t.table_id
-        LEFT JOIN (SELECT table_id,
-                          ARRAY_AGG(schema_id) as schema_ids,
-                          ARRAY_AGG(schema) as schemas
-                   FROM table_schema WHERE warehouse_id = $1 AND table_id = ANY($2)
-                   GROUP BY table_id) ts ON ts.table_id = t.table_id
         LEFT JOIN (SELECT table_id,
                           ARRAY_AGG(partition_spec) as partition_spec,
                           ARRAY_AGG(partition_spec_id) as partition_spec_id
@@ -681,6 +679,44 @@ pub(crate) async fn load_tables(
     .await
     .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
 
+    // Schemas live in the normalized `schema_field` table (one row per field). Fetch them flat
+    // for the whole batch in one query and group per table; assembled in `into_table_metadata`.
+    let schema_field_rows = sqlx::query!(
+        r#"SELECT table_id,
+                  schema_id, field_id, parent_field_id, ordinal, name, required, doc,
+                  type_kind::text as "type_kind!", type_params, initial_default, write_default,
+                  is_identifier
+           FROM schema_field
+           WHERE warehouse_id = $1 AND table_id = ANY($2)
+           ORDER BY table_id, schema_id, parent_field_id, ordinal"#,
+        *warehouse_id,
+        &table_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+
+    let mut schema_rows_by_table: HashMap<Uuid, Vec<normalized_schema::SchemaFieldRow>> =
+        HashMap::new();
+    for r in schema_field_rows {
+        schema_rows_by_table.entry(r.table_id).or_default().push(
+            normalized_schema::SchemaFieldRow {
+                schema_id: r.schema_id,
+                field_id: r.field_id,
+                parent_field_id: r.parent_field_id,
+                ordinal: r.ordinal,
+                name: r.name,
+                required: r.required,
+                doc: r.doc,
+                type_kind: r.type_kind,
+                type_params: r.type_params,
+                initial_default: r.initial_default,
+                write_default: r.write_default,
+                is_identifier: r.is_identifier,
+            },
+        );
+    }
+
     table
         .into_iter()
         .map(|table| {
@@ -693,7 +729,10 @@ pub(crate) async fn load_tables(
                 .transpose()
                 .map_err(InternalParseLocationError::from)?;
             let namespace_id = table.namespace_id.into();
-            let table_metadata = table.into_table_metadata()?;
+            let schema_rows = schema_rows_by_table
+                .remove(&table.table_id)
+                .unwrap_or_default();
+            let table_metadata = table.into_table_metadata(schema_rows)?;
 
             Ok(LoadTableResponse {
                 table_id,
@@ -960,6 +999,58 @@ pub mod tests {
             table_id,
             table_ident,
         }
+    }
+
+    /// Create a real table (via the production `create_table` path, which now writes `schema_field`)
+    /// whose current schema is `schema`, in a fresh namespace. Returns the table id and the PERSISTED
+    /// current schema — create-time normalization may reassign field ids, so assertions should use
+    /// the returned schema, not the input.
+    pub(crate) async fn create_table_with_schema(
+        state: CatalogState,
+        warehouse_id: WarehouseId,
+        schema: Schema,
+    ) -> (TableId, Schema) {
+        let namespace =
+            NamespaceIdent::from_vec(vec![format!("my_namespace_{}", Uuid::now_v7())]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id = get_namespace_id(state.clone(), warehouse_id, &namespace).await;
+
+        let table_id: TableId = Uuid::now_v7().into();
+        let name = format!("my_table_{}", Uuid::now_v7());
+        let location = format!("s3://my_bucket/{}", Uuid::now_v7());
+        let metadata_location: Location =
+            format!("{location}/metadata/metadata-{}.json", Uuid::now_v7())
+                .parse()
+                .unwrap();
+        let request = CreateTableRequest {
+            name: name.clone(),
+            location: Some(location),
+            schema,
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties: None,
+        };
+        let table_metadata = create_table_request_into_table_metadata(
+            table_id,
+            request,
+            &AllowedFormatVersions::default(),
+            None,
+        )
+        .unwrap();
+        let table_ident = TableIdent { namespace, name };
+        let create = TableCreation {
+            warehouse_id,
+            namespace_id,
+            table_ident: &table_ident,
+            table_metadata: &table_metadata,
+            metadata_location: Some(&metadata_location),
+        };
+        let mut transaction = state.write_pool().begin().await.unwrap();
+        create_table(create, &mut transaction).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        (table_id, table_metadata.current_schema().as_ref().clone())
     }
 
     #[sqlx::test]

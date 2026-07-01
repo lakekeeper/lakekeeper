@@ -14,7 +14,7 @@ use sqlx::{PgConnection, Postgres, Transaction};
 
 use crate::{
     dbutils::DBErrorHandler,
-    tabular::table::{assigned_rows_as_i64, first_row_id_as_i64},
+    tabular::table::{assigned_rows_as_i64, first_row_id_as_i64, normalized_schema},
 };
 
 pub(super) async fn remove_schemas(
@@ -26,6 +26,22 @@ pub(super) async fn remove_schemas(
     if schema_ids.is_empty() {
         return Ok(());
     }
+
+    // Delete schema_field rows explicitly (before the anchor) so the AFTER DELETE statement
+    // trigger fires with a populated transition table and reaps orphaned column_identity rows.
+    let _ = sqlx::query!(
+        r#"DELETE FROM schema_field
+           WHERE warehouse_id = $1 AND table_id = $2 AND schema_id = ANY($3::INT[])"#,
+        *warehouse_id,
+        *table_id,
+        &schema_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Failed to remove schema fields")
+    })?;
 
     let _ = sqlx::query!(
         r#"DELETE FROM table_schema
@@ -55,29 +71,37 @@ pub(super) async fn insert_schemas(
     }
 
     let num_schemas = schema_iter.len();
-    let mut ids = Vec::with_capacity(num_schemas);
-    let mut schemas = Vec::with_capacity(num_schemas);
+    let schemas: Vec<&SchemaRef> = schema_iter.collect();
+    let ids: Vec<i32> = schemas.iter().map(|s| s.schema_id()).collect();
     let table_ids = vec![*table_id; num_schemas];
 
-    for s in schema_iter {
-        ids.push(s.schema_id());
-        schemas.push(serde_json::to_value(s).map_err(|e| SerializationError::new("schema", e))?);
-    }
-
+    // Anchor rows only — the schema content lives in `schema_field` (written below). The legacy
+    // `schema` JSONB column is left NULL (dropped in a follow-up release).
     let _ = sqlx::query!(
-        r#"INSERT INTO table_schema(schema_id, table_id, schema, warehouse_id)
-           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[], $4::JSONB[])"#,
+        r#"INSERT INTO table_schema(schema_id, table_id, warehouse_id)
+           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[])"#,
         &ids,
         &table_ids,
         *warehouse_id,
-        &schemas
     )
     .execute(&mut **transaction)
     .await
     .map_err(|e| {
         e.into_catalog_backend_error()
-            .append_detail("Failed to insert schema")
+            .append_detail("Failed to insert schema anchor")
     })?;
+
+    for s in schemas {
+        let flat = normalized_schema::flatten_schema(s).map_err(|e| {
+            InternalBackendErrors::InternalConversionError(ConversionError::new(
+                "Failed to flatten schema into normalized schema_field rows",
+                e,
+            ))
+        })?;
+        write_normalized_schema(transaction, warehouse_id, table_id, s.schema_id(), &flat)
+            .await
+            .map_err(InternalBackendErrors::CatalogBackendError)?;
+    }
 
     Ok(())
 }
@@ -848,4 +872,155 @@ pub(crate) async fn remove_table_encryption_keys(
     })?;
 
     Ok(())
+}
+
+// Consumed by the commit path + migration backfill (wired in later tasks).
+#[allow(dead_code)]
+pub(crate) async fn write_normalized_schema(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    warehouse_id: lakekeeper::WarehouseId,
+    table_id: lakekeeper::service::TableId,
+    schema_id: i32,
+    flat: &[crate::tabular::table::normalized_schema::FlatField],
+) -> Result<(), lakekeeper::service::CatalogBackendError> {
+    if flat.is_empty() {
+        return Ok(());
+    }
+
+    let n = flat.len();
+    let mut field_ids: Vec<i32> = Vec::with_capacity(n);
+    let mut parents: Vec<Option<i32>> = Vec::with_capacity(n);
+    let mut ordinals: Vec<i32> = Vec::with_capacity(n);
+    let mut names: Vec<String> = Vec::with_capacity(n);
+    let mut requireds: Vec<bool> = Vec::with_capacity(n);
+    let mut docs: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut type_kinds: Vec<String> = Vec::with_capacity(n);
+    let mut type_params: Vec<Option<serde_json::Value>> = Vec::with_capacity(n);
+    let mut initial_defaults: Vec<Option<serde_json::Value>> = Vec::with_capacity(n);
+    let mut write_defaults: Vec<Option<serde_json::Value>> = Vec::with_capacity(n);
+    let mut is_identifiers: Vec<bool> = Vec::with_capacity(n);
+
+    for f in flat {
+        field_ids.push(f.field_id);
+        parents.push(f.parent_field_id);
+        ordinals.push(f.ordinal);
+        names.push(f.name.clone());
+        requireds.push(f.required);
+        docs.push(f.doc.clone());
+        type_kinds.push(f.type_kind.as_str().to_string());
+        type_params.push(f.type_params.clone());
+        initial_defaults.push(f.initial_default.clone());
+        write_defaults.push(f.write_default.clone());
+        is_identifiers.push(f.is_identifier);
+    }
+
+    sqlx::query!(
+        r#"INSERT INTO schema_field
+            (warehouse_id, table_id, schema_id, field_id, parent_field_id, ordinal, name,
+             required, doc, type_kind, type_params, initial_default, write_default, is_identifier)
+        SELECT $1, $2, $3, u.field_id, u.parent_field_id, u.ordinal, u.name,
+               u.required, u.doc, u.type_kind::iceberg_type_kind,
+               u.type_params, u.initial_default, u.write_default, u.is_identifier
+        FROM UNNEST(
+            $4::int[], $5::int[], $6::int[], $7::text[], $8::bool[], $9::text[],
+            $10::text[], $11::jsonb[], $12::jsonb[], $13::jsonb[], $14::bool[]
+        ) AS u(field_id, parent_field_id, ordinal, name, required, doc,
+               type_kind, type_params, initial_default, write_default, is_identifier)"#,
+        *warehouse_id,
+        *table_id,
+        schema_id,
+        &field_ids,
+        &parents as _,
+        &ordinals,
+        &names,
+        &requireds,
+        &docs as _,
+        &type_kinds,
+        &type_params as _,
+        &initial_defaults as _,
+        &write_defaults as _,
+        &is_identifiers,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Failed to write normalized schema")
+    })?;
+
+    sqlx::query!(
+        r#"INSERT INTO column_identity (warehouse_id, table_id, field_id)
+        SELECT $1, $2, u.field_id FROM UNNEST($3::int[]) AS u(field_id)
+        ON CONFLICT DO NOTHING"#,
+        *warehouse_id,
+        *table_id,
+        &field_ids,
+    )
+    .execute(&mut **transaction)
+    .await
+    .map_err(|e| {
+        e.into_catalog_backend_error()
+            .append_detail("Failed to write normalized schema")
+    })?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+    use lakekeeper::{WarehouseId, service::TableId};
+
+    use crate::{
+        CatalogState, tabular::table::tests::create_table_with_schema,
+        warehouse::test::initialize_warehouse,
+    };
+
+    fn two_col_schema() -> Schema {
+        Schema::builder()
+            .with_schema_id(0)
+            .with_identifier_field_ids(vec![1])
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                NestedField::required(2, "name", Type::Primitive(PrimitiveType::String)).into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    async fn count(pool: &sqlx::PgPool, table: &str, wh: WarehouseId, table_id: TableId) -> i64 {
+        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND table_id=$2");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(q))
+            .bind(*wh)
+            .bind(*table_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn create_writes_schema_field_and_column_identity(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        // create_table -> insert_schemas writes schema_field + column_identity for the current schema
+        // (write_normalized_schema is the chokepoint it calls).
+        let (table_id, schema) =
+            create_table_with_schema(state.clone(), wh, two_col_schema()).await;
+
+        assert_eq!(count(&pool, "schema_field", wh, table_id).await, 2);
+        assert_eq!(count(&pool, "column_identity", wh, table_id).await, 2);
+
+        // is_identifier flags match the persisted schema's identifier_field_ids.
+        let ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT field_id FROM schema_field WHERE warehouse_id=$1 AND table_id=$2 AND is_identifier ORDER BY field_id",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let mut expected: Vec<i32> = schema.identifier_field_ids().collect();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+    }
 }

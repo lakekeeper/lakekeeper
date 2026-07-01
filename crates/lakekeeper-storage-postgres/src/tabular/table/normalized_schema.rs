@@ -2,10 +2,7 @@
 //! Flatten/assemble are pure Rust (no DB); used by the write path (flatten) and read path
 //! (assemble). One `#[sqlx::test]` guards that the PG `iceberg_type_kind` enum covers every kind.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use iceberg::spec::{
     ListType, MapType, NestedField, NestedFieldRef, PrimitiveType, Schema, SchemaId, StructType,
@@ -212,15 +209,14 @@ fn flatten_field(
                     kind: type_kind.as_str(),
                 });
             }
-            let json = lit
-                .clone()
-                .try_into_json(&field.field_type)
-                .map_err(|e| SchemaNormError::Assembly {
+            let json = lit.clone().try_into_json(&field.field_type).map_err(|e| {
+                SchemaNormError::Assembly {
                     detail: format!(
                         "initial_default serialize failed for field_id={}: {e}",
                         field.id
                     ),
-                })?;
+                }
+            })?;
             Some(json)
         }
     };
@@ -233,15 +229,14 @@ fn flatten_field(
                     kind: type_kind.as_str(),
                 });
             }
-            let json = lit
-                .clone()
-                .try_into_json(&field.field_type)
-                .map_err(|e| SchemaNormError::Assembly {
+            let json = lit.clone().try_into_json(&field.field_type).map_err(|e| {
+                SchemaNormError::Assembly {
                     detail: format!(
                         "write_default serialize failed for field_id={}: {e}",
                         field.id
                     ),
-                })?;
+                }
+            })?;
             Some(json)
         }
     };
@@ -434,10 +429,7 @@ fn build_field<'row>(
                 ),
             })?
             .ok_or_else(|| SchemaNormError::Assembly {
-                detail: format!(
-                    "write_default was null JSON for field_id={}",
-                    row.field_id
-                ),
+                detail: format!("write_default was null JSON for field_id={}", row.field_id),
             })?;
         field = field.with_write_default(lit);
     }
@@ -504,12 +496,12 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
         "float" => PrimitiveType::Float,
         "double" => PrimitiveType::Double,
         "decimal" => {
-            let params =
-                row.type_params
-                    .as_ref()
-                    .ok_or_else(|| SchemaNormError::Assembly {
-                        detail: format!("decimal field_id={} missing type_params", row.field_id),
-                    })?;
+            let params = row
+                .type_params
+                .as_ref()
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!("decimal field_id={} missing type_params", row.field_id),
+                })?;
             let precision = params
                 .get("precision")
                 .and_then(|v| v.as_u64())
@@ -539,12 +531,12 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
         "string" => PrimitiveType::String,
         "uuid" => PrimitiveType::Uuid,
         "fixed" => {
-            let params =
-                row.type_params
-                    .as_ref()
-                    .ok_or_else(|| SchemaNormError::Assembly {
-                        detail: format!("fixed field_id={} missing type_params", row.field_id),
-                    })?;
+            let params = row
+                .type_params
+                .as_ref()
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!("fixed field_id={} missing type_params", row.field_id),
+                })?;
             let length = params
                 .get("length")
                 .and_then(|v| v.as_u64())
@@ -593,10 +585,11 @@ pub fn flat_to_row(flat: &FlatField, schema_id: i32) -> SchemaFieldRow {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use iceberg::spec::{
         ListType, MapType, NestedField, PrimitiveType, Schema, StructType, Type, VariantType,
     };
+
+    use super::*;
 
     fn flat_schema() -> Schema {
         Schema::builder()
@@ -636,9 +629,7 @@ mod tests {
         ));
         Schema::builder()
             .with_schema_id(3)
-            .with_fields(vec![
-                NestedField::required(1, "tags", list_type).into(),
-            ])
+            .with_fields(vec![NestedField::required(1, "tags", list_type).into()])
             .build()
             .unwrap()
     }
@@ -750,10 +741,7 @@ mod tests {
     fn round_trip(schema: &Schema) {
         let flat = flatten_schema(schema).expect("flatten failed");
         let schema_id = schema.schema_id();
-        let rows: Vec<SchemaFieldRow> = flat
-            .iter()
-            .map(|f| flat_to_row(f, schema_id))
-            .collect();
+        let rows: Vec<SchemaFieldRow> = flat.iter().map(|f| flat_to_row(f, schema_id)).collect();
         let assembled = assemble_schemas(rows).expect("assemble failed");
         let got = assembled
             .get(&schema_id)
@@ -768,7 +756,10 @@ mod tests {
         // PARSES BACK equal.
         let json = serde_json::to_value(got.as_ref()).expect("serialize assembled failed");
         let reparsed: Schema = serde_json::from_value(json).expect("parse-back failed");
-        assert_eq!(&reparsed, schema, "JSON parse-back failed for schema_id={schema_id}");
+        assert_eq!(
+            &reparsed, schema,
+            "JSON parse-back failed for schema_id={schema_id}"
+        );
     }
 
     #[test]
@@ -844,7 +835,10 @@ mod tests {
         };
         let err = flatten_schema(&schema).unwrap_err();
         assert!(
-            matches!(err, SchemaNormError::NonNullDefaultUnsupported { field_id: 1, .. }),
+            matches!(
+                err,
+                SchemaNormError::NonNullDefaultUnsupported { field_id: 1, .. }
+            ),
             "expected NonNullDefaultUnsupported, got {err:?}"
         );
     }
@@ -954,7 +948,9 @@ mod tests {
             NestedField::required(3, "a", Type::Primitive(PrimitiveType::Int)).into(),
             NestedField::optional(4, "b", Type::Primitive(PrimitiveType::String)).into(),
         ]));
-        let list = Type::List(ListType::new(NestedField::list_element(2, elem, true).into()));
+        let list = Type::List(ListType::new(
+            NestedField::list_element(2, elem, true).into(),
+        ));
         Schema::builder()
             .with_schema_id(12)
             .with_fields(vec![NestedField::required(1, "items", list).into()])
@@ -984,8 +980,9 @@ mod tests {
             NestedField::map_key_element(4, Type::Primitive(PrimitiveType::String)).into(),
             NestedField::map_value_element(5, Type::Primitive(PrimitiveType::Int), true).into(),
         ));
-        let inner_list =
-            Type::List(ListType::new(NestedField::list_element(3, inner_map, true).into()));
+        let inner_list = Type::List(ListType::new(
+            NestedField::list_element(3, inner_map, true).into(),
+        ));
         let outer = Type::Struct(StructType::new(vec![
             NestedField::required(2, "inner", inner_list).into(),
         ]));
@@ -1080,12 +1077,13 @@ mod tests {
             NestedField::map_key_element(2, Type::Primitive(PrimitiveType::String)).into(),
             NestedField::map_value_element(3, Type::Primitive(PrimitiveType::Int), true).into(),
         ));
-        let field = NestedField::required(1, "by_key", map).with_write_default(Literal::Map(
-            Map::from([(
-                Literal::Primitive(PrimitiveLiteral::String("a".to_string())),
-                Some(Literal::Primitive(PrimitiveLiteral::Int(1))),
-            )]),
-        ));
+        let field =
+            NestedField::required(1, "by_key", map).with_write_default(Literal::Map(Map::from([
+                (
+                    Literal::Primitive(PrimitiveLiteral::String("a".to_string())),
+                    Some(Literal::Primitive(PrimitiveLiteral::Int(1))),
+                ),
+            ])));
         let schema = Schema::builder()
             .with_schema_id(18)
             .with_fields(vec![Arc::new(field)])

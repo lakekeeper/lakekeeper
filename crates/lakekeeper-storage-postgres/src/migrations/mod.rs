@@ -26,6 +26,7 @@ use crate::{
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
 
+mod normalize_schema;
 mod patch_migration_hash;
 mod split_table_metadata;
 
@@ -509,10 +510,16 @@ fn get_changed_migration_ids() -> HashSet<i64> {
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
-    HashMap::from([(
-        SplitTableMetadataHook::version(),
-        Box::new(SplitTableMetadataHook) as Box<_>,
-    )])
+    HashMap::from([
+        (
+            SplitTableMetadataHook::version(),
+            Box::new(SplitTableMetadataHook) as Box<_>,
+        ),
+        (
+            normalize_schema::NormalizeSchemaHook::version(),
+            Box::new(normalize_schema::NormalizeSchemaHook) as Box<_>,
+        ),
+    ])
 }
 
 fn validate_applied_migrations(
