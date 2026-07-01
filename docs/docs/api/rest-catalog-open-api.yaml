@@ -349,7 +349,7 @@ paths:
                 NoSuchNamespaceExample:
                   $ref: '#/components/examples/NoSuchNamespaceError'
         409:
-          description: Not Empty - Namespace to delete is not empty.
+          description: Conflict - the namespace cannot be deleted. Either it is not empty and `recursive=true` was not provided (NamespaceNotEmptyError), or a soft-deletion expiration is currently running for a contained table or view, which blocks force-deletion (NamespaceHasRunningTabularExpirations); retry once it completes.
           content:
             application/json:
               schema:
@@ -357,6 +357,13 @@ paths:
               examples:
                 NamespaceNotEmptyExample:
                   $ref: '#/components/examples/NamespaceNotEmptyError'
+                NamespaceHasRunningTabularExpirationsExample:
+                  summary: A soft-deletion expiration is running for a table or view in the namespace
+                  value:
+                    error:
+                      message: A soft-deletion expiration is currently running for a table or view in this namespace. Retry once it completes.
+                      type: NamespaceHasRunningTabularExpirations
+                      code: 409
         419:
           $ref: '#/components/responses/AuthenticationTimeoutResponse'
         503:
