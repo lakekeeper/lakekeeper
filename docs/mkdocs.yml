@@ -24,6 +24,7 @@ nav:
           - Authorization (Cedar): authorization-cedar.md
           - Admission Gates: admission.md
           - View Security: view-security.md
+          - UI Branding <span class="lkp"></span>: ui-branding.md
           - Generic Tables: generic-tables.md
           - logging.md
           - monitoring.md
