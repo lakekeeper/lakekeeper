@@ -874,8 +874,8 @@ pub(crate) async fn remove_table_encryption_keys(
     Ok(())
 }
 
-// Consumed by the commit path + migration backfill (wired in later tasks).
-#[allow(dead_code)]
+// Write chokepoint for one schema: its `schema_field` rows + the `column_identity` spine.
+// Used by `insert_schemas` (commit path) and the migration backfill.
 pub(crate) async fn write_normalized_schema(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     warehouse_id: lakekeeper::WarehouseId,
@@ -960,7 +960,7 @@ pub(crate) async fn write_normalized_schema(
     .await
     .map_err(|e| {
         e.into_catalog_backend_error()
-            .append_detail("Failed to write normalized schema")
+            .append_detail("Failed to write column identity")
     })?;
 
     Ok(())

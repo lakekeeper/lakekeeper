@@ -1,9 +1,6 @@
 mod commit;
 mod common;
 mod create;
-// Data-model layer; public items are consumed by the write/read paths in later tasks,
-// so dead_code is expected until then.
-#[allow(dead_code)]
 pub(crate) mod normalized_schema;
 
 use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
@@ -2497,13 +2494,14 @@ pub mod tests {
     }
 
     #[sqlx::test]
-    async fn freeze_trigger_rejects_jsonb_schema_write(pool: sqlx::PgPool) {
+    async fn freeze_blocks_jsonb_but_allows_null_anchor(pool: sqlx::PgPool) {
         use crate::migrations::MigrationHook;
 
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let (table_id, _s) = create_table_with_schema(state.clone(), wh, two_col()).await;
 
+        // Install the freeze via the real hook (also drops NOT NULL, after a no-op backfill).
         let mut txn = pool.begin().await.unwrap();
         crate::migrations::normalize_schema::NormalizeSchemaHook
             .apply(&mut txn)
@@ -2511,6 +2509,18 @@ pub mod tests {
             .unwrap();
         txn.commit().await.unwrap();
 
+        // The new write path (schema = NULL anchor) is permitted under the freeze.
+        sqlx::query(
+            "INSERT INTO table_schema(warehouse_id, table_id, schema_id) VALUES ($1,$2,$3)",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .bind(998_i32)
+        .execute(&pool)
+        .await
+        .expect("NULL-schema anchor insert must be allowed under the freeze");
+
+        // A legacy JSONB schema write is rejected with SQLSTATE object_not_in_prerequisite_state.
         let err = sqlx::query(
             "INSERT INTO table_schema(warehouse_id, table_id, schema_id, schema) \
              VALUES ($1,$2,$3,$4)",

@@ -50,6 +50,7 @@ pub enum IcebergTypeKind {
 impl IcebergTypeKind {
     /// Every variant. A new variant must be added here and to `as_str`; the wildcard-free
     /// `match`es force the variant to exist, and `pg_enum_db_test` checks PG carries its label.
+    #[cfg(test)] // exhaustive catalog; only consumed by the pg_enum_db_test parity guard
     pub const ALL: [IcebergTypeKind; 20] = [
         IcebergTypeKind::Boolean,
         IcebergTypeKind::Int,
@@ -751,9 +752,8 @@ mod tests {
             schema,
             "round-trip failed for schema_id={schema_id}"
         );
-        // Fidelity is semantic, not byte-identical (design §5): identifier-field-ids is a set,
-        // so serialized array order isn't stable. Assert the assembled schema serializes and
-        // PARSES BACK equal.
+        // Fidelity is semantic, not byte-identical: identifier-field-ids is a set, so serialized
+        // array order isn't stable. Assert the assembled schema serializes and PARSES BACK equal.
         let json = serde_json::to_value(got.as_ref()).expect("serialize assembled failed");
         let reparsed: Schema = serde_json::from_value(json).expect("parse-back failed");
         assert_eq!(
@@ -940,7 +940,7 @@ mod tests {
         assert_eq!(IcebergTypeKind::Map.as_str(), "map");
     }
 
-    // ─── nested-container + nested-default coverage (design §11) ───────────────
+    // ─── nested-container + nested-default coverage ────────────────────────────
 
     fn list_of_structs_schema() -> Schema {
         // list<struct<a:int, b:string>>
@@ -1044,7 +1044,7 @@ mod tests {
         round_trip(&initial_default_schema());
     }
 
-    // ─── container-VALUED defaults (design §11; deferred verification) ─────────
+    // ─── container-VALUED defaults ─────────────────────────────────────────────
     // A list/map-valued default exercises the same flatten(try_into_json) /
     // assemble(try_from_json) path as scalar defaults, but over a non-primitive
     // Literal. iceberg-rust supports both directions for List/Map literals.

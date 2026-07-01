@@ -32,13 +32,21 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
         .execute(&mut **txn)
         .await?;
     backfill(txn).await?;
-    // Freeze future JSONB schema writes (SHARE ROW EXCLUSIVE — reads still allowed). No DROP NOT NULL
-    // here; that is a later release.
+    // Allow the normalized write path (which inserts anchors with schema = NULL): drop the legacy
+    // column's NOT NULL. This takes ACCESS EXCLUSIVE, but only briefly and *after* the long backfill,
+    // so reads stall only for the migration tail.
+    sqlx::query("ALTER TABLE table_schema ALTER COLUMN schema DROP NOT NULL")
+        .execute(&mut **txn)
+        .await?;
+    // Freeze legacy JSONB schema writes: reject any write that sets a non-null `schema` (an old-pod
+    // write during the brief roll-over) while permitting the new NULL-anchor writes. Rejected writes
+    // fail loud (SQLSTATE object_not_in_prerequisite_state) and are retried against a new pod.
     sqlx::query(
         r#"CREATE FUNCTION reject_schema_write() RETURNS trigger LANGUAGE plpgsql AS $f$
            BEGIN
-             IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND NEW.schema IS DISTINCT FROM OLD.schema) THEN
-               RAISE EXCEPTION 'schema writes are frozen during the normalized-schema migration'
+             IF (TG_OP = 'INSERT' AND NEW.schema IS NOT NULL)
+                OR (TG_OP = 'UPDATE' AND NEW.schema IS DISTINCT FROM OLD.schema) THEN
+               RAISE EXCEPTION 'schema JSONB writes are frozen after the normalized-schema migration'
                  USING ERRCODE = 'object_not_in_prerequisite_state';
              END IF;
              RETURN NEW;
