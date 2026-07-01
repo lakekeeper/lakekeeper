@@ -419,7 +419,7 @@ mod test {
 
         use crate::api::endpoints::Endpoint;
         let exempt_config_paths = [
-            "management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config",
+            "management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config",
             "management/v1/warehouse/{warehouse_id}/task-queue/tabular_purge/config",
             "management/v1/project/task-queue/task_log_cleanup/config",
         ];

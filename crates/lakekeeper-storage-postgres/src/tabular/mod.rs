@@ -822,8 +822,8 @@ where
             FROM tabular t
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
-            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name = 'tabular_expiration' AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
-            WHERE t.warehouse_id = $1 AND (tt.queue_name = 'tabular_expiration' OR tt.queue_name is NULL)
+            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
+            WHERE t.warehouse_id = $1 AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
                 AND (t.typ = $3 OR $3 IS NULL)
@@ -1557,7 +1557,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
             WHERE ta.entity_type in ('table', 'view', 'generic-table')
                 AND ta.warehouse_id = $2
-                AND ta.queue_name = 'tabular_expiration'
+                AND ta.queue_name IN ('soft_deletion', 'tabular_expiration')
             FOR UPDATE OF ta
         ),
         updated AS (

@@ -989,6 +989,7 @@ where
     // ------------- Tasks -------------
     async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>>;
@@ -1046,6 +1047,7 @@ where
     /// If `queue_name` is `None`, cancel tasks in all queues.
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
+        legacy_queue_names: &[&TaskQueueName],
         filter: CancelTasksFilter,
         cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,

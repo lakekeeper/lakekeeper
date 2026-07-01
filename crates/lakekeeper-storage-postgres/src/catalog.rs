@@ -952,12 +952,14 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn pick_new_task_impl(
         queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: Duration,
         state: Self::State,
     ) -> Result<Option<Task>> {
         pick_task(
             &state.write_pool(),
             queue_name,
+            legacy_queue_names,
             default_max_time_since_last_heartbeat,
         )
         .await
@@ -1023,11 +1025,19 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn cancel_scheduled_tasks_impl(
         queue_name: Option<&TaskQueueName>,
+        legacy_queue_names: &[&TaskQueueName],
         filter: CancelTasksFilter,
         force: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
-        cancel_scheduled_tasks(&mut *transaction, filter, queue_name, force).await
+        cancel_scheduled_tasks(
+            &mut *transaction,
+            filter,
+            queue_name,
+            legacy_queue_names,
+            force,
+        )
+        .await
     }
 
     async fn check_and_heartbeat_task_impl(

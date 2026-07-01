@@ -309,9 +309,16 @@ pub(crate) async fn queue_task_batch(
 pub(crate) async fn pick_task(
     pool: &PgPool,
     queue_name: &TaskQueueName,
+    legacy_queue_names: &[&TaskQueueName],
     default_max_time_since_last_heartbeat: chrono::Duration,
 ) -> Result<Option<Task>, IcebergErrorResponse> {
     let queue_name = queue_name.as_str();
+    // All names this queue answers to: the current name plus any pre-rename
+    // aliases. Rows enqueued before a rename still carry the old name, so the
+    // worker must match on the full set to finalize them.
+    let queue_names: Vec<String> = std::iter::once(queue_name.to_string())
+        .chain(legacy_queue_names.iter().map(|n| n.as_str().to_string()))
+        .collect();
     let max_time_since_last_heartbeat = PgInterval {
         months: 0,
         days: 0,
@@ -328,17 +335,31 @@ pub(crate) async fn pick_task(
     let x = sqlx::query!(
         r#"
         WITH picked_task AS (
-            SELECT t.*, config
+            SELECT t.*, tc.config
             FROM task t
-            LEFT JOIN task_config tc
-                ON tc.queue_name = t.queue_name
-                    AND ((tc.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (tc.warehouse_id = t.warehouse_id))
-                    AND tc.project_id = t.project_id
-            WHERE (t.queue_name = $1 AND scheduled_for <= now()) 
+            -- Config belongs to the queue, not to a row's (possibly legacy)
+            -- name. Prefer the canonical queue's config ($3) and fall back to a
+            -- legacy-named config row only when the canonical one is unset, so a
+            -- row enqueued under an old name still loads the right config.
+            LEFT JOIN LATERAL (
+                SELECT cfg.config, cfg.max_time_since_last_heartbeat
+                FROM task_config cfg
+                WHERE cfg.queue_name = ANY($1)
+                    AND ((cfg.warehouse_id IS NULL AND t.warehouse_id IS NULL) OR (cfg.warehouse_id = t.warehouse_id))
+                    AND cfg.project_id = t.project_id
+                ORDER BY (cfg.queue_name = $3) DESC
+                LIMIT 1
+            ) tc ON true
+            WHERE (t.queue_name = ANY($1) AND scheduled_for <= now())
                 AND (
-                    (status = 'scheduled') OR 
+                    (status = 'scheduled') OR
                     (status != 'scheduled' AND (now() - last_heartbeat_at) > COALESCE(tc.max_time_since_last_heartbeat, $2))
                 )
+            -- Oldest-due first, then task_id as a unique tiebreaker so pickup
+            -- order is fully deterministic when scheduled_for ties (the queue
+            -- match is a set via `= ANY`, so row order is otherwise at the
+            -- planner's discretion).
+            ORDER BY scheduled_for, task_id
             -- FOR UPDATE locks the row we select here, SKIP LOCKED makes us not wait for rows other
             -- transactions locked
             FOR UPDATE OF t SKIP LOCKED
@@ -414,8 +435,9 @@ pub(crate) async fn pick_task(
             (select config from picked_task),
             task.project_id
             "#,
-        queue_name,
-        max_time_since_last_heartbeat
+        &queue_names,
+        max_time_since_last_heartbeat,
+        queue_name
     )
     .fetch_optional(pool)
     .await
@@ -1031,18 +1053,32 @@ pub(crate) async fn cancel_scheduled_tasks(
     connection: &mut PgConnection,
     filter: CancelTasksFilter,
     queue_name: Option<&TaskQueueName>,
+    legacy_queue_names: &[&TaskQueueName],
     force_delete_running_tasks: bool,
 ) -> lakekeeper::api::Result<()> {
     let queue_name_is_none = queue_name.is_none();
-    let queue_name = queue_name.map(TaskQueueName::as_str);
-    let queue_name = queue_name.unwrap_or("");
+    // The queue's current name plus any pre-rename aliases. Matched with
+    // `queue_name = ANY(...)` so tasks enqueued under an old name are cancelled
+    // too (e.g. undropping a tabular whose expiration was scheduled before the
+    // rename). Empty when `queue_name` is None — the `queue_name_is_none`
+    // escape then matches all queues.
+    let queue_names: Vec<String> = queue_name
+        .into_iter()
+        .chain(legacy_queue_names.iter().copied())
+        .map(|n| n.as_str().to_string())
+        .collect();
+    let queue_name = if queue_names.is_empty() {
+        "<all>".to_string()
+    } else {
+        queue_names.join(", ")
+    };
     match filter {
         CancelTasksFilter::WarehouseId { warehouse_id } => {
             sqlx::query!(
                 r#"
                 WITH deleted as (
                     DELETE FROM task
-                    WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = $2 OR $6)
+                    WHERE (status = $3 OR $5) AND warehouse_id = $1 AND (queue_name = ANY($2) OR $6)
                     RETURNING *
                 )
                 INSERT INTO task_log(task_id,
@@ -1089,7 +1125,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
                 *warehouse_id,
-                queue_name,
+                &queue_names,
                 TaskIntermediateStatus::Scheduled as _,
                 TaskOutcome::Cancelled as _,
                 force_delete_running_tasks,
@@ -1112,7 +1148,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 r#"
                 WITH deleted as (
                     DELETE FROM task
-                    WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = $4 OR $5)
+                    WHERE (status = $3 OR $6) AND task_id = ANY($1) AND (queue_name = ANY($4) OR $5)
                     RETURNING *
                 )
                 INSERT INTO task_log(task_id,
@@ -1161,7 +1197,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 &task_ids.iter().map(|s| **s).collect_vec(),
                 TaskOutcome::Cancelled as _,
                 TaskIntermediateStatus::Scheduled as _,
-                queue_name,
+                &queue_names,
                 queue_name_is_none,
                 force_delete_running_tasks
             )
@@ -1180,7 +1216,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 r#"
                 WITH deleted as (
                     DELETE FROM task
-                    WHERE (status = $3 OR $5) AND project_id = $1 AND ($7 OR warehouse_id IS NULL) AND (queue_name = $2 OR $6)
+                    WHERE (status = $3 OR $5) AND project_id = $1 AND ($7 OR warehouse_id IS NULL) AND (queue_name = ANY($2) OR $6)
                     RETURNING *
                 )
                 INSERT INTO task_log(task_id,
@@ -1226,7 +1262,7 @@ pub(crate) async fn cancel_scheduled_tasks(
                 ON CONFLICT (task_id, attempt) DO NOTHING
                 "#,
                 project_id.as_str(),
-                queue_name,
+                &queue_names,
                 TaskIntermediateStatus::Scheduled as _,
                 TaskOutcome::Cancelled as _,
                 force_delete_running_tasks,
@@ -1458,6 +1494,64 @@ mod test {
     }
 
     #[sqlx::test]
+    async fn test_pick_task_dual_reads_legacy_queue_name(pool: PgPool) {
+        // A task enqueued under a queue's pre-rename name must still be picked
+        // up when the worker polls under the current name plus the legacy
+        // alias. This is what keeps in-flight soft-deletions finalizing across
+        // the `tabular_expiration` -> `soft_deletion` rename.
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let legacy_name = TaskQueueName::from("tabular_expiration");
+        let current_name = TaskQueueName::from("soft_deletion");
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let id = queue_task(
+            &mut conn,
+            &legacy_name,
+            None,
+            project_id,
+            None,
+            None,
+            TaskEntity::EntityInWarehouse {
+                warehouse_id,
+                entity_id,
+                entity_name: vec![format!("entity-{}", entity_id.as_uuid())],
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Polling under the current name alone must NOT match the legacy row.
+        let none = pick_task(
+            &pool,
+            &current_name,
+            &[],
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+        )
+        .await
+        .unwrap();
+        assert!(
+            none.is_none(),
+            "legacy-named task must not match the current name without the alias"
+        );
+
+        // With the legacy alias supplied, the same poll picks it up.
+        let task = pick_task(
+            &pool,
+            &current_name,
+            &[&legacy_name],
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(task.task_id(), id);
+        assert_eq!(&task.queue_name, &legacy_name);
+    }
+
+    #[sqlx::test]
     async fn test_failed_tasks_retry_attempts(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
@@ -1482,7 +1576,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1498,7 +1592,7 @@ mod test {
             .await
             .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1514,7 +1608,7 @@ mod test {
             .unwrap();
 
         assert!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none()
@@ -1547,7 +1641,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1564,7 +1658,7 @@ mod test {
             .unwrap();
 
         assert!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none()
@@ -1598,7 +1692,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1633,7 +1727,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1676,6 +1770,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![id]),
             Some(&tq_name),
+            &[],
             false,
         )
         .await
@@ -1699,7 +1794,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1740,7 +1835,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1775,7 +1870,7 @@ mod test {
         .unwrap();
         assert_ne!(id, id2);
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1815,7 +1910,7 @@ mod test {
         .unwrap();
 
         assert_eq!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap(),
             None
@@ -1823,7 +1918,7 @@ mod test {
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1861,7 +1956,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, chrono::Duration::milliseconds(500))
+        let task = pick_task(&pool, &tq_name, &[], chrono::Duration::milliseconds(500))
             .await
             .unwrap()
             .unwrap();
@@ -1875,7 +1970,7 @@ mod test {
 
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-        let task = pick_task(&pool, &tq_name, chrono::Duration::milliseconds(500))
+        let task = pick_task(&pool, &tq_name, &[], chrono::Duration::milliseconds(500))
             .await
             .unwrap()
             .unwrap();
@@ -1913,7 +2008,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1938,12 +2033,12 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -2021,16 +2116,16 @@ mod test {
         let id = ids[0].task_id;
         let id2 = ids[1].task_id;
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -2106,16 +2201,16 @@ mod test {
         .await
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
         assert!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -2171,7 +2266,7 @@ mod test {
             .unwrap();
 
         // pick one new task, one re-inserted task
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2184,7 +2279,7 @@ mod test {
         assert_eq!(&task.queue_name, &tq_name);
 
         assert!(
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .is_none(),
@@ -2394,7 +2489,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2425,10 +2520,15 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let task = pick_task(&pool, &other_tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
+        let task = pick_task(
+            &pool,
+            &other_tq_name,
+            &[],
+            DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(task.queue_name, other_tq_name);
         assert_eq!(task.config, None);
         assert_eq!(task.data, other_payload);
@@ -2461,7 +2561,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2480,7 +2580,7 @@ mod test {
             .unwrap();
 
         // Verify task is no longer in active tasks table
-        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let active_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(active_task.is_none());
@@ -2538,7 +2638,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2622,7 +2722,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2638,7 +2738,7 @@ mod test {
         assert!(result.is_ok());
 
         // Task should no longer be available for picking
-        let no_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let no_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(no_task.is_none());
@@ -2671,7 +2771,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2690,7 +2790,7 @@ mod test {
             .unwrap();
 
         // Verify task is no longer in active tasks table
-        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let active_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(active_task.is_none());
@@ -2750,7 +2850,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2776,10 +2876,11 @@ mod test {
         assert_eq!(original_details.task.last_heartbeat_at, None);
 
         // Task should be rescheduled for retry since max_retries=2 > attempt=1
-        let rescheduled_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap()
-            .unwrap();
+        let rescheduled_task =
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(rescheduled_task.task_id(), task_id);
         assert_eq!(rescheduled_task.attempt(), 2);
 
@@ -2799,7 +2900,7 @@ mod test {
         );
 
         // Verify the task is still active and can be processed
-        let still_active = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let still_active = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(still_active.is_none()); // Already picked up above
@@ -2810,7 +2911,7 @@ mod test {
             .unwrap();
 
         // Task should now be permanently failed
-        let no_more_tasks = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let no_more_tasks = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(no_more_tasks.is_none());
@@ -2879,7 +2980,7 @@ mod test {
         .unwrap();
 
         // Verify task is available
-        let scheduled_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let scheduled_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2900,13 +3001,14 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             false,
         )
         .await
         .unwrap();
 
         // Verify task is no longer in active tasks table
-        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let active_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(active_task.is_none());
@@ -2916,6 +3018,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             false,
         )
         .await
@@ -2926,6 +3029,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             false,
         )
         .await
@@ -2979,7 +3083,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -2994,13 +3098,14 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             true, // force_delete_running_tasks
         )
         .await
         .unwrap();
 
         // Verify task is no longer in active tasks table
-        let active_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let active_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(active_task.is_none());
@@ -3010,6 +3115,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             true,
         )
         .await
@@ -3020,6 +3126,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             true,
         )
         .await
@@ -3073,7 +3180,7 @@ mod test {
         .unwrap()
         .unwrap();
 
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -3099,6 +3206,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             true,
         )
         .await
@@ -3109,6 +3217,7 @@ mod test {
             &mut conn,
             CancelTasksFilter::TaskIds(vec![task_id]),
             Some(&tq_name),
+            &[],
             true,
         )
         .await
@@ -3165,7 +3274,7 @@ mod test {
         .unwrap();
 
         // Verify task is scheduled for future (not pickable now)
-        let task_before = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task_before = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap();
         assert!(task_before.is_none(), "Task should not be pickable yet");
@@ -3176,7 +3285,7 @@ mod test {
             .unwrap();
 
         // Now the task should be pickable immediately
-        let task_after = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task_after = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -3297,7 +3406,7 @@ mod test {
         .unwrap();
 
         // Step 2: Pick that task (makes it running)
-        let picked_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let picked_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -3400,9 +3509,10 @@ mod test {
         );
 
         // Step 6: Verify that the rescheduled task can be picked up again
-        let rescheduled_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
-            .await
-            .unwrap();
+        let rescheduled_task =
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+                .await
+                .unwrap();
 
         // Should not be pickable yet since it's scheduled for the future
         assert!(
@@ -3415,7 +3525,7 @@ mod test {
             .await
             .unwrap();
 
-        let now_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let now_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -3532,7 +3642,7 @@ mod test {
         let mut picked_project_tasks = Vec::new();
 
         while let Some(picked_task) =
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
         {
@@ -3628,7 +3738,7 @@ mod test {
         let mut picked_tasks = Vec::new();
 
         while let Some(picked_task) =
-            pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
         {
