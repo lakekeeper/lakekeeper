@@ -118,7 +118,7 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 | Variable                                                                          | Example    | Description |
 |-----------------------------------------------------------------------------------|------------|-----|
 | <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`</nobr>                                     | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
-| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS`                                     | 2          | Number of workers spawned to expire soft-deleted tables and views. |
+| `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`                                          | 2          | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`                                          | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | <nobr>`LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`</nobr><span class="lkp"></span> | 2          | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 

@@ -732,6 +732,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
 
         C::cancel_scheduled_tasks(
             None,
+            &[],
             CancelTasksFilter::TaskIds(drop_info.open_tasks),
             false,
             t.transaction(),
