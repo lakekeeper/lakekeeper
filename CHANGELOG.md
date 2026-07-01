@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/lakekeeper/lakekeeper/compare/v0.13.1...v0.13.2) (2026-07-01)
+
+
+### Miscellaneous Chores
+
+* **docs:** Add 0.13.1 release notes ([382d951](https://github.com/lakekeeper/lakekeeper/commit/382d951db43a51e20f66da395e5f674b5e4d55cf))
+
 ## [0.13.1](https://github.com/lakekeeper/lakekeeper/compare/v0.13.0...v0.13.1) (2026-06-30)
 
 
