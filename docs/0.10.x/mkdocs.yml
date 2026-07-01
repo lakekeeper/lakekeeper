@@ -1,0 +1,24 @@
+site_name: docs/0.10.x
+
+plugins:
+  - search
+
+nav:
+  - Concepts: concepts.md
+  - API:
+      - Catalog: api/catalog.md
+      - Management: api/management.md
+  - Query Engines: engines.md
+  - User Guide:
+      - bootstrap.md
+      - storage.md
+      - authentication.md
+      - authorization.md
+      - opa.md
+      - table-maintenance.md
+      - production.md
+      - gotchas.md
+  - Configuration: configuration.md
+  - Contribute:
+      - developer-guide.md
+      - customize.md
