@@ -344,6 +344,7 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 | `LAKEKEEPER__UI__OPENID_TOKEN_TYPE`                | `access_token`                               | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
 | `LAKEKEEPER__UI__ENABLE_SURVEYS`              | `true`                                       | The UI occasionally shows in-app user surveys to gather feedback on Lakekeeper. All responses are collected anonymously. Set to `false` to opt out; the UI then never initializes the survey SDK and makes no third-party requests. Defaults to `true`. |
+| `LAKEKEEPER__UI__BRANDING`<span class="lkp"></span> | `eyJ0aGVtZXMiOns...`                | Base64-encoded JSON that white-labels the UI with custom theme colors and partner logos. See [UI Branding](./ui-branding.md). Lakekeeper Plus only. |
 
 ### Caching
 Lakekeeper uses in-memory caches to speed up certain operations.
