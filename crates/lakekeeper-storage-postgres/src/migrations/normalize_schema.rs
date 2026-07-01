@@ -3,7 +3,7 @@ use sqlx::Postgres;
 
 use super::MigrationHook;
 
-pub(super) struct NormalizeSchemaHook;
+pub(crate) struct NormalizeSchemaHook;
 
 impl MigrationHook for NormalizeSchemaHook {
     fn apply<'c>(
@@ -55,7 +55,7 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
+pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     const BATCH: i64 = 500;
     let (mut last_wh, mut last_tbl, mut last_sid) =
         (uuid::Uuid::nil(), uuid::Uuid::nil(), i32::MIN);

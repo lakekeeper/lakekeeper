@@ -26,7 +26,7 @@ use crate::{
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
 
-mod normalize_schema;
+pub(crate) mod normalize_schema;
 mod patch_migration_hash;
 mod split_table_metadata;
 

@@ -2191,4 +2191,341 @@ pub mod tests {
         assert!(names.contains("table_one"));
         assert!(names.contains("table_two"));
     }
+
+    // ── helpers ─────────────────────────────────────────────────────────────
+
+    /// Two required primitive columns; field 1 is the identifier.
+    fn two_col() -> Schema {
+        Schema::builder()
+            .with_schema_id(0)
+            .with_identifier_field_ids(vec![1])
+            .with_fields(vec![
+                NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                    .into(),
+                NestedField::required(
+                    2,
+                    "name",
+                    iceberg::spec::Type::Primitive(PrimitiveType::String),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    /// Rich schema exercising struct, list, map, decimal, uuid, identifier
+    /// field, and a primitive column with an `initial_default`.
+    fn nested_corpus_schema() -> Schema {
+        use iceberg::spec::{ListType, MapType, StructType, Type};
+
+        let address_struct = Type::Struct(StructType::new(vec![
+            NestedField::required(3, "street", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::optional(4, "city", Type::Primitive(PrimitiveType::String)).into(),
+        ]));
+
+        let tag_list = Type::List(ListType::new(
+            NestedField::list_element(6, Type::Primitive(PrimitiveType::String), true).into(),
+        ));
+
+        let props_map = Type::Map(MapType::new(
+            NestedField::map_key_element(8, Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::map_value_element(9, Type::Primitive(PrimitiveType::Long), false).into(),
+        ));
+
+        let count_with_default =
+            NestedField::required(10, "count", Type::Primitive(PrimitiveType::Int))
+                .with_initial_default(iceberg::spec::Literal::Primitive(
+                    iceberg::spec::PrimitiveLiteral::Int(7),
+                ));
+
+        Schema::builder()
+            .with_schema_id(0)
+            .with_identifier_field_ids(vec![1])
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+                NestedField::required(2, "address", address_struct).into(),
+                NestedField::required(5, "tags", tag_list).into(),
+                NestedField::required(7, "props", props_map).into(),
+                NestedField::required(
+                    11,
+                    "amount",
+                    Type::Primitive(PrimitiveType::Decimal {
+                        precision: 10,
+                        scale: 2,
+                    }),
+                )
+                .into(),
+                NestedField::required(12, "uid", Type::Primitive(PrimitiveType::Uuid)).into(),
+                Arc::new(count_with_default),
+            ])
+            .build()
+            .unwrap()
+    }
+
+    /// Count rows in `table` scoped to one warehouse + table pair.
+    async fn row_count(
+        pool: &sqlx::PgPool,
+        table: &str,
+        wh: WarehouseId,
+        table_id: TableId,
+    ) -> i64 {
+        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND table_id=$2");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(q))
+            .bind(*wh)
+            .bind(*table_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    // ── A. Load assembly ─────────────────────────────────────────────────────
+
+    #[sqlx::test]
+    async fn load_returns_assembled_nested_schema(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, persisted) =
+            create_table_with_schema(state.clone(), wh, nested_corpus_schema()).await;
+
+        let mut txn = pool.begin().await.unwrap();
+        let mut loaded = load_tables(
+            wh,
+            vec![table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let md = loaded.pop().unwrap().table_metadata;
+        assert_eq!(md.current_schema().as_ref(), &persisted);
+    }
+
+    #[sqlx::test]
+    async fn load_returns_all_schema_versions(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, s0) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        // Build s1 from the PERSISTED s0 so field ids line up.
+        let mut fields: Vec<iceberg::spec::NestedFieldRef> = s0.as_struct().fields().to_vec();
+        let next_id = fields.iter().map(|f| f.id).max().unwrap() + 1;
+        fields.push(
+            NestedField::optional(
+                next_id,
+                "age",
+                iceberg::spec::Type::Primitive(PrimitiveType::Int),
+            )
+            .into(),
+        );
+        let s1: std::sync::Arc<Schema> = Arc::new(
+            Schema::builder()
+                .with_schema_id(s0.schema_id() + 1)
+                .with_identifier_field_ids(s0.identifier_field_ids().collect::<Vec<_>>())
+                .with_fields(fields)
+                .build()
+                .unwrap(),
+        );
+
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::insert_schemas(std::iter::once(&s1), &mut txn, wh, table_id)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        let mut loaded = load_tables(
+            wh,
+            vec![table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let md = loaded.pop().unwrap().table_metadata;
+        assert_eq!(md.schemas_iter().count(), 2);
+        assert!(md.schema_by_id(s0.schema_id()).is_some());
+        assert!(md.schema_by_id(s1.schema_id()).is_some());
+        assert_eq!(
+            md.schema_by_id(s1.schema_id()).unwrap().as_ref(),
+            s1.as_ref()
+        );
+    }
+
+    // ── B. column_identity refcount GC ───────────────────────────────────────
+
+    #[sqlx::test]
+    async fn gc_reaps_identity_when_last_schema_removed(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, s0) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 2);
+        assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 2);
+
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::remove_schemas(wh, table_id, vec![s0.schema_id()], &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 0);
+        assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
+    }
+
+    #[sqlx::test]
+    async fn gc_keeps_identity_referenced_by_another_schema(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, s0) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        // Build s1 = s0's columns + one extra.
+        let mut fields: Vec<iceberg::spec::NestedFieldRef> = s0.as_struct().fields().to_vec();
+        let next_id = fields.iter().map(|f| f.id).max().unwrap() + 1;
+        fields.push(
+            NestedField::optional(
+                next_id,
+                "age",
+                iceberg::spec::Type::Primitive(PrimitiveType::Int),
+            )
+            .into(),
+        );
+        let s1: std::sync::Arc<Schema> = Arc::new(
+            Schema::builder()
+                .with_schema_id(s0.schema_id() + 1)
+                .with_identifier_field_ids(s0.identifier_field_ids().collect::<Vec<_>>())
+                .with_fields(fields)
+                .build()
+                .unwrap(),
+        );
+
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::insert_schemas(std::iter::once(&s1), &mut txn, wh, table_id)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        // id, name, age → 3 identities after both schemas exist.
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 3);
+
+        // Remove s0 — s1 still references id + name, so identities stay at 3.
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::remove_schemas(wh, table_id, vec![s0.schema_id()], &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 3);
+
+        // Remove s1 — last schema gone, all identities reaped.
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::remove_schemas(wh, table_id, vec![s1.schema_id()], &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 0);
+    }
+
+    #[sqlx::test]
+    async fn gc_whole_table_drop_cascades(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, _) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 2);
+
+        sqlx::query(r#"DELETE FROM "table" WHERE warehouse_id=$1 AND table_id=$2"#)
+            .bind(*wh)
+            .bind(*table_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
+        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 0);
+    }
+
+    // ── C. Backfill + freeze ─────────────────────────────────────────────────
+
+    #[sqlx::test]
+    async fn backfill_reproduces_schema_from_jsonb(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, persisted) =
+            create_table_with_schema(state.clone(), wh, nested_corpus_schema()).await;
+
+        let jsonb = serde_json::to_value(&persisted).unwrap();
+        let mut txn = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id=$1 AND table_id=$2")
+            .bind(*wh)
+            .bind(*table_id)
+            .execute(&mut *txn)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE table_schema SET schema=$3 WHERE warehouse_id=$1 AND table_id=$2")
+            .bind(*wh)
+            .bind(*table_id)
+            .bind(&jsonb)
+            .execute(&mut *txn)
+            .await
+            .unwrap();
+        crate::migrations::normalize_schema::backfill(&mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        let md = load_tables(
+            wh,
+            vec![table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut txn,
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .table_metadata;
+        txn.commit().await.unwrap();
+
+        assert_eq!(md.current_schema().as_ref(), &persisted);
+    }
+
+    #[sqlx::test]
+    async fn freeze_trigger_rejects_jsonb_schema_write(pool: sqlx::PgPool) {
+        use crate::migrations::MigrationHook;
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, _s) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        let mut txn = pool.begin().await.unwrap();
+        crate::migrations::normalize_schema::NormalizeSchemaHook
+            .apply(&mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+
+        let err = sqlx::query(
+            "INSERT INTO table_schema(warehouse_id, table_id, schema_id, schema) \
+             VALUES ($1,$2,$3,$4)",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .bind(999_i32)
+        .bind(serde_json::json!({"type":"struct","schema-id":999,"fields":[]}))
+        .execute(&pool)
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            err.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("55000")
+        );
+    }
 }
