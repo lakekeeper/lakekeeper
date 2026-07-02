@@ -128,7 +128,7 @@ moka = { version = "^0.12", features = ["future"] }
 pastey = "0.2.1"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"
-quick-xml = { version = "0.38.3", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 rdkafka = { version = "0.38.0", default-features = false, features = [
     "tokio",
     "zstd",
