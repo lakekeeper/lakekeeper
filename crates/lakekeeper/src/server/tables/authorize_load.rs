@@ -1017,10 +1017,8 @@ mod tests {
             },
         ];
 
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
-            &tabulars,
-            &target_ident,
-        );
+        let actions =
+            build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars, &target_ident);
 
         let emitted: Vec<_> = actions
             .iter()
