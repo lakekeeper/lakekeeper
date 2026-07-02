@@ -1066,6 +1066,7 @@ async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     // 9. Build actions and check all authorizations in batch.
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
+        &table,
     );
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
@@ -2372,7 +2373,10 @@ mod unit_tests {
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
         let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &table.tabular_ident,
+        );
         let results = vec![true, true, true];
 
         let (info, perms) = interpret_authz_results_for_load_table(
@@ -2395,7 +2399,10 @@ mod unit_tests {
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
         let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &table.tabular_ident,
+        );
         let results = vec![true, true, false];
 
         let (_, perms) = interpret_authz_results_for_load_table(
@@ -2417,7 +2424,10 @@ mod unit_tests {
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
         let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &table.tabular_ident,
+        );
         let results = vec![true, false, false];
 
         let (_, perms) = interpret_authz_results_for_load_table(
@@ -2439,7 +2449,10 @@ mod unit_tests {
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
         let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &table.tabular_ident,
+        );
         let results = vec![false, false, false];
 
         let result = interpret_authz_results_for_load_table(
@@ -2464,7 +2477,10 @@ mod unit_tests {
             resolved(view.into(), &actor, view_ns),
             resolved(table.clone().into(), &actor, table_ns),
         ];
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &table.tabular_ident,
+        );
         let results = vec![false, true, true, true];
 
         let result = interpret_authz_results_for_load_table(
@@ -2484,7 +2500,10 @@ mod unit_tests {
         let actor = Actor::Principal(UserId::new_unchecked("test", "user"));
 
         let tabulars = vec![resolved(table.clone().into(), &actor, namespace)];
-        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(&tabulars);
+        let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
+            &tabulars,
+            &table.tabular_ident,
+        );
         let results = vec![true, true]; // Only 2 results for 3 actions
 
         let result = interpret_authz_results_for_load_table(
