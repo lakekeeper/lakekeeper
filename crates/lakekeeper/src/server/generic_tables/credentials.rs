@@ -219,6 +219,7 @@ pub(super) async fn authorize_load_generic_table<C: CatalogStore, A: Authorizer 
     // 9. Build actions and authorize in batch.
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
+        &table,
     );
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
