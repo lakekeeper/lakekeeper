@@ -168,6 +168,6 @@ spark.stop()
 
 - [Query Engines → Spark](engines.md#spark) — Iceberg tables via the REST catalog (no client library needed)
 - [Generic Tables](generic-tables.md) — the catalog concept
-- [Python Client](pylakekeeper.md) — the same vending flow in pure Python (no Spark)
-- [Apache Flink](flink.md) — streaming into generic tables from Java
+- [Python Client](generic-tables-pylakekeeper.md) — the same vending flow in pure Python (no Spark)
+- [Apache Flink](generic-tables-flink.md) — streaming into generic tables from Java
 - Source & notebook: [`lakekeeper-clients` on GitHub](https://github.com/lakekeeper/lakekeeper-clients/tree/main/python/examples)

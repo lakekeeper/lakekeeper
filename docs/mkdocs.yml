@@ -17,9 +17,9 @@ nav:
     - Query Engines: engines.md
     - Generic Tables:
           - Overview: generic-tables.md
-          - Python Client: pylakekeeper.md
-          - Apache Spark (PySpark): spark.md
-          - Apache Flink (Java): flink.md
+          - Python Client: generic-tables-pylakekeeper.md
+          - Apache Spark (PySpark): generic-tables-spark.md
+          - Apache Flink (Java): generic-tables-flink.md
     - User Guide:
           - bootstrap.md
           - storage.md

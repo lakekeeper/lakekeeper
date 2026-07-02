@@ -1,10 +1,9 @@
 # UI Branding <span class="lkp"></span> {#ui-branding}
 
-Lakekeeper Plus lets you **white-label the built-in UI** for a deployment: replace the color scheme and place a partner logo next to the Lakekeeper+ logo — with **no rebuild**. Branding is applied at container start from a single environment variable, so the same image can be re-skinned per customer or per environment.
+Lakekeeper Plus lets you **customize the built-in UI** for a deployment: replace the color scheme and place a partner logo next to the Lakekeeper+ logo — with **no rebuild**. Branding is applied at container start from a single environment variable, so the same image can be re-skinned per customer or per environment.
 
 Branding is a **Lakekeeper Plus** feature. The open-source console ships the standard Lakekeeper theme and cannot be re-skinned.
 
-<!-- Screenshot: default vs. custom-branded UI side by side -->
 ![Custom-branded Lakekeeper UI](../../assets/ui-branding-overview.png)
 
 ## How it works
@@ -142,7 +141,6 @@ The string can be long (logos are embedded), so storing it in a `Secret` / `Conf
 
 Restart the server and reload the UI to see the new theme.
 
-<!-- Screenshot: AppBar with the partner logo beside Lakekeeper -->
 ![Partner logo in the AppBar and Home page](../../assets/ui-branding-appbar.png)
 
 ## Local development

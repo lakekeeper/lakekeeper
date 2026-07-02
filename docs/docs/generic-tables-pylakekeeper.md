@@ -5,7 +5,7 @@
 Its main job is **credential vending**: you ask Lakekeeper to load a table with `vended=True`, and the client hands you short-lived, prefix-scoped storage credentials already translated into the shape your engine expects — Lance `storage_options`, `fsspec` kwargs, or plain AWS keys for `boto3`.
 
 !!! note "Generic tables only"
-    This client covers the generic-tables surface (Lance, `dataset`, Parquet, CSV, any format). For Iceberg tables use a standard Iceberg REST client such as [PyIceberg](engines.md) pointed at Lakekeeper's catalog endpoint.
+    This client covers the generic-tables surface (Lance, `dataset`, Parquet, CSV, any format). For Iceberg tables use a standard Iceberg REST client such as [PyIceberg](engines.md#pyiceberg) pointed at Lakekeeper's catalog endpoint.
 
 ## Install
 
@@ -306,6 +306,6 @@ See [Authentication](authentication.md) for how Lakekeeper validates tokens and 
 ## Related
 
 - [Generic Tables](generic-tables.md) — the catalog concept this client operates on
-- [Apache Flink](flink.md) — the same vending flow from Java/Flink
+- [Apache Flink](generic-tables-flink.md) — the same vending flow from Java/Flink
 - [Query Engines](engines.md) — Iceberg-native engines against Lakekeeper
 - Source & examples: [`lakekeeper-clients` on GitHub](https://github.com/lakekeeper/lakekeeper-clients/tree/main/python)

@@ -1,7 +1,7 @@
 # Generic Tables
 
 Lakekeeper's **Generic Table API** catalogs non-Iceberg tables — Lance, CSV, Parquet, or any other format — alongside Iceberg tables in the same Warehouse. Each generic table sits in a Namespace, has a name, a `format` string, an optional base `location`, `schema`, `statistics`, `properties`, and a free-form `doc` field. Engines handle writes against the underlying format; Lakekeeper handles **identity, governance, access control, and lifecycle**.
-<!-- Screenshot:  generic tables in the Console -->
+
 ![generic tables in the Console](../../assets/generic-tables.png){ width="50%" }
 
 Unlike Iceberg tables, Lakekeeper does not commit format-specific metadata for generic tables — readers and writers go directly to the storage location after obtaining catalog metadata and credentials. This makes the API format-agnostic: any future or experimental format works without changes to the catalog.
@@ -37,8 +37,9 @@ The flow is the same for every format: create the table, load it with *vended* c
 
 You don't need to hand-roll these HTTP calls:
 
-- **Python** — the [Python client (`pylakekeeper`)](pylakekeeper.md) wraps create/load/list/drop and maps vended credentials into the keys Lance, `boto3`, and `fsspec` expect. See its [Lance example](pylakekeeper.md#example-lance-table).
-- **Java / Flink** — [Apache Flink](flink.md) shows the same vending flow.
+- **Python** — the [Python client (`pylakekeeper`)](generic-tables-pylakekeeper.md) wraps create/load/list/drop and maps vended credentials into the keys Lance, `boto3`, and `fsspec` expect. See its [Lance example](generic-tables-pylakekeeper.md#example-lance-table).
+- **PySpark** — [Apache Spark](generic-tables-spark.md) reads and writes generic tables through the same vending flow.
+- **Java / Flink** — [Apache Flink](generic-tables-flink.md) shows the same vending flow.
 
 For a runnable end-to-end example (warehouse setup, STS credentials, create/load/drop, undrop, listing), see [`tests/integration-tests/lance/test_lance.py`](https://github.com/lakekeeper/lakekeeper/blob/main/tests/integration-tests/lance/test_lance.py).
 
@@ -52,21 +53,18 @@ Because the `format` field is an opaque string, any format shows up as a first-c
 
 Multimodal / vector tables written with Lance. The detail view surfaces the stored schema (embeddings, scalar features, raw bytes) and the storage location engines read from.
 
-<!-- Screenshot: Lance generic table in the Console (namespace listing + detail view) -->
 ![Lance generic table in the Console](../../assets/generic-tables-lance.png){ width="100%" }
 
 ### Delta
 
 Delta Lake tables cataloged as generic tables — governed and permissioned in Lakekeeper while engines read/write the Delta log directly at the table location.
 
-<!-- Screenshot: Delta generic table in the Console -->
 ![Delta generic table in the Console](../../assets/generic-tables-delta.png){ width="100%" }
 
 ### Dataset
 
 A raw dataset (CSV / JSON / Parquet drop) registered so it appears in the catalog and inherits the surrounding Namespace's permissions.
 
-<!-- Screenshot: dataset / raw generic table in the Console -->
 ![Dataset generic table in the Console](../../assets/generic-tables-dataset.png){ width="100%" }
 
 ## Authorization model
