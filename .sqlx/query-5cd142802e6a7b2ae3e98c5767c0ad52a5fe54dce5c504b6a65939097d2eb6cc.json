@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO column_identity (warehouse_id, tabular_id, field_id)\n        SELECT $1, $2, u.field_id FROM UNNEST($3::int[]) AS u(field_id)\n        ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5cd142802e6a7b2ae3e98c5767c0ad52a5fe54dce5c504b6a65939097d2eb6cc"
+}

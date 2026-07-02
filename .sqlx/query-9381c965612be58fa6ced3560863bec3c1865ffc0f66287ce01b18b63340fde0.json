@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT table_id,\n                  schema_id, field_id, parent_field_id, ordinal, name, required, doc,\n                  type_kind::text as \"type_kind!\", type_params, initial_default, write_default,\n                  is_identifier\n           FROM schema_field\n           WHERE warehouse_id = $1 AND table_id = ANY($2)\n           ORDER BY table_id, schema_id, parent_field_id, ordinal",
+  "query": "SELECT tabular_id,\n                  schema_id, field_id, parent_field_id, ordinal, name, required, doc,\n                  type_kind::text as \"type_kind!\", type_params, initial_default, write_default,\n                  is_identifier\n           FROM schema_field\n           WHERE warehouse_id = $1 AND tabular_id = ANY($2)\n           ORDER BY tabular_id, schema_id, parent_field_id, ordinal",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "table_id",
+        "name": "tabular_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "schema_field",
-            "name": "table_id"
+            "name": "tabular_id"
           }
         }
       },
@@ -164,5 +164,5 @@
       false
     ]
   },
-  "hash": "d546327cb44343a982ea90d9c0f3a012fc80466bc68e2c2384ea75575a09171b"
+  "hash": "9381c965612be58fa6ced3560863bec3c1865ffc0f66287ce01b18b63340fde0"
 }

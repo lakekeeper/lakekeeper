@@ -101,7 +101,7 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
             crate::tabular::table::write_normalized_schema(
                 txn,
                 r.warehouse_id.into(),
-                r.table_id.into(),
+                r.table_id,
                 r.schema_id,
                 &flat,
             )

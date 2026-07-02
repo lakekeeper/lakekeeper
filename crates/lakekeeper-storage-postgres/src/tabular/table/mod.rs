@@ -679,13 +679,13 @@ pub(crate) async fn load_tables(
     // Schemas live in the normalized `schema_field` table (one row per field). Fetch them flat
     // for the whole batch in one query and group per table; assembled in `into_table_metadata`.
     let schema_field_rows = sqlx::query!(
-        r#"SELECT table_id,
+        r#"SELECT tabular_id,
                   schema_id, field_id, parent_field_id, ordinal, name, required, doc,
                   type_kind::text as "type_kind!", type_params, initial_default, write_default,
                   is_identifier
            FROM schema_field
-           WHERE warehouse_id = $1 AND table_id = ANY($2)
-           ORDER BY table_id, schema_id, parent_field_id, ordinal"#,
+           WHERE warehouse_id = $1 AND tabular_id = ANY($2)
+           ORDER BY tabular_id, schema_id, parent_field_id, ordinal"#,
         *warehouse_id,
         &table_ids,
     )
@@ -696,7 +696,7 @@ pub(crate) async fn load_tables(
     let mut schema_rows_by_table: HashMap<Uuid, Vec<normalized_schema::SchemaFieldRow>> =
         HashMap::new();
     for r in schema_field_rows {
-        schema_rows_by_table.entry(r.table_id).or_default().push(
+        schema_rows_by_table.entry(r.tabular_id).or_default().push(
             normalized_schema::SchemaFieldRow {
                 schema_id: r.schema_id,
                 field_id: r.field_id,
@@ -2266,7 +2266,7 @@ pub mod tests {
         wh: WarehouseId,
         table_id: TableId,
     ) -> i64 {
-        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND table_id=$2");
+        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND tabular_id=$2");
         sqlx::query_scalar(sqlx::AssertSqlSafe(q))
             .bind(*wh)
             .bind(*table_id)
@@ -2435,7 +2435,7 @@ pub mod tests {
 
         assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 2);
 
-        sqlx::query(r#"DELETE FROM "table" WHERE warehouse_id=$1 AND table_id=$2"#)
+        sqlx::query(r#"DELETE FROM tabular WHERE warehouse_id=$1 AND tabular_id=$2"#)
             .bind(*wh)
             .bind(*table_id)
             .execute(&pool)
@@ -2457,7 +2457,7 @@ pub mod tests {
 
         let jsonb = serde_json::to_value(&persisted).unwrap();
         let mut txn = pool.begin().await.unwrap();
-        sqlx::query("DELETE FROM schema_field WHERE warehouse_id=$1 AND table_id=$2")
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2")
             .bind(*wh)
             .bind(*table_id)
             .execute(&mut *txn)

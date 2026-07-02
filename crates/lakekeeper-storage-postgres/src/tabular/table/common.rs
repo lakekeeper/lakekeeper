@@ -31,7 +31,7 @@ pub(super) async fn remove_schemas(
     // trigger fires with a populated transition table and reaps orphaned column_identity rows.
     let _ = sqlx::query!(
         r#"DELETE FROM schema_field
-           WHERE warehouse_id = $1 AND table_id = $2 AND schema_id = ANY($3::INT[])"#,
+           WHERE warehouse_id = $1 AND tabular_id = $2 AND schema_id = ANY($3::INT[])"#,
         *warehouse_id,
         *table_id,
         &schema_ids,
@@ -98,7 +98,7 @@ pub(super) async fn insert_schemas(
                 e,
             ))
         })?;
-        write_normalized_schema(transaction, warehouse_id, table_id, s.schema_id(), &flat)
+        write_normalized_schema(transaction, warehouse_id, *table_id, s.schema_id(), &flat)
             .await
             .map_err(InternalBackendErrors::CatalogBackendError)?;
     }
@@ -879,7 +879,7 @@ pub(crate) async fn remove_table_encryption_keys(
 pub(crate) async fn write_normalized_schema(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     warehouse_id: lakekeeper::WarehouseId,
-    table_id: lakekeeper::service::TableId,
+    tabular_id: uuid::Uuid,
     schema_id: i32,
     flat: &[crate::tabular::table::normalized_schema::FlatField],
 ) -> Result<(), lakekeeper::service::CatalogBackendError> {
@@ -916,7 +916,7 @@ pub(crate) async fn write_normalized_schema(
 
     sqlx::query!(
         r#"INSERT INTO schema_field
-            (warehouse_id, table_id, schema_id, field_id, parent_field_id, ordinal, name,
+            (warehouse_id, tabular_id, schema_id, field_id, parent_field_id, ordinal, name,
              required, doc, type_kind, type_params, initial_default, write_default, is_identifier)
         SELECT $1, $2, $3, u.field_id, u.parent_field_id, u.ordinal, u.name,
                u.required, u.doc, u.type_kind::iceberg_type_kind,
@@ -927,7 +927,7 @@ pub(crate) async fn write_normalized_schema(
         ) AS u(field_id, parent_field_id, ordinal, name, required, doc,
                type_kind, type_params, initial_default, write_default, is_identifier)"#,
         *warehouse_id,
-        *table_id,
+        tabular_id,
         schema_id,
         &field_ids,
         &parents as _,
@@ -949,11 +949,11 @@ pub(crate) async fn write_normalized_schema(
     })?;
 
     sqlx::query!(
-        r#"INSERT INTO column_identity (warehouse_id, table_id, field_id)
+        r#"INSERT INTO column_identity (warehouse_id, tabular_id, field_id)
         SELECT $1, $2, u.field_id FROM UNNEST($3::int[]) AS u(field_id)
         ON CONFLICT DO NOTHING"#,
         *warehouse_id,
-        *table_id,
+        tabular_id,
         &field_ids,
     )
     .execute(&mut **transaction)
@@ -989,7 +989,7 @@ mod tests {
     }
 
     async fn count(pool: &sqlx::PgPool, table: &str, wh: WarehouseId, table_id: TableId) -> i64 {
-        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND table_id=$2");
+        let q = format!("SELECT count(*) FROM {table} WHERE warehouse_id=$1 AND tabular_id=$2");
         sqlx::query_scalar(sqlx::AssertSqlSafe(q))
             .bind(*wh)
             .bind(*table_id)
@@ -1012,7 +1012,7 @@ mod tests {
 
         // is_identifier flags match the persisted schema's identifier_field_ids.
         let ids: Vec<i32> = sqlx::query_scalar(
-            "SELECT field_id FROM schema_field WHERE warehouse_id=$1 AND table_id=$2 AND is_identifier ORDER BY field_id",
+            "SELECT field_id FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2 AND is_identifier ORDER BY field_id",
         )
         .bind(*wh)
         .bind(*table_id)
