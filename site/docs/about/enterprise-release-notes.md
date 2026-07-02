@@ -1,5 +1,51 @@
 # Lakekeeper Plus Release Notes
 
+## v0.13.0 (2026-06-30)
+
+_Based on Lakekeeper OSS v0.13.1._
+
+### Highlights
+- **Microsoft Entra ID (Graph) role provider.** Resolve a user's transitive Entra group memberships into Lakekeeper roles — with secret, certificate, managed-identity, and workload-identity credentials, sovereign-cloud support, and built-in throttling/retry.
+- **External admission gate.** A new post-authentication seam can ask your control plane whether an already-authenticated caller may use this instance — for IdPs that issue broad, non-instance-scoped tokens — and contribute the caller's resolved roles.
+- **Console overhaul.** The bundled UI jumps to v0.13.2: a Files/storage explorer with in-browser Parquet/Avro/CSV preview, per-entity action menus, datasets as a first-class entity, redesigned view and table-health pages, a Role Members tab, and an enterprise usage-report builder.
+
+### Features
+- **Entra ID / Microsoft Graph role provider.** Paged `transitiveMemberOf` resolution; credential methods secret / certificate / managed-identity / workload-identity; public, US-gov, and China clouds; retries on 429 (honoring `Retry-After`) and transient 5xx.
+- **AD range retrieval for LDAP attribute-mode groups.** Active Directory returns >1500 group values under a ranged `memberOf;range=…` key; attribute mode now walks the range windows, so users in many groups are no longer silently truncated. OpenLDAP/389-DS behavior is unchanged.
+- **External enforce-endpoint admission gate** (`lakekeeper-admission-enforce`). Configurable named checks POST to your endpoint; the HTTP status is the decision (2xx allows and grants the check's role, `403` denies, anything else fails closed with `503` + `Retry-After`). Allow and deny are both cached; caller bearer-token relay is opt-in and never logged.
+- **Persist OIDC token roles for DEFINER views.** Opt-in via `LAKEKEEPER__ROLE_PROVIDER_CHAIN__PERSIST_TOKEN_ROLES` (default off) — mirrors a user's OIDC-token roles into the catalog so authorization can evaluate them when the user isn't the live caller, e.g. a DEFINER view running as its owner. Write-gated; no migration.
+- **Generic-table parity in Cedar authorization.** Non-Iceberg generic tables (e.g. Lance, Delta) now resolve and authorize through the Cedar surface exactly like tables and views.
+- **Destructive-delete context for Cedar policies.** `force` / `purge` / `recursive` and a warehouse `soft_delete_enabled` attribute are now in the Cedar request context, so a policy can forbid hard deletes that would bypass configured soft-deletion.
+- **Role-membership actions in Cedar.** The new manage/read role-assignment actions map to dedicated fine-grained Cedar actions, so policy authors control their bundling.
+- **Destination-aware role source-system rebind.** A dedicated `update_source_system` Cedar action exposes the target provider/source, so rebinds can be gated by destination — something the coarse upstream OpenFGA relation cannot express.
+- **Per-decision policy trace in authorization audit.** Audit events and the `/check` endpoint now record which Cedar policies determined each allow/deny outcome.
+- **Schedule maintenance directly.** `expire_snapshots` and `remove_orphan_files` can be triggered per table via the task-queue schedule endpoint, without waiting for a commit hook.
+
+### Bug Fixes
+- **Corrupt-manifest orphan-files task no longer retries forever.** A permanent failure (e.g. a corrupt Avro manifest) is now classified permanent and not requeued, instead of failing silently and re-running every day. Maintenance workers (`remove_orphan_files`, `expire_snapshots`) also persist a readable failure reason, surfaced in the task-details API — no server-log access required.
+
+### Breaking Changes
+- **Default storage layout is now flat** (inherited from upstream Lakekeeper 0.13): new namespaces use `<base>/<tabular-uuid>` instead of nesting tabulars under the parent-namespace UUID. Not retroactive — existing namespaces and paths are unchanged — so explicitly configure the full-hierarchy layout if you need the old behavior for new namespaces ([lakekeeper#1853](https://github.com/lakekeeper/lakekeeper/pull/1853)).
+
+### Upgrade Notes
+- **Encrypted tables are skipped by maintenance.** `expire_snapshots` and `remove_orphan_files` now detect Iceberg native encryption (format v3) via the immutable `encryption.key-id` property and skip such tables — Lakekeeper cannot read their encrypted manifests, and processing anyway risked deleting live data. Manually scheduling either task on an encrypted table returns `400`.
+- **Downgrade protection** (upstream): `serve` refuses to start against a database already migrated by a newer binary. After a rollback, start the older binary with `serve --force-start`, accepting the schema-incompatibility risk ([lakekeeper#1861](https://github.com/lakekeeper/lakekeeper/pull/1861)).
+- **Docker base images** moved from Debian 12 (bookworm) to Debian 13 (trixie).
+- **Building Plus from source:** the catalog Postgres backend and the NATS/Kafka event backends are now separate upstream crates (`lakekeeper-storage-postgres`, `lakekeeper-events-nats`, `lakekeeper-events-kafka`). Prebuilt binaries and images are unaffected ([lakekeeper#1812](https://github.com/lakekeeper/lakekeeper/pull/1812), [lakekeeper#1814](https://github.com/lakekeeper/lakekeeper/pull/1814)).
+
+### Upstream Lakekeeper changes (up to Lakekeeper v0.13.1)
+Rolls up OSS **v0.12.4**, **v0.13.0**, and **v0.13.1** (full list in the [Lakekeeper release notes](https://docs.lakekeeper.io/about/release-notes/)). Notable for Plus users:
+- **Generic Table API** — register non-Iceberg tables (Lance, Delta) as first-class generic tables with credential vending and full authorization ([lakekeeper#1673](https://github.com/lakekeeper/lakekeeper/pull/1673), [lakekeeper#1813](https://github.com/lakekeeper/lakekeeper/pull/1813)); surfaced in Plus through the Cedar generic-table parity above.
+- **Operator-owned warehouses.** A `managed_by` marker locks warehouse spec mutations (delete, rename, (de)activate, storage profile, protection, format-version policy) to instance admins ([lakekeeper#1828](https://github.com/lakekeeper/lakekeeper/pull/1828)).
+- **Authorizer-independent role-membership API** — one management surface to list/add/remove a role's members regardless of the configured authorizer ([lakekeeper#1829](https://github.com/lakekeeper/lakekeeper/pull/1829)).
+- **Multiple OIDC providers** at once via `LAKEKEEPER__OPENID_PROVIDERS` (e.g. Okta for users + a cloud issuer for service accounts) ([lakekeeper#1760](https://github.com/lakekeeper/lakekeeper/pull/1760)).
+- **Microsoft OneLake / Fabric storage** profile, including workspace private-link endpoints ([lakekeeper#1852](https://github.com/lakekeeper/lakekeeper/pull/1852)).
+- **Per-warehouse table format-version policy** — allowed Iceberg format versions and an optional default per warehouse ([lakekeeper#1786](https://github.com/lakekeeper/lakekeeper/pull/1786)).
+- **Customer-managed KMS encryption** — warehouses with `aws-kms-key-arn` advertise `s3.sse.type=kms`, so vended-credential writes use your KMS key ([lakekeeper#1847](https://github.com/lakekeeper/lakekeeper/pull/1847)).
+- **Cache hardening for large fleets** — single-flight read-throughs and TTL jitter cut thundering-herd load on the database and on rate-limited STS/SAS endpoints ([lakekeeper#1833](https://github.com/lakekeeper/lakekeeper/pull/1833), [lakekeeper#1837](https://github.com/lakekeeper/lakekeeper/pull/1837)).
+- `/health` now returns `503` (not `200`) when unhealthy, so Kubernetes HTTP probes detect it ([lakekeeper#1802](https://github.com/lakekeeper/lakekeeper/pull/1802)).
+- Postgres migration locks are transaction-scoped, so a failed migration can't leak an advisory lock that blocks future migrations ([lakekeeper#1790](https://github.com/lakekeeper/lakekeeper/pull/1790)).
+
 ## v0.12.2 (2026-05-26)
 
 ### Highlights
