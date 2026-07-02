@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use iceberg::{
     NamespaceIdent,
     spec::{
-        Schema, SqlViewRepresentation, ViewMetadata, ViewMetadataParts, ViewRepresentation,
+        SqlViewRepresentation, ViewMetadata, ViewMetadataParts, ViewRepresentation,
         ViewRepresentations, ViewVersion, ViewVersionId, ViewVersionLog,
     },
 };
@@ -31,6 +31,7 @@ use crate::{
     dbutils::DBErrorHandler,
     tabular::{
         prepare_properties,
+        table::normalized_schema,
         view::{ViewFormatVersion, ViewRepresentationType},
     },
 };
@@ -48,8 +49,6 @@ pub(crate) async fn load_view(
         view_fs_protocol,
         metadata_location,
         current_version_id,
-        schema_ids,
-        schemas,
         view_properties_keys,
         view_properties_values,
         version_ids,
@@ -68,8 +67,45 @@ pub(crate) async fn load_view(
         .await?
         .ok_or_else(|| TabularNotFound::new(warehouse_id, view_id))?;
 
-    let view_id = view_id.into();
-    let schemas = prepare_schemas(warehouse_id, view_id, schema_ids, schemas)?;
+    let view_id: ViewId = view_id.into();
+
+    let schema_field_rows = sqlx::query!(
+        r#"SELECT schema_id, field_id, parent_field_id, ordinal, name, required, doc,
+                  type_kind::text as "type_kind!", type_params, initial_default, write_default,
+                  is_identifier
+           FROM schema_field
+           WHERE warehouse_id = $1 AND tabular_id = $2
+           ORDER BY schema_id, parent_field_id, ordinal"#,
+        *warehouse_id,
+        *view_id,
+    )
+    .fetch_all(&mut **conn)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+
+    let rows: Vec<normalized_schema::SchemaFieldRow> = schema_field_rows
+        .into_iter()
+        .map(|r| normalized_schema::SchemaFieldRow {
+            schema_id: r.schema_id,
+            field_id: r.field_id,
+            parent_field_id: r.parent_field_id,
+            ordinal: r.ordinal,
+            name: r.name,
+            required: r.required,
+            doc: r.doc,
+            type_kind: r.type_kind,
+            type_params: r.type_params,
+            initial_default: r.initial_default,
+            write_default: r.write_default,
+            is_identifier: r.is_identifier,
+        })
+        .collect();
+    let schemas = normalized_schema::assemble_schemas(rows).map_err(|e| {
+        RequiredViewComponentMissing::new(warehouse_id, view_id).append_detail(format!(
+            "Failed to assemble view schemas from schema_field rows: {e}"
+        ))
+    })?;
+
     let properties = prepare_properties(view_properties_keys, view_properties_values);
     let version_log = prepare_version_log(version_log_ids, version_log_timestamps);
 
@@ -133,8 +169,6 @@ SELECT v.view_id,
        ta.fs_protocol                    AS view_fs_protocol,
        ta.metadata_location              AS "metadata_location!",
        cvv.version_id                    AS current_version_id,
-       vs.schema_ids,
-       vs.schemas                        AS "schemas: Vec<Json<Schema>>",
        vp.view_properties_keys,
        vp.view_properties_values,
        vvr.version_ids                   AS "version_ids!: Vec<ViewVersionId>",
@@ -154,13 +188,6 @@ FROM view v
          INNER JOIN warehouse w ON w.warehouse_id = $1
          INNER JOIN current_view_metadata_version cvv
              ON cvv.warehouse_id = $1 AND v.view_id = cvv.view_id
-         LEFT JOIN (SELECT view_id,
-                           ARRAY_AGG(schema_id) AS schema_ids,
-                           ARRAY_AGG(schema)    AS schemas
-                    FROM view_schema
-                    WHERE warehouse_id = $1 and view_id = $2
-                    GROUP BY view_id) vs
-                    ON v.view_id = vs.view_id
          LEFT JOIN (SELECT view_id,
                            ARRAY_AGG(version_id) AS version_log_ids,
                            ARRAY_AGG(timestamp)  AS version_log_timestamps
@@ -325,26 +352,6 @@ fn prepare_version_log(
     }
 }
 
-fn prepare_schemas(
-    warehouse_id: WarehouseId,
-    view_id: ViewId,
-    schema_ids: Option<Vec<i32>>,
-    schemas: Option<Vec<Json<Schema>>>,
-) -> Result<HashMap<i32, Arc<Schema>>, RequiredViewComponentMissing> {
-    let schema_ids = schema_ids.ok_or_else(|| {
-        RequiredViewComponentMissing::new(warehouse_id, view_id).append_detail("Schema IDs missing")
-    })?;
-    let schemas = schemas.ok_or_else(|| {
-        RequiredViewComponentMissing::new(warehouse_id, view_id).append_detail("No Schema found")
-    })?;
-    let schemas = schema_ids
-        .into_iter()
-        .zip(schemas)
-        .map(|(id, schema)| Ok((id, Arc::new(schema.0))))
-        .collect::<Result<HashMap<_, _>, _>>()?;
-    Ok(schemas)
-}
-
 // Default Namespace is a required field. Yet, some query engines (e.g. Spark) may not send
 // any value for it. In this case, we should return an empty `NamespaceIdent`.
 // `NamespaceIdent` does not allow empty vecs, hence this workaround.
@@ -381,8 +388,6 @@ struct Query {
     view_fs_protocol: String,
     metadata_location: String,
     current_version_id: ViewVersionId,
-    schema_ids: Option<Vec<i32>>,
-    schemas: Option<Vec<Json<Schema>>>,
     view_properties_keys: Option<Vec<String>>,
     view_properties_values: Option<Vec<String>>,
     version_ids: Vec<ViewVersionId>,

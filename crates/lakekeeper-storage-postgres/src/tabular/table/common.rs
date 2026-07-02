@@ -874,8 +874,174 @@ pub(crate) async fn remove_table_encryption_keys(
     Ok(())
 }
 
+/// Accumulator for `schema_field` + `column_identity` rows across one or more schemas, flushed as
+/// a single bulk write. The 14 parallel arrays are the query's UNNEST columns; they are kept
+/// length-aligned by construction: every push appends to all of them in one loop (GUARD 1).
+///
+/// Reusable across flushes: `flush` clears all arrays so the same batch can be filled again (used
+/// by the migration backfill to bound statement size independent of the read page).
+#[derive(Default)]
+pub(crate) struct SchemaFieldBatch {
+    warehouse_ids: Vec<uuid::Uuid>,
+    tabular_ids: Vec<uuid::Uuid>,
+    schema_ids: Vec<i32>,
+    field_ids: Vec<i32>,
+    parents: Vec<Option<i32>>,
+    ordinals: Vec<i32>,
+    names: Vec<String>,
+    requireds: Vec<bool>,
+    docs: Vec<Option<String>>,
+    type_kinds: Vec<String>,
+    type_params: Vec<Option<serde_json::Value>>,
+    initial_defaults: Vec<Option<serde_json::Value>>,
+    write_defaults: Vec<Option<serde_json::Value>>,
+    is_identifiers: Vec<bool>,
+}
+
+impl SchemaFieldBatch {
+    /// Append every field of one schema. `warehouse_id`/`tabular_id`/`schema_id` are repeated per
+    /// field. One loop appends to all 14 arrays in lockstep — this is the alignment guarantee.
+    pub(crate) fn push_schema(
+        &mut self,
+        warehouse_id: uuid::Uuid,
+        tabular_id: uuid::Uuid,
+        schema_id: i32,
+        flat: &[crate::tabular::table::normalized_schema::FlatField],
+    ) {
+        for f in flat {
+            self.warehouse_ids.push(warehouse_id);
+            self.tabular_ids.push(tabular_id);
+            self.schema_ids.push(schema_id);
+            self.field_ids.push(f.field_id);
+            self.parents.push(f.parent_field_id);
+            self.ordinals.push(f.ordinal);
+            self.names.push(f.name.clone());
+            self.requireds.push(f.required);
+            self.docs.push(f.doc.clone());
+            self.type_kinds.push(f.type_kind.as_str().to_string());
+            self.type_params.push(f.type_params.clone());
+            self.initial_defaults.push(f.initial_default.clone());
+            self.write_defaults.push(f.write_default.clone());
+            self.is_identifiers.push(f.is_identifier);
+        }
+    }
+
+    /// Number of accumulated field rows (used to decide when to flush).
+    pub(crate) fn field_count(&self) -> usize {
+        self.field_ids.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.field_ids.is_empty()
+    }
+
+    /// Issue the two bulk INSERTs (schema_field, then the column_identity spine) and clear all
+    /// arrays so the batch can be reused. No-op when empty.
+    pub(crate) async fn flush(
+        &mut self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), lakekeeper::service::CatalogBackendError> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        // Belt-and-suspenders for GUARD 1: the arrays must stay length-aligned (push_schema is the
+        // only mutator and appends to all of them in lockstep).
+        let n = self.field_ids.len();
+        debug_assert!(
+            self.warehouse_ids.len() == n
+                && self.tabular_ids.len() == n
+                && self.schema_ids.len() == n
+                && self.parents.len() == n
+                && self.ordinals.len() == n
+                && self.names.len() == n
+                && self.requireds.len() == n
+                && self.docs.len() == n
+                && self.type_kinds.len() == n
+                && self.type_params.len() == n
+                && self.initial_defaults.len() == n
+                && self.write_defaults.len() == n
+                && self.is_identifiers.len() == n,
+            "SchemaFieldBatch arrays must be length-aligned"
+        );
+
+        sqlx::query!(
+            r#"INSERT INTO schema_field
+                (warehouse_id, tabular_id, schema_id, field_id, parent_field_id, ordinal, name,
+                 required, doc, type_kind, type_params, initial_default, write_default, is_identifier)
+            SELECT u.warehouse_id, u.tabular_id, u.schema_id, u.field_id, u.parent_field_id,
+                   u.ordinal, u.name, u.required, u.doc, u.type_kind::iceberg_type_kind,
+                   u.type_params, u.initial_default, u.write_default, u.is_identifier
+            FROM UNNEST(
+                $1::uuid[], $2::uuid[], $3::int[], $4::int[], $5::int[], $6::int[], $7::text[],
+                $8::bool[], $9::text[], $10::text[], $11::jsonb[], $12::jsonb[], $13::jsonb[],
+                $14::bool[]
+            ) AS u(warehouse_id, tabular_id, schema_id, field_id, parent_field_id, ordinal, name,
+                   required, doc, type_kind, type_params, initial_default, write_default,
+                   is_identifier)"#,
+            &self.warehouse_ids,
+            &self.tabular_ids,
+            &self.schema_ids,
+            &self.field_ids,
+            &self.parents as _,
+            &self.ordinals,
+            &self.names,
+            &self.requireds,
+            &self.docs as _,
+            &self.type_kinds,
+            &self.type_params as _,
+            &self.initial_defaults as _,
+            &self.write_defaults as _,
+            &self.is_identifiers,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            e.into_catalog_backend_error()
+                .append_detail("Failed to write normalized schema")
+        })?;
+
+        // Reuse the same warehouse/tabular/field arrays. ON CONFLICT DO NOTHING absorbs both
+        // intra-statement duplicate triples (a field_id repeats across schema versions) and rows
+        // already present, so no Rust-side dedup is needed.
+        sqlx::query!(
+            r#"INSERT INTO column_identity (warehouse_id, tabular_id, field_id)
+            SELECT u.warehouse_id, u.tabular_id, u.field_id
+            FROM UNNEST($1::uuid[], $2::uuid[], $3::int[]) AS u(warehouse_id, tabular_id, field_id)
+            ON CONFLICT DO NOTHING"#,
+            &self.warehouse_ids,
+            &self.tabular_ids,
+            &self.field_ids,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            e.into_catalog_backend_error()
+                .append_detail("Failed to write column identity")
+        })?;
+
+        self.warehouse_ids.clear();
+        self.tabular_ids.clear();
+        self.schema_ids.clear();
+        self.field_ids.clear();
+        self.parents.clear();
+        self.ordinals.clear();
+        self.names.clear();
+        self.requireds.clear();
+        self.docs.clear();
+        self.type_kinds.clear();
+        self.type_params.clear();
+        self.initial_defaults.clear();
+        self.write_defaults.clear();
+        self.is_identifiers.clear();
+
+        Ok(())
+    }
+}
+
 // Write chokepoint for one schema: its `schema_field` rows + the `column_identity` spine.
-// Used by `insert_schemas` (commit path) and the migration backfill.
+// Used by `insert_schemas` (commit path) and view sync. A thin wrapper over `SchemaFieldBatch` so
+// the array-keyed bulk query is the single source of truth.
 pub(crate) async fn write_normalized_schema(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     warehouse_id: lakekeeper::WarehouseId,
@@ -883,87 +1049,9 @@ pub(crate) async fn write_normalized_schema(
     schema_id: i32,
     flat: &[crate::tabular::table::normalized_schema::FlatField],
 ) -> Result<(), lakekeeper::service::CatalogBackendError> {
-    if flat.is_empty() {
-        return Ok(());
-    }
-
-    let n = flat.len();
-    let mut field_ids: Vec<i32> = Vec::with_capacity(n);
-    let mut parents: Vec<Option<i32>> = Vec::with_capacity(n);
-    let mut ordinals: Vec<i32> = Vec::with_capacity(n);
-    let mut names: Vec<String> = Vec::with_capacity(n);
-    let mut requireds: Vec<bool> = Vec::with_capacity(n);
-    let mut docs: Vec<Option<String>> = Vec::with_capacity(n);
-    let mut type_kinds: Vec<String> = Vec::with_capacity(n);
-    let mut type_params: Vec<Option<serde_json::Value>> = Vec::with_capacity(n);
-    let mut initial_defaults: Vec<Option<serde_json::Value>> = Vec::with_capacity(n);
-    let mut write_defaults: Vec<Option<serde_json::Value>> = Vec::with_capacity(n);
-    let mut is_identifiers: Vec<bool> = Vec::with_capacity(n);
-
-    for f in flat {
-        field_ids.push(f.field_id);
-        parents.push(f.parent_field_id);
-        ordinals.push(f.ordinal);
-        names.push(f.name.clone());
-        requireds.push(f.required);
-        docs.push(f.doc.clone());
-        type_kinds.push(f.type_kind.as_str().to_string());
-        type_params.push(f.type_params.clone());
-        initial_defaults.push(f.initial_default.clone());
-        write_defaults.push(f.write_default.clone());
-        is_identifiers.push(f.is_identifier);
-    }
-
-    sqlx::query!(
-        r#"INSERT INTO schema_field
-            (warehouse_id, tabular_id, schema_id, field_id, parent_field_id, ordinal, name,
-             required, doc, type_kind, type_params, initial_default, write_default, is_identifier)
-        SELECT $1, $2, $3, u.field_id, u.parent_field_id, u.ordinal, u.name,
-               u.required, u.doc, u.type_kind::iceberg_type_kind,
-               u.type_params, u.initial_default, u.write_default, u.is_identifier
-        FROM UNNEST(
-            $4::int[], $5::int[], $6::int[], $7::text[], $8::bool[], $9::text[],
-            $10::text[], $11::jsonb[], $12::jsonb[], $13::jsonb[], $14::bool[]
-        ) AS u(field_id, parent_field_id, ordinal, name, required, doc,
-               type_kind, type_params, initial_default, write_default, is_identifier)"#,
-        *warehouse_id,
-        tabular_id,
-        schema_id,
-        &field_ids,
-        &parents as _,
-        &ordinals,
-        &names,
-        &requireds,
-        &docs as _,
-        &type_kinds,
-        &type_params as _,
-        &initial_defaults as _,
-        &write_defaults as _,
-        &is_identifiers,
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|e| {
-        e.into_catalog_backend_error()
-            .append_detail("Failed to write normalized schema")
-    })?;
-
-    sqlx::query!(
-        r#"INSERT INTO column_identity (warehouse_id, tabular_id, field_id)
-        SELECT $1, $2, u.field_id FROM UNNEST($3::int[]) AS u(field_id)
-        ON CONFLICT DO NOTHING"#,
-        *warehouse_id,
-        tabular_id,
-        &field_ids,
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|e| {
-        e.into_catalog_backend_error()
-            .append_detail("Failed to write column identity")
-    })?;
-
-    Ok(())
+    let mut batch = SchemaFieldBatch::default();
+    batch.push_schema(*warehouse_id, tabular_id, schema_id, flat);
+    batch.flush(transaction).await
 }
 
 #[cfg(test)]

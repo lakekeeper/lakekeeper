@@ -7,7 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use iceberg::spec::{SchemaRef, ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
+use iceberg::spec::{ViewMetadata, ViewRepresentation, ViewVersionId, ViewVersionRef};
 use lakekeeper::{
     WarehouseId,
     service::{
@@ -24,7 +24,10 @@ use uuid::Uuid;
 
 use crate::{
     dbutils::DBErrorHandler as _,
-    tabular::{CreateTabular, TabularType, create_tabular},
+    tabular::{
+        CreateTabular, TabularType, create_tabular,
+        table::{normalized_schema::flatten_schema, write_normalized_schema},
+    },
 };
 
 pub(crate) async fn create_view(
@@ -222,13 +225,7 @@ async fn populate_view_metadata(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), CreateViewError> {
     // schemas first (FK target for view_version)
-    batch_insert_view_schemas(
-        warehouse_id,
-        view_id,
-        metadata.schemas_iter(),
-        &mut *transaction,
-    )
-    .await?;
+    sync_view_schemas(warehouse_id, view_id, metadata, &mut *transaction).await?;
 
     // versions (FK to schemas, FK target for representations/log/current)
     batch_insert_view_versions(
@@ -263,20 +260,18 @@ async fn populate_view_metadata(
     Ok(())
 }
 
-// Removes all view sub-metadata so a commit can repopulate it from `ViewMetadata`.
+// Clears view sub-metadata so a commit can repopulate it, WITHOUT touching schemas.
 //
-// Only two DELETEs are needed because of the FK chain set up in migration
-// `20250904142650_reusable_table_id.sql`:
+// Schemas are reconciled incrementally by `sync_view_schemas` so that
+// `column_identity` for persisting columns survives a commit (stable governance
+// spine). This function therefore clears only the version-family and properties.
 //
-//   - `view_version` REFERENCES `view_schema` ON DELETE CASCADE
-//     → deleting `view_schema` cascades to all `view_version` rows.
-//   - `view_version_log`, `view_representation`, and
-//     `current_view_metadata_version` all REFERENCE `view_version` ON DELETE
-//     CASCADE → cascade transitively from the `view_schema` delete.
-//
-// If a future migration weakens any of those CASCADE constraints, this
-// function must be updated to delete from the affected tables explicitly,
-// or `populate_view_metadata` will hit PK collisions.
+// The version-family is cleared with a single `DELETE FROM view_version`: per the
+// FK graph in `20240620151544_views.sql` as amended by `20250904142650`,
+// `view_representation`, `view_version_log`, and `current_view_metadata_version`
+// all REFERENCE `view_version` ON DELETE CASCADE, so all three are removed
+// transitively. If a future migration weakens any of those CASCADE links, delete
+// from the affected tables explicitly here.
 async fn clear_view_metadata(
     warehouse_id: WarehouseId,
     view_id: Uuid,
@@ -298,10 +293,7 @@ async fn clear_view_metadata(
     })?;
 
     sqlx::query!(
-        r#"
-        DELETE FROM view_schema
-        WHERE warehouse_id = $1 AND view_id = $2
-        "#,
+        r#"DELETE FROM view_version WHERE warehouse_id = $1 AND view_id = $2"#,
         *warehouse_id,
         view_id,
     )
@@ -309,7 +301,7 @@ async fn clear_view_metadata(
     .await
     .map_err(|e| {
         e.into_catalog_backend_error()
-            .append_detail("Error clearing view metadata before commit.")
+            .append_detail("Error clearing view versions before commit.")
     })?;
 
     Ok(())
@@ -384,41 +376,72 @@ async fn set_view_properties(
     Ok(())
 }
 
-async fn batch_insert_view_schemas<'a>(
+/// Reconcile the persisted schema set for a view to exactly `metadata`'s schemas, incrementally:
+/// add anchors + normalized fields for new schema_ids, delete them for removed ones, leave
+/// persisting schema_ids untouched so their `column_identity` survives (stable governance spine).
+/// Works for create (no existing rows -> add all) and commit (diff).
+async fn sync_view_schemas(
     warehouse_id: WarehouseId,
     view_id: Uuid,
-    schemas: impl IntoIterator<Item = &'a SchemaRef>,
+    metadata: &ViewMetadata,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), CreateViewError> {
-    let (schema_ids, schema_jsons): (Vec<i32>, Vec<serde_json::Value>) = schemas
-        .into_iter()
-        .map(|s| {
-            serde_json::to_value(s)
-                .map(|json| (s.schema_id(), json))
-                .map_err(|e| SerializationError::new("schema", e))
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .unzip();
-
-    if schema_ids.is_empty() {
-        return Ok(());
-    }
-
-    sqlx::query!(
-        r#"
-        INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
-        SELECT $1, $2, u.schema_id, u.schema
-        FROM UNNEST($3::int[], $4::jsonb[]) AS u(schema_id, schema)
-        "#,
+    let existing: Vec<i32> = sqlx::query_scalar!(
+        r#"SELECT schema_id FROM view_schema WHERE warehouse_id = $1 AND view_id = $2"#,
         *warehouse_id,
         view_id,
-        &schema_ids,
-        &schema_jsons,
     )
-    .execute(&mut **transaction)
+    .fetch_all(&mut **transaction)
     .await
     .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    let existing: HashSet<i32> = existing.into_iter().collect();
+    let desired: HashSet<i32> = metadata.schemas_iter().map(|s| s.schema_id()).collect();
+
+    // Remove schema versions no longer present. Delete schema_field first (explicit DELETE fires
+    // the GC statement trigger with a populated transition table), then the anchor.
+    let to_remove: Vec<i32> = existing.difference(&desired).copied().collect();
+    if !to_remove.is_empty() {
+        sqlx::query!(
+            r#"DELETE FROM schema_field
+               WHERE warehouse_id = $1 AND tabular_id = $2 AND schema_id = ANY($3::INT[])"#,
+            *warehouse_id,
+            view_id,
+            &to_remove,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+        sqlx::query!(
+            r#"DELETE FROM view_schema
+               WHERE warehouse_id = $1 AND view_id = $2 AND schema_id = ANY($3::INT[])"#,
+            *warehouse_id,
+            view_id,
+            &to_remove,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    }
+
+    // Add new schema versions: NULL anchor (JSONB frozen) + normalized fields.
+    for s in metadata.schemas_iter() {
+        if existing.contains(&s.schema_id()) {
+            continue;
+        }
+        sqlx::query!(
+            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
+               VALUES ($1, $2, $3, NULL)"#,
+            *warehouse_id,
+            view_id,
+            s.schema_id(),
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+        let flat = flatten_schema(s)
+            .map_err(|e| ConversionError::new("Failed to flatten view schema", e))?;
+        write_normalized_schema(transaction, warehouse_id, view_id, s.schema_id(), &flat).await?;
+    }
     Ok(())
 }
 
@@ -1294,19 +1317,29 @@ pub mod tests {
 
     #[sqlx::test]
     async fn commit_existing_view_cleans_old_sub_metadata(pool: PgPool) {
-        // `clear_view_metadata` only deletes from `view_properties` and
-        // `view_schema`; everything else relies on ON DELETE CASCADE. If a
-        // future migration weakens any CASCADE link, the second
-        // `populate_view_metadata` call below will hit a PK collision because
-        // the prior version/representation/log rows weren't cleared. This
-        // test asserts the cascade chain still works end-to-end.
+        // On commit, `clear_view_metadata` clears the version-family (versions +
+        // representations/log/current via ON DELETE CASCADE) and properties, while
+        // schemas are reconciled incrementally by `sync_view_schemas`. If a future
+        // migration weakens any CASCADE link off `view_version`, the second
+        // `populate_view_metadata` call below hits a PK collision because prior
+        // version/representation/log rows weren't cleared. This test asserts the
+        // version-family cascade works end-to-end and that the persisted schema set
+        // matches the committed metadata exactly.
+        //
+        // The committed metadata equals the created metadata, so the schema diff is
+        // empty: the two original schema versions persist untouched (their
+        // `column_identity` survives). Versions/representations are cleared and
+        // repopulated to the same counts.
         let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
             prepare_view(pool.clone()).await;
         let namespace_id =
             crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
                 .await;
         let view_uuid = metadata.uuid();
-        let expected_schemas = i64::try_from(metadata.schemas_iter().len()).unwrap();
+        let mut expected_schema_ids: Vec<i32> =
+            metadata.schemas_iter().map(|s| s.schema_id()).collect();
+        expected_schema_ids.sort_unstable();
+        let expected_schemas = i64::try_from(expected_schema_ids.len()).unwrap();
         let expected_versions = i64::try_from(metadata.versions().len()).unwrap();
         let expected_reps = i64::try_from(
             metadata
@@ -1341,6 +1374,13 @@ pub mod tests {
                 .fetch_one(&state.read_pool())
                 .await
                 .unwrap();
+        let schema_ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT schema_id FROM view_schema WHERE view_id = $1 ORDER BY schema_id",
+        )
+        .bind(view_uuid)
+        .fetch_all(&state.read_pool())
+        .await
+        .unwrap();
         let version_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM view_version WHERE view_id = $1")
                 .bind(view_uuid)
@@ -1354,7 +1394,14 @@ pub mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(schema_count, expected_schemas, "view_schema not cleared");
+        assert_eq!(
+            schema_count, expected_schemas,
+            "unexpected view_schema count"
+        );
+        assert_eq!(
+            schema_ids, expected_schema_ids,
+            "persisted view_schema ids must equal committed metadata's schema ids"
+        );
         assert_eq!(version_count, expected_versions, "view_version not cleared");
         assert_eq!(rep_count, expected_reps, "view_representation not cleared");
     }

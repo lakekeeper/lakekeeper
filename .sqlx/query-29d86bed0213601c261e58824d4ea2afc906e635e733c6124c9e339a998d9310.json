@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM view_schema\n               WHERE warehouse_id = $1 AND view_id = $2 AND schema_id = ANY($3::INT[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "29d86bed0213601c261e58824d4ea2afc906e635e733c6124c9e339a998d9310"
+}

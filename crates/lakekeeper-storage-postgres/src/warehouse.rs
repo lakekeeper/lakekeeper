@@ -1050,6 +1050,14 @@ pub mod test {
             .execute(pool)
             .await
             .unwrap();
+        sqlx::query("DROP TRIGGER IF EXISTS view_schema_freeze_jsonb ON view_schema")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE view_schema ALTER COLUMN schema DROP NOT NULL")
+            .execute(pool)
+            .await
+            .unwrap();
     }
 
     pub async fn initialize_warehouse(
