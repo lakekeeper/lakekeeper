@@ -496,4 +496,169 @@ mod tests {
             "last schema version must have 100 field rows"
         );
     }
+
+    // ── H. Benchmark: 100k tables ────────────────────────────────────────────
+
+    /// Benchmark the backfill over ~100k tables with a realistic 15-field schema.
+    ///
+    /// Marked `#[ignore]` — run explicitly with:
+    ///   cargo nextest run -p lakekeeper-storage-postgres bench_backfill_100k --run-ignored all --no-capture
+    ///
+    /// Seeding uses set-based SQL (generate_series) to avoid 100k round-trips.
+    #[ignore]
+    #[sqlx::test]
+    async fn bench_backfill_100k(pool: PgPool) {
+        use std::time::Instant;
+
+        const N_TABLES: i64 = 100_000;
+        const FIELDS_PER_SCHEMA: usize = 15;
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns_bench".to_string()]).unwrap();
+        initialize_namespace(state.clone(), wh, &namespace, None).await;
+        let namespace_id =
+            crate::tabular::table::tests::get_namespace_id(state.clone(), wh, &namespace).await;
+
+        // Build one realistic Iceberg schema with FIELDS_PER_SCHEMA fields:
+        // 10 primitives + 1 struct (with 2 inner fields) + 1 list + 1 map + 1 timestamp + 1 binary
+        // We serialize it once and reuse the JSON for all 100k rows.
+        let schema_json = serde_json::json!({
+            "type": "struct",
+            "schema-id": 0,
+            "fields": [
+                {"id": 1,  "name": "id",         "required": true,  "type": "long"},
+                {"id": 2,  "name": "name",        "required": false, "type": "string"},
+                {"id": 3,  "name": "created_at",  "required": false, "type": "timestamptz"},
+                {"id": 4,  "name": "updated_at",  "required": false, "type": "timestamp"},
+                {"id": 5,  "name": "amount",      "required": false, "type": "double"},
+                {"id": 6,  "name": "count",       "required": false, "type": "int"},
+                {"id": 7,  "name": "is_active",   "required": false, "type": "boolean"},
+                {"id": 8,  "name": "score",       "required": false, "type": "float"},
+                {"id": 9,  "name": "event_date",  "required": false, "type": "date"},
+                {"id": 10, "name": "payload",     "required": false, "type": "binary"},
+                {"id": 11, "name": "address", "required": false, "type": {
+                    "type": "struct",
+                    "fields": [
+                        {"id": 12, "name": "street", "required": false, "type": "string"},
+                        {"id": 13, "name": "city",   "required": false, "type": "string"}
+                    ]
+                }},
+                {"id": 14, "name": "tags", "required": false, "type": {
+                    "type": "list",
+                    "element-id": 15,
+                    "element": "string",
+                    "element-required": false
+                }},
+                {"id": 16, "name": "properties", "required": false, "type": {
+                    "type": "map",
+                    "key-id": 17,
+                    "key": "string",
+                    "value-id": 18,
+                    "value": "string",
+                    "value-required": false
+                }},
+                {"id": 19, "name": "uuid_col",   "required": false, "type": "uuid"},
+                {"id": 20, "name": "decimal_col", "required": false, "type": "decimal(18,6)"}
+            ]
+        });
+
+        // Seed: bulk-insert N_TABLES rows into tabular + "table" + table_schema using generate_series.
+        // This avoids N round-trips and lets PG generate random UUIDs server-side.
+        let seed_start = Instant::now();
+
+        // Create a temp table of UUIDs — one per synthetic table.
+        sqlx::query("CREATE TEMP TABLE _bench_ids (tabular_id uuid NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO _bench_ids SELECT gen_random_uuid() FROM generate_series(1, $1)",
+        )
+        .bind(N_TABLES)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert into tabular (warehouse_id, tabular_id, namespace_id, name, typ, location, fs_location).
+        sqlx::query(
+            "INSERT INTO tabular (warehouse_id, tabular_id, namespace_id, name, typ, location, fs_location)
+             SELECT $1, b.tabular_id, $2, 'bench_tbl_' || b.tabular_id, 'table',
+                    's3://bench-bucket/' || b.tabular_id,
+                    'bench-bucket/' || b.tabular_id
+             FROM _bench_ids b",
+        )
+        .bind(*wh)
+        .bind(*namespace_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert into "table" (warehouse_id, table_id).
+        sqlx::query(
+            "INSERT INTO \"table\" (warehouse_id, table_id)
+             SELECT $1, b.tabular_id FROM _bench_ids b",
+        )
+        .bind(*wh)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert into table_schema (warehouse_id, table_id, schema_id, schema).
+        sqlx::query(
+            "INSERT INTO table_schema (warehouse_id, table_id, schema_id, schema)
+             SELECT $1, b.tabular_id, 0, $2::jsonb FROM _bench_ids b",
+        )
+        .bind(*wh)
+        .bind(&schema_json)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let seed_elapsed = seed_start.elapsed();
+
+        // Backfill: measure only the backfill call.
+        let backfill_start = Instant::now();
+        let mut txn = pool.begin().await.unwrap();
+        super::backfill(&mut txn).await.unwrap();
+        txn.commit().await.unwrap();
+        let backfill_elapsed = backfill_start.elapsed();
+
+        // Count resulting schema_field rows.
+        let sf_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schema_field WHERE warehouse_id = $1",
+        )
+        .bind(*wh)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Expected: N_TABLES × FIELDS_PER_SCHEMA (flat leaf count).
+        // The schema has 15 user-level fields but the struct children (12, 13) + list element (15)
+        // + map key (17) + map value (18) are also emitted as separate schema_field rows.
+        // Total = 20 field IDs in the JSON above.
+        let expected_rows = N_TABLES * 20;
+
+        let rows_per_sec = sf_count as f64 / backfill_elapsed.as_secs_f64();
+        let schemas_per_sec = N_TABLES as f64 / backfill_elapsed.as_secs_f64();
+        let extrap_500k = backfill_elapsed.as_secs_f64() * (500_000.0 / N_TABLES as f64);
+
+        println!();
+        println!("=== bench_backfill_100k results ===");
+        println!("  N tables:              {N_TABLES}");
+        println!("  Fields per schema:     {FIELDS_PER_SCHEMA} top-level ({} total field ids)", 20);
+        println!("  schema_field rows:     {sf_count}");
+        println!("  Seed duration:         {:.3}s", seed_elapsed.as_secs_f64());
+        println!("  Backfill duration:     {:.3}s", backfill_elapsed.as_secs_f64());
+        println!("  Rows/sec:              {rows_per_sec:.0}");
+        println!("  Schemas/sec:           {schemas_per_sec:.0}");
+        println!("  Extrapolation 500k:    {extrap_500k:.1}s");
+        println!("===================================");
+        println!();
+
+        assert_eq!(
+            sf_count, expected_rows,
+            "schema_field count must equal N_TABLES × field_ids_per_schema (got {sf_count}, want {expected_rows})"
+        );
+    }
 }
