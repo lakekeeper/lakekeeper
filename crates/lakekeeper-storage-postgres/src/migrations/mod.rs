@@ -219,6 +219,16 @@ pub async fn migrate(
         .map_err(|e| e.error)?;
     let transaction = trx.transaction();
 
+    // The normalized-schema backfill can run minutes on large catalogs. Set a 60-min statement/idle
+    // backstop on the migration txn: generous enough never to clip real work, finite enough to bound
+    // a hung migration. SET LOCAL is txn-scoped; both are USERSET GUCs, overriding any managed default.
+    sqlx::query("SET LOCAL statement_timeout = '60min'")
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '60min'")
+        .execute(&mut **transaction)
+        .await?;
+
     // Transaction-scoped advisory lock to prevent concurrent migrations.
     // Postgres auto-releases on COMMIT or ROLLBACK — including when the
     // transaction is aborted by a failing SQL statement, which is the

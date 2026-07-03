@@ -91,6 +91,10 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
     let (mut last_wh, mut last_tbl, mut last_sid) =
         (uuid::Uuid::nil(), uuid::Uuid::nil(), i32::MIN);
     let mut batch = SchemaFieldBatch::default();
+    // Progress logging: a single-transaction backfill of a large catalog runs for minutes;
+    // emit a throttled INFO line per flush so operators can see it advancing.
+    let started = std::time::Instant::now();
+    let (mut schemas_done, mut fields_done): (u64, u64) = (0, 0);
     loop {
         // Keyset pagination (bounded memory) — one batch at a time, not the whole table.
         let rows = sqlx::query!(
@@ -122,11 +126,19 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
                 )
             })?;
             batch.push_schema(r.warehouse_id, r.table_id, r.schema_id, &flat);
+            schemas_done += 1;
+            fields_done += flat.len() as u64;
             if batch.field_count() >= FIELD_FLUSH_THRESHOLD {
                 batch
                     .flush(txn)
                     .await
                     .map_err(|e| anyhow::anyhow!("write schema_field: {e}"))?;
+                tracing::info!(
+                    schemas = schemas_done,
+                    field_rows = fields_done,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "table schema backfill progress"
+                );
             }
         }
         let l = rows.last().unwrap();
@@ -136,6 +148,14 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
         .flush(txn)
         .await
         .map_err(|e| anyhow::anyhow!("write schema_field: {e}"))?;
+    if schemas_done > 0 {
+        tracing::info!(
+            schemas = schemas_done,
+            field_rows = fields_done,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "table schema backfill complete"
+        );
+    }
     Ok(())
 }
 
@@ -146,6 +166,8 @@ pub(crate) async fn backfill_view_schemas(
     let (mut last_wh, mut last_view, mut last_sid) =
         (uuid::Uuid::nil(), uuid::Uuid::nil(), i32::MIN);
     let mut batch = SchemaFieldBatch::default();
+    let started = std::time::Instant::now();
+    let (mut schemas_done, mut fields_done): (u64, u64) = (0, 0);
     loop {
         // Keyset pagination (bounded memory) — one batch at a time, not the whole table.
         let rows = sqlx::query!(
@@ -177,11 +199,19 @@ pub(crate) async fn backfill_view_schemas(
                 )
             })?;
             batch.push_schema(r.warehouse_id, r.view_id, r.schema_id, &flat);
+            schemas_done += 1;
+            fields_done += flat.len() as u64;
             if batch.field_count() >= FIELD_FLUSH_THRESHOLD {
                 batch
                     .flush(txn)
                     .await
                     .map_err(|e| anyhow::anyhow!("write schema_field view: {e}"))?;
+                tracing::info!(
+                    schemas = schemas_done,
+                    field_rows = fields_done,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "view schema backfill progress"
+                );
             }
         }
         let l = rows.last().unwrap();
@@ -191,6 +221,14 @@ pub(crate) async fn backfill_view_schemas(
         .flush(txn)
         .await
         .map_err(|e| anyhow::anyhow!("write schema_field view: {e}"))?;
+    if schemas_done > 0 {
+        tracing::info!(
+            schemas = schemas_done,
+            field_rows = fields_done,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "view schema backfill complete"
+        );
+    }
     Ok(())
 }
 
@@ -510,6 +548,11 @@ mod tests {
     async fn bench_backfill_100k(pool: PgPool) {
         use std::time::Instant;
 
+        // Surface the backfill's INFO progress logs live (run with --no-capture).
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .try_init();
+
         const N_TABLES: i64 = 100_000;
         const FIELDS_PER_SCHEMA: usize = 15;
 
@@ -564,43 +607,52 @@ mod tests {
         });
 
         // Seed: bulk-insert N_TABLES rows into tabular + "table" + table_schema using generate_series.
-        // This avoids N round-trips and lets PG generate random UUIDs server-side.
+        // Use a single connection (acquire from pool) so the temp table is visible to all queries.
         let seed_start = Instant::now();
 
-        // Create a temp table of UUIDs — one per synthetic table.
+        let mut conn = pool.acquire().await.unwrap();
+
+        // Temp table of UUIDs — one per synthetic table. Visible only within this connection.
         sqlx::query("CREATE TEMP TABLE _bench_ids (tabular_id uuid NOT NULL)")
-            .execute(&pool)
+            .execute(&mut *conn)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO _bench_ids SELECT gen_random_uuid() FROM generate_series(1, $1)",
-        )
-        .bind(N_TABLES)
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO _bench_ids SELECT gen_random_uuid() FROM generate_series(1, $1)")
+            .bind(N_TABLES)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
 
-        // Insert into tabular (warehouse_id, tabular_id, namespace_id, name, typ, location, fs_location).
+        // Insert into tabular. Columns required (after all migrations):
+        //   warehouse_id, tabular_id, namespace_id, name, typ, fs_protocol, fs_location,
+        //   tabular_namespace_name (text[], NOT NULL, FK-backed by namespace.namespace_name).
+        // `location` was dropped in migration 20250216.
+        // `tabular_namespace_name` was added (NOT NULL) in migration 20250923.
+        // We look it up from namespace so the FK is satisfied.
         sqlx::query(
-            "INSERT INTO tabular (warehouse_id, tabular_id, namespace_id, name, typ, location, fs_location)
+            "INSERT INTO tabular (warehouse_id, tabular_id, namespace_id, name, typ, fs_protocol, fs_location, tabular_namespace_name)
              SELECT $1, b.tabular_id, $2, 'bench_tbl_' || b.tabular_id, 'table',
-                    's3://bench-bucket/' || b.tabular_id,
-                    'bench-bucket/' || b.tabular_id
-             FROM _bench_ids b",
+                    's3',
+                    'bench-bucket/' || b.tabular_id,
+                    n.namespace_name
+             FROM _bench_ids b
+             CROSS JOIN namespace n
+             WHERE n.warehouse_id = $1 AND n.namespace_id = $2",
         )
         .bind(*wh)
         .bind(*namespace_id)
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .unwrap();
 
-        // Insert into "table" (warehouse_id, table_id).
+        // Insert into "table". After migration 20250923, table_format_version, last_column_id,
+        // last_sequence_number, last_updated_ms, last_partition_id, and next_row_id are all NOT NULL.
         sqlx::query(
-            "INSERT INTO \"table\" (warehouse_id, table_id)
-             SELECT $1, b.tabular_id FROM _bench_ids b",
+            "INSERT INTO \"table\" (warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id, next_row_id)
+             SELECT $1, b.tabular_id, '2', 20, 0, 0, 999, 0 FROM _bench_ids b",
         )
         .bind(*wh)
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .unwrap();
 
@@ -611,9 +663,11 @@ mod tests {
         )
         .bind(*wh)
         .bind(&schema_json)
-        .execute(&pool)
+        .execute(&mut *conn)
         .await
         .unwrap();
+
+        drop(conn); // return connection to pool; temp table is session-local and goes away
 
         let seed_elapsed = seed_start.elapsed();
 
@@ -625,13 +679,12 @@ mod tests {
         let backfill_elapsed = backfill_start.elapsed();
 
         // Count resulting schema_field rows.
-        let sf_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM schema_field WHERE warehouse_id = $1",
-        )
-        .bind(*wh)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let sf_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_field WHERE warehouse_id = $1")
+                .bind(*wh)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         // Expected: N_TABLES × FIELDS_PER_SCHEMA (flat leaf count).
         // The schema has 15 user-level fields but the struct children (12, 13) + list element (15)
@@ -646,10 +699,19 @@ mod tests {
         println!();
         println!("=== bench_backfill_100k results ===");
         println!("  N tables:              {N_TABLES}");
-        println!("  Fields per schema:     {FIELDS_PER_SCHEMA} top-level ({} total field ids)", 20);
+        println!(
+            "  Fields per schema:     {FIELDS_PER_SCHEMA} top-level ({} total field ids)",
+            20
+        );
         println!("  schema_field rows:     {sf_count}");
-        println!("  Seed duration:         {:.3}s", seed_elapsed.as_secs_f64());
-        println!("  Backfill duration:     {:.3}s", backfill_elapsed.as_secs_f64());
+        println!(
+            "  Seed duration:         {:.3}s",
+            seed_elapsed.as_secs_f64()
+        );
+        println!(
+            "  Backfill duration:     {:.3}s",
+            backfill_elapsed.as_secs_f64()
+        );
         println!("  Rows/sec:              {rows_per_sec:.0}");
         println!("  Schemas/sec:           {schemas_per_sec:.0}");
         println!("  Extrapolation 500k:    {extrap_500k:.1}s");
