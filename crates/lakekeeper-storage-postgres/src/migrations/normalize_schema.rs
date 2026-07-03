@@ -193,3 +193,307 @@ pub(crate) async fn backfill_view_schemas(
         .map_err(|e| anyhow::anyhow!("write schema_field view: {e}"))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use iceberg::{
+        NamespaceIdent,
+        spec::{NestedField, PrimitiveType, Schema, Type as IcebergType},
+    };
+    use lakekeeper_io::Location;
+    use serde_json::json;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::NormalizeSchemaHook;
+    use crate::{
+        CatalogState, migrations::MigrationHook, namespace::tests::initialize_namespace,
+        tabular::view::load_view, warehouse::test::initialize_warehouse,
+    };
+
+    // ── E. View backfill ─────────────────────────────────────────────────────
+
+    /// Seed a legacy `view_schema` JSONB row (no schema_field yet), run the backfill,
+    /// assert schema_field is populated and load_view reconstructs the schema exactly.
+    #[sqlx::test]
+    async fn view_backfill_reproduces_schema_from_jsonb(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns_backfill".to_string()]).unwrap();
+        initialize_namespace(state.clone(), wh, &namespace, None).await;
+        let namespace_id =
+            crate::tabular::table::tests::get_namespace_id(state.clone(), wh, &namespace).await;
+
+        let view_uuid = Uuid::now_v7();
+        let location = format!("s3://bucket/view_{view_uuid}/data")
+            .parse::<Location>()
+            .unwrap();
+        let meta_loc: Location = format!("s3://bucket/view_{view_uuid}/meta/v1.json")
+            .parse()
+            .unwrap();
+
+        // The view_request fixture: schema_id=0 (fields 0,1), schema_id=1 (field 0).
+        let request = crate::tabular::view::tests::view_request(Some(view_uuid), &location);
+        let mut tx = pool.begin().await.unwrap();
+        crate::tabular::view::create_view(
+            wh,
+            namespace_id,
+            &meta_loc,
+            &mut tx,
+            "bf_view",
+            &request,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Wipe schema_field rows (simulate pre-migration state) and restore JSONB on view_schema.
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2")
+            .bind(*wh)
+            .bind(view_uuid)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        // Restore the JSONB for each schema version so the backfill can read it.
+        for s in request.schemas_iter() {
+            let jsonb = serde_json::to_value(s.as_ref()).unwrap();
+            sqlx::query(
+                "UPDATE view_schema SET schema=$3 WHERE warehouse_id=$1 AND view_id=$2 AND schema_id=$4",
+            )
+            .bind(*wh)
+            .bind(view_uuid)
+            .bind(&jsonb)
+            .bind(s.schema_id())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        // Run only the view backfill (not the table one, to keep scope narrow).
+        super::backfill_view_schemas(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // schema_field must now exist.
+        let sf_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2",
+        )
+        .bind(*wh)
+        .bind(view_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // view_request fixture: schema 1 has 1 field, schema 0 has 2 fields → 3 rows.
+        assert_eq!(
+            sf_count, 3,
+            "backfill must reproduce exactly the fixture's schema_field rows"
+        );
+
+        // load_view must reconstruct both schemas exactly.
+        let mut tx = pool.begin().await.unwrap();
+        let loaded = load_view(wh, view_uuid.into(), false, &mut tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // ViewMetadata is Eq with HashMap-backed versions+schemas, so struct equality is
+        // order-insensitive; comparing serialized JSON would be flaky on HashMap iteration order.
+        assert_eq!(
+            loaded.metadata.as_ref(),
+            &request,
+            "load_view after backfill must equal original metadata"
+        );
+    }
+
+    // ── F. View freeze ───────────────────────────────────────────────────────
+
+    /// After NormalizeSchemaHook runs, a NULL-anchor view_schema INSERT is allowed
+    /// but a non-null `schema` INSERT is rejected with SQLSTATE 55000.
+    #[sqlx::test]
+    async fn view_freeze_blocks_jsonb_but_allows_null_anchor(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns_freeze".to_string()]).unwrap();
+        initialize_namespace(state.clone(), wh, &namespace, None).await;
+        let namespace_id =
+            crate::tabular::table::tests::get_namespace_id(state.clone(), wh, &namespace).await;
+
+        let view_uuid = Uuid::now_v7();
+        let location = format!("s3://bucket/view_{view_uuid}/data")
+            .parse::<Location>()
+            .unwrap();
+        let meta_loc: Location = format!("s3://bucket/view_{view_uuid}/meta/v1.json")
+            .parse()
+            .unwrap();
+
+        let request = crate::tabular::view::tests::view_request(Some(view_uuid), &location);
+        let mut tx = pool.begin().await.unwrap();
+        crate::tabular::view::create_view(
+            wh,
+            namespace_id,
+            &meta_loc,
+            &mut tx,
+            "freeze_view",
+            &request,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Install the freeze (drops NOT NULL + installs trigger).
+        let mut tx = pool.begin().await.unwrap();
+        NormalizeSchemaHook.apply(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // NULL-anchor insert is allowed.
+        sqlx::query("INSERT INTO view_schema(warehouse_id, view_id, schema_id) VALUES ($1,$2,$3)")
+            .bind(*wh)
+            .bind(view_uuid)
+            .bind(998_i32)
+            .execute(&pool)
+            .await
+            .expect("NULL-schema anchor insert on view_schema must be allowed under freeze");
+
+        // JSONB schema write is rejected with SQLSTATE 55000.
+        let err = sqlx::query(
+            "INSERT INTO view_schema(warehouse_id, view_id, schema_id, schema) VALUES ($1,$2,$3,$4)",
+        )
+        .bind(*wh)
+        .bind(view_uuid)
+        .bind(999_i32)
+        .bind(serde_json::json!({"type":"struct","schema-id":999,"fields":[]}))
+        .execute(&pool)
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            err.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("55000"),
+            "legacy JSONB view_schema write must fail with SQLSTATE 55000"
+        );
+    }
+
+    // ── G. >threshold batched backfill ───────────────────────────────────────
+
+    /// Seed more than FIELD_FLUSH_THRESHOLD (10_000) total field rows across
+    /// multiple table_schema entries, run the backfill hook, assert every field
+    /// round-trips. This exercises the mid-loop flush + SchemaFieldBatch array-clear
+    /// reuse path.
+    ///
+    /// Strategy: 1 seed field + 100 schemas × 100 fields = 10_001 field rows (> FIELD_FLUSH_THRESHOLD).
+    #[sqlx::test]
+    async fn batched_backfill_exceeds_flush_threshold(pool: PgPool) {
+        // We need a real table row as a FK anchor. Use `create_table_with_schema` to
+        // create one seed table, then insert extra schema versions directly.
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let seed_schema = Schema::builder()
+            .with_schema_id(0)
+            .with_fields(vec![
+                NestedField::required(1, "seed", IcebergType::Primitive(PrimitiveType::Long))
+                    .into(),
+            ])
+            .build()
+            .unwrap();
+        let (table_id, _) =
+            crate::tabular::table::tests::create_table_with_schema(state.clone(), wh, seed_schema)
+                .await;
+
+        // Wipe schema_field rows for the seed schema so the backfill re-populates them cleanly.
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2")
+            .bind(*wh)
+            .bind(*table_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Restore the seed schema's JSONB and add 100 extra schema versions, each with 100 fields.
+        // Total field rows: seed(1) + 100×100 = 10_001, which exceeds FIELD_FLUSH_THRESHOLD=10_000.
+        let seed_jsonb = serde_json::json!({"type":"struct","schema-id":0,"fields":[
+            {"id":1,"name":"seed","required":true,"type":"long"}
+        ]});
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("UPDATE table_schema SET schema=$3 WHERE warehouse_id=$1 AND table_id=$2 AND schema_id=0")
+            .bind(*wh)
+            .bind(*table_id)
+            .bind(&seed_jsonb)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        for schema_ver in 1_i32..=100 {
+            let fields: Vec<serde_json::Value> = (0_i32..100)
+                .map(|i| {
+                    let fid = schema_ver * 100 + i + 2; // unique field_id across all schemas
+                    json!({"id": fid, "name": format!("f{fid}"), "required": false, "type": "long"})
+                })
+                .collect();
+            let schema_jsonb = json!({
+                "type": "struct",
+                "schema-id": schema_ver,
+                "fields": fields
+            });
+            sqlx::query(
+                "INSERT INTO table_schema(warehouse_id, table_id, schema_id, schema) VALUES ($1,$2,$3,$4)",
+            )
+            .bind(*wh)
+            .bind(*table_id)
+            .bind(schema_ver)
+            .bind(&schema_jsonb)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        // Run the backfill. This must exercise at least one mid-loop flush.
+        let mut tx = pool.begin().await.unwrap();
+        super::backfill(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // schema_field must have exactly 10_001 rows: 1 (seed) + 100 schemas × 100 fields.
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(total, 10_001, "backfill must persist all 10_001 field rows");
+
+        // Spot-check: the seed field (field_id=1) round-trips.
+        let sf_rows = sqlx::query!(
+            r#"SELECT schema_id, field_id, name FROM schema_field
+               WHERE warehouse_id=$1 AND tabular_id=$2 AND schema_id=0"#,
+            *wh,
+            *table_id,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            sf_rows.len(),
+            1,
+            "seed schema must have exactly 1 field row"
+        );
+        assert_eq!(sf_rows[0].field_id, 1);
+        assert_eq!(sf_rows[0].name, "seed");
+
+        // Spot-check: schema_ver=100 must have 100 field rows.
+        let last_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2 AND schema_id=100",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            last_count, 100,
+            "last schema version must have 100 field rows"
+        );
+    }
+}

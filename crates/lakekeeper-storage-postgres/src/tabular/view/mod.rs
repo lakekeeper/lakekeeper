@@ -1458,4 +1458,387 @@ pub mod tests {
             project_id,
         )
     }
+
+    // Build a ViewMetadata whose schemas list has the given (schema_id, field_ids) pairs.
+    // Each schema version is referenced by its own view_version; current_version_id points at
+    // the last version. The metadata carries a single SQL representation per version.
+    fn view_metadata_with_schemas(
+        view_uuid: Uuid,
+        location: &Location,
+        schemas: &[(i32, Vec<i32>)],
+    ) -> ViewMetadata {
+        assert!(!schemas.is_empty());
+
+        let schemas_json: Vec<serde_json::Value> = schemas
+            .iter()
+            .map(|(sid, fids)| {
+                let fields: Vec<serde_json::Value> = fids
+                    .iter()
+                    .map(|fid| {
+                        json!({
+                            "id": fid,
+                            "name": format!("col_{fid}"),
+                            "required": false,
+                            "type": "long"
+                        })
+                    })
+                    .collect();
+                json!({"schema-id": sid, "type": "struct", "fields": fields})
+            })
+            .collect();
+
+        let versions_json: Vec<serde_json::Value> = schemas
+            .iter()
+            .enumerate()
+            .map(|(i, (sid, _))| {
+                let version_id = i as i64 + 1;
+                json!({
+                    "version-id": version_id,
+                    "schema-id": sid,
+                    "timestamp-ms": 1_719_559_079_091_usize + i,
+                    "summary": {"engine-name": "test"},
+                    "representations": [{"type": "sql", "sql": "SELECT 1", "dialect": "spark"}],
+                    "default-namespace": []
+                })
+            })
+            .collect();
+
+        let current_version_id = schemas.len() as i64;
+        let version_log_json: Vec<serde_json::Value> = schemas
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                json!({"version-id": i as i64 + 1, "timestamp-ms": 1_719_559_079_095_usize + i})
+            })
+            .collect();
+
+        serde_json::from_value(json!({
+            "format-version": 1,
+            "view-uuid": view_uuid.to_string(),
+            "location": location.as_str(),
+            "current-version-id": current_version_id,
+            "versions": versions_json,
+            "version-log": version_log_json,
+            "schemas": schemas_json,
+            "properties": {}
+        }))
+        .unwrap()
+    }
+
+    // ── D. Normalized schema round-trip and spine tests ──────────────────────
+
+    /// Create a view with a non-trivial schema (nested struct + list), load it,
+    /// and assert the loaded `ViewMetadata.schemas` equals the input exactly.
+    #[sqlx::test]
+    async fn normalized_create_load_roundtrip(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns_roundtrip".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id =
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
+
+        let view_uuid = Uuid::now_v7();
+        let location = format!("s3://bucket/view_{view_uuid}/data")
+            .parse::<Location>()
+            .unwrap();
+        let metadata_location = format!("s3://bucket/view_{view_uuid}/meta/v1.json")
+            .parse::<Location>()
+            .unwrap();
+
+        // Nested struct (field 2 is a struct containing fields 3,4) + list (field 5 is a list
+        // whose element is field 6). Field 1 is a top-level primitive identifier.
+        let request: ViewMetadata = serde_json::from_value(json!({
+            "format-version": 1,
+            "view-uuid": view_uuid.to_string(),
+            "location": location.as_str(),
+            "current-version-id": 1,
+            "versions": [{
+                "version-id": 1,
+                "schema-id": 0,
+                "timestamp-ms": 1_719_559_079_091_usize,
+                "summary": {"engine-name": "test"},
+                "representations": [{"type": "sql", "sql": "SELECT 1", "dialect": "spark"}],
+                "default-namespace": []
+            }],
+            "version-log": [{"version-id": 1, "timestamp-ms": 1_719_559_079_095_usize}],
+            "schemas": [{
+                "schema-id": 0,
+                "type": "struct",
+                "identifier-field-ids": [1],
+                "fields": [
+                    {"id": 1, "name": "id",   "required": true,  "type": "long"},
+                    {"id": 2, "name": "addr", "required": false, "type": {
+                        "type": "struct",
+                        "fields": [
+                            {"id": 3, "name": "street", "required": true,  "type": "string"},
+                            {"id": 4, "name": "city",   "required": false, "type": "string"}
+                        ]
+                    }},
+                    {"id": 5, "name": "tags", "required": false, "type": {
+                        "type": "list",
+                        "element-id": 6,
+                        "element": "string",
+                        "element-required": true
+                    }}
+                ]
+            }],
+            "properties": {}
+        }))
+        .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        super::create_view(
+            warehouse_id,
+            namespace_id,
+            &metadata_location,
+            &mut tx,
+            "roundtrip_view",
+            &request,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let loaded = load_view(warehouse_id, view_uuid.into(), false, &mut tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // ViewMetadata is Eq with HashMap-backed versions+schemas, so struct equality is
+        // order-insensitive; comparing serialized JSON would be flaky on HashMap iteration order.
+        assert_eq!(
+            loaded.metadata.as_ref(),
+            &request,
+            "loaded ViewMetadata must equal created metadata"
+        );
+    }
+
+    /// Commit that adds a schema while retaining existing ones: spine stability.
+    /// Create a view with schema A (field_ids {1,2,3}); commit NEW metadata that
+    /// retains A and adds schema B (field_id 4). Assert column_identity exactly
+    /// equals {1,2,3,4} and both schema versions assemble correctly.
+    #[sqlx::test]
+    async fn normalized_commit_adds_schema_stable_spine(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns_spine".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id =
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
+
+        let view_uuid = Uuid::now_v7();
+        let location = format!("s3://bucket/view_{view_uuid}/data")
+            .parse::<Location>()
+            .unwrap();
+        let meta_v1: Location = format!("s3://bucket/view_{view_uuid}/meta/v1.json")
+            .parse()
+            .unwrap();
+
+        // Schema A: field_ids {1, 2, 3}
+        let initial = view_metadata_with_schemas(view_uuid, &location, &[(0, vec![1, 2, 3])]);
+        let mut tx = pool.begin().await.unwrap();
+        super::create_view(
+            warehouse_id,
+            namespace_id,
+            &meta_v1,
+            &mut tx,
+            "spine_view",
+            &initial,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // After create: column_identity should have exactly {1,2,3}
+        let mut ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+        )
+        .bind(*warehouse_id)
+        .bind(view_uuid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "initial column_identity must be {{1,2,3}}"
+        );
+
+        // Commit: schema A retained (field_ids {1,2,3}) + new schema B (field_ids {1,2,3,4})
+        let meta_v2: Location = format!("s3://bucket/view_{view_uuid}/meta/v2.json")
+            .parse()
+            .unwrap();
+        let updated = view_metadata_with_schemas(
+            view_uuid,
+            &location,
+            &[(0, vec![1, 2, 3]), (1, vec![1, 2, 3, 4])],
+        );
+        let mut tx = pool.begin().await.unwrap();
+        super::commit_existing_view(
+            warehouse_id,
+            namespace_id,
+            &meta_v2,
+            &meta_v1,
+            &mut tx,
+            &updated,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // column_identity must be exactly {1,2,3,4} — field 4 added, {1,2,3} survived.
+        ids = sqlx::query_scalar(
+            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+        )
+        .bind(*warehouse_id)
+        .bind(view_uuid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3, 4],
+            "after add-schema commit column_identity must be {{1,2,3,4}}"
+        );
+
+        // Both schema versions must assemble correctly via load.
+        let mut tx = pool.begin().await.unwrap();
+        let loaded = load_view(warehouse_id, view_uuid.into(), false, &mut tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let schemas: std::collections::HashMap<i32, _> = loaded
+            .metadata
+            .schemas_iter()
+            .map(|s| (s.schema_id(), s.clone()))
+            .collect();
+        assert_eq!(schemas.len(), 2, "must have both schema versions");
+        let schema_a = schemas.get(&0).expect("schema A (id=0) must be present");
+        let a_fields: Vec<i32> = {
+            let mut v: Vec<i32> = schema_a.as_struct().fields().iter().map(|f| f.id).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            a_fields,
+            vec![1, 2, 3],
+            "schema A must have field_ids {{1,2,3}}"
+        );
+        let schema_b = schemas.get(&1).expect("schema B (id=1) must be present");
+        let b_fields: Vec<i32> = {
+            let mut v: Vec<i32> = schema_b.as_struct().fields().iter().map(|f| f.id).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(
+            b_fields,
+            vec![1, 2, 3, 4],
+            "schema B must have field_ids {{1,2,3,4}}"
+        );
+    }
+
+    /// Commit that drops a schema: GC reaps column_identity for removed fields.
+    /// Create view with schemas {A(fields 1,2), B(fields 1,3)}. Commit retaining
+    /// only A. Assert column_identity == {1,2} and schema_field for B is gone.
+    #[sqlx::test]
+    async fn normalized_commit_drops_schema_gc(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace = NamespaceIdent::from_vec(vec!["ns_gc".to_string()]).unwrap();
+        initialize_namespace(state.clone(), warehouse_id, &namespace, None).await;
+        let namespace_id =
+            crate::tabular::table::tests::get_namespace_id(state.clone(), warehouse_id, &namespace)
+                .await;
+
+        let view_uuid = Uuid::now_v7();
+        let location = format!("s3://bucket/view_{view_uuid}/data")
+            .parse::<Location>()
+            .unwrap();
+        let meta_v1: Location = format!("s3://bucket/view_{view_uuid}/meta/v1.json")
+            .parse()
+            .unwrap();
+
+        // Create with schema A (fields 1,2) + schema B (fields 1,3).
+        let initial =
+            view_metadata_with_schemas(view_uuid, &location, &[(0, vec![1, 2]), (1, vec![1, 3])]);
+        let mut tx = pool.begin().await.unwrap();
+        super::create_view(
+            warehouse_id,
+            namespace_id,
+            &meta_v1,
+            &mut tx,
+            "gc_view",
+            &initial,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // After create: column_identity == {1,2,3} (field 1 shared, 2 in A only, 3 in B only).
+        let mut ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+        )
+        .bind(*warehouse_id)
+        .bind(view_uuid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "before GC column_identity must be {{1,2,3}}"
+        );
+
+        // Commit metadata retaining only schema A.
+        let meta_v2: Location = format!("s3://bucket/view_{view_uuid}/meta/v2.json")
+            .parse()
+            .unwrap();
+        let only_a = view_metadata_with_schemas(view_uuid, &location, &[(0, vec![1, 2])]);
+        let mut tx = pool.begin().await.unwrap();
+        super::commit_existing_view(
+            warehouse_id,
+            namespace_id,
+            &meta_v2,
+            &meta_v1,
+            &mut tx,
+            &only_a,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // column_identity must be exactly {1,2} — field 3 reaped by GC.
+        ids = sqlx::query_scalar(
+            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+        )
+        .bind(*warehouse_id)
+        .bind(view_uuid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ids,
+            vec![1, 2],
+            "after GC column_identity must be exactly {{1,2}}"
+        );
+
+        // schema_field rows for schema_id=1 (schema B) must be gone.
+        let b_field_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2 AND schema_id=1",
+        )
+        .bind(*warehouse_id)
+        .bind(view_uuid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            b_field_count, 0,
+            "schema_field rows for schema B must be reaped"
+        );
+    }
 }
