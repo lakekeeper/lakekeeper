@@ -25,6 +25,22 @@ RUST_LOG=lakekeeper::service::events=trace   # Trace only the events module
 
 For production environments, use `RUST_LOG=info` to avoid excessive log volume while capturing all important operational events. You can optionally reduce noise from verbose dependencies (e.g., `RUST_LOG=info,sqlx=warn`).
 
+### OpenTelemetry traces
+
+The `serve` command exports traces over OTLP HTTP/protobuf when `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set; without either variable, Lakekeeper retains its existing JSON-only tracing behavior.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_SERVICE_NAME=lakekeeper \
+lakekeeper serve
+```
+
+Lakekeeper honors the standard OTLP headers and timeout environment variables, `OTEL_SERVICE_NAME`, and `OTEL_RESOURCE_ATTRIBUTES`. Incoming W3C `traceparent` and `tracestate` headers become the parent of the HTTP request span. PostgreSQL transaction and OpenFGA client-operation spans are exported as children, but trace context is not injected into the PostgreSQL wire protocol or OpenFGA gRPC metadata.
+
+`RUST_LOG` filters JSON log output only. OTLP instrumentation captures spans at `INFO` and above; use the standard `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` variables to control trace sampling.
+
+An invalid exporter configuration prevents the server from starting. Export failures after startup are reported by the OpenTelemetry SDK and do not terminate the server.
+
 ### Audit Logs and RUST_LOG
 
 Audit logs are **enabled by default**. They will appear when `RUST_LOG` is set to `info` or higher (since audit logs are emitted at INFO level).

@@ -36,6 +36,7 @@ use openfga_client::{
     },
     tonic,
 };
+use tracing::Instrument as _;
 #[cfg(feature = "open-api")]
 use utoipa::OpenApi as _;
 
@@ -1140,6 +1141,16 @@ impl OpenFGAAuthorizer {
     /// A convenience wrapper around write.
     /// All writes happen in a single transaction.
     /// At most 100 writes can be performed in a single transaction.
+    #[tracing::instrument(
+        name = "openfga.v1.OpenFGAService/Write",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            rpc.system.name = "grpc",
+            rpc.method = "openfga.v1.OpenFGAService/Write"
+        )
+    )]
     pub(crate) async fn write(
         &self,
         writes: impl Into<Option<Vec<TupleKey>>>,
@@ -1154,6 +1165,17 @@ impl OpenFGAAuthorizer {
     /// A convenience wrapper around write.
     /// All writes happen in a single transaction.
     /// At most 100 writes can be performed in a single transaction.
+    #[tracing::instrument(
+        name = "openfga.v1.OpenFGAService/Write",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            rpc.system.name = "grpc",
+            rpc.method = "openfga.v1.OpenFGAService/Write",
+            lakekeeper.openfga.consistency = "higher"
+        )
+    )]
     async fn write_higher_consistency(
         &self,
         writes: impl Into<Option<Vec<TupleKey>>>,
@@ -1172,6 +1194,16 @@ impl OpenFGAAuthorizer {
     ///
     /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
     /// [`openfga_client::client::OpenFgaClient::read`].
+    #[tracing::instrument(
+        name = "openfga.v1.OpenFGAService/Read",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            rpc.system.name = "grpc",
+            rpc.method = "openfga.v1.OpenFGAService/Read"
+        )
+    )]
     pub(crate) async fn read(
         &self,
         page_size: i32,
@@ -1194,6 +1226,17 @@ impl OpenFGAAuthorizer {
     ///
     /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
     /// [`openfga_client::client::OpenFgaClient::read`].
+    #[tracing::instrument(
+        name = "openfga.v1.OpenFGAService/Read",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            rpc.system.name = "grpc",
+            rpc.method = "openfga.v1.OpenFGAService/Read",
+            lakekeeper.openfga.consistency = "higher"
+        )
+    )]
     async fn read_higher_consistency(
         &self,
         page_size: i32,
@@ -1211,6 +1254,7 @@ impl OpenFGAAuthorizer {
     }
 
     /// Read all tuples for a given request
+    #[tracing::instrument(name = "openfga.read_all", level = "info", skip_all)]
     pub(crate) async fn read_all(
         &self,
         tuple_key: Option<impl Into<ReadRequestTupleKey>>,
@@ -1218,10 +1262,21 @@ impl OpenFGAAuthorizer {
         self.client
             .read_all_pages(tuple_key, 100, 500)
             .await
+            .inspect_err(|e| tracing::error!(error = ?e, "OpenFGA read-all operation failed"))
             .map_err(|e| OpenFGABackendUnavailable::from(Box::new(e)))
     }
 
     /// A convenience wrapper around check
+    #[tracing::instrument(
+        name = "openfga.v1.OpenFGAService/Check",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            rpc.system.name = "grpc",
+            rpc.method = "openfga.v1.OpenFGAService/Check"
+        )
+    )]
     pub(crate) async fn check(
         &self,
         tuple_key: impl Into<CheckRequestTupleKey>,
@@ -1275,6 +1330,7 @@ impl OpenFGAAuthorizer {
             .collect())
     }
     /// A convenience wrapper around `batch_check`.
+    #[tracing::instrument(name = "openfga.batch_check", level = "info", skip_all)]
     async fn batch_check(
         &self,
         tuple_keys: Vec<impl Into<CheckRequestTupleKey>>,
@@ -1293,8 +1349,18 @@ impl OpenFGAAuthorizer {
             .collect();
 
         let chunks: Vec<_> = items.chunks(AUTH_CONFIG.max_batch_check_size).collect();
-        let chunked_raw_results =
-            try_join_all(chunks.iter().map(|&c| self.client.batch_check(c.to_vec()))).await?;
+        let chunked_raw_results = try_join_all(chunks.iter().map(|&chunk| {
+            self.client
+                .batch_check(chunk.to_vec())
+                .instrument(tracing::info_span!(
+                    "openfga.v1.OpenFGAService/BatchCheck",
+                    otel.kind = "client",
+                    rpc.system.name = "grpc",
+                    rpc.method = "openfga.v1.OpenFGAService/BatchCheck"
+                ))
+        }))
+        .await
+        .inspect_err(|e| tracing::error!(error = ?e, "OpenFGA batch-check operation failed"))?;
 
         let mut results = vec![false; num_tuples];
         let mut idxs_seen = vec![false; num_tuples];
@@ -1351,6 +1417,7 @@ impl OpenFGAAuthorizer {
     }
 
     /// Returns Ok(()) only if not tuples are associated in any relation with the given object.
+    #[tracing::instrument(name = "openfga.relation_exists", level = "info", skip_all)]
     async fn require_no_relations(&self, object: &impl OpenFgaEntity) -> AuthorizerResult<()> {
         let openfga_tpye = object.openfga_type().clone();
         let fga_object = object.to_openfga();
@@ -1361,6 +1428,13 @@ impl OpenFGAAuthorizer {
         let relations_exist = self
             .client_higher_consistency
             .exists_relation_to(&fga_object)
+            .instrument(tracing::info_span!(
+                "openfga.v1.OpenFGAService/Read",
+                otel.kind = "client",
+                rpc.system.name = "grpc",
+                rpc.method = "openfga.v1.OpenFGAService/Read",
+                lakekeeper.openfga.consistency = "higher"
+            ))
             .await
             .map_err(|e| {
                 tracing::error!("Failed to check if relations to {fga_object} exists: {e}");
@@ -1494,6 +1568,7 @@ impl OpenFGAAuthorizer {
         Ok(())
     }
 
+    #[tracing::instrument(name = "openfga.delete_relations", level = "info", skip_all)]
     async fn delete_own_relations(&self, object: &impl OpenFgaEntity) -> OpenFGAResult<()> {
         let object_openfga = object.to_openfga();
         self.client_higher_consistency
@@ -1504,6 +1579,16 @@ impl OpenFGAAuthorizer {
     }
 
     /// A convenience wrapper around `client.list_objects`
+    #[tracing::instrument(
+        name = "openfga.v1.OpenFGAService/ListObjects",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            rpc.system.name = "grpc",
+            rpc.method = "openfga.v1.OpenFGAService/ListObjects"
+        )
+    )]
     async fn list_objects(
         &self,
         r#type: impl Into<String>,
@@ -1514,6 +1599,7 @@ impl OpenFGAAuthorizer {
         self.client
             .list_objects(r#type, relation, user, None, None)
             .await
+            .inspect_err(|e| tracing::error!(error = ?e, "OpenFGA list-objects operation failed"))
             .map_err(Into::into)
             .map(|response| response.into_inner().objects)
     }
