@@ -791,10 +791,10 @@ The app registration this provider authenticates as needs the Microsoft Graph **
 
 | Method | Fields |
 |--------|--------|
-| `secret`            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
-| `certificate`       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
-| `managed_identity`  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
-| `workload_identity` | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
+| <nobr>`secret`</nobr>            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
+| <nobr>`certificate`</nobr>       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
+| <nobr>`managed_identity`</nobr>  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
+| <nobr>`workload_identity`</nobr> | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
 
 **Cloud / endpoints:**
 
@@ -808,10 +808,10 @@ Built-in cloud endpoints:
 
 | Cloud | Graph base | Authority |
 |-------|------------|-----------|
-| `public`        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
-| `us_government` | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
-| `china`         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
-| `custom`        | *(none — set `…__GRAPH_BASE`)*             | *(none — set `…__AUTHORITY_HOST`)*  |
+| <nobr>`public`</nobr>        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
+| <nobr>`us_government`</nobr> | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
+| <nobr>`china`</nobr>         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
+| <nobr>`custom`</nobr>        | *(none — set `…__GRAPH_BASE`)*             | *(none — set `…__AUTHORITY_HOST`)*  |
 
 **HTTP timeouts:**
 
