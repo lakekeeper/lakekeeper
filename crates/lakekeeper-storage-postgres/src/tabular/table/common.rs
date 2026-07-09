@@ -874,12 +874,9 @@ pub(crate) async fn remove_table_encryption_keys(
     Ok(())
 }
 
-/// Accumulator for `schema_field` + `column_identity` rows across one or more schemas, flushed as
-/// a single bulk write. The 14 parallel arrays are the query's UNNEST columns; they are kept
-/// length-aligned by construction: every push appends to all of them in one loop (GUARD 1).
-///
-/// Reusable across flushes: `flush` clears all arrays so the same batch can be filled again (used
-/// by the migration backfill to bound statement size independent of the read page).
+/// Accumulator for a bulk `schema_field` + `column_identity` write. The 14 parallel arrays are the
+/// query's UNNEST columns. Reusable across flushes: `flush` clears them so the same batch can be
+/// refilled — the migration backfill uses this to bound statement size independent of the read page.
 #[derive(Default)]
 pub(crate) struct SchemaFieldBatch {
     warehouse_ids: Vec<uuid::Uuid>,
@@ -945,8 +942,8 @@ impl SchemaFieldBatch {
             return Ok(());
         }
 
-        // Belt-and-suspenders for GUARD 1: the arrays must stay length-aligned (push_schema is the
-        // only mutator and appends to all of them in lockstep).
+        // push_schema is the only mutator and appends to all 14 arrays in lockstep; this catches a
+        // future second mutator that forgets one array, which would misalign the UNNEST columns.
         let n = self.field_ids.len();
         debug_assert!(
             self.warehouse_ids.len() == n

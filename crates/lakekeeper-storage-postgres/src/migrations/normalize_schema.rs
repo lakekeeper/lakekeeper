@@ -6,7 +6,7 @@ use crate::tabular::table::{SchemaFieldBatch, normalized_schema::flatten_schema}
 
 // Flush the accumulated batch once it reaches this many field rows. Bounds statement size /
 // memory independent of the 500-row read page — wide or deeply nested schemas emit many field
-// rows per schema, so the read page alone is not a safe write cap (GUARD 3).
+// rows per schema, so the read page alone is not a safe write cap.
 const FIELD_FLUSH_THRESHOLD: usize = 10_000;
 
 pub(crate) struct NormalizeSchemaHook;
