@@ -65,14 +65,14 @@ fn migration_lock_id(database_name: &str) -> i64 {
 ///
 /// ```ignore
 /// ExtensionMigrations::builder()
-///     .name("cedar")
+///     .name("audit")
 ///     .migrator(sqlx::migrate!("./migrations"))
 ///     .build()
 /// ```
 #[allow(missing_debug_implementations)]
 #[derive(TypedBuilder)]
 pub struct ExtensionMigrations {
-    /// Short identifier for this extension (e.g. `"cedar"`, `"audit"`). Used
+    /// Short identifier for this extension (e.g. `"audit"`, `"demo"`). Used
     /// verbatim to derive the per-source migration tracker table name
     /// `ext_<name>_sqlx_migrations`.
     ///
@@ -815,7 +815,7 @@ mod tests {
         };
 
         // Accept: simple lowercase, with digits, leading underscore.
-        for ok in ["demo", "cedar", "audit2", "_internal", "a"] {
+        for ok in ["demo", "policy", "audit2", "_internal", "a"] {
             mk(ok)
                 .validate_name()
                 .unwrap_or_else(|e| panic!("`{ok}` must validate: {e}"));
