@@ -46,6 +46,16 @@ static UI_CONFIG: LazyLock<LakekeeperConsoleConfig> = LazyLock::new(|| {
             "LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH",
         )
         .unwrap_or(default_config.idp_post_logout_redirect_path),
+        idp_post_logout_redirect_url: std::env::var(
+            "LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_URL",
+        )
+        .unwrap_or(default_config.idp_post_logout_redirect_url),
+        idp_disable_post_logout_redirect: std::env::var(
+            "LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_DISABLED",
+        )
+        .ok()
+        .and_then(|v| v.to_lowercase().parse::<bool>().ok())
+        .unwrap_or(default_config.idp_disable_post_logout_redirect),
         idp_token_type: match std::env::var("LAKEKEEPER__UI__OPENID_TOKEN_TYPE").as_deref() {
             Ok("id_token") => lakekeeper_console::IdpTokenType::IdToken,
             Ok("access_token") | Err(VarError::NotPresent) => {
@@ -115,11 +125,11 @@ pub(crate) async fn static_handler(uri: Uri, headers: HeaderMap) -> impl IntoRes
         forwarded_prefix,
         lakekeeper_base_uri
     );
-    cache_item_to_response(FILE_CACHE.get_file(
+    cache_item_to_response(
         &path,
-        forwarded_prefix,
-        lakekeeper_base_uri.as_deref(),
-    ))
+        &headers,
+        FILE_CACHE.get_file(&path, forwarded_prefix, lakekeeper_base_uri.as_deref()),
+    )
 }
 
 fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
@@ -128,11 +138,80 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
         .and_then(|hv| hv.to_str().ok())
 }
 
-fn cache_item_to_response(item: CacheItem) -> Response {
+/// Browser cache policy for a static asset, keyed on its (prefix-stripped) path.
+/// Returns the `Cache-Control` value and whether to attach an `ETag` validator.
+///
+/// - `assets/*` are Vite content-hashed, so bytes never change under a given
+///   name → cache forever, never revalidate.
+/// - `duckdb/*` + the worker wrapper keep stable names but their bytes change on
+///   a DuckDB/console version bump → revalidate via `ETag` once stale (a `304`
+///   avoids re-downloading the multi-MB WASM on every LoQE open).
+/// - `index.html` (and the SPA fallback that serves it) is templated per request
+///   → always revalidate.
+fn cache_policy(path: &str) -> (&'static str, bool) {
+    if path.starts_with("assets/") {
+        ("public, max-age=31536000, immutable", false)
+    } else if path.starts_with("duckdb/") || path == "duckdb-worker-wrapper.js" {
+        ("public, max-age=3600, must-revalidate", true)
+    } else if path == "favicon.ico" {
+        ("public, max-age=86400", true)
+    } else {
+        ("no-cache", true)
+    }
+}
+
+/// Weak `ETag` over the response bytes. Weak (`W/`) because the compression
+/// layer re-encodes the body, which would break a strong byte-for-byte validator.
+fn weak_etag(data: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    format!("W/\"{:x}\"", hasher.finish())
+}
+
+/// Whether the request's `If-None-Match` matches `etag` (or is the `*` wildcard).
+fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == "*" || v.split(',').any(|t| t.trim() == etag))
+}
+
+fn cache_item_to_response(path: &str, req_headers: &HeaderMap, item: CacheItem) -> Response {
     match item {
         CacheItem::NotFound => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
         CacheItem::Found { mime, data } => {
-            ([(header::CONTENT_TYPE, mime.as_ref())], data).into_response()
+            let (cache_control, use_etag) = cache_policy(path);
+            if !use_etag {
+                return (
+                    [
+                        (header::CONTENT_TYPE, mime.as_ref()),
+                        (header::CACHE_CONTROL, cache_control),
+                    ],
+                    data,
+                )
+                    .into_response();
+            }
+            let etag = weak_etag(&data);
+            if if_none_match(req_headers, &etag) {
+                return (
+                    StatusCode::NOT_MODIFIED,
+                    [
+                        (header::CACHE_CONTROL, cache_control),
+                        (header::ETAG, etag.as_str()),
+                    ],
+                )
+                    .into_response();
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref()),
+                    (header::CACHE_CONTROL, cache_control),
+                    (header::ETAG, etag.as_str()),
+                ],
+                data,
+            )
+                .into_response()
         }
     }
 }
