@@ -75,8 +75,9 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         ArcProjectId, ArcRole, ArcRoleIdent, CachePolicy, CatalogListRolesByIdFilter,
-        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore, Result, RoleId,
-        RoleMemberKind, RoleMembershipEntry, SecretStore, State, UserId, UserMembershipEntry,
+        CatalogRoleAssignmentOps, CatalogRoleMember, CatalogRoleOps, CatalogStore,
+        ManagedRoleImmutable, Result, RoleId, RoleMemberKind, RoleMembershipEntry, SecretStore,
+        State, UserId, UserMembershipEntry,
         authz::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, AuthZUserOps, Authorizer,
             CatalogProjectAction, CatalogRoleAction, CatalogUserAction, ManagesRoleAssignments,
@@ -763,7 +764,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogRoleAction::ManageRoleAssignments,
             )
             .await;
-        let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // A provider-managed role's member list is authoritative from its role
+        // provider and converged by sync; reject manual (un)assignment via the
+        // API so it cannot drift from what the next sync would produce.
+        if authorizer
+            .managed_role_provider_ids()
+            .contains(role.ident.provider_id())
+        {
+            return Err(ErrorModel::from(ManagedRoleImmutable::new(
+                role.ident.provider_id().to_string(),
+            ))
+            .into());
+        }
 
         // Dedup on the typed identifier so a member named twice (the request is
         // already typed, so no string-spelling ambiguity remains) collapses to one
@@ -850,7 +864,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogRoleAction::ManageRoleAssignments,
             )
             .await;
-        let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // A provider-managed role's member list is maintained by provider sync;
+        // reject manual removal via the API so it cannot drift from sync.
+        if authorizer
+            .managed_role_provider_ids()
+            .contains(role.ident.provider_id())
+        {
+            return Err(ErrorModel::from(ManagedRoleImmutable::new(
+                role.ident.provider_id().to_string(),
+            ))
+            .into());
+        }
 
         let subject = parse_member(member_type, &member_id)?;
         match authorizer.role_assignments() {
