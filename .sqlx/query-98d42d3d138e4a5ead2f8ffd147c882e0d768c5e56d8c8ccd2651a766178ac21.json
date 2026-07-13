@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT warehouse_id, table_id, schema_id,\n                      schema as \"schema!: sqlx::types::Json<iceberg::spec::Schema>\"\n               FROM table_schema\n               WHERE schema IS NOT NULL\n                 AND (warehouse_id, table_id, schema_id) > ($1, $2, $3)\n               ORDER BY warehouse_id, table_id, schema_id\n               LIMIT $4",
+  "query": "SELECT warehouse_id, view_id, schema_id,\n                      schema as \"schema!: sqlx::types::Json<serde_json::Value>\"\n               FROM view_schema\n               WHERE schema IS NOT NULL\n                 AND (warehouse_id, view_id, schema_id) > ($1, $2, $3)\n               ORDER BY warehouse_id, view_id, schema_id\n               LIMIT $4",
   "describe": {
     "columns": [
       {
@@ -9,19 +9,19 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "table_schema",
+            "table": "view_schema",
             "name": "warehouse_id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "table_id",
+        "name": "view_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "table_schema",
-            "name": "table_id"
+            "table": "view_schema",
+            "name": "view_id"
           }
         }
       },
@@ -31,18 +31,18 @@
         "type_info": "Int4",
         "origin": {
           "Table": {
-            "table": "table_schema",
+            "table": "view_schema",
             "name": "schema_id"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "schema!: sqlx::types::Json<iceberg::spec::Schema>",
+        "name": "schema!: sqlx::types::Json<serde_json::Value>",
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "table_schema",
+            "table": "view_schema",
             "name": "schema"
           }
         }
@@ -63,5 +63,5 @@
       false
     ]
   },
-  "hash": "598d7408ad030b700fc1be873efc93461551e2301230cd109db2bc561b345405"
+  "hash": "98d42d3d138e4a5ead2f8ffd147c882e0d768c5e56d8c8ccd2651a766178ac21"
 }

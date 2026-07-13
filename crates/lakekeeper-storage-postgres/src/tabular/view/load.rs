@@ -100,11 +100,32 @@ pub(crate) async fn load_view(
             is_identifier: r.is_identifier,
         })
         .collect();
-    let schemas = normalized_schema::assemble_schemas(rows).map_err(|e| {
-        RequiredViewComponentMissing::new(warehouse_id, view_id).append_detail(format!(
-            "Failed to assemble view schemas from schema_field rows: {e}"
-        ))
-    })?;
+    // Anchor-driven assembly: reconstruct a legitimately-empty schema (anchor present, no field
+    // rows) instead of dropping it. Only seed anchors NOT referenced by any version — a
+    // version-referenced schema that produced no rows stays absent so `ViewMetadata::try_from_parts`
+    // fails loud (lost rows), rather than silently loading it as empty.
+    let version_referenced: std::collections::HashSet<i32> =
+        version_schema_ids.iter().flatten().copied().collect();
+    let schema_anchor_rows = sqlx::query!(
+        r#"SELECT schema_id FROM view_schema WHERE warehouse_id = $1 AND view_id = $2"#,
+        *warehouse_id,
+        *view_id,
+    )
+    .fetch_all(&mut **conn)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+    let seed_empty_schema_ids: Vec<i32> = schema_anchor_rows
+        .into_iter()
+        .map(|r| r.schema_id)
+        .filter(|id| !version_referenced.contains(id))
+        .collect();
+
+    let schemas =
+        normalized_schema::assemble_schemas(rows, &seed_empty_schema_ids).map_err(|e| {
+            RequiredViewComponentMissing::new(warehouse_id, view_id).append_detail(format!(
+                "Failed to assemble view schemas from schema_field rows: {e}"
+            ))
+        })?;
 
     let properties = prepare_properties(view_properties_keys, view_properties_values);
     let version_log = prepare_version_log(version_log_ids, version_log_timestamps);

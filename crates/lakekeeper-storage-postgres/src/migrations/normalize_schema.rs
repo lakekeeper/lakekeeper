@@ -39,19 +39,31 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
         .await?;
     backfill(txn).await?;
     // Allow the normalized write path (which inserts anchors with schema = NULL): drop the legacy
-    // column's NOT NULL. This takes ACCESS EXCLUSIVE, but only briefly and *after* the long backfill,
-    // so reads stall only for the migration tail.
+    // column's NOT NULL. DROP NOT NULL needs ACCESS EXCLUSIVE, which conflicts with concurrent readers
+    // (maintenance mode still serves GETs) and would queue every new query behind it — a catalog-wide
+    // stall bounded only by the slowest in-flight reader. Cap the wait with a short lock_timeout so it
+    // fails fast instead; the whole migration then rolls back and retries on the next boot. Reset to
+    // unbounded afterwards so it does not clip later statements in this transaction.
+    sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut **txn)
+        .await?;
     sqlx::query("ALTER TABLE table_schema ALTER COLUMN schema DROP NOT NULL")
         .execute(&mut **txn)
         .await?;
+    sqlx::query("SET LOCAL lock_timeout = '0'")
+        .execute(&mut **txn)
+        .await?;
     // Freeze legacy JSONB schema writes: reject any write that sets a non-null `schema` (an old-pod
-    // write during the brief roll-over) while permitting the new NULL-anchor writes. Rejected writes
-    // fail loud (SQLSTATE object_not_in_prerequisite_state) and are retried against a new pod.
+    // write during the brief roll-over) while permitting the new NULL-anchor writes. Blanking an
+    // existing `schema` back to NULL is also permitted, so a later cleanup migration can clear the
+    // column before dropping it. Rejected writes fail loud (SQLSTATE object_not_in_prerequisite_state)
+    // and are retried against a new pod.
     sqlx::query(
         r#"CREATE FUNCTION reject_schema_write() RETURNS trigger LANGUAGE plpgsql AS $f$
            BEGIN
              IF (TG_OP = 'INSERT' AND NEW.schema IS NOT NULL)
-                OR (TG_OP = 'UPDATE' AND NEW.schema IS DISTINCT FROM OLD.schema) THEN
+                OR (TG_OP = 'UPDATE' AND NEW.schema IS NOT NULL
+                    AND NEW.schema IS DISTINCT FROM OLD.schema) THEN
                RAISE EXCEPTION 'schema JSONB writes are frozen after the normalized-schema migration'
                  USING ERRCODE = 'object_not_in_prerequisite_state';
              END IF;
@@ -74,7 +86,14 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
         .execute(&mut **txn)
         .await?;
     backfill_view_schemas(txn).await?;
+    // Same lock_timeout backstop as the table DROP NOT NULL above (bounds the ACCESS EXCLUSIVE wait).
+    sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut **txn)
+        .await?;
     sqlx::query("ALTER TABLE view_schema ALTER COLUMN schema DROP NOT NULL")
+        .execute(&mut **txn)
+        .await?;
+    sqlx::query("SET LOCAL lock_timeout = '0'")
         .execute(&mut **txn)
         .await?;
     sqlx::query(
@@ -96,10 +115,12 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
     let started = std::time::Instant::now();
     let (mut schemas_done, mut fields_done): (u64, u64) = (0, 0);
     loop {
-        // Keyset pagination (bounded memory) — one batch at a time, not the whole table.
+        // Keyset pagination (bounded memory) — one page at a time. Fetch the legacy JSONB as a raw
+        // Value and deserialize per row below, so a single corrupt blob names its
+        // (warehouse, table, schema) instead of aborting the migration with a context-free error.
         let rows = sqlx::query!(
             r#"SELECT warehouse_id, table_id, schema_id,
-                      schema as "schema!: sqlx::types::Json<iceberg::spec::Schema>"
+                      schema as "schema!: sqlx::types::Json<serde_json::Value>"
                FROM table_schema
                WHERE schema IS NOT NULL
                  AND (warehouse_id, table_id, schema_id) > ($1, $2, $3)
@@ -112,20 +133,15 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
         )
         .fetch_all(&mut **txn)
         .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for r in &rows {
-            let schema = &r.schema.0;
-            let flat = flatten_schema(schema).map_err(|e| {
-                anyhow::anyhow!(
-                    "flatten {}/{} schema {}: {e}",
-                    r.warehouse_id,
-                    r.table_id,
-                    r.schema_id
-                )
-            })?;
-            batch.push_schema(r.warehouse_id, r.table_id, r.schema_id, &flat);
+        let Some(l) = rows.last() else { break };
+        (last_wh, last_tbl, last_sid) = (l.warehouse_id, l.table_id, l.schema_id);
+        for r in rows {
+            let (wh, tbl, sid, schema_json) = (r.warehouse_id, r.table_id, r.schema_id, r.schema.0);
+            let schema: iceberg::spec::Schema = serde_json::from_value(schema_json)
+                .map_err(|e| anyhow::anyhow!("deserialize {wh}/{tbl} schema {sid}: {e}"))?;
+            let flat = flatten_schema(&schema)
+                .map_err(|e| anyhow::anyhow!("flatten {wh}/{tbl} schema {sid}: {e}"))?;
+            batch.push_schema(wh, tbl, sid, &flat);
             schemas_done += 1;
             fields_done += flat.len() as u64;
             if batch.field_count() >= FIELD_FLUSH_THRESHOLD {
@@ -141,8 +157,6 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
                 );
             }
         }
-        let l = rows.last().unwrap();
-        (last_wh, last_tbl, last_sid) = (l.warehouse_id, l.table_id, l.schema_id);
     }
     batch
         .flush(txn)
@@ -169,10 +183,11 @@ pub(crate) async fn backfill_view_schemas(
     let started = std::time::Instant::now();
     let (mut schemas_done, mut fields_done): (u64, u64) = (0, 0);
     loop {
-        // Keyset pagination (bounded memory) — one batch at a time, not the whole table.
+        // Keyset pagination (bounded memory) — one page at a time. Raw-Value fetch + per-row
+        // deserialize so a corrupt blob names its (warehouse, view, schema); see `backfill`.
         let rows = sqlx::query!(
             r#"SELECT warehouse_id, view_id, schema_id,
-                      schema as "schema!: sqlx::types::Json<iceberg::spec::Schema>"
+                      schema as "schema!: sqlx::types::Json<serde_json::Value>"
                FROM view_schema
                WHERE schema IS NOT NULL
                  AND (warehouse_id, view_id, schema_id) > ($1, $2, $3)
@@ -185,20 +200,15 @@ pub(crate) async fn backfill_view_schemas(
         )
         .fetch_all(&mut **txn)
         .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for r in &rows {
-            let schema = &r.schema.0;
-            let flat = flatten_schema(schema).map_err(|e| {
-                anyhow::anyhow!(
-                    "flatten view {}/{} schema {}: {e}",
-                    r.warehouse_id,
-                    r.view_id,
-                    r.schema_id
-                )
-            })?;
-            batch.push_schema(r.warehouse_id, r.view_id, r.schema_id, &flat);
+        let Some(l) = rows.last() else { break };
+        (last_wh, last_view, last_sid) = (l.warehouse_id, l.view_id, l.schema_id);
+        for r in rows {
+            let (wh, view, sid, schema_json) = (r.warehouse_id, r.view_id, r.schema_id, r.schema.0);
+            let schema: iceberg::spec::Schema = serde_json::from_value(schema_json)
+                .map_err(|e| anyhow::anyhow!("deserialize view {wh}/{view} schema {sid}: {e}"))?;
+            let flat = flatten_schema(&schema)
+                .map_err(|e| anyhow::anyhow!("flatten view {wh}/{view} schema {sid}: {e}"))?;
+            batch.push_schema(wh, view, sid, &flat);
             schemas_done += 1;
             fields_done += flat.len() as u64;
             if batch.field_count() >= FIELD_FLUSH_THRESHOLD {
@@ -214,8 +224,6 @@ pub(crate) async fn backfill_view_schemas(
                 );
             }
         }
-        let l = rows.last().unwrap();
-        (last_wh, last_view, last_sid) = (l.warehouse_id, l.view_id, l.schema_id);
     }
     batch
         .flush(txn)
@@ -377,6 +385,20 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
+        // Seed a legacy JSONB schema row (pre-freeze, column still nullable) so we can verify below
+        // that the freeze permits blanking it back to NULL.
+        sqlx::query("INSERT INTO view_schema(warehouse_id, view_id, schema_id, schema) VALUES ($1,$2,$3,$4)")
+            .bind(*wh)
+            .bind(view_uuid)
+            .bind(500_i32)
+            .bind(serde_json::json!({
+                "type": "struct", "schema-id": 500,
+                "fields": [{"id": 1, "name": "c", "required": false, "type": "int"}]
+            }))
+            .execute(&pool)
+            .await
+            .expect("pre-freeze JSONB insert should be allowed");
+
         // Install the freeze (drops NOT NULL + installs trigger).
         let mut tx = pool.begin().await.unwrap();
         NormalizeSchemaHook.apply(&mut tx).await.unwrap();
@@ -407,6 +429,23 @@ mod tests {
             err.as_database_error().and_then(|e| e.code()).as_deref(),
             Some("55000"),
             "legacy JSONB view_schema write must fail with SQLSTATE 55000"
+        );
+
+        // Blanking an existing JSONB schema back to NULL is allowed (so a later cleanup migration can
+        // clear the column before dropping it) — the freeze rejects only writes that SET a non-null.
+        let affected = sqlx::query(
+            "UPDATE view_schema SET schema = NULL WHERE warehouse_id = $1 AND view_id = $2 AND schema_id = $3",
+        )
+        .bind(*wh)
+        .bind(view_uuid)
+        .bind(500_i32)
+        .execute(&pool)
+        .await
+        .expect("blanking a JSONB schema to NULL must be allowed under the freeze")
+        .rows_affected();
+        assert_eq!(
+            affected, 1,
+            "expected exactly one JSONB schema row blanked to NULL"
         );
     }
 

@@ -180,6 +180,7 @@ impl TableQueryStruct {
     fn into_table_metadata(
         self,
         schema_rows: Vec<normalized_schema::SchemaFieldRow>,
+        expected_schema_ids: &[i32],
     ) -> Result<TableMetadata, LoadTableError> {
         fn expect<T>(
             field: Option<T>,
@@ -200,11 +201,12 @@ impl TableQueryStruct {
 
         // Schemas are assembled from the normalized `schema_field` rows (one row per field,
         // fetched separately and grouped per table), not from a JSONB blob.
-        let schemas = normalized_schema::assemble_schemas(schema_rows).map_err(|e| {
-            RequiredTableComponentMissing::new(warehouse_id, table_id).append_detail(format!(
-                "Failed to assemble schemas from schema_field rows: {e}"
-            ))
-        })?;
+        let schemas = normalized_schema::assemble_schemas(schema_rows, expected_schema_ids)
+            .map_err(|e| {
+                RequiredTableComponentMissing::new(warehouse_id, table_id).append_detail(format!(
+                    "Failed to assemble schemas from schema_field rows: {e}"
+                ))
+            })?;
 
         let partition_specs = expect(self.partition_spec_ids, "Partition Spec IDs", &info)?
             .into_iter()
@@ -393,6 +395,19 @@ impl TableQueryStruct {
         .collect::<HashMap<_, _>>();
 
         let current_schema_id = expect(self.current_schema, "Current Schema ID", &info)?;
+
+        // A zero-row current schema almost certainly means lost `schema_field` rows (a zero-column
+        // table is unusable), so fail loud rather than silently loading an empty current schema.
+        // Legitimately-empty *non-current* schemas are still reconstructed by `assemble_schemas`.
+        if let Some(s) = schemas.get(&current_schema_id)
+            && s.as_struct().fields().is_empty()
+        {
+            return Err(RequiredTableComponentMissing::new(warehouse_id, table_id)
+                .append_detail(format!(
+                    "Current schema {current_schema_id} has no fields (schema_field rows missing)."
+                ))
+                .into());
+        }
 
         let default_partition_type = default_spec
             .partition_type(schemas.get(&current_schema_id).ok_or_else(|| {
@@ -714,6 +729,25 @@ pub(crate) async fn load_tables(
         );
     }
 
+    // Authoritative schema-id set per table (the `table_schema` anchor rows). Drives assembly so a
+    // legitimately-empty schema (anchor present, no field rows) is reconstructed, not dropped.
+    let schema_anchor_rows = sqlx::query!(
+        r#"SELECT table_id, schema_id FROM table_schema
+           WHERE warehouse_id = $1 AND table_id = ANY($2)"#,
+        *warehouse_id,
+        &table_ids,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+    let mut schema_ids_by_table: HashMap<Uuid, Vec<i32>> = HashMap::new();
+    for r in schema_anchor_rows {
+        schema_ids_by_table
+            .entry(r.table_id)
+            .or_default()
+            .push(r.schema_id);
+    }
+
     table
         .into_iter()
         .map(|table| {
@@ -729,7 +763,10 @@ pub(crate) async fn load_tables(
             let schema_rows = schema_rows_by_table
                 .remove(&table.table_id)
                 .unwrap_or_default();
-            let table_metadata = table.into_table_metadata(schema_rows)?;
+            let expected_schema_ids = schema_ids_by_table
+                .remove(&table.table_id)
+                .unwrap_or_default();
+            let table_metadata = table.into_table_metadata(schema_rows, &expected_schema_ids)?;
 
             Ok(LoadTableResponse {
                 table_id,
@@ -2351,6 +2388,82 @@ pub mod tests {
         assert_eq!(
             md.schema_by_id(s1.schema_id()).unwrap().as_ref(),
             s1.as_ref()
+        );
+    }
+
+    #[sqlx::test]
+    async fn empty_non_current_schema_reloads_present(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, s0) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        // A legitimately-empty, retained non-current schema: anchor row, zero field rows.
+        let empty: Arc<Schema> = Arc::new(
+            Schema::builder()
+                .with_schema_id(s0.schema_id() + 1)
+                .build()
+                .unwrap(),
+        );
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::insert_schemas(
+            std::iter::once(&empty),
+            &mut txn,
+            wh,
+            table_id,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        let mut loaded = load_tables(
+            wh,
+            vec![table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let md = loaded.pop().unwrap().table_metadata;
+        assert_eq!(md.schemas_iter().count(), 2);
+        let empty_loaded = md
+            .schema_by_id(s0.schema_id() + 1)
+            .expect("empty non-current schema must reload, not vanish");
+        assert!(empty_loaded.as_struct().fields().is_empty());
+    }
+
+    #[sqlx::test]
+    async fn empty_current_schema_fails_loud(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, s0) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        // Simulate lost schema_field rows for the CURRENT schema (its anchor row remains).
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id = $1 AND tabular_id = $2 AND schema_id = $3")
+            .bind(*wh)
+            .bind(*table_id)
+            .bind(s0.schema_id())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        let result = load_tables(
+            wh,
+            vec![table_id],
+            false,
+            &LoadTableFilters::default(),
+            &mut txn,
+        )
+        .await;
+
+        let err = result.expect_err("current schema with no field rows must fail loud");
+        assert!(
+            format!("{err:?}").contains("has no fields"),
+            "expected a 'current schema has no fields' error, got: {err:?}"
         );
     }
 

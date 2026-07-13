@@ -313,8 +313,17 @@ fn type_kind_and_params(ty: &Type) -> (IcebergTypeKind, Option<Value>) {
 
 /// Reconstruct `Schema` values from flat `SchemaFieldRow`s. Groups by `schema_id`,
 /// builds the field tree bottom-up, then calls `Schema::builder().build()`.
+/// Reassemble the schemas for a tabular from its flat `schema_field` rows.
+///
+/// Assembly is anchor-driven: `expected_schema_ids` is the authoritative set of schema ids (the
+/// `table_schema` / `view_schema` anchor rows). Any expected id with no field rows reconstructs as
+/// an empty-fields schema — a zero-column schema is valid in Iceberg (it persists an anchor but no
+/// `schema_field` rows), so this keeps the round-trip lossless instead of silently dropping it.
+/// The caller is responsible for rejecting an *empty current schema*, where zero rows is far more
+/// likely to mean lost rows than a legitimately empty schema.
 pub fn assemble_schemas(
     rows: Vec<SchemaFieldRow>,
+    expected_schema_ids: &[SchemaId],
 ) -> Result<HashMap<SchemaId, Arc<Schema>>, SchemaNormError> {
     // Group rows by schema_id
     let mut by_schema: HashMap<i32, Vec<SchemaFieldRow>> = HashMap::new();
@@ -361,6 +370,21 @@ pub fn assemble_schemas(
         result.insert(schema_id, Arc::new(schema));
     }
 
+    // Anchor-driven: seed an empty-fields schema for any expected id that produced no rows. A valid
+    // zero-column schema persists an anchor but no `schema_field` rows, so it would otherwise vanish.
+    for &schema_id in expected_schema_ids {
+        if result.contains_key(&schema_id) {
+            continue;
+        }
+        let schema = Schema::builder()
+            .with_schema_id(schema_id)
+            .build()
+            .map_err(|e| SchemaNormError::Assembly {
+                detail: format!("empty Schema::build() failed for schema_id={schema_id}: {e}"),
+            })?;
+        result.insert(schema_id, Arc::new(schema));
+    }
+
     Ok(result)
 }
 
@@ -394,6 +418,23 @@ fn build_field<'row>(
     children: &ChildrenIndex<'row>,
 ) -> Result<NestedFieldRef, SchemaNormError> {
     let field_type = build_type(row, children)?;
+    // The pinned iceberg-rust's `Literal::try_from_json` is unimplemented (panics) for fixed/binary
+    // values, so a fixed/binary default below would panic the whole load. Such a default cannot arrive
+    // via the JSON request or JSONB backfill path (upstream deserialization hits the same gap first),
+    // but a programmatically-built schema could persist one — reject it with a typed error rather than
+    // reaching the panic. Remove once upstream implements hex encode/decode for these literals.
+    if matches!(
+        field_type,
+        Type::Primitive(PrimitiveType::Fixed(_) | PrimitiveType::Binary)
+    ) && (row.initial_default.is_some() || row.write_default.is_some())
+    {
+        return Err(SchemaNormError::Assembly {
+            detail: format!(
+                "default values for fixed/binary fields are not yet supported (field_id={})",
+                row.field_id
+            ),
+        });
+    }
     let mut field = if row.required {
         NestedField::required(row.field_id, row.name.clone(), field_type)
     } else {
@@ -743,7 +784,7 @@ mod tests {
         let flat = flatten_schema(schema).expect("flatten failed");
         let schema_id = schema.schema_id();
         let rows: Vec<SchemaFieldRow> = flat.iter().map(|f| flat_to_row(f, schema_id)).collect();
-        let assembled = assemble_schemas(rows).expect("assemble failed");
+        let assembled = assemble_schemas(rows, &[]).expect("assemble failed");
         let got = assembled
             .get(&schema_id)
             .expect("assembled schema not found");
@@ -859,8 +900,53 @@ mod tests {
             write_default: None,
             is_identifier: false,
         };
-        let err = assemble_schemas(vec![row]).unwrap_err();
+        let err = assemble_schemas(vec![row], &[]).unwrap_err();
         assert!(matches!(err, SchemaNormError::Assembly { .. }));
+    }
+
+    #[test]
+    fn fixed_and_binary_defaults_are_rejected_not_panicked() {
+        // iceberg-rust's `Literal::try_from_json` is unimplemented (panics) for fixed/binary; a
+        // persisted default of those types must surface as a typed Assembly error, not a panic.
+        let fixed_with_default = SchemaFieldRow {
+            schema_id: 1,
+            field_id: 1,
+            parent_field_id: None,
+            ordinal: 0,
+            name: "f".to_string(),
+            required: false,
+            doc: None,
+            type_kind: "fixed".to_string(),
+            type_params: Some(serde_json::json!({"length": 16})),
+            initial_default: Some(serde_json::json!("00112233445566778899aabbccddeeff")),
+            write_default: None,
+            is_identifier: false,
+        };
+        let err = assemble_schemas(vec![fixed_with_default], &[]).unwrap_err();
+        assert!(
+            matches!(err, SchemaNormError::Assembly { .. }),
+            "got {err:?}"
+        );
+
+        let binary_with_default = SchemaFieldRow {
+            schema_id: 1,
+            field_id: 1,
+            parent_field_id: None,
+            ordinal: 0,
+            name: "b".to_string(),
+            required: false,
+            doc: None,
+            type_kind: "binary".to_string(),
+            type_params: None,
+            initial_default: None,
+            write_default: Some(serde_json::json!("cafe")),
+            is_identifier: false,
+        };
+        let err = assemble_schemas(vec![binary_with_default], &[]).unwrap_err();
+        assert!(
+            matches!(err, SchemaNormError::Assembly { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -875,10 +961,32 @@ mod tests {
             .map(|f| flat_to_row(f, s1.schema_id()))
             .collect();
         rows.extend(flat2.iter().map(|f| flat_to_row(f, s2.schema_id())));
-        let assembled = assemble_schemas(rows).unwrap();
+        let assembled = assemble_schemas(rows, &[]).unwrap();
         assert_eq!(assembled.len(), 2);
         assert_eq!(assembled.get(&s1.schema_id()).unwrap().as_ref(), &s1);
         assert_eq!(assembled.get(&s2.schema_id()).unwrap().as_ref(), &s2);
+    }
+
+    #[test]
+    fn assemble_seeds_empty_schema_for_expected_id_without_rows() {
+        // schema 5 has fields (reconstructed from rows); schema 7 is an expected anchor with no
+        // field rows -> reconstructed as an empty-fields schema instead of vanishing.
+        let s = flat_schema();
+        let rows: Vec<SchemaFieldRow> = flatten_schema(&s)
+            .unwrap()
+            .iter()
+            .map(|f| flat_to_row(f, 5))
+            .collect();
+
+        let assembled = assemble_schemas(rows, &[5, 7]).unwrap();
+
+        assert_eq!(assembled.len(), 2);
+        assert!(!assembled.get(&5).unwrap().as_struct().fields().is_empty());
+        let empty = assembled
+            .get(&7)
+            .expect("expected anchor 7 must be seeded as an empty schema");
+        assert_eq!(empty.schema_id(), 7);
+        assert!(empty.as_struct().fields().is_empty());
     }
 
     #[test]
