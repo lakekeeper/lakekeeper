@@ -197,7 +197,10 @@ jobs:
         with:
           node-version: 24
       - name: Build TS Client
-        run: npx @hey-api/openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
+        # Pin both the generator and typescript: typescript 7.x (native rewrite)
+        # dropped ts.SyntaxKind, which openapi-ts relies on, and the tool's dep
+        # range would otherwise float to it and crash codegen.
+        run: npx -p @hey-api/openapi-ts@0.98.2 -p typescript@5.9.3 openapi-ts -i docs/docs/api/management-open-api.yaml -o src/gen/management -c @hey-api/client-fetch
 
   test:
     runs-on: ubuntu-24.04
