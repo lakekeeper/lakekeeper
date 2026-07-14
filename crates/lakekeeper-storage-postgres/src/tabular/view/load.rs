@@ -102,8 +102,9 @@ pub(crate) async fn load_view(
         .collect();
     // Anchor-driven assembly: reconstruct a legitimately-empty schema (anchor present, no field
     // rows) instead of dropping it. Only seed anchors NOT referenced by any version — a
-    // version-referenced schema that produced no rows stays absent so `ViewMetadata::try_from_parts`
-    // fails loud (lost rows), rather than silently loading it as empty.
+    // version-referenced schema that produced no rows stays absent, so if the *current* version
+    // references it `ViewMetadata::try_from_parts` fails loud (lost rows) rather than loading it as
+    // empty. (A non-current version referencing a missing schema still surfaces during validation.)
     let version_referenced: std::collections::HashSet<i32> =
         version_schema_ids.iter().flatten().copied().collect();
     let schema_anchor_rows = sqlx::query!(

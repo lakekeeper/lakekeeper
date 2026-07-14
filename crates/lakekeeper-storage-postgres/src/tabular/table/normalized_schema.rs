@@ -311,8 +311,6 @@ fn type_kind_and_params(ty: &Type) -> (IcebergTypeKind, Option<Value>) {
 
 // ─── assemble_schemas ────────────────────────────────────────────────────────
 
-/// Reconstruct `Schema` values from flat `SchemaFieldRow`s. Groups by `schema_id`,
-/// builds the field tree bottom-up, then calls `Schema::builder().build()`.
 /// Reassemble the schemas for a tabular from its flat `schema_field` rows.
 ///
 /// Assembly is anchor-driven: `expected_schema_ids` is the authoritative set of schema ids (the

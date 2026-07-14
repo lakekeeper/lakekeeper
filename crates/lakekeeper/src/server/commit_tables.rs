@@ -51,8 +51,15 @@ pub(crate) fn ensure_schema_content_stable<'a>(
         let Some(p) = previous.get(&n.schema_id()) else {
             continue;
         };
-        if p.as_struct() != n.as_struct() || !p.identifier_field_ids().eq(n.identifier_field_ids())
-        {
+        // Compare identifier fields as a SET: `identifier_field_ids()` iterates a randomized HashSet,
+        // so an order-sensitive comparison would spuriously differ for the same set. Sort both.
+        let (mut p_ids, mut n_ids): (Vec<i32>, Vec<i32>) = (
+            p.identifier_field_ids().collect(),
+            n.identifier_field_ids().collect(),
+        );
+        p_ids.sort_unstable();
+        n_ids.sort_unstable();
+        if p.as_struct() != n.as_struct() || p_ids != n_ids {
             return Err(ErrorModel::bad_request(
                 format!(
                     "Commit would reassign schema id {} to different content; schema ids are immutable.",
@@ -252,7 +259,10 @@ mod tests {
     };
     use iceberg_ext::spec::TableMetadataBuilder;
 
-    use super::{AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed};
+    use super::{
+        AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed,
+        ensure_schema_content_stable,
+    };
 
     fn test_metadata_with_properties(
         props: HashMap<String, String>,
@@ -510,5 +520,42 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err.error.r#type, "SchemaIdContentChanged");
+    }
+
+    #[test]
+    fn identical_composite_identifier_schema_is_not_flagged() {
+        // Regression: identifier fields must compare as a SET. `identifier_field_ids()` iterates a
+        // randomized HashSet, so an order-sensitive comparison would spuriously differ (~50% for a
+        // 2-field identifier) and wrongly reject a legitimate remove-and-re-add of an identical
+        // schema. Rebuild both schemas each iteration (fresh HashSet orders) and repeat so an
+        // order-sensitive regression fails with overwhelming probability.
+        let build = || -> iceberg::spec::SchemaRef {
+            std::sync::Arc::new(
+                Schema::builder()
+                    .with_schema_id(1)
+                    .with_identifier_field_ids(vec![1, 2])
+                    .with_fields(vec![
+                        NestedField::required(
+                            1,
+                            "a",
+                            iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                        )
+                        .into(),
+                        NestedField::required(
+                            2,
+                            "b",
+                            iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                        )
+                        .into(),
+                    ])
+                    .build()
+                    .unwrap(),
+            )
+        };
+        for _ in 0..64 {
+            let (p, n) = (build(), build());
+            ensure_schema_content_stable(std::iter::once(&p), std::iter::once(&n))
+                .expect("identical schemas with the same identifier set must not be flagged");
+        }
     }
 }
