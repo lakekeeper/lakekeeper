@@ -9589,6 +9589,22 @@ components:
                   type: string
                   enum:
                     - cloudflare-r2
+        - allOf:
+            - $ref: '#/components/schemas/S3AccessKeyCredential'
+              description: |-
+                Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+                Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+            - type: object
+              required:
+                - credential-type
+              properties:
+                credential-type:
+                  type: string
+                  enum:
+                    - aliyun-oss
+          description: |-
+            Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+            Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
     S3CredentialType:
       type: string
       description: The type of S3 credential.
@@ -9596,6 +9612,7 @@ components:
         - access-key
         - aws-system-identity
         - cloudflare-r2
+        - aliyun-oss
     S3Flavor:
       type: string
       enum:

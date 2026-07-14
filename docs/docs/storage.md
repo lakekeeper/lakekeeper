@@ -602,6 +602,48 @@ For cloudflare R2 credentials, the following parameters are automatically set:
 
 It is required to specify the `endpoint`. Use a [Data Location Hint](https://developers.cloudflare.com/r2/reference/data-location/#available-hints) as region.
 
+### Alibaba Cloud OSS
+
+Lakekeeper supports Alibaba Cloud Object Storage Service (OSS) with all S3 compatible clients, including vended credentials via the Alibaba Cloud STS [`AssumeRole`](https://www.alibabacloud.com/help/en/ram/developer-reference/api-sts-2015-04-01-assumerole) API. OSS is S3-compatible for data-plane operations, but its STS uses the Alibaba Cloud RPC signing scheme rather than AWS SigV4, so a dedicated `aliyun-oss` credential type is required.
+
+First, create a Bucket in the OSS console and note down its name, the region (e.g. `cn-hangzhou`), and the S3-compatible endpoint (e.g. `https://oss-cn-hangzhou.aliyuncs.com`).
+
+Secondly, create the identity Lakekeeper authenticates with and the role it assumes to vend downscoped credentials:
+
+1. In the RAM console, create a RAM user for Lakekeeper and generate an AccessKey pair for it. Note down the "AccessKey ID" and "AccessKey Secret".
+1. Create a RAM role that Lakekeeper assumes to vend credentials (e.g. `lakekeeper-oss`). Grant this role the OSS permissions on your bucket, and configure its trust policy so the RAM user above is allowed to assume it (`sts:AssumeRole`). Note down the role's ARN (e.g. `acs:ram::123456789012:role/lakekeeper-oss`).
+
+Finally, create the Warehouse in Lakekeeper via the UI or API. A POST request to `/management/v1/warehouse` expects the following body:
+
+```json
+{
+  "warehouse-name": "oss_dev",
+  "delete-profile": { "type": "hard" },
+  "storage-credential":
+    {
+        "credential-type": "aliyun-oss",
+        "access-key-id": "<AccessKey ID of the RAM user>",
+        "secret-access-key": "<AccessKey Secret of the RAM user>"
+    },
+  "storage-profile":
+    {
+        "type": "s3",
+        "bucket": "<name of your OSS bucket>",
+        "region": "<OSS region, i.e. cn-hangzhou>",
+        "key-prefix": "path/to/my/warehouse",
+        "endpoint": "<S3-compatible OSS endpoint, i.e. https://oss-cn-hangzhou.aliyuncs.com>",
+        "sts-role-arn": "<ARN of the RAM role, i.e. acs:ram::123456789012:role/lakekeeper-oss>"
+    }
+}
+```
+
+For `aliyun-oss` credentials, the following parameters are automatically set:
+
+- `flavor` is set to `s3-compat`
+- `sts-enabled` is set to `true`
+
+It is required to specify the `endpoint`, and either `sts-role-arn` or `assume-role-arn` (the ARN of the RAM role Lakekeeper assumes). The STS endpoint is derived from the `region` (`https://sts.<region>.aliyuncs.com`); set `sts-endpoint` explicitly to override it, for example to use a VPC endpoint. If the RAM role's trust policy requires an [`sts:ExternalId`](https://www.alibabacloud.com/help/en/ram/user-guide/use-externalid-to-prevent-the-confused-deputy-problem) condition, provide it as `external-id` in the storage credential.
+
 ## Azure Data Lake Storage Gen 2
 
 To add a Warehouse backed by ADLS, we need two Azure objects: The Storage Account itself and an App Registration which Lakekeeper can use to access it and delegate access to compute engines.
