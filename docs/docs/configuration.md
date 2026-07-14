@@ -776,6 +776,8 @@ LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-passwor
 
 ##### Microsoft Graph (Entra ID) role provider
 
+*Available since Lakekeeper Plus 0.13.0*
+
 Resolves a user's **transitive** Microsoft Entra ID group memberships via the Microsoft Graph API and maps each group to a role — keyed by the group's object id, with the group `displayName` as the role name. Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
 
 The app registration this provider authenticates as needs the Microsoft Graph **application** permissions `GroupMember.Read.All` and `User.Read.All`, admin-consented.
@@ -850,6 +852,88 @@ LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__CLIENT_SECRET=<app-client-secret>
 # Only resolve users who logged in via the OIDC provider with id `oidc`
 # (the default provider's reserved id; a multi-OIDC provider uses its own id).
 LAKEKEEPER__ROLE_PROVIDER__ENTRA__IDP_IDS=["oidc"]
+```
+
+##### Okta role provider
+
+*Available since Lakekeeper Plus 0.13.1*
+
+Resolves a user's Okta group memberships via the Okta management API and maps each group to a role — keyed by the group's immutable `id`, with the group `profile.name` as the role name and `profile.description` as the description. Okta groups are flat, so a single call returns the user's effective membership (direct plus group-rule assignments). Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
+
+Authentication uses OAuth 2.0 client-credentials with a **private-key-JWT** client assertion — the only client-auth method Okta supports for org-scoped service apps. No static client secret is stored.
+
+**Okta setup:** In the Admin Console, create an **API Services** app integration. Under General → Client Credentials, set Client authentication to **Public key / Private key** and **Save keys in Okta**, then **Generate new key** and copy the private key (Okta shows a JWK by default; click **PEM** for PEM) — this is your only chance to save it. Grant the app the `okta.users.read` scope (admin-consented), and under **Admin roles** assign a **read-only admin role** (e.g. Read-only Administrator).
+
+**Required fields:**
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <nobr>`…__TYPE`</nobr>      | `okta`                    | Provider type. Must be `okta`. |
+| <nobr>`…__ORG_URL`</nobr>   | `https://acme.okta.com`   | Okta org base URL. Must use `https`. Base for both the token endpoint and the API. |
+| <nobr>`…__CLIENT_ID`</nobr> | `0oa…`                    | The service app's client id. |
+
+**Signing key** — supply the service app's private key via exactly one of:
+
+| Variable | Description |
+|----------|-------------|
+| <nobr>`…__PRIVATE_KEY`</nobr>      | Inline private key — the JWK (Okta's default "Copy to clipboard") **or** a PEM block. |
+| <nobr>`…__PRIVATE_KEY_FILE`</nobr> | Path to a file holding the private key (JWK or PEM), read at startup. |
+| <nobr>`…__KEY_ID`</nobr>           | Public key id. **Required** when the key is PEM; a JWK carries its own `kid`. |
+
+**Scopes (optional):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__SCOPES`</nobr> | `["okta.users.read"]` | JSON array of OAuth scopes requested for the token. |
+
+**HTTP timeouts:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `10` | Seconds to wait when establishing a connection to Okta. |
+| <nobr>`…__REQUEST_TIMEOUT_SECS`</nobr> | `30` | Seconds to wait for an Okta response. |
+
+Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connection/timeout errors) are retried a few times with exponential backoff before the request fails and the cache falls back to the last good result. Outbound requests honor the standard `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables.
+
+**Caching:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Okta. Uses the same two-layer (in-memory + database) cache as the LDAP and Entra providers, including stale-fallback on an Okta outage. |
+
+**Startup:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire an Okta token on startup. |
+
+**DPoP:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__DPOP`</nobr> | `true` | Sender-constrain the access token with [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) (RFC 9449): each token and API request carries an ES256 proof signed by an ephemeral in-memory key, so a leaked token is useless without it. Okta accepts DPoP whether or not the app has *Require DPoP* set, so leave it on. Set `false` only if an org rejects DPoP. |
+
+**IDP filtering (optional):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
+
+**Example — inline JWK key (env vars):**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__OKTA__TYPE=okta
+LAKEKEEPER__ROLE_PROVIDER__OKTA__ORG_URL=https://acme.okta.com
+LAKEKEEPER__ROLE_PROVIDER__OKTA__CLIENT_ID=<service-app-client-id>
+# The JWK Okta shows on "Generate new key" (carries its own kid):
+LAKEKEEPER__ROLE_PROVIDER__OKTA__PRIVATE_KEY='{"kty":"RSA","kid":"…","n":"…","e":"AQAB","d":"…","p":"…","q":"…"}'
+# Only resolve users who logged in via the OIDC provider with id `oidc`:
+LAKEKEEPER__ROLE_PROVIDER__OKTA__IDP_IDS=["oidc"]
+```
+
+For a PEM key, click **PEM** when copying the key, then supply it plus its Key ID:
+```bash
+LAKEKEEPER__ROLE_PROVIDER__OKTA__PRIVATE_KEY_FILE=/run/secrets/okta-key.pem
+LAKEKEEPER__ROLE_PROVIDER__OKTA__KEY_ID=<public-key-id>
 ```
 
 ##### File-based configuration
