@@ -66,10 +66,7 @@ fn reject_managed_provider(
 /// separately with an `is_system()` check yielding `SystemRoleImmutable`, while
 /// the membership sites deliberately permit it — `system` (and `lakekeeper`)
 /// roles are `manually_assignable`, so their member lists stay editable.
-pub(crate) fn reject_managed_role<A, E>(
-    authorizer: &A,
-    role: &ArcRole,
-) -> std::result::Result<(), E>
+pub(crate) fn reject_managed_role<A, E>(authorizer: &A, role: &ArcRole) -> Result<(), E>
 where
     A: Authorizer,
     E: From<ManagedRoleImmutable>,
