@@ -26,14 +26,14 @@ use crate::{
     },
 };
 
-/// Rejects a request whose `provider_id` is not writable through the
-/// role-management API: the catalog-managed `system` namespace (see
+/// Rejects a `provider_id` **supplied in a request body** that is not writable
+/// through the role-management API: the catalog-managed `system` namespace (see
 /// [`crate::service::SYSTEM_ROLE_PROVIDER_ID`]), or any namespace owned by a
 /// configured role provider (`managed`, from
 /// [`Authorizer::managed_role_provider_ids`]) whose roles are maintained by
 /// provider sync. Used as a pre-authz check on endpoints that accept a provider
-/// in the request body, and on the resolved role's provider for endpoints that
-/// mutate an existing role.
+/// in the request body (create, source-system rebind target). To guard the
+/// provider of an *already-resolved* role, use [`reject_managed_role`].
 fn reject_managed_provider(
     provider_id: &RoleProviderId,
     managed: &HashSet<RoleProviderId>,
@@ -49,6 +49,34 @@ fn reject_managed_provider(
     }
     if managed.contains(provider_id) {
         return Err(ErrorModel::from(ManagedRoleImmutable::new(provider_id.to_string())).into());
+    }
+    Ok(())
+}
+
+/// Rejects mutating an **already-resolved role** whose provider namespace is
+/// owned by a configured role provider (from
+/// [`Authorizer::managed_role_provider_ids`]) — such roles are maintained by
+/// provider sync and must not be changed through the API. The caller's error
+/// type is produced via its `From<ManagedRoleImmutable>` conversion (e.g.
+/// [`DeleteRoleError`], [`UpdateRoleError`], or [`ErrorModel`]).
+///
+/// Complements [`reject_managed_provider`], which guards a provider taken from a
+/// request body. The reserved `system` namespace is **not** checked here: the
+/// mutate-existing-role sites (delete, update, source-system rebind) reject it
+/// separately with an `is_system()` check yielding `SystemRoleImmutable`, while
+/// the membership sites deliberately permit it — `system` (and `lakekeeper`)
+/// roles are `manually_assignable`, so their member lists stay editable.
+pub(crate) fn reject_managed_role<A, E>(
+    authorizer: &A,
+    role: &ArcRole,
+) -> std::result::Result<(), E>
+where
+    A: Authorizer,
+    E: From<ManagedRoleImmutable>,
+{
+    let provider_id = role.ident.provider_id();
+    if authorizer.managed_role_provider_ids().contains(provider_id) {
+        return Err(ManagedRoleImmutable::new(provider_id.to_string()).into());
     }
     Ok(())
 }
@@ -727,15 +755,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     if role.ident.is_system() {
         return Err(DeleteRoleError::from(SystemRoleImmutable::new()).into());
     }
-    if authorizer
-        .managed_role_provider_ids()
-        .contains(role.ident.provider_id())
-    {
-        return Err(DeleteRoleError::from(ManagedRoleImmutable::new(
-            role.ident.provider_id().to_string(),
-        ))
-        .into());
-    }
+    reject_managed_role::<_, DeleteRoleError>(&authorizer, &role)?;
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
@@ -793,15 +813,7 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     if role.ident.is_system() {
         return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
     }
-    if authorizer
-        .managed_role_provider_ids()
-        .contains(role.ident.provider_id())
-    {
-        return Err(UpdateRoleError::from(ManagedRoleImmutable::new(
-            role.ident.provider_id().to_string(),
-        ))
-        .into());
-    }
+    reject_managed_role::<_, UpdateRoleError>(&authorizer, &role)?;
 
     // -------------------- Business Logic --------------------
     let description = request.description.filter(|d| !d.is_empty());
@@ -852,15 +864,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     // Reject rebinding a role that is *currently* owned by a configured role
     // provider — its identity is the provider's to manage. (Rebinding *into* a
     // managed/`system` namespace is rejected on the request in the handler.)
-    if authorizer
-        .managed_role_provider_ids()
-        .contains(role.ident.provider_id())
-    {
-        return Err(UpdateRoleError::from(ManagedRoleImmutable::new(
-            role.ident.provider_id().to_string(),
-        ))
-        .into());
-    }
+    reject_managed_role::<_, UpdateRoleError>(&authorizer, &role)?;
 
     // -------------------- Business Logic --------------------
     let mut t = C::Transaction::begin_write(catalog_state)
