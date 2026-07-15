@@ -2,7 +2,10 @@
 //! Flatten/assemble are pure Rust (no DB); used by the write path (flatten) and read path
 //! (assemble). One `#[sqlx::test]` guards that the PG `iceberg_type_kind` enum covers every kind.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use iceberg::spec::{
     ListType, MapType, NestedField, NestedFieldRef, PrimitiveType, Schema, SchemaId, StructType,
@@ -201,6 +204,19 @@ fn flatten_field(
     out: &mut Vec<FlatField>,
 ) -> Result<(), SchemaNormError> {
     let (type_kind, type_params) = type_kind_and_params(&field.field_type);
+    // Mirror build_field: the pinned iceberg-rust cannot round-trip fixed/binary default values
+    // (try_into_json corrupts them, try_from_json panics on load), so reject at flatten time rather
+    // than persist an unreadable default. Remove once upstream implements hex encode/decode.
+    if matches!(type_kind, IcebergTypeKind::Fixed | IcebergTypeKind::Binary)
+        && (field.initial_default.is_some() || field.write_default.is_some())
+    {
+        return Err(SchemaNormError::Assembly {
+            detail: format!(
+                "default values for fixed/binary fields are not yet supported (field_id={})",
+                field.id
+            ),
+        });
+    }
     let initial_default = match &field.initial_default {
         None => None,
         Some(lit) => {
@@ -346,9 +362,30 @@ pub fn assemble_schemas(
         let children = build_children_index(&rows);
         let top_level = children.get(&None).map(Vec::as_slice).unwrap_or_default();
 
+        // Track every row reached by the top-down traversal. Each field's build_field records its
+        // field_id exactly once (a second visit means a duplicate row or a cycle → rejected in
+        // build_field). After the walk, every input row must have been consumed.
+        let mut consumed: HashSet<i32> = HashSet::with_capacity(rows.len());
         let mut fields = Vec::with_capacity(top_level.len());
         for &row in top_level {
-            fields.push(build_field(row, &children)?);
+            fields.push(build_field(row, &children, &mut consumed)?);
+        }
+        // A row left unconsumed is unreachable from the schema root — its parent_field_id points at a
+        // primitive (which consumes no children), a nonexistent field, or a disconnected cycle. Such a
+        // row would silently vanish from the assembled schema, dropping a column; reject it instead.
+        if consumed.len() != rows.len() {
+            let orphans: Vec<i32> = rows
+                .iter()
+                .map(|r| r.field_id)
+                .filter(|id| !consumed.contains(id))
+                .collect();
+            return Err(SchemaNormError::Assembly {
+                detail: format!(
+                    "schema_id={schema_id}: {} field row(s) unreachable from the schema root \
+                     (parent_field_id orphaned or attached to a non-container field): field_ids={orphans:?}",
+                    rows.len() - consumed.len(),
+                ),
+            });
         }
 
         // remove (not get + clone): each schema_id is assembled once, so move the Vec out.
@@ -414,8 +451,19 @@ fn children_of<'idx, 'row>(
 fn build_field<'row>(
     row: &'row SchemaFieldRow,
     children: &ChildrenIndex<'row>,
+    consumed: &mut HashSet<i32>,
 ) -> Result<NestedFieldRef, SchemaNormError> {
-    let field_type = build_type(row, children)?;
+    // Reject a field reached twice — a duplicate row (same field_id) or a parent/child cycle — before
+    // it can double-assemble a subtree.
+    if !consumed.insert(row.field_id) {
+        return Err(SchemaNormError::Assembly {
+            detail: format!(
+                "field_id={} reached more than once during assembly (duplicate row or cycle)",
+                row.field_id
+            ),
+        });
+    }
+    let field_type = build_type(row, children, consumed)?;
     // The pinned iceberg-rust's `Literal::try_from_json` is unimplemented (panics) for fixed/binary
     // values, so a fixed/binary default below would panic the whole load. Such a default cannot arrive
     // via the JSON request or JSONB backfill path (upstream deserialization hits the same gap first),
@@ -480,6 +528,7 @@ fn build_field<'row>(
 fn build_type<'row>(
     row: &'row SchemaFieldRow,
     children: &ChildrenIndex<'row>,
+    consumed: &mut HashSet<i32>,
 ) -> Result<Type, SchemaNormError> {
     // A node's children play roles fixed by THIS node's type_kind, in ordinal order:
     // struct → fields; list → its single element; map → key (ordinal 0) + value (ordinal 1).
@@ -489,7 +538,7 @@ fn build_type<'row>(
             let kids = children_of(children, row.field_id);
             let mut fields = Vec::with_capacity(kids.len());
             for &child_row in kids {
-                fields.push(build_field(child_row, children)?);
+                fields.push(build_field(child_row, children, consumed)?);
             }
             Ok(Type::Struct(StructType::new(fields)))
         }
@@ -504,7 +553,17 @@ fn build_type<'row>(
                     ),
                 });
             }
-            let elem_field = build_field(kids[0], children)?;
+            // The element must sit at ordinal 0 (as flatten writes it); a stray ordinal signals a
+            // corrupt row set.
+            if kids[0].ordinal != 0 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "list field_id={} element must have ordinal 0, found {}",
+                        row.field_id, kids[0].ordinal
+                    ),
+                });
+            }
+            let elem_field = build_field(kids[0], children, consumed)?;
             Ok(Type::List(ListType::new(elem_field)))
         }
         "map" => {
@@ -518,9 +577,19 @@ fn build_type<'row>(
                     ),
                 });
             }
-            // buckets are ordinal-sorted: [0] = key, [1] = value (set by flatten).
-            let key_field = build_field(kids[0], children)?;
-            let val_field = build_field(kids[1], children)?;
+            // buckets are ordinal-sorted: key = ordinal 0, value = ordinal 1 (set by flatten).
+            // Require exactly {0, 1} — a missing, duplicate, or stray ordinal would silently swap or
+            // mis-map key/value.
+            if kids[0].ordinal != 0 || kids[1].ordinal != 1 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "map field_id={} children must have ordinals 0 (key) and 1 (value), found {} and {}",
+                        row.field_id, kids[0].ordinal, kids[1].ordinal
+                    ),
+                });
+            }
+            let key_field = build_field(kids[0], children, consumed)?;
+            let val_field = build_field(kids[1], children, consumed)?;
             Ok(Type::Map(MapType::new(key_field, val_field)))
         }
         "variant" => Ok(Type::Variant(VariantType)),
@@ -883,6 +952,39 @@ mod tests {
     }
 
     #[test]
+    fn test_fixed_binary_default_rejected_by_flatten() {
+        // Write-side symmetry with build_field: a fixed/binary default cannot round-trip through the
+        // pinned iceberg-rust codec, so flatten must reject it (typed Assembly error) rather than
+        // persist a corrupt value. Reachable only via a programmatically-built schema.
+        let cases = [
+            NestedField::optional(1, "b", Type::Primitive(PrimitiveType::Binary))
+                .with_initial_default(iceberg::spec::Literal::Primitive(
+                    iceberg::spec::PrimitiveLiteral::Binary(vec![0xca, 0xfe]),
+                )),
+            NestedField::optional(1, "f", Type::Primitive(PrimitiveType::Fixed(2)))
+                .with_write_default(iceberg::spec::Literal::Primitive(
+                    iceberg::spec::PrimitiveLiteral::Binary(vec![0x00, 0x01]),
+                )),
+        ];
+        for field in cases {
+            // If iceberg-rust's builder rejects the default upstream, there's nothing for flatten to
+            // catch — an acceptable outcome too (as in test_variant_default_rejected).
+            let Ok(schema) = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![Arc::new(field)])
+                .build()
+            else {
+                continue;
+            };
+            let err = flatten_schema(&schema).unwrap_err();
+            assert!(
+                matches!(err, SchemaNormError::Assembly { .. }),
+                "expected Assembly rejection for fixed/binary default, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_unknown_type_kind_errors() {
         let row = SchemaFieldRow {
             schema_id: 1,
@@ -944,6 +1046,53 @@ mod tests {
         assert!(
             matches!(err, SchemaNormError::Assembly { .. }),
             "got {err:?}"
+        );
+    }
+
+    /// Compact `SchemaFieldRow` builder for malformed-input assembly tests.
+    fn sfr(type_kind: &str, field_id: i32, parent: Option<i32>, ordinal: i32) -> SchemaFieldRow {
+        SchemaFieldRow {
+            schema_id: 1,
+            field_id,
+            parent_field_id: parent,
+            ordinal,
+            name: format!("f{field_id}"),
+            required: false,
+            doc: None,
+            type_kind: type_kind.to_string(),
+            type_params: None,
+            initial_default: None,
+            write_default: None,
+            is_identifier: false,
+        }
+    }
+
+    #[test]
+    fn assemble_rejects_unreachable_row() {
+        // field 2 is a child of primitive field 1, which consumes no children, so it is unreachable
+        // and would silently drop from the schema. Assembly must reject it, naming the orphan.
+        let rows = vec![sfr("long", 1, None, 0), sfr("long", 2, Some(1), 0)];
+        let err = assemble_schemas(rows, &[]).unwrap_err();
+        assert!(
+            matches!(&err, SchemaNormError::Assembly { detail }
+                if detail.contains("unreachable") && detail.contains("[2]")),
+            "expected unreachable-row rejection naming field_id 2, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn assemble_rejects_bad_map_ordinals() {
+        // A map's two children must sit at ordinals 0 (key) and 1 (value). Here both are ordinal 0,
+        // which would let the sort silently pick an arbitrary key/value — reject it.
+        let rows = vec![
+            sfr("map", 1, None, 0),
+            sfr("long", 2, Some(1), 0),
+            sfr("long", 3, Some(1), 0),
+        ];
+        let err = assemble_schemas(rows, &[]).unwrap_err();
+        assert!(
+            matches!(&err, SchemaNormError::Assembly { detail } if detail.contains("ordinal")),
+            "expected map ordinal rejection, got {err:?}"
         );
     }
 

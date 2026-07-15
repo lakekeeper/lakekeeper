@@ -150,6 +150,15 @@ pub(crate) async fn backfill(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyho
             let (wh, tbl, sid, schema_json) = (r.warehouse_id, r.table_id, r.schema_id, r.schema.0);
             let schema: iceberg::spec::Schema = serde_json::from_value(schema_json)
                 .map_err(|e| anyhow::anyhow!("deserialize {wh}/{tbl} schema {sid}: {e}"))?;
+            // The anchor's schema_id column is the store's identity (table_current_schema references
+            // it); the JSONB carries its own embedded schema-id. Lakekeeper always writes them equal,
+            // so a mismatch is corrupt source data — fail loud before this migration drops the JSONB.
+            if schema.schema_id() != sid {
+                anyhow::bail!(
+                    "schema-id mismatch for {wh}/{tbl}: anchor row schema_id={sid}, embedded schema-id={}",
+                    schema.schema_id()
+                );
+            }
             let flat = flatten_schema(&schema)
                 .map_err(|e| anyhow::anyhow!("flatten {wh}/{tbl} schema {sid}: {e}"))?;
             batch.push_schema(wh, tbl, sid, &flat);
@@ -217,6 +226,13 @@ pub(crate) async fn backfill_view_schemas(
             let (wh, view, sid, schema_json) = (r.warehouse_id, r.view_id, r.schema_id, r.schema.0);
             let schema: iceberg::spec::Schema = serde_json::from_value(schema_json)
                 .map_err(|e| anyhow::anyhow!("deserialize view {wh}/{view} schema {sid}: {e}"))?;
+            // Same anchor/embedded schema-id integrity check as `backfill`.
+            if schema.schema_id() != sid {
+                anyhow::bail!(
+                    "schema-id mismatch for view {wh}/{view}: anchor row schema_id={sid}, embedded schema-id={}",
+                    schema.schema_id()
+                );
+            }
             let flat = flatten_schema(&schema)
                 .map_err(|e| anyhow::anyhow!("flatten view {wh}/{view} schema {sid}: {e}"))?;
             batch.push_schema(wh, view, sid, &flat);
@@ -582,6 +598,60 @@ mod tests {
         assert_eq!(
             last_count, 100,
             "last schema version must have 100 field rows"
+        );
+    }
+
+    // ── G2. schema-id integrity ──────────────────────────────────────────────
+
+    /// A legacy JSONB whose embedded schema-id disagrees with its anchor `schema_id` column is
+    /// corrupt source data. The backfill must reject it loud (naming both ids) rather than silently
+    /// normalize under the column id, because the migration then drops the JSONB irreversibly.
+    #[sqlx::test]
+    async fn backfill_rejects_schema_id_mismatch(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let seed_schema = Schema::builder()
+            .with_schema_id(0)
+            .with_fields(vec![
+                NestedField::required(1, "seed", IcebergType::Primitive(PrimitiveType::Long))
+                    .into(),
+            ])
+            .build()
+            .unwrap();
+        let (table_id, _) =
+            crate::tabular::table::tests::create_table_with_schema(state.clone(), wh, seed_schema)
+                .await;
+
+        // Pre-migration state, but with a corrupt JSONB whose embedded schema-id (999) disagrees
+        // with the anchor row's schema_id column (0).
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2")
+            .bind(*wh)
+            .bind(*table_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let corrupt = json!({"type":"struct","schema-id":999,"fields":[
+            {"id":1,"name":"seed","required":true,"type":"long"}
+        ]});
+        sqlx::query(
+            "UPDATE table_schema SET schema=$3 WHERE warehouse_id=$1 AND table_id=$2 AND schema_id=0",
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .bind(&corrupt)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        let err = super::backfill(&mut tx).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("schema-id mismatch")
+                && msg.contains("schema_id=0")
+                && msg.contains("embedded schema-id=999"),
+            "expected a contextual schema-id mismatch error naming anchor 0 and embedded 999, got: {msg}"
         );
     }
 
