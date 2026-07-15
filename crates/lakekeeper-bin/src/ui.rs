@@ -145,7 +145,7 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
 ///   name → cache forever, never revalidate.
 /// - `duckdb/*` + the worker wrapper keep stable names but their bytes change on
 ///   a DuckDB/console version bump → revalidate via `ETag` once stale (a `304`
-///   avoids re-downloading the multi-MB WASM on every LoQE open).
+///   avoids re-downloading the multi-MB WASM on every `LoQE` open).
 /// - `index.html` (and the SPA fallback that serves it) is templated per request
 ///   → always revalidate.
 fn cache_policy(path: &str) -> (&'static str, bool) {
