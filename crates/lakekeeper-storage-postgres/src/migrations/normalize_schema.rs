@@ -1,3 +1,4 @@
+use anyhow::Context;
 use futures::{FutureExt, future::BoxFuture};
 use sqlx::Postgres;
 
@@ -38,9 +39,10 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     // locks on those tables), the DROP NOT NULLs — ACCESS EXCLUSIVE — on the maintenance-mode reads.
     // Cap the wait so any of them fails fast and the whole migration rolls back to retry on the next
     // boot, rather than queueing the catalog behind an unbounded wait. SET LOCAL reverts at txn end,
-    // so a managed-Postgres / role lock_timeout default is untouched outside this migration. The
-    // backfill and CREATE statements take no contended lock, so 5s never clips them — their duration
-    // is bounded by the migrator's 60min statement_timeout instead.
+    // so a managed-Postgres / role lock_timeout default is untouched outside this migration. 5s never
+    // clips the long work: the backfill statements take no contended lock, and each CREATE TRIGGER is
+    // satisfied by the ACCESS EXCLUSIVE its ALTER already holds. Those are each capped instead by the
+    // migrator's per-statement 60min statement_timeout (which does not bound the backfill as a whole).
     sqlx::query("SET LOCAL lock_timeout = '5s'")
         .execute(&mut **txn)
         .await?;
@@ -48,12 +50,20 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     // maintenance-mode reads, so no JSONB schema is written behind the cursor and missed. Held to commit.
     sqlx::query("LOCK TABLE table_schema IN SHARE MODE")
         .execute(&mut **txn)
-        .await?;
+        .await
+        .context(
+            "acquire SHARE lock on table_schema for schema backfill \
+             (5s lock_timeout; migration retries on the next boot if writers are active)",
+        )?;
     backfill(txn).await?;
     // Allow NULL anchors on the normalized write path: drop the legacy column's NOT NULL.
     sqlx::query("ALTER TABLE table_schema ALTER COLUMN schema DROP NOT NULL")
         .execute(&mut **txn)
-        .await?;
+        .await
+        .context(
+            "drop NOT NULL on table_schema.schema \
+             (5s lock_timeout; ACCESS EXCLUSIVE contends with reads; migration retries on the next boot)",
+        )?;
     // Freeze legacy JSONB schema writes: reject any write that sets a non-null `schema` (an old-pod
     // write during the brief roll-over) while permitting the new NULL-anchor writes. Blanking an
     // existing `schema` back to NULL is also permitted, so a later cleanup migration can clear the
@@ -84,11 +94,19 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     // created above. Still under the 5s lock_timeout set at the top.
     sqlx::query("LOCK TABLE view_schema IN SHARE MODE")
         .execute(&mut **txn)
-        .await?;
+        .await
+        .context(
+            "acquire SHARE lock on view_schema for schema backfill \
+             (5s lock_timeout; migration retries on the next boot if writers are active)",
+        )?;
     backfill_view_schemas(txn).await?;
     sqlx::query("ALTER TABLE view_schema ALTER COLUMN schema DROP NOT NULL")
         .execute(&mut **txn)
-        .await?;
+        .await
+        .context(
+            "drop NOT NULL on view_schema.schema \
+             (5s lock_timeout; ACCESS EXCLUSIVE contends with reads; migration retries on the next boot)",
+        )?;
     sqlx::query(
         "CREATE TRIGGER view_schema_freeze_jsonb BEFORE INSERT OR UPDATE ON view_schema
          FOR EACH ROW EXECUTE FUNCTION reject_schema_write()",
