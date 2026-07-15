@@ -1,27 +1,82 @@
 use std::{
     fmt::{Debug, Display},
     sync::Arc,
+    time::Instant,
 };
 
-use futures::TryFutureExt;
+use axum_prometheus::metrics;
+use futures::FutureExt;
 use tokio::sync::RwLock;
 
 use super::types;
+
+pub(crate) const METRIC_EVENT_LISTENER_DURATION_SECONDS: &str =
+    "lakekeeper_event_listener_duration_seconds";
+pub(crate) const METRIC_EVENT_TYPE_LABEL: &str = "event_type";
+pub(crate) const METRIC_LISTENER_LABEL: &str = "listener";
+
+/// Prometheus histogram for event listener execution duration. Registered
+/// lazily on first use.
+pub(crate) static LISTENER_DURATION_HISTOGRAM: std::sync::LazyLock<()> =
+    std::sync::LazyLock::new(|| {
+        metrics::describe_histogram!(
+            METRIC_EVENT_LISTENER_DURATION_SECONDS,
+            "Duration of event listener execution in seconds"
+        );
+    });
+
+fn record_listener_duration(
+    event_type: &'static str,
+    listener_name: String,
+    elapsed: std::time::Duration,
+) {
+    metrics::histogram!(
+        METRIC_EVENT_LISTENER_DURATION_SECONDS,
+        METRIC_EVENT_TYPE_LABEL => event_type,
+        METRIC_LISTENER_LABEL => listener_name,
+    )
+    .record(elapsed.as_secs_f64());
+}
 
 /// Macro to dispatch events to all listeners with error logging.
 ///
 /// Snapshots the listener list (acquiring + releasing the read lock) *before*
 /// awaiting any futures, so no lock guard is held across an `.await` point.
+///
+/// Each listener call is timed and recorded in
+/// [`METRIC_EVENT_LISTENER_DURATION_SECONDS`]. Listeners are timed concurrently
+/// within a single task (`join_all` does not spawn), so the duration recorded
+/// for each listener is its wall-clock *contribution to the response latency*,
+/// not its isolated execution time. A listener that blocks the executor —
+/// synchronous CPU work or a blocking call instead of `.await` — stalls its
+/// siblings' polling and inflates their recorded durations too. This is
+/// acceptable: such a listener violates the light-weight [`EventListener`]
+/// contract, and the per-listener `warn!` still names the offender.
 macro_rules! dispatch_event {
     ($self:ident, $method:ident, $event:expr) => {{
+        // Ensure the histogram metric description is registered.
+        let _ = &*$crate::service::events::dispatch::LISTENER_DURATION_HISTOGRAM;
+
         // Snapshot under the lock, then drop the guard before any await.
         let listeners: Vec<Arc<dyn EventListener>> = $self.0.read().await.clone();
+        let event_type = stringify!($method);
         futures::future::join_all(listeners.iter().map(|listener| {
-            listener.$method($event.clone()).map_err(|e| {
-                tracing::warn!(
-                    "Listener '{}' encountered error on {}: {e:?}",
-                    listener.to_string(),
-                    stringify!($method),
+            let start = Instant::now();
+            let listener_name = listener.to_string();
+            listener.$method($event.clone()).map(move |result| {
+                let elapsed = start.elapsed();
+                if let Err(e) = &result {
+                    tracing::warn!(
+                        "Listener '{}' encountered error on {} (took {:.1?}): {e:?}",
+                        listener_name,
+                        event_type,
+                        elapsed,
+                    );
+                }
+                $crate::service::events::dispatch::record_listener_duration(
+                    event_type,
+                    listener_name,
+                    elapsed,
                 );
             })
         }))

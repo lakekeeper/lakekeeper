@@ -7,7 +7,11 @@ pub(crate) mod gcs;
 pub mod s3;
 pub mod storage_layout;
 
-use std::{collections::HashMap, str::FromStr as _};
+use std::{
+    collections::HashMap,
+    str::FromStr as _,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 pub use az::{AzCredential, EndpointMode, GenericAdlsProfile, OneLakeProfile, TopLevelFolder};
 pub(crate) use error::ValidationError;
@@ -113,6 +117,51 @@ pub enum StoragePermissions {
 pub struct TableConfig {
     pub(crate) creds: TableProperties,
     pub(crate) config: TableProperties,
+    /// Actual expiry (epoch ms) of the vended credentials in [`Self::creds`], or
+    /// `None` if none expire. Set wherever a backend vends an expiring
+    /// credential; the source for the `loadTable` `ETag`'s revalidation point.
+    pub(crate) credentials_expiration_ms: Option<i64>,
+}
+
+/// Half of a credential's remaining lifetime, capped at 1h — the window during
+/// which the STC cache keeps serving it ([`cache`]) and during which a
+/// conditional `loadTable` may still answer `304`.
+pub(crate) fn credential_serve_window(remaining: Duration) -> Duration {
+    (remaining / 2).min(Duration::from_hours(1))
+}
+
+/// Current time in epoch ms. Fails closed to `i64::MAX` for an unknowable clock
+/// (pre-1970 / overflow): as a "now" this makes freshness checks reload rather
+/// than serve a possibly-stale `304`.
+pub(crate) fn now_epoch_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(i64::MAX)
+}
+
+/// Absolute time (epoch ms) until which a conditional `loadTable` may answer
+/// `304` for a credential expiring at `expiry_ms`: `now + credential_serve_window`,
+/// clamped to never exceed `expiry_ms` so a bogus clock can't push it past the
+/// real expiry. Always reflects the credential the client actually holds.
+#[must_use]
+pub(crate) fn credential_revalidate_after_ms(expiry_ms: i64) -> i64 {
+    revalidate_after_at(expiry_ms, now_epoch_ms())
+}
+
+pub(crate) fn revalidate_after_at(expiry_ms: i64, now_ms: i64) -> i64 {
+    let remaining =
+        Duration::from_millis(u64::try_from(expiry_ms.saturating_sub(now_ms)).unwrap_or(0));
+    let window = credential_serve_window(remaining);
+    let revalidate_after = now_ms
+        .saturating_add(i64::try_from(window.as_millis()).unwrap_or(i64::MAX))
+        .min(expiry_ms);
+    // Load-bearing safety invariant: a 304 is served only while `now <
+    // revalidate_after`, so this must never reach `expiry_ms` or a 304 could hand
+    // back an expired credential. Enforced by the `.min(expiry_ms)` clamp above.
+    debug_assert!(revalidate_after <= expiry_ms);
+    revalidate_after
 }
 
 #[derive(Debug, Hash, Clone, Eq, PartialEq)]
@@ -289,6 +338,31 @@ impl StorageProfile {
         }
     }
 
+    /// Whether [`Self::generate_table_config`] for `data_access` may vend
+    /// credentials that expire. Gates the conditional-`loadTable` 304 path for
+    /// the cases where the client's echoed `ETag` carries no revalidation point
+    /// (metadata-only / wildcard).
+    ///
+    /// Conservative: may return `true` when the concrete response ends up without
+    /// credentials (only forgoes the 304 fast-path); never `false` while expiring
+    /// credentials are vended.
+    #[must_use]
+    pub fn vends_expiring_credentials(&self, data_access: DataAccessMode) -> bool {
+        if !data_access.provide_credentials() {
+            return false;
+        }
+        match self {
+            // Real backends vend expiring credentials — a new one should land here.
+            StorageProfile::S3(_)
+            | StorageProfile::Adls(_)
+            | StorageProfile::OneLake(_)
+            | StorageProfile::Gcs(_) => true,
+            // The in-memory test profile never vends credentials.
+            #[cfg(feature = "test-utils")]
+            StorageProfile::Memory(_) => false,
+        }
+    }
+
     /// Generate the table config for the storage profile.
     ///
     /// # Errors
@@ -376,6 +450,7 @@ impl StorageProfile {
             StorageProfile::Memory(_) => Ok(TableConfig {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
+                credentials_expiration_ms: None,
             }),
         }
     }
@@ -1835,5 +1910,53 @@ mod tests {
         Box::pin(profile.validate_access(cred.as_ref(), None, &request_metadata))
             .await
             .unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "test-utils"))]
+mod vends_expiring_credentials_tests {
+    use super::{MemoryProfile, StorageProfile};
+    use crate::api::iceberg::v1::{DataAccess, tables::DataAccessMode};
+
+    #[test]
+    fn memory_profile_never_vends_expiring_credentials() {
+        let profile = StorageProfile::Memory(MemoryProfile::default());
+        // The in-memory test profile vends no credentials, so the conditional
+        // `loadTable` 304 fast-path must stay available for it regardless of the
+        // requested access mode.
+        assert!(!profile.vends_expiring_credentials(DataAccessMode::default()));
+        assert!(
+            !profile.vends_expiring_credentials(DataAccessMode::ServerDelegated(DataAccess {
+                vended_credentials: true,
+                remote_signing: false,
+            }))
+        );
+        assert!(!profile.vends_expiring_credentials(DataAccessMode::ClientManaged));
+    }
+}
+
+#[cfg(test)]
+mod revalidate_after_tests {
+    use super::revalidate_after_at;
+
+    const NOW: i64 = 1_750_000_000_000;
+
+    #[test]
+    fn revalidate_after_is_half_remaining_and_before_expiry() {
+        // 10-min credential → revalidate at +5 min, always before expiry.
+        let expiry = NOW + 600_000;
+        let reval = revalidate_after_at(expiry, NOW);
+        assert_eq!(reval, NOW + 300_000);
+        assert!(reval < expiry);
+        // Capped at 1h: a 4h credential revalidates at +1h, not +2h.
+        assert_eq!(
+            revalidate_after_at(NOW + 4 * 3_600_000, NOW),
+            NOW + 3_600_000
+        );
+        // Already expired → clamped to expiry, so the check never serves a 304.
+        assert_eq!(revalidate_after_at(NOW - 1, NOW), NOW - 1);
+        // Bogus clock (pre-1970 → now == i64::MAX) must not poison the result
+        // with a far-future revalidation point: clamp to the real expiry.
+        assert_eq!(revalidate_after_at(expiry, i64::MAX), expiry);
     }
 }

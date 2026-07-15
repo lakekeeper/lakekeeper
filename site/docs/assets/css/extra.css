@@ -46,13 +46,13 @@
 
 /* Short Lakekeeper Plus Badge with auto-generated content */
 .lkp::after {
-  content: "★ lakekeeper ＋";
+  content: "★ lakekeeper +";
   color: var(--lakekeeper-warning-color) !important;
   background: rgba(253, 176, 34, 0.1);
   padding: 1px 4px;
   border-radius: 6px;
   font-size: 0.45em;
-  font-weight: 500;
+  font-weight: 700;
   border: 0.5px solid var(--lakekeeper-warning-color);
   text-transform: uppercase;
   letter-spacing: 0.2px;

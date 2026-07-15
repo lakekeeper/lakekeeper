@@ -176,6 +176,10 @@ namespace Lakekeeper {
     project: Project,
     is_active: Bool,
     protected: Bool,
+    // Whether this warehouse has soft-deletion configured. When true, a `force`
+    // drop bypasses the configured grace period and is irreversible immediately;
+    // when false, drops are already hard deletes and `force` changes nothing.
+    soft_delete_enabled: Bool,
   };
 
   // Namespace can be nested within other namespaces or directly within a warehouse.
@@ -281,9 +285,12 @@ namespace Lakekeeper {
 
   // ---------- Server Actions ----------
   action "ServerActions";
+  // ReadUserRoleAssignments — list the roles assigned to a user. A user may
+  // always read the assignments of their own identity (enforced in the
+  // authorizer, not by policy).
   action ListServerCedarEntitySources, ListCedarPoliciesFromServerSources,
          ListServerCedarPolicySources, UpdateUsers, DeleteUsers, ListUsers,
-         ProvisionUsers, IntrospectServerAuthorization,
+         ProvisionUsers, ReadUserRoleAssignments, IntrospectServerAuthorization,
          EvaluateCedarPolicies in ["ServerActions"]
     appliesTo {
       principal: [User, Role],
@@ -349,6 +356,29 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Role]
     };
+  // Role-membership (assignment) actions, gating the role-membership management
+  // API. Roles may have both users and other roles as members (recursive roles).
+  //   ManageRoleAssignments — add/remove members (user or role) of this role.
+  //   ReadRoleAssignments   — list this role's members, parents and assignments.
+  action ManageRoleAssignments, ReadRoleAssignments in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role]
+    };
+  // UpdateRoleSourceSystem — rebind this role's external identity (provider +
+  // source id) to a different source system. Treated like role management. The
+  // rebind destination is surfaced as context so policies can gate it (e.g. forbid
+  // moving a role onto a particular provider). Context is absent for the
+  // destination-less introspection / base-capability form.
+  action UpdateRoleSourceSystem in ["RoleActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Role],
+      context: {
+        requested_provider_id?: String,
+        requested_source_id?: String,
+      }
+    };
 
   // ---------- Warehouse Actions ----------
   action "WarehouseActions";
@@ -395,11 +425,27 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Namespace]
     };
-  action IntrospectNamespaceAuthorization, DeleteNamespace,
+  action IntrospectNamespaceAuthorization,
          SetNamespaceProtection in ["NamespaceModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
+    };
+  action DeleteNamespace in ["NamespaceModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Namespace],
+      context: {
+        // Whether the warehouse-configured soft-deletion is bypassed, i.e.
+        // contained tabulars are hard-deleted immediately instead of being
+        // recoverable for the configured grace period.
+        force: Bool,
+        // Whether the underlying data/metadata files are physically purged.
+        purge: Bool,
+        // Whether the drop recurses into child namespaces, tables and views,
+        // deleting the entire subtree rooted at this namespace.
+        recursive: Bool,
+      }
     };
   action CreateTable in ["NamespaceModifyActions"]
     appliesTo {
@@ -488,12 +534,25 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [Table]
     };
-  action IntrospectTableAuthorization, DropTable, WriteTableData, RenameTable,
+  action IntrospectTableAuthorization, WriteTableData, RenameTable,
          UndropTable, ControlTableTasks,
          SetTableProtection in ["TableModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
+    };
+  action DropTable in ["TableModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Table],
+      context: {
+        // Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        // table is hard-deleted immediately instead of being recoverable for the
+        // configured grace period. Extra destructive — irreversible right away.
+        force: Bool,
+        // Whether the underlying data files are physically purged from storage.
+        purge: Bool,
+      }
     };
   action CommitTable in ["TableModifyActions"]
     appliesTo {
@@ -522,11 +581,24 @@ namespace Lakekeeper {
       principal: [User, Role],
       resource: [View]
     };
-  action IntrospectViewAuthorization, DropView, RenameView, UndropView,
+  action IntrospectViewAuthorization, RenameView, UndropView,
          ControlViewTasks, SetViewProtection in ["ViewModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
+    };
+  action DropView in ["ViewModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [View],
+      context: {
+        // Whether the warehouse-configured soft-deletion is bypassed, i.e. the
+        // view is hard-deleted immediately instead of being recoverable for the
+        // configured grace period. Extra destructive — irreversible right away.
+        force: Bool,
+        // Whether the underlying metadata files are physically purged from storage.
+        purge: Bool,
+      }
     };
   action CommitView in ["ViewModifyActions"]
     appliesTo {

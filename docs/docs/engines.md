@@ -99,7 +99,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
         "s3.region" = '<AWS Region to use. For S3-compatible storage use a non-existent AWS region, such as local>',
-        "fs.native-s3.enabled" = 'true'
+        "fs.s3.enabled" = 'true'
         -- Required for some S3-compatible storages:
         "s3.path-style-access" = 'true',
         "s3.endpoint" = '<Custom S3 endpoint>',
@@ -114,7 +114,7 @@ Basic setup in trino:
 
 === "Azure"
 
-    Trino does not support vended-credentials for Azure, so that Storage Account credentials must be specified in Trino. If you are interested in vended-credentials for Azure, please up-vote the [Trino Issue](https://github.com/trinodb/trino/issues/23238).
+    Trino supports vended-credentials from Iceberg REST Catalogs for Azure, so that no Storage Account credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Trino docs](https://trino.io/docs/current/object-storage/file-system-azure.html#object-storage-file-system-azure--page-root).
 
@@ -126,7 +126,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-azure.enabled" = 'true',
+        "fs.azure.enabled" = 'true',
         "azure.auth-type" = 'OAUTH',
         "azure.oauth.client-id" = '<Client-ID for an Application with Storage Account access>',
         "azure.oauth.secret" = '<Client-Secret>',
@@ -143,7 +143,7 @@ Basic setup in trino:
 
 === "GCS"
 
-    Trino does not support vended-credentials for GCS, so that GCS credentials must be specified in Trino. If you are interested in vended-credentials for GCS, please up-vote the [Trino Issue](https://github.com/trinodb/trino/issues/24518).
+    Trino supports vended-credentials from Iceberg REST Catalogs for GCS, so that no GCS credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Trino docs](https://trino.io/docs/current/object-storage/file-system-gcs.html).
 
@@ -156,7 +156,7 @@ Basic setup in trino:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-gcs.enabled" = 'true',
+        "fs.gcs.enabled" = 'true',
         "gcs.project-id" = '<Identifier for the project on Google Cloud Storage>',
         "gcs.json-key" = '<Your Google Cloud service account key in JSON format>',
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:
@@ -192,7 +192,7 @@ Basic setup in Starburst:
         "iceberg.rest-catalog.vended-credentials-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
         "s3.region" = '<AWS Region to use. For S3-compatible storage use a non-existent AWS region, such as local>',
-        "fs.native-s3.enabled" = 'true'
+        "fs.s3.enabled" = 'true'
         -- Required for some S3-compatible storages:
         "s3.path-style-access" = 'true',
         "s3.endpoint" = '<Custom S3 endpoint>',
@@ -207,7 +207,7 @@ Basic setup in Starburst:
 
 === "Azure"
 
-    Starburst does not support vended-credentials for Azure, so that Storage Account credentials must be specified in Starburst.
+    Starburst supports vended-credentials from Iceberg REST Catalogs for Azure, so that no Storage Account credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-azure.html).
 
@@ -219,7 +219,7 @@ Basic setup in Starburst:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-azure.enabled" = 'true',
+        "fs.azure.enabled" = 'true',
         "azure.auth-type" = 'OAUTH',
         "azure.oauth.client-id" = '<Client-ID for an Application with Storage Account access>',
         "azure.oauth.secret" = '<Client-Secret>',
@@ -236,7 +236,7 @@ Basic setup in Starburst:
 
 === "GCS"
 
-    Starburst does not support vended-credentials for GCS, so that GCS credentials must be specified in the connector.
+    Starburst supports vended-credentials from Iceberg REST Catalogs for GCS, so that no GCS credentials are required when creating the Catalog.
 
     Please find additional configuration Options in the [Starburst docs](https://docs.starburst.io/latest/object-storage/file-system-gcs.html).
 
@@ -249,7 +249,7 @@ Basic setup in Starburst:
         "iceberg.rest-catalog.warehouse" = '<Name of the Warehouse in Lakekeeper>',
         "iceberg.rest-catalog.nested-namespace-enabled" = 'true',
         "iceberg.unique-table-location" = 'true',
-        "fs.native-gcs.enabled" = 'true',
+        "fs.gcs.enabled" = 'true',
         "gcs.project-id" = '<Identifier for the project on Google Cloud Storage>',
         "gcs.json-key" = '<Your Google Cloud service account key in JSON format>',
         -- Required Parameters if OAuth2 authentication is enabled for Lakekeeper:

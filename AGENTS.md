@@ -46,6 +46,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Use workspace dependencies (`{ workspace = true }`) — don't add versions directly.
 - All crate versions use `version.workspace = true`.
 - Minimize new dependencies — justify additions.
+- Docs prose (`docs/docs/*.md`): one line per paragraph — no hard line wrapping. Rely on soft-wrap.
 
 ## Architecture
 - Before adding new code, check if existing crates already solve the problem. Reuse over reinvention.

@@ -15,6 +15,11 @@ nav:
           - Management (Core): api/management.md
           - Management <span class="lkp"></span>: api/management-plus.md
     - Query Engines: engines.md
+    - Generic Tables:
+          - Overview: generic-tables.md
+          - Python Client: generic-tables-pylakekeeper.md
+          - Apache Spark (PySpark): generic-tables-spark.md
+          - Apache Flink (Java): generic-tables-flink.md
     - User Guide:
           - bootstrap.md
           - storage.md
@@ -22,8 +27,9 @@ nav:
           - authorization.md
           - Authorization (OpenFGA): authorization-openfga.md
           - Authorization (Cedar): authorization-cedar.md
+          - Admission Gates: admission.md
           - View Security: view-security.md
-          - Generic Tables: generic-tables.md
+          - UI Branding <span class="lkp"></span>: ui-branding.md
           - logging.md
           - monitoring.md
           - opa.md

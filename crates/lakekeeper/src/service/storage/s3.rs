@@ -496,6 +496,7 @@ impl S3Profile {
 
         let mut config = TableProperties::default();
         let mut creds = TableProperties::default();
+        let mut credentials_expiration_ms: Option<i64> = None;
 
         if let Some(true) = self.path_style_access {
             config.insert(&s3::PathStyleAccess(true));
@@ -564,6 +565,7 @@ impl S3Profile {
             if let Some(expiration) = expiration_ms_since_epoch {
                 creds.insert(&s3::SesionTokenExpiresAtMs(expiration));
                 creds.insert(&creds::ExpirationTimeMs(expiration));
+                credentials_expiration_ms = Some(expiration);
             }
             if tabular_info.tabular_id().is_table() {
                 creds.insert(&client::RefreshClientCredentialsEndpoint(
@@ -591,7 +593,11 @@ impl S3Profile {
             config.insert(&s3::SignerEndpoint(signer_endpoint));
         }
 
-        Ok(TableConfig { creds, config })
+        Ok(TableConfig {
+            creds,
+            config,
+            credentials_expiration_ms,
+        })
     }
 
     async fn get_or_fetch_temporary_credentials(

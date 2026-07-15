@@ -8,6 +8,59 @@ For Lakekeeper Plus releases, see the [Lakekeeper Plus Release Notes](enterprise
 
 <!-- Maintainers: how to update this page at release → .github/RELEASING.md -->
 
+## v0.13.1 (2026-06-30)
+
+### Bug Fixes
+- Console updated to v0.19.0; the default OAuth `client_id` no longer carries a leading slash ([ac1094a](https://github.com/lakekeeper/lakekeeper/commit/ac1094a52e51da586c60a27159f9720784eb66e7)).
+
+## v0.13.0 (2026-06-28)
+
+### Highlights
+- **Generic Table API.** Register non-Iceberg tables (e.g. Lance, Delta) as first-class generic tables and get credential vending, list/load/rename/drop, soft-delete/undrop, protection, and full authorization — without faking Iceberg metadata ([#1673](https://github.com/lakekeeper/lakekeeper/pull/1673), [#1813](https://github.com/lakekeeper/lakekeeper/pull/1813)).
+- **Operator-owned warehouses.** A `managed_by` marker lets a control plane (operator/IaC) own a warehouse, locking spec mutations (delete, rename, (de)activate, storage profile, protection, format-version policy) to instance admins even when authorization would otherwise allow them ([#1828](https://github.com/lakekeeper/lakekeeper/pull/1828)).
+- **Cache hardening for large fleets.** Hot read-through caches now coalesce concurrent identical misses (single-flight) and jitter their TTLs, cutting thundering-herd load on the database and on rate-limited cloud STS/SAS endpoints ([#1833](https://github.com/lakekeeper/lakekeeper/pull/1833), [#1837](https://github.com/lakekeeper/lakekeeper/pull/1837)).
+
+### Features
+- **Per-warehouse table format-version policy.** Set the allowed Iceberg table format versions and an optional default per warehouse, enforced on create/commit/upgrade ([#1786](https://github.com/lakekeeper/lakekeeper/pull/1786)).
+- **Customer-managed KMS encryption.** Warehouses with `aws-kms-key-arn` now advertise `s3.sse.type=kms` to clients, so writes via vended credentials are encrypted with your KMS key ([#1847](https://github.com/lakekeeper/lakekeeper/pull/1847)).
+- **Schedule a task directly.** `POST .../task-queue/{queue_name}/schedule` schedules a task for a single table without waiting for a commit hook ([#1783](https://github.com/lakekeeper/lakekeeper/pull/1783)).
+- **Task failures are debuggable.** Failed tasks now surface the root-cause failure reason in task-detail responses, no server-log access required ([#1873](https://github.com/lakekeeper/lakekeeper/pull/1873)).
+- **Pluggable admission gates.** A new post-authentication seam lets an external service reject already-authenticated principals that have no entitlement on this instance and contribute their resolved roles ([#1865](https://github.com/lakekeeper/lakekeeper/pull/1865), [#1866](https://github.com/lakekeeper/lakekeeper/pull/1866), [#1869](https://github.com/lakekeeper/lakekeeper/pull/1869)).
+- **Authorizer-independent role-membership API.** A single management surface lists, adds, and removes a role's members (users or roles) and shows what a role or user belongs to — the same API regardless of the configured authorizer. The membership edges keep a single source of truth: the authorizer's own store when it manages assignments (e.g. OpenFGA), otherwise the catalog's Postgres tables ([#1829](https://github.com/lakekeeper/lakekeeper/pull/1829)).
+- **Iceberg 1.11 remote signing.** Emits the new `signer.uri`/`signer.endpoint` properties alongside the legacy `s3.signer.*` keys, so clients ≥1.11 stop logging deprecation warnings while older clients keep working ([#1820](https://github.com/lakekeeper/lakekeeper/pull/1820)).
+- **Per-decision authorization audit.** Authorization audit events now record the contributing policies behind each allow/deny outcome ([#1844](https://github.com/lakekeeper/lakekeeper/pull/1844)).
+- **More observability.** New client-side Postgres connection-pool metrics and event-listener dispatch timing metrics ([#1838](https://github.com/lakekeeper/lakekeeper/pull/1838), [#1863](https://github.com/lakekeeper/lakekeeper/pull/1863)).
+- **Console v0.15.1** — generic-tables (Lance/Delta) tab, Iceberg format-version policy editor, OneLake/Fabric backend, and per-queue maintenance summaries ([#1855](https://github.com/lakekeeper/lakekeeper/pull/1855)).
+
+### Bug Fixes
+- `GET /config` now authorizes only the requested warehouse (fixing timeouts on large projects) and masks hidden/unknown warehouses identically so existence and UUIDs can't leak ([#1788](https://github.com/lakekeeper/lakekeeper/pull/1788)).
+- Conditional `loadTable` no longer returns `304` once the cached response's vended credentials have expired ([#1862](https://github.com/lakekeeper/lakekeeper/pull/1862)).
+- S3: keep the STS vended-credential policy within the packed-size limit and emit a reliable table resource ARN for paths with special characters ([#1857](https://github.com/lakekeeper/lakekeeper/pull/1857)).
+- Azure (ADLS): add a connect timeout and a larger retry budget so transient connect failures are retried; retry storage OAuth token acquisition for ADLS and GCS ([#1815](https://github.com/lakekeeper/lakekeeper/pull/1815), [#1827](https://github.com/lakekeeper/lakekeeper/pull/1827)).
+- Postgres: migration locks are now transaction-scoped, so a failed migration no longer leaks an advisory lock that could permanently block future migrations ([#1790](https://github.com/lakekeeper/lakekeeper/pull/1790)).
+
+### Breaking Changes
+- **Default storage layout is now flat** — new namespaces use `<base>/<tabular-uuid>` instead of nesting tabulars under the parent-namespace UUID. Only namespaces created on/after 0.13 are affected; existing namespaces and tabulars keep their persisted paths (not retroactive, no migration), so a warehouse spanning the upgrade can hold a mix. To keep the previous behavior for new namespaces, explicitly configure the full-hierarchy layout ([#1853](https://github.com/lakekeeper/lakekeeper/pull/1853)).
+- **Event backends are separate crates.** The NATS and Kafka backends moved out of the core `lakekeeper` crate into `lakekeeper-events-nats` and `lakekeeper-events-kafka`. Prebuilt binaries and images are unaffected (same env vars); building from source must depend on the new crates — the `nats`, `kafka`, and `vendored-protoc` features are removed from `lakekeeper` ([#1814](https://github.com/lakekeeper/lakekeeper/pull/1814)).
+- **Postgres backend is a separate crate.** Catalog Postgres logic moved into `lakekeeper-storage-postgres`, making `lakekeeper` backend-agnostic. Source consumers of `lakekeeper::implementations::*` must now depend on the new crate; prebuilt binary/image users are unaffected ([#1812](https://github.com/lakekeeper/lakekeeper/pull/1812)).
+- **Role source-system rebind is now permission-gated.** `PUT /role/{id}/source-system` requires membership-control permission (OpenFGA model v4.6→v4.7), closing a privilege-escalation gap ([#1848](https://github.com/lakekeeper/lakekeeper/pull/1848)).
+- **Custom authorizers.** `are_allowed_*_actions_impl` now return `Vec<AuthorizationDecision>` instead of `Vec<bool>`, and `RoleAction` gained a non-`Copy` `UpdateSourceSystem` variant; out-of-tree authorizer implementations must adapt. Built-in OpenFGA users are unaffected ([#1844](https://github.com/lakekeeper/lakekeeper/pull/1844), [#1848](https://github.com/lakekeeper/lakekeeper/pull/1848)).
+- **Regenerate action client SDKs.** `GET …/actions` now advertises action *kinds* (`Lakekeeper*ActionKind`); the wire JSON is unchanged, but generated clients should be regenerated ([#1860](https://github.com/lakekeeper/lakekeeper/pull/1860)).
+
+### Upgrade Notes
+- **Downgrade protection.** `serve` now refuses to start against a database already migrated by a newer binary and does not retry. After a rollback, start the older binary with `serve --force-start`, accepting the schema-incompatibility risk ([#1861](https://github.com/lakekeeper/lakekeeper/pull/1861)).
+- Docker base images moved from Debian 12 (bookworm) to Debian 13 (trixie) ([#1794](https://github.com/lakekeeper/lakekeeper/pull/1794)).
+- The docker-compose examples now use SeaweedFS instead of MinIO for object storage ([#1811](https://github.com/lakekeeper/lakekeeper/pull/1811)).
+
+## v0.12.4 (2026-06-17)
+
+### Features
+- **Multiple OIDC providers.** Authenticate tokens from several identity providers at once (e.g. Okta for users + a cloud OIDC issuer for service accounts) via `LAKEKEEPER__OPENID_PROVIDERS`; fully backwards-compatible with the existing single-provider config ([#1760](https://github.com/lakekeeper/lakekeeper/pull/1760)).
+- **Microsoft OneLake / Fabric storage + private endpoints.** New OneLake (ADLS Gen2) storage profile with configurable endpoint modes including workspace private link ([#1852](https://github.com/lakekeeper/lakekeeper/pull/1852)); Console updated to v0.14.3 for OneLake support.
+
+### Bug Fixes
+- `/health` now returns HTTP `503` (not `200`) when aggregate health is unhealthy or unknown, so Kubernetes HTTP probes correctly detect an unhealthy server; the JSON body is unchanged ([#1802](https://github.com/lakekeeper/lakekeeper/pull/1802)).
+
 ## v0.12.3 (2026-05-26)
 
 ### Features

@@ -2,6 +2,8 @@
 
 Lakekeeper's **Generic Table API** catalogs non-Iceberg tables — Lance, CSV, Parquet, or any other format — alongside Iceberg tables in the same Warehouse. Each generic table sits in a Namespace, has a name, a `format` string, an optional base `location`, `schema`, `statistics`, `properties`, and a free-form `doc` field. Engines handle writes against the underlying format; Lakekeeper handles **identity, governance, access control, and lifecycle**.
 
+![generic tables in the Console](../../assets/generic-tables.png){ width="50%" }
+
 Unlike Iceberg tables, Lakekeeper does not commit format-specific metadata for generic tables — readers and writers go directly to the storage location after obtaining catalog metadata and credentials. This makes the API format-agnostic: any future or experimental format works without changes to the catalog.
 
 ## When to use generic tables
@@ -29,44 +31,41 @@ Generic tables are first-class citizens. Most of Lakekeeper's table-side machine
 | Commit coordination | :x: | The catalog does not arbitrate writes — engines write directly |
 | Schema enforcement | :x: | Schema is stored, not validated against data files |
 
-## Lance example
+## Working with generic tables
 
-Once a warehouse and namespace exist, create a Lance table via the API:
+The flow is the same for every format: create the table, load it with *vended* credentials, then read or write directly with the format's own library. Lakekeeper only brokers metadata and short-lived storage credentials — never the data itself — so the same credentials path works for any format and only the reader library changes.
 
-```bash
-curl -X POST "$LAKEKEEPER/lakekeeper/v1/$WAREHOUSE/namespaces/ai/generic-tables" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "image_embeddings",
-    "format": "lance",
-    "doc": "CLIP embeddings + thumbnails for product catalog",
-    "properties": {"embedding-dim": "768"}
-  }'
-```
+You don't need to hand-roll these HTTP calls:
 
-Then load credentials and open the dataset with LanceDB:
-
-```python
-import requests, lance
-
-meta = requests.get(
-    f"{LAKEKEEPER}/lakekeeper/v1/{WAREHOUSE}/namespaces/ai/generic-tables/image_embeddings",
-    headers={"Authorization": f"Bearer {TOKEN}"},
-).json()
-
-creds = requests.get(
-    f"{LAKEKEEPER}/lakekeeper/v1/{WAREHOUSE}/namespaces/ai/generic-tables/image_embeddings/credentials",
-    headers={"Authorization": f"Bearer {TOKEN}"},
-).json()
-
-ds = lance.dataset(meta["location"], storage_options=creds["storage-options"])
-ds.to_table(columns=["caption", "embedding"]).filter("score > 0.8")
-```
-
-The same credentials path works for any format — only the reader library changes.
+- **Python** — the [Python client (`pylakekeeper`)](generic-tables-pylakekeeper.md) wraps create/load/list/drop and maps vended credentials into the keys Lance, `boto3`, and `fsspec` expect. See its [Lance example](generic-tables-pylakekeeper.md#example-lance-table).
+- **PySpark** — [Apache Spark](generic-tables-spark.md) reads and writes generic tables through the same vending flow.
+- **Java / Flink** — [Apache Flink](generic-tables-flink.md) shows the same vending flow.
 
 For a runnable end-to-end example (warehouse setup, STS credentials, create/load/drop, undrop, listing), see [`tests/integration-tests/lance/test_lance.py`](https://github.com/lakekeeper/lakekeeper/blob/main/tests/integration-tests/lance/test_lance.py).
+
+## In the Console
+
+The Lakekeeper Console lists generic tables alongside Iceberg tables and views inside each Namespace, tagged with their `format` so you can tell them apart at a glance. Selecting one opens a detail view with its location, schema, statistics, properties, and the same actions (rename, protect, drop/undrop, permissions) available for Iceberg tables.
+
+Because the `format` field is an opaque string, any format shows up as a first-class entry — below are a few common ones.
+
+### Lance
+
+Multimodal / vector tables written with Lance. The detail view surfaces the stored schema (embeddings, scalar features, raw bytes) and the storage location engines read from.
+
+![Lance generic table in the Console](../../assets/generic-tables-lance.png){ width="100%" }
+
+### Delta
+
+Delta Lake tables cataloged as generic tables — governed and permissioned in Lakekeeper while engines read/write the Delta log directly at the table location.
+
+![Delta generic table in the Console](../../assets/generic-tables-delta.png){ width="100%" }
+
+### Dataset
+
+A raw dataset (CSV / JSON / Parquet drop) registered so it appears in the catalog and inherits the surrounding Namespace's permissions.
+
+![Dataset generic table in the Console](../../assets/generic-tables-dataset.png){ width="100%" }
 
 ## Authorization model
 

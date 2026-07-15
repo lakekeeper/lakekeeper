@@ -66,6 +66,25 @@ sections. Link the (public) PRs as Markdown links. Credit external contributors 
 Sections, in order: **Highlights · Features · Bug Fixes · Breaking Changes · Upgrade
 Notes**.
 
+## What to leave out / collapse
+
+The `CHANGELOG.md` PR list is raw input, not the release notes. Curate it:
+
+- **Don't list a bug fix for code first introduced in the same release.** If the feature
+  and its follow-up fix both land in this version, the bug never shipped — fold the fix
+  into the feature (or drop it). Check with `git show <last-release-tag>:<path>`: if the
+  fixed code/route didn't exist at the previous release, it's a same-release fix. (A fix
+  for a path that *did* exist at the last release is a real, listable fix.)
+- **One line per feature, even when it spanned several PRs.** Backend + management API +
+  console PRs for the same capability are a single entry citing all the PRs together.
+- **Highlight what matters to OSS users.** The OSS authorizer is OpenFGA; changes that
+  only affect the built-in/internal authorization store are not OSS highlights (OpenFGA
+  already covers most of that ground) — keep them to a modest Features line or omit.
+- **Don't re-announce features that shipped in a parallel `rel-*` patch.** Patch releases
+  are cut from `rel-*` branches, so `main`'s release-please CHANGELOG re-lists those PRs
+  under the next minor (it diffs `last-main-release...this`). Put them in the patch's own
+  notes section and omit them here. Add the patch section too if it was never written up.
+
 ## Notes
 
 - No CI generation, no API key, no `git-cliff`. Summarising is a manual/agent-assisted

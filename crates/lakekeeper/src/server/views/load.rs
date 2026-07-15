@@ -219,6 +219,7 @@ async fn authorize_load_view<C: CatalogStore, A: Authorizer + Clone>(
     // 9. Build actions and check all authorizations in batch
     let actions = build_actions_from_sorted_tabulars_for_authorize_load_tabular(
         &sorted_tabulars_with_full_info,
+        view,
     );
     let authz_results = authorizer
         .are_allowed_tabular_actions_vec(request_metadata, &warehouse, &namespaces, &actions)
@@ -253,11 +254,10 @@ fn interpret_authz_results_for_load_view(
     let mut target_is_delegated = false;
     let mut can_get_metadata = false;
 
-    // Each view in the chain emits both `GetMetadata` and `Select` — see
-    // `build_actions_from_sorted_tabulars_for_authorize_load_tabular`. On the
-    // target view we only consult `GetMetadata` (loadView reads the
-    // definition; it doesn't execute). On intermediate views we enforce any
-    // denial, which includes `Select`.
+    // The target view emits only `GetMetadata` — loadView reads the
+    // definition; it doesn't execute. Intermediate views additionally emit
+    // `Select`, and we enforce any denial on them. See
+    // `build_actions_from_sorted_tabulars_for_authorize_load_tabular`.
     for ((_ns, action), &allowed) in actions.iter().zip(authz_results) {
         match action {
             ActionOnTableOrView::View(view_action) => {

@@ -205,11 +205,43 @@ async fn get_scheduled_project_ids<C: CatalogStore>(
                 .map(|task| task.task_metadata.project_id().clone()),
         );
 
-        if response.next_page_token.is_none() {
+        if !has_more_task_pages(
+            response.tasks.is_empty(),
+            response.next_page_token.as_deref(),
+        ) {
             break;
         }
         page_token = response.next_page_token;
     }
 
     Ok(project_ids)
+}
+
+/// Whether [`get_scheduled_project_ids`] should request another page given the
+/// page just returned by `list_tasks`.
+///
+/// `list_tasks` echoes the supplied page token back even when a page comes back
+/// empty (so a caller can resume the same cursor later), so the end of the
+/// result set is signalled by an empty page — not by a missing token.
+fn has_more_task_pages(page_was_empty: bool, next_page_token: Option<&str>) -> bool {
+    !page_was_empty && next_page_token.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_more_task_pages;
+
+    #[test]
+    fn stops_paginating_on_empty_terminal_page() {
+        // A non-empty page with a continuation token: keep going.
+        assert!(has_more_task_pages(false, Some("token")));
+
+        // `list_tasks` echoes the supplied token back on an empty terminal page,
+        // so an empty page must stop pagination even though a token is present.
+        assert!(!has_more_task_pages(true, Some("token")));
+
+        // No token: stop regardless of whether the page had rows.
+        assert!(!has_more_task_pages(false, None));
+        assert!(!has_more_task_pages(true, None));
+    }
 }

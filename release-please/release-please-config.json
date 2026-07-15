@@ -14,7 +14,7 @@
     "bump-minor-pre-major": true,
     "bump-patch-for-minor-pre-major": false,
     "include-component-in-tag": false,
-    "release-as": "0.13.0",
+    "release-as": "0.14.0",
     "extra-files": [
         {
             "type": "toml",
@@ -44,7 +44,27 @@
         {
             "type": "toml",
             "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-events-kafka\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-events-nats\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-integration-tests\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
             "jsonpath": "$.package[?(@.name.value == \"lakekeeper-io\")].version"
+        },
+        {
+            "type": "toml",
+            "path": "Cargo.lock",
+            "jsonpath": "$.package[?(@.name.value == \"lakekeeper-secrets-kv2\")].version"
         },
         {
             "type": "toml",

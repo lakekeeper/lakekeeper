@@ -564,7 +564,7 @@ pub enum CatalogRoleAction {
     ReadRoleAssignments,
     /// Can rebind this role's external identity (provider + source id) to a
     /// different source system. `target` is the rebind destination, surfaced as
-    /// action context (`target_provider_id` / `target_source_id`) so policy-based
+    /// action context (`requested_provider_id` / `requested_source_id`) so policy-based
     /// authorizers can gate it (e.g. forbid moving a role onto a particular
     /// provider). The catalog backend treats this the same as
     /// `ManageRoleAssignments`.
@@ -610,8 +610,8 @@ impl CatalogAction for CatalogRoleAction {
             target: SourceSystemTarget::To(target),
         } = self
         {
-            b = b.context_string("target_provider_id", target.provider_id.to_string());
-            b = b.context_string("target_source_id", target.source_id.to_string());
+            b = b.context_string("requested_provider_id", target.provider_id.to_string());
+            b = b.context_string("requested_source_id", target.source_id.to_string());
         }
         b.build()
     }

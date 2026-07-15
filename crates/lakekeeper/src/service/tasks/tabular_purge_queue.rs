@@ -134,14 +134,11 @@ async fn instrumented_purge<S: SecretStore, C: CatalogStore>(
                 "Error in `{QN_STR}` worker. Failed to purge location {}. {err}",
                 task.data.tabular_location,
             );
-            task.record_failure::<C>(
-                catalog_state,
-                &format!(
-                    "Failed to purge tabular at location `{}`.\n{err}",
-                    task.data.tabular_location
-                ),
-            )
-            .await;
+            let detail = format!(
+                "Failed to purge tabular at location `{}`.\nError: {}",
+                task.data.tabular_location, err.error
+            );
+            task.record_failure::<C>(catalog_state, &detail).await;
         }
     }
 }

@@ -47,9 +47,9 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 
 | Metric                                                                                             | Type      | Labels                   | Description |
 |----------------------------------------------------------------------------------------------------|-----------|--------------------------|-----|
-| <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable. Updated by the periodic health-check loop. |
-| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call. The `outcome` label reflects how the request was served (see table below). |
-| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Number of failures writing fresh roles back to the Postgres catalog cache. |
+| <code class="selectable">lakekeeper_<wbr>role_provider_up</code>                                   | Gauge     | `provider_id`            | `1` when the provider is reachable, `0` when unreachable. Updated by the periodic health-check loop. Emitted only for providers with an external backend (e.g. LDAP); the OIDC token provider has no external dependency and reports no series. |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>get_roles_<wbr>duration_seconds</code> | Histogram | `provider_id`, `outcome` | Duration of each role-lookup call. The `outcome` label reflects how the request was served (see table below). Emitted by external-backed providers (LDAP). |
+| <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>sync_errors_total</code>               | Counter   | `provider_id`            | Number of failures writing fresh roles back to the Postgres catalog cache. Emitted by LDAP providers and by the OIDC token provider when `persist_token_roles` is enabled. |
 | <code class="selectable">lakekeeper_<wbr>role_provider_<wbr>ldap_<wbr>reconnects_total</code>      | Counter   | `provider_id`, `outcome` | LDAP reconnect attempts (LDAP providers only), labelled `success` or `error`. |
 
 **`outcome` values for `lakekeeper_role_provider_get_roles_duration_seconds`** (histogram label):
@@ -66,7 +66,7 @@ When a Role Provider (e.g. LDAP) is configured, Lakekeeper emits the following m
 This contrasts with the Postgres connection: if Postgres becomes unreachable, the pod **will** fail its health check (see [Database Monitoring](#database-postgres-monitoring) below). `/health` returns `200 OK` only when the aggregate health state is `ok`; it returns `503 Service Unavailable` when the aggregate state is `error` or `unknown`.
 
 !!! tip "Alerting on role provider health"
-    Alert on `lakekeeper_role_provider_up == 0` to detect provider outages early. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms that Lakekeeper is actively falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` with a healthy provider indicates a separate Postgres write problem — investigate database connectivity or permissions.
+    Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported — the series exists only for external-backed providers (LDAP) and only after the first health-check cycle, so pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms that Lakekeeper is actively falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` indicates failures writing roles back to Postgres — for an LDAP provider a database connectivity/permissions problem; for the OIDC token provider (`persist_token_roles`) a failure persisting token roles for definer-view reuse.
 
 ## Prometheus Integration
 
@@ -153,7 +153,7 @@ See [Configuration - Endpoint Statistics](./configuration.md#endpoint-statistics
 
 ## Best Practices
 
-Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, and `lakekeeper_role_provider_up == 0`.
+Split Grafana dashboards by concern: API health (status codes, pending, latency), database health, cache hit/miss ratios, role provider health, and Kubernetes resource utilization. Alert on sustained 5XX/4XX spikes, high pending request counts, low cache hit rates, and `lakekeeper_role_provider_up == 0` (combined with `absent(...)` to catch a provider that never reported).
 
 ## Troubleshooting
 

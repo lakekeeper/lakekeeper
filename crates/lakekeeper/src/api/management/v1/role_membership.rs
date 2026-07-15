@@ -108,7 +108,7 @@ impl From<RoleMemberType> for RoleMemberKind {
 
 /// A member of a role, returned by `GET /role/{id}/members`. Discriminated by
 /// `type`: a `user` (direct user→role assignment) or a `role` (role→role edge).
-/// Identity is hydrated; for requests and add/remove confirmations use the
+/// Identity is hydrated; for requests and add confirmations use the
 /// un-hydrated [`RoleMemberRef`] instead.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -162,9 +162,9 @@ impl From<CatalogRoleMember> for RoleMember {
 }
 
 /// An identity reference to a role member — a `user` or a `role`, by typed id.
-/// Sent in `POST /role/{id}/members` requests and echoed by the add/remove
-/// confirmations. Unlike [`RoleMember`] it is never hydrated (no display name):
-/// it names *which* principal, not its display identity.
+/// Sent in `POST /role/{id}/members` requests and echoed by the add confirmation
+/// (remove returns `204` with no body). Unlike [`RoleMember`] it is never hydrated
+/// (no display name): it names *which* principal, not its display identity.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -228,14 +228,15 @@ pub struct AddRoleMembersResponse {
     pub members: Vec<RoleMemberRef>,
 }
 
-/// One page of a role's direct members (users ∪ member roles).
+/// One page of a role's members (users ∪ member roles) — direct for `/members`,
+/// transitive for `/members/transitive`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRoleMembersResponse {
     pub members: Vec<RoleMember>,
     /// Token for the next page; `null`/absent once the listing is exhausted.
-    /// Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+    /// Note for SDK authors: **stop when `next-page-token` is null/absent.** The
     /// final page of results may itself return a null token, so don't rely on
     /// receiving a separate trailing empty page — keep requesting until the token
     /// is null.
@@ -270,14 +271,15 @@ impl From<RoleMembershipEntry> for RoleMembership {
     }
 }
 
-/// One page of roles (the `member-of` set, or a user's directly-assigned roles).
+/// One page of roles — the `member-of` set or a user's roles, direct or transitive
+/// depending on the endpoint.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct ListRoleMembershipsResponse {
     pub roles: Vec<RoleMembership>,
     /// Token for the next page; `null`/absent once the listing is exhausted.
-    /// Note for SDK authors: **stop when `next_page_token` is null/absent.** The
+    /// Note for SDK authors: **stop when `next-page-token` is null/absent.** The
     /// final page of results may itself return a null token, so don't rely on
     /// receiving a separate trailing empty page — keep requesting until the token
     /// is null.

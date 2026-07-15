@@ -154,9 +154,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "apache-avro"
@@ -1781,7 +1781,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5"
 dependencies = [
  "digest 0.10.7",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -1804,9 +1804,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -2454,7 +2454,7 @@ checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
  "futures-core",
  "futures-sink",
- "spin 0.9.8",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -3253,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "iceberg-ext"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "axum",
  "bytes",
@@ -3714,7 +3714,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3757,7 +3757,7 @@ dependencies = [
  "pastey",
  "percent-encoding",
  "pretty_assertions",
- "quick-xml 0.38.4",
+ "quick-xml 0.41.0",
  "reqwest 0.12.28",
  "semver",
  "serde",
@@ -3794,7 +3794,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-authz-openfga"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-bin"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3847,8 +3847,8 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-console"
-version = "0.15.1"
-source = "git+https://github.com/lakekeeper/console?rev=v0.15.1#b559f3f9d80153ecc25f5481600a8d7e056deae1"
+version = "0.19.0"
+source = "git+https://github.com/lakekeeper/console?rev=v0.19.0#7c6568e411504c4acfde7b03c9af16754916eac3"
 dependencies = [
  "flate2",
  "fs_extra",
@@ -3859,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-events-kafka"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3877,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-events-nats"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-integration-tests"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -3934,7 +3934,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-io"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3988,7 +3988,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-secrets-kv2"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4007,7 +4007,7 @@ dependencies = [
 
 [[package]]
 name = "lakekeeper-storage-postgres"
-version = "0.12.3"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5305,9 +5305,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.38.4"
+version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
 dependencies = [
  "memchr",
  "serde",
@@ -5315,9 +5315,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.40.1"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
  "serde",
@@ -5345,9 +5345,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -6588,18 +6588,18 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
 name = "spki"

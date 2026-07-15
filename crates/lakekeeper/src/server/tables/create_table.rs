@@ -37,7 +37,7 @@ use crate::{
         },
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
-        storage::{StoragePermissions, ValidationError},
+        storage::{StoragePermissions, ValidationError, credential_revalidate_after_ms},
     },
 };
 
@@ -335,6 +335,9 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         )
         .await?;
 
+    let credentials_revalidate_after_ms = config
+        .credentials_expiration_ms
+        .map(credential_revalidate_after_ms);
     let storage_credentials = (!config.creds.inner().is_empty()).then(|| {
         vec![StorageCredential {
             prefix: table_location.to_string(),
@@ -347,6 +350,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         metadata: table_metadata.clone(),
         config: Some(config.config.into()),
         storage_credentials,
+        credentials_revalidate_after_ms,
     };
 
     // Create table in authorizer

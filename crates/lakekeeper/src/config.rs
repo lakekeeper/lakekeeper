@@ -479,8 +479,13 @@ pub struct DynAppConfig {
     // ------------- Tasks -------------
     /// Duration to wait after no new task was found before polling for new tasks again.
     pub task_poll_interval: std::time::Duration,
-    /// Number of workers to spawn for expiring tabulars. (default: 2)
-    pub task_tabular_expiration_workers: usize,
+    /// Number of workers to spawn for finalizing soft-deleted tabulars once
+    /// their expiration elapses. (default: 2)
+    ///
+    /// The `task_tabular_expiration_workers` alias keeps the pre-rename env var
+    /// `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` working.
+    #[serde(alias = "task_tabular_expiration_workers")]
+    pub task_soft_deletion_workers: usize,
     /// Number of workers to spawn for purging tabulars. (default: 2)
     pub task_tabular_purge_workers: usize,
     /// Number of workers to spawn for cleaning task logs. (default: 2)
@@ -1055,7 +1060,7 @@ impl Default for DynAppConfig {
             health_check_frequency_seconds: 10,
             secret_backend: SecretBackend::Postgres,
             task_poll_interval: Duration::from_secs(10),
-            task_tabular_expiration_workers: 2,
+            task_soft_deletion_workers: 2,
             task_tabular_purge_workers: 2,
             task_log_cleanup_workers: 2,
             default_tabular_expiration_delay_seconds: chrono::Duration::days(7),

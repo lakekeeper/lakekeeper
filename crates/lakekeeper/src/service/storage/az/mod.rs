@@ -526,6 +526,7 @@ pub(super) async fn generate_adls_table_config<T: BasicTabularInfo>(
         // Back-compat: clients still expect creds duplicated in config.
         config: creds.clone(),
         creds,
+        credentials_expiration_ms: Some(expiration_ms),
     })
 }
 

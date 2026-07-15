@@ -324,11 +324,11 @@ mod tests {
         .unwrap();
 
         // Pick up the tasks to make them active
-        let _task1 = pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _task1 = pick_task(&pool, &tq_name1, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
-        let _task2 = pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _task2 = pick_task(&pool, &tq_name2, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -411,7 +411,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let _picked = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _picked = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -488,7 +488,7 @@ mod tests {
         .unwrap();
 
         // Pick up and complete both tasks
-        let task1 = pick_task(&pool, &tq_name1, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name1, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -496,7 +496,7 @@ mod tests {
             .await
             .unwrap();
 
-        let task2 = pick_task(&pool, &tq_name2, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name2, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -611,7 +611,7 @@ mod tests {
         .unwrap();
 
         // Complete task2, pick up task1 (leave task3 scheduled)
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -619,7 +619,7 @@ mod tests {
             .await
             .unwrap();
 
-        let _task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -909,7 +909,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -918,7 +918,7 @@ mod tests {
             .unwrap();
 
         // Second attempt - pick and keep running
-        let _task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1068,7 +1068,7 @@ mod tests {
 
         // Complete half of the tasks to have them in task_log
         for (i, _) in task_ids.iter().enumerate().take(10) {
-            let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .unwrap();

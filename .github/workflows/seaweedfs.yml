@@ -67,16 +67,16 @@ jobs:
 
       - name: Start SeaweedFS Docker Container
         run: |
-          # Mount an advanced IAM config so the S3 gateway also serves the STS
-          # AssumeRole API. Lakekeeper's vended-credentials tests (S3Compat
-          # flavor) call sts:AssumeRole; without an STS signing key SeaweedFS
-          # returns 503. See .github/seaweedfs-iam.json (the signing key there is
-          # an ephemeral, CI-only value).
+          # SeaweedFS mini serves S3 plus the STS AssumeRole API in one process.
+          # -bucket pre-creates the `tests` bucket so the non-admin lakekeeper
+          # identity (which cannot CreateBucket) suffices; its vended-credentials
+          # tests (S3Compat flavor) call sts:AssumeRole, which needs the STS
+          # signing key in .github/seaweedfs-iam.json (an ephemeral, CI-only value).
           docker run -d --name seaweedfs -p 8333:8333 \
             -e "AWS_ACCESS_KEY_ID=some_access_key1" \
             -e "AWS_SECRET_ACCESS_KEY=some_secret_key1" \
             -v "${GITHUB_WORKSPACE}/.github/seaweedfs-iam.json:/etc/seaweedfs/iam.json:ro" \
-            chrislusf/seaweedfs:4.31 server -s3 -ip.bind=0.0.0.0 \
+            chrislusf/seaweedfs:4.36 mini -dir=/data -bucket=tests -ip.bind=0.0.0.0 \
             -s3.config=/etc/seaweedfs/iam.json -s3.iam.config=/etc/seaweedfs/iam.json
 
       - name: Wait for SeaweedFS S3 to be healthy
@@ -102,15 +102,6 @@ jobs:
           echo "=== Open Ports ==="
           netstat -tlnp
           exit 1
-
-      - name: Create SeaweedFS Bucket
-        env:
-          AWS_ACCESS_KEY_ID: some_access_key1
-          AWS_SECRET_ACCESS_KEY: some_secret_key1
-          AWS_DEFAULT_REGION: local
-          AWS_EC2_METADATA_DISABLED: true
-        run: |
-          aws s3api create-bucket --bucket tests --endpoint-url http://127.0.0.1:8333
 
       - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         if: ${{ env.AZURE_CLIENT_ID != '' }}

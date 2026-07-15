@@ -122,6 +122,7 @@ fn parse_task_details(
         data: most_recent.task_data,
         attempts,
         execution_details: most_recent.execution_details,
+        message: most_recent.message,
     }))
 }
 
@@ -680,7 +681,7 @@ mod tests {
         .unwrap();
 
         // Pick up the task to make it active
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -770,7 +771,7 @@ mod tests {
         .unwrap();
 
         // Pick up the task
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -807,6 +808,68 @@ mod tests {
 
         // No historical attempts for single completed task
         assert!(result.attempts.is_empty());
+        // The current attempt's message (here: success result details) is
+        // surfaced at the top level.
+        assert_eq!(
+            result.message,
+            Some("Task completed successfully".to_string())
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_get_task_details_single_terminal_failure(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+        let entity_id = WarehouseTaskEntityId::Table {
+            table_id: Uuid::now_v7().into(),
+        };
+        let tq_name = generate_tq_name();
+
+        let task_id = queue_wh_task_helper(
+            &mut conn,
+            &tq_name,
+            None,
+            entity_id,
+            vec!["ns".to_string(), "table".to_string()],
+            project_id.clone(),
+            warehouse_id,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        // Pick and fail terminally (max_retries = 1 => attempt 1 is terminal,
+        // mirroring how remove_orphan_files runs as a single-attempt task).
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+        record_failure(&task, 1, "only attempt failed", &mut conn)
+            .await
+            .unwrap();
+
+        let result = get_task_details(
+            task_id,
+            TaskDetailsScope::Warehouse {
+                project_id,
+                warehouse_id,
+            },
+            10,
+            &pool,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.task.task_id(), task_id);
+        assert_eq!(result.task.attempt(), 1);
+        assert!(matches!(result.task.status, TaskStatus::Failed));
+        // The reported bug: a single failed attempt has no historical attempts,
+        // and its message used to be dropped. It is now surfaced top-level.
+        assert!(result.attempts.is_empty());
+        assert_eq!(result.message, Some("only attempt failed".to_string()));
     }
 
     #[sqlx::test]
@@ -836,7 +899,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -847,7 +910,7 @@ mod tests {
             .unwrap();
 
         // Second attempt - pick and fail
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -858,7 +921,7 @@ mod tests {
             .unwrap();
 
         // Third attempt - pick and succeed
-        let task3 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task3 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -886,6 +949,9 @@ mod tests {
         assert_eq!(result.task.task_id(), task_id);
         assert_eq!(result.task.attempt(), 3);
         assert!(matches!(result.task.status, TaskStatus::Success));
+        // Top-level message is the most-recent (3rd) attempt's message; the
+        // current attempt is NOT duplicated into attempts[].
+        assert_eq!(result.message, Some("Third attempt succeeded".to_string()));
 
         // Verify we have 2 historical attempts (failed attempts 1 and 2)
         assert_eq!(result.attempts.len(), 2);
@@ -929,7 +995,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -939,7 +1005,7 @@ mod tests {
             .unwrap();
 
         // Second attempt - pick but keep running
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1008,7 +1074,7 @@ mod tests {
 
         // Create 5 failed attempts
         for i in 1..=5 {
-            let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .unwrap();
@@ -1019,7 +1085,7 @@ mod tests {
         }
 
         // 6th attempt succeeds
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1098,7 +1164,7 @@ mod tests {
         .unwrap();
 
         // Pick up child task
-        let _child_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _child_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();

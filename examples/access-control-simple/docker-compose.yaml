@@ -154,7 +154,7 @@ services:
       iceberg_net:
 
   seaweedfs:
-    image: chrislusf/seaweedfs:4.31
+    image: chrislusf/seaweedfs:4.36
     # `mini` is SeaweedFS' single-process dev mode (master + volume + filer + S3).
     # -bucket pre-creates the `examples` bucket, and the IAM config enables STS so
     # Lakekeeper can vend short-lived credentials to query engines.
@@ -164,7 +164,6 @@ services:
       - -bucket=examples
       - -s3.config=/etc/seaweedfs/iam.json
       - -s3.iam.config=/etc/seaweedfs/iam.json
-      - -s3.iam.readOnly=false
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8333/status"]
       interval: 2s
