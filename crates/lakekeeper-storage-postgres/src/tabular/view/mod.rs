@@ -26,7 +26,7 @@ use crate::{
     dbutils::DBErrorHandler as _,
     tabular::{
         CreateTabular, TabularType, create_tabular,
-        table::{normalized_schema::flatten_schema, write_normalized_schema},
+        table::{SchemaFieldBatch, normalized_schema::flatten_schema},
     },
 };
 
@@ -426,7 +426,9 @@ async fn sync_view_schemas(
         .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
     }
 
-    // Add new schema versions: NULL anchor (JSONB frozen) + normalized fields.
+    // Add new schema versions: NULL anchor (JSONB frozen) + normalized fields. Accumulate every new
+    // schema's fields into one batch and issue a single bulk write after the loop.
+    let mut batch = SchemaFieldBatch::default();
     for s in metadata.schemas_iter() {
         if existing.contains(&s.schema_id()) {
             continue;
@@ -443,8 +445,9 @@ async fn sync_view_schemas(
         .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
         let flat = flatten_schema(s)
             .map_err(|e| ConversionError::new("Failed to flatten view schema", e))?;
-        write_normalized_schema(transaction, warehouse_id, view_id, s.schema_id(), &flat).await?;
+        batch.push_schema(*warehouse_id, view_id, s.schema_id(), &flat);
     }
+    batch.flush(transaction).await?;
     Ok(())
 }
 

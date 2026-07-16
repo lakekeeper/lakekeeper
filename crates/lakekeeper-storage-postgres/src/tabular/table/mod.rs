@@ -6,7 +6,7 @@ pub(crate) mod normalized_schema;
 use std::{collections::HashMap, default::Default, ops::Deref, str::FromStr, sync::Arc};
 
 pub(crate) use commit::commit_table_transaction;
-pub(crate) use common::{SchemaFieldBatch, write_normalized_schema};
+pub(crate) use common::SchemaFieldBatch;
 pub(crate) use create::create_table;
 use iceberg::{
     TableUpdate,

@@ -611,7 +611,7 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
                 .ok_or_else(|| SchemaNormError::Assembly {
                     detail: format!("decimal field_id={} missing type_params", row.field_id),
                 })?;
-            let precision = params
+            let precision_u64 = params
                 .get("precision")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| SchemaNormError::Assembly {
@@ -619,8 +619,15 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
                         "decimal field_id={} missing precision in type_params",
                         row.field_id
                     ),
-                })? as u32;
-            let scale = params
+                })?;
+            let precision =
+                u32::try_from(precision_u64).map_err(|_| SchemaNormError::Assembly {
+                    detail: format!(
+                        "decimal field_id={} precision {precision_u64} out of u32 range",
+                        row.field_id
+                    ),
+                })?;
+            let scale_u64 = params
                 .get("scale")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| SchemaNormError::Assembly {
@@ -628,7 +635,13 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
                         "decimal field_id={} missing scale in type_params",
                         row.field_id
                     ),
-                })? as u32;
+                })?;
+            let scale = u32::try_from(scale_u64).map_err(|_| SchemaNormError::Assembly {
+                detail: format!(
+                    "decimal field_id={} scale {scale_u64} out of u32 range",
+                    row.field_id
+                ),
+            })?;
             PrimitiveType::Decimal { precision, scale }
         }
         "date" => PrimitiveType::Date,

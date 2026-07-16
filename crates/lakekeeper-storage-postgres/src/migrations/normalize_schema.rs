@@ -46,8 +46,11 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     sqlx::query("SET LOCAL lock_timeout = '5s'")
         .execute(&mut **txn)
         .await?;
-    // Quiesce writers to table_schema for the backfill: SHARE blocks writers but allows the
-    // maintenance-mode reads, so no JSONB schema is written behind the cursor and missed. Held to commit.
+    // Run both backfills first under SHARE locks (writers blocked, maintenance-mode reads allowed),
+    // so no JSONB schema is written behind a cursor and missed. The two ACCESS EXCLUSIVE DROP NOT
+    // NULLs — which also block reads — are deferred to the tail, after both backfills complete, so a
+    // table's read-blocking window is the brief end of the transaction rather than the whole
+    // (minutes-long) backfill. table_schema goes dead last, after the view side.
     sqlx::query("LOCK TABLE table_schema IN SHARE MODE")
         .execute(&mut **txn)
         .await
@@ -56,19 +59,20 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
              (5s lock_timeout; migration retries on the next boot if writers are active)",
         )?;
     backfill(txn).await?;
-    // Allow NULL anchors on the normalized write path: drop the legacy column's NOT NULL.
-    sqlx::query("ALTER TABLE table_schema ALTER COLUMN schema DROP NOT NULL")
+    sqlx::query("LOCK TABLE view_schema IN SHARE MODE")
         .execute(&mut **txn)
         .await
         .context(
-            "drop NOT NULL on table_schema.schema \
-             (5s lock_timeout; ACCESS EXCLUSIVE contends with reads; migration retries on the next boot)",
+            "acquire SHARE lock on view_schema for schema backfill \
+             (5s lock_timeout; migration retries on the next boot if writers are active)",
         )?;
+    backfill_view_schemas(txn).await?;
+
     // Freeze legacy JSONB schema writes: reject any write that sets a non-null `schema` (an old-pod
     // write during the brief roll-over) while permitting the new NULL-anchor writes. Blanking an
     // existing `schema` back to NULL is also permitted, so a later cleanup migration can clear the
     // column before dropping it. Rejected writes fail loud (SQLSTATE object_not_in_prerequisite_state)
-    // and are retried against a new pod.
+    // and are retried against a new pod. Shared by both freeze triggers below.
     sqlx::query(
         r#"CREATE FUNCTION reject_schema_write() RETURNS trigger LANGUAGE plpgsql AS $f$
            BEGIN
@@ -83,23 +87,8 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
     )
     .execute(&mut **txn)
     .await?;
-    sqlx::query(
-        "CREATE TRIGGER table_schema_freeze_jsonb BEFORE INSERT OR UPDATE ON table_schema
-         FOR EACH ROW EXECUTE FUNCTION reject_schema_write()",
-    )
-    .execute(&mut **txn)
-    .await?;
 
-    // Same choreography for views (backfill -> drop NOT NULL -> freeze), reusing reject_schema_write()
-    // created above. Still under the 5s lock_timeout set at the top.
-    sqlx::query("LOCK TABLE view_schema IN SHARE MODE")
-        .execute(&mut **txn)
-        .await
-        .context(
-            "acquire SHARE lock on view_schema for schema backfill \
-             (5s lock_timeout; migration retries on the next boot if writers are active)",
-        )?;
-    backfill_view_schemas(txn).await?;
+    // Views: allow NULL anchors (drop NOT NULL) then install the freeze trigger.
     sqlx::query("ALTER TABLE view_schema ALTER COLUMN schema DROP NOT NULL")
         .execute(&mut **txn)
         .await
@@ -109,6 +98,22 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
         )?;
     sqlx::query(
         "CREATE TRIGGER view_schema_freeze_jsonb BEFORE INSERT OR UPDATE ON view_schema
+         FOR EACH ROW EXECUTE FUNCTION reject_schema_write()",
+    )
+    .execute(&mut **txn)
+    .await?;
+
+    // table_schema last: its ACCESS EXCLUSIVE (which blocks reads) is held for the shortest window
+    // before commit, after all backfill work — table and view — is done.
+    sqlx::query("ALTER TABLE table_schema ALTER COLUMN schema DROP NOT NULL")
+        .execute(&mut **txn)
+        .await
+        .context(
+            "drop NOT NULL on table_schema.schema \
+             (5s lock_timeout; ACCESS EXCLUSIVE contends with reads; migration retries on the next boot)",
+        )?;
+    sqlx::query(
+        "CREATE TRIGGER table_schema_freeze_jsonb BEFORE INSERT OR UPDATE ON table_schema
          FOR EACH ROW EXECUTE FUNCTION reject_schema_write()",
     )
     .execute(&mut **txn)

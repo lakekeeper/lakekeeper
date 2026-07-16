@@ -91,6 +91,9 @@ pub(super) async fn insert_schemas(
             .append_detail("Failed to insert schema anchor")
     })?;
 
+    // Accumulate every schema's fields into one batch and issue a single bulk write, instead of one
+    // flush per schema.
+    let mut batch = SchemaFieldBatch::default();
     for s in schemas {
         let flat = normalized_schema::flatten_schema(s).map_err(|e| {
             InternalBackendErrors::InternalConversionError(ConversionError::new(
@@ -98,10 +101,12 @@ pub(super) async fn insert_schemas(
                 e,
             ))
         })?;
-        write_normalized_schema(transaction, warehouse_id, *table_id, s.schema_id(), &flat)
-            .await
-            .map_err(InternalBackendErrors::CatalogBackendError)?;
+        batch.push_schema(*warehouse_id, *table_id, s.schema_id(), &flat);
     }
+    batch
+        .flush(transaction)
+        .await
+        .map_err(InternalBackendErrors::CatalogBackendError)?;
 
     Ok(())
 }
@@ -1039,18 +1044,6 @@ impl SchemaFieldBatch {
 // Write chokepoint for one schema: its `schema_field` rows + the `column_identity` spine.
 // Used by `insert_schemas` (commit path) and view sync. A thin wrapper over `SchemaFieldBatch` so
 // the array-keyed bulk query is the single source of truth.
-pub(crate) async fn write_normalized_schema(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    warehouse_id: lakekeeper::WarehouseId,
-    tabular_id: uuid::Uuid,
-    schema_id: i32,
-    flat: &[crate::tabular::table::normalized_schema::FlatField],
-) -> Result<(), lakekeeper::service::CatalogBackendError> {
-    let mut batch = SchemaFieldBatch::default();
-    batch.push_schema(*warehouse_id, tabular_id, schema_id, flat);
-    batch.flush(transaction).await
-}
-
 #[cfg(test)]
 mod tests {
     use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
@@ -1088,7 +1081,7 @@ mod tests {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
         // create_table -> insert_schemas writes schema_field + column_identity for the current schema
-        // (write_normalized_schema is the chokepoint it calls).
+        // (SchemaFieldBatch::flush is the chokepoint it calls).
         let (table_id, schema) =
             create_table_with_schema(state.clone(), wh, two_col_schema()).await;
 
