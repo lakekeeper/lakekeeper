@@ -12,8 +12,9 @@ Lakekeeper is a rust-native Apache Iceberg REST Catalog implementation
 """
 
 [package.metadata.cargo-machete]
-# Imported as `cloudevents`
-ignored = ["cloudevents-sdk"]
+# `cloudevents-sdk` imported as `cloudevents`; `k8s-openapi` is a features-only
+# dep that selects the Kubernetes API version for the transitive limes copy.
+ignored = ["cloudevents-sdk", "k8s-openapi"]
 
 [features]
 all = ["s3-signer", "router", "open-api"]
@@ -59,6 +60,9 @@ iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 iso8601 = { workspace = true }
 itertools = { workspace = true }
+# Selects the Kubernetes API version for the k8s-openapi that `limes` pulls in
+# transitively (limes leaves the choice to the consumer). Not used directly.
+k8s-openapi = { workspace = true, features = ["v1_32"] }
 lakekeeper-io = { path = "../io", features = [
     "storage-s3",
     "storage-adls",
