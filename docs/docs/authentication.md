@@ -540,6 +540,6 @@ spark-submit \
   my-spark-job.py
 ```
 
-User identities appear in Lakekeeper as `kubernetes~<service-account-uid>`, where the UID is the Kubernetes `uid` of the service account (as returned by the `TokenReview` API). The `system:serviceaccount:<namespace>:<service-account-name>` string is stored as the user's display name.
+By default, user identities appear in Lakekeeper as `kubernetes~<service-account-uid>`, where the UID is the Kubernetes `uid` of the service account (as returned by the `TokenReview` API). The `system:serviceaccount:<namespace>:<service-account-name>` string is stored as the user's display name.
 
-The UID is assigned by Kubernetes and differs between clusters, so a given service account has a different Lakekeeper user ID in each cluster. Keep this in mind when pre-provisioning roles or setting `LAKEKEEPER__INSTANCE_ADMINS` across environments.
+The UID is assigned by Kubernetes and differs between clusters, so a given service account has a different Lakekeeper user ID in each cluster. If you pre-provision roles or set `LAKEKEEPER__INSTANCE_ADMINS` across environments, set `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username` instead. User identities then appear as `kubernetes~system:serviceaccount:<namespace>:<service-account-name>`, which is stable across clusters. Choose the subject source at initial setup: changing it after users exist changes their IDs and orphans existing role assignments.

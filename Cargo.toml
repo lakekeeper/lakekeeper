@@ -112,9 +112,13 @@ http-body-util = "^0.1"
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2056f3e4d53129039f2229f3b326aa538289be27" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
+# `limes` pulls k8s-openapi transitively without picking a Kubernetes version.
+# The version feature (`v1_XX`) is selected by the `lakekeeper` crate, not in
+# this workspace table.
+k8s-openapi = { version = "0.28" }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"
-limes = { git = "https://github.com/vakamo-labs/limes-rs.git", rev = "a88da41", features = [
+limes = { git = "https://github.com/vakamo-labs/limes-rs.git", tag = "v0.4.2", features = [
     "kubernetes",
     "axum",
     "rustls-tls",
