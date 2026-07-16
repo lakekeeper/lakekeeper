@@ -112,8 +112,9 @@ http-body-util = "^0.1"
 iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
-# Version feature (`v1_XX`) is selected by consumers, not here. `limes` pulls
-# k8s-openapi transitively without a version; the lakekeeper crate selects one.
+# `limes` pulls k8s-openapi transitively without picking a Kubernetes version.
+# The version feature (`v1_XX`) is selected by the `lakekeeper` crate, not in
+# this workspace table.
 k8s-openapi = { version = "0.28" }
 lazy-regex = { version = "3.2.0", features = ["lite"] }
 lazy_static = "^1.4"

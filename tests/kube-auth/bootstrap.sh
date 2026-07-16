@@ -17,6 +17,8 @@ curl -f -H "Content-Type: application/json" -H "$AUTH" "$BASE/bootstrap" -d '{"a
 
 body="$(curl -f -s -H "$AUTH" "$BASE/whoami")"
 echo "whoami: $body"
+# The whoami response is compact JSON with a single `"id":"..."` (the user ID);
+# no other field serializes that key ahead of it. jq isn't in curlimages/curl.
 id="$(echo "$body" | grep -o '"id":"[^"]*"' | head -n1 | sed 's/"id":"//; s/"$//')"
 echo "resolved user id: $id (mode=$MODE)"
 
