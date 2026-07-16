@@ -1,7 +1,9 @@
 use std::{default::Default, env::VarError, sync::LazyLock};
 
 use lakekeeper::{
-    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER, axum,
+    AuthZBackend, CONFIG, X_FORWARDED_PREFIX_HEADER,
+    api::iceberg::v1::tables::parse_if_none_match,
+    axum,
     axum::{
         Router,
         http::{HeaderMap, StatusCode, Uri, header},
@@ -138,8 +140,9 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
         .and_then(|hv| hv.to_str().ok())
 }
 
-/// Browser cache policy for a static asset, keyed on its (prefix-stripped) path.
-/// Returns the `Cache-Control` value and whether to attach an `ETag` validator.
+/// `Cache-Control` value for a static asset, keyed on its (prefix-stripped) path.
+/// Every response also carries a weak `ETag`, so all of these revalidate with a
+/// cheap `304` once stale.
 ///
 /// Note we cannot mark anything `immutable`: the console rewrites config
 /// placeholders (IDP settings, base URL/prefix, …) into `.js`/`.css`/`.html`
@@ -150,63 +153,65 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
 ///
 /// - `assets/*`, `duckdb/*` and the worker wrapper: stable filenames but
 ///   config-templated (or version-bumped) bytes → cache for an hour, then
-///   revalidate via `ETag`. Within the hour there are no requests; afterwards a
-///   `304` avoids re-downloading (e.g. the multi-MB WASM on a `LoQE` open).
-/// - `favicon.ico`: rarely changes → cache a day, revalidate via `ETag`.
+///   revalidate. Within the hour there are no requests; afterwards a `304`
+///   avoids re-downloading (e.g. the multi-MB WASM on a `LoQE` open).
+/// - `favicon.ico`: rarely changes → cache a day.
 /// - `index.html` (and the SPA fallback that serves it) is templated per request
 ///   → always revalidate.
-fn cache_policy(path: &str) -> (&'static str, bool) {
+fn cache_policy(path: &str) -> &'static str {
     if path.starts_with("assets/")
         || path.starts_with("duckdb/")
         || path == "duckdb-worker-wrapper.js"
     {
-        ("public, max-age=3600, must-revalidate", true)
+        "public, max-age=3600, must-revalidate"
     } else if path == "favicon.ico" {
-        ("public, max-age=86400", true)
+        "public, max-age=86400"
     } else {
-        ("no-cache", true)
+        "no-cache"
     }
 }
 
-/// Weak `ETag` over the response bytes. Weak (`W/`) because the compression
-/// layer re-encodes the body, which would break a strong byte-for-byte validator.
+/// Bare weak-`ETag` hash (opaque tag without the `W/"…"` wrapper) over the
+/// response bytes. The value is served weak because the compression layer
+/// re-encodes the body, which would break a strong byte-for-byte validator.
+///
+/// This hashes the full body on the request path. For large, rarely-changing
+/// assets (the multi-MB `DuckDB` WASM) that is wasted work on every revalidation;
+/// the proper fix is to precompute the validator alongside the rendered bytes in
+/// the file cache (console-side) so it is computed once per cache entry rather
+/// than per request. Hashing only a length/prefix is not a safe alternative —
+/// distinct assets would collide and get an incorrect `304`.
 fn weak_etag(data: &[u8]) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     data.hash(&mut hasher);
-    format!("W/\"{:x}\"", hasher.finish())
+    format!("{:x}", hasher.finish())
 }
 
-/// Whether the request's `If-None-Match` matches `etag` (or is the `*` wildcard).
+/// Whether the request's `If-None-Match` matches our bare weak `etag` under RFC
+/// 9110 weak comparison, or is the `*` wildcard. Delegates parsing to the
+/// catalog's [`parse_if_none_match`], which reads every field value (`get_all`)
+/// and normalises each entry to its bare opaque tag (dropping the `W/` marker
+/// and quotes) — so a client echoing either the weak or strong form matches.
 fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
-    headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v == "*" || v.split(',').any(|t| t.trim() == etag))
+    parse_if_none_match(headers)
+        .iter()
+        .any(|tag| tag.as_str() == "*" || tag.as_str() == etag)
 }
 
 fn cache_item_to_response(path: &str, req_headers: &HeaderMap, item: CacheItem) -> Response {
     match item {
         CacheItem::NotFound => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
         CacheItem::Found { mime, data } => {
-            let (cache_control, use_etag) = cache_policy(path);
-            if !use_etag {
-                return (
-                    [
-                        (header::CONTENT_TYPE, mime.as_ref()),
-                        (header::CACHE_CONTROL, cache_control),
-                    ],
-                    data,
-                )
-                    .into_response();
-            }
+            let cache_control = cache_policy(path);
             let etag = weak_etag(&data);
+            let etag_header = format!("W/\"{etag}\"");
             if if_none_match(req_headers, &etag) {
                 return (
                     StatusCode::NOT_MODIFIED,
                     [
                         (header::CACHE_CONTROL, cache_control),
-                        (header::ETAG, etag.as_str()),
+                        (header::ETAG, etag_header.as_str()),
                     ],
                 )
                     .into_response();
@@ -215,7 +220,7 @@ fn cache_item_to_response(path: &str, req_headers: &HeaderMap, item: CacheItem) 
                 [
                     (header::CONTENT_TYPE, mime.as_ref()),
                     (header::CACHE_CONTROL, cache_control),
-                    (header::ETAG, etag.as_str()),
+                    (header::ETAG, etag_header.as_str()),
                 ],
                 data,
             )
@@ -313,43 +318,49 @@ mod test {
         // Config-templated / version-bumped: bounded cache + revalidate.
         assert_eq!(
             cache_policy("assets/app.config-abc123.js"),
-            ("public, max-age=3600, must-revalidate", true)
+            "public, max-age=3600, must-revalidate"
         );
         assert_eq!(
             cache_policy("duckdb/duckdb-eh.wasm"),
-            ("public, max-age=3600, must-revalidate", true)
+            "public, max-age=3600, must-revalidate"
         );
         assert_eq!(
             cache_policy("duckdb-worker-wrapper.js"),
-            ("public, max-age=3600, must-revalidate", true)
+            "public, max-age=3600, must-revalidate"
         );
         // Nothing is `immutable`: templating can change bytes under a stable name.
-        assert!(
-            !cache_policy("assets/app.config-abc123.js")
-                .0
-                .contains("immutable")
-        );
-        // Favicon: longer cache, still revalidates.
-        assert_eq!(cache_policy("favicon.ico"), ("public, max-age=86400", true));
+        assert!(!cache_policy("assets/app.config-abc123.js").contains("immutable"));
+        // Favicon: longer cache.
+        assert_eq!(cache_policy("favicon.ico"), "public, max-age=86400");
         // Per-request templated entry point: never cached without revalidation.
-        assert_eq!(cache_policy("index.html"), ("no-cache", true));
+        assert_eq!(cache_policy("index.html"), "no-cache");
     }
 
     #[test]
     fn test_if_none_match() {
-        let etag = "W/\"deadbeef\"";
+        // `etag` is our bare opaque tag; clients echo the weak (or strong) form.
         let with = |v: &str| {
             let mut h = HeaderMap::new();
             h.append(header::IF_NONE_MATCH, v.parse().unwrap());
             h
         };
-        assert!(if_none_match(&with(etag), etag));
-        assert!(if_none_match(&with("*"), etag));
+        assert!(if_none_match(&with("W/\"deadbeef\""), "deadbeef"));
+        // Weak comparison: the strong form of the same tag also matches.
+        assert!(if_none_match(&with("\"deadbeef\""), "deadbeef"));
+        assert!(if_none_match(&with("*"), "deadbeef"));
         // Present in a comma-separated list.
-        assert!(if_none_match(&with(&format!("W/\"other\", {etag}")), etag));
+        assert!(if_none_match(
+            &with("W/\"other\", W/\"deadbeef\""),
+            "deadbeef"
+        ));
+        // Spread across multiple header field lines (get_all, not just get).
+        let mut multi = HeaderMap::new();
+        multi.append(header::IF_NONE_MATCH, "W/\"other\"".parse().unwrap());
+        multi.append(header::IF_NONE_MATCH, "W/\"deadbeef\"".parse().unwrap());
+        assert!(if_none_match(&multi, "deadbeef"));
         // No / non-matching validator.
-        assert!(!if_none_match(&HeaderMap::new(), etag));
-        assert!(!if_none_match(&with("W/\"other\""), etag));
+        assert!(!if_none_match(&HeaderMap::new(), "deadbeef"));
+        assert!(!if_none_match(&with("W/\"other\""), "deadbeef"));
     }
 
     #[tokio::test]
