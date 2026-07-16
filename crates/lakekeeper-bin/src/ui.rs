@@ -141,17 +141,25 @@ fn forwarded_prefix(headers: &HeaderMap) -> Option<&str> {
 /// Browser cache policy for a static asset, keyed on its (prefix-stripped) path.
 /// Returns the `Cache-Control` value and whether to attach an `ETag` validator.
 ///
-/// - `assets/*` are Vite content-hashed, so bytes never change under a given
-///   name → cache forever, never revalidate.
-/// - `duckdb/*` + the worker wrapper keep stable names but their bytes change on
-///   a DuckDB/console version bump → revalidate via `ETag` once stale (a `304`
-///   avoids re-downloading the multi-MB WASM on every `LoQE` open).
+/// Note we cannot mark anything `immutable`: the console rewrites config
+/// placeholders (IDP settings, base URL/prefix, …) into `.js`/`.css`/`.html`
+/// files — including Vite content-hashed `assets/*` — at serve time, so the
+/// bytes behind a given filename change whenever the deployment's config
+/// changes, without the filename changing. A bounded `max-age` bounds how long
+/// a returning browser can serve stale config after a restart.
+///
+/// - `assets/*`, `duckdb/*` and the worker wrapper: stable filenames but
+///   config-templated (or version-bumped) bytes → cache for an hour, then
+///   revalidate via `ETag`. Within the hour there are no requests; afterwards a
+///   `304` avoids re-downloading (e.g. the multi-MB WASM on a `LoQE` open).
+/// - `favicon.ico`: rarely changes → cache a day, revalidate via `ETag`.
 /// - `index.html` (and the SPA fallback that serves it) is templated per request
 ///   → always revalidate.
 fn cache_policy(path: &str) -> (&'static str, bool) {
-    if path.starts_with("assets/") {
-        ("public, max-age=31536000, immutable", false)
-    } else if path.starts_with("duckdb/") || path == "duckdb-worker-wrapper.js" {
+    if path.starts_with("assets/")
+        || path.starts_with("duckdb/")
+        || path == "duckdb-worker-wrapper.js"
+    {
         ("public, max-age=3600, must-revalidate", true)
     } else if path == "favicon.ico" {
         ("public, max-age=86400", true)
@@ -298,5 +306,95 @@ mod test {
         )
         .unwrap();
         assert!(body_str.contains("\"/lakekeeper/ui/assets/"));
+    }
+
+    #[test]
+    fn test_cache_policy() {
+        // Config-templated / version-bumped: bounded cache + revalidate.
+        assert_eq!(
+            cache_policy("assets/app.config-abc123.js"),
+            ("public, max-age=3600, must-revalidate", true)
+        );
+        assert_eq!(
+            cache_policy("duckdb/duckdb-eh.wasm"),
+            ("public, max-age=3600, must-revalidate", true)
+        );
+        assert_eq!(
+            cache_policy("duckdb-worker-wrapper.js"),
+            ("public, max-age=3600, must-revalidate", true)
+        );
+        // Nothing is `immutable`: templating can change bytes under a stable name.
+        assert!(
+            !cache_policy("assets/app.config-abc123.js")
+                .0
+                .contains("immutable")
+        );
+        // Favicon: longer cache, still revalidates.
+        assert_eq!(cache_policy("favicon.ico"), ("public, max-age=86400", true));
+        // Per-request templated entry point: never cached without revalidation.
+        assert_eq!(cache_policy("index.html"), ("no-cache", true));
+    }
+
+    #[test]
+    fn test_if_none_match() {
+        let etag = "W/\"deadbeef\"";
+        let with = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.append(header::IF_NONE_MATCH, v.parse().unwrap());
+            h
+        };
+        assert!(if_none_match(&with(etag), etag));
+        assert!(if_none_match(&with("*"), etag));
+        // Present in a comma-separated list.
+        assert!(if_none_match(&with(&format!("W/\"other\", {etag}")), etag));
+        // No / non-matching validator.
+        assert!(!if_none_match(&HeaderMap::new(), etag));
+        assert!(!if_none_match(&with("W/\"other\""), etag));
+    }
+
+    #[tokio::test]
+    async fn test_static_asset_cache_headers() {
+        // `duckdb-worker-wrapper.js` is a real embedded asset on a revalidating path.
+        let uri = "/ui/duckdb-worker-wrapper.js".parse::<Uri>().unwrap();
+        let response = static_handler(uri, HeaderMap::new()).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let cache_control = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .expect("Cache-Control header missing")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(cache_control, "public, max-age=3600, must-revalidate");
+
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .expect("ETag header missing")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(etag.starts_with("W/\""), "expected a weak ETag, got {etag}");
+
+        // Re-requesting with the returned ETag yields a bodyless 304.
+        let mut headers = HeaderMap::new();
+        headers.append(header::IF_NONE_MATCH, etag.parse().unwrap());
+        let uri = "/ui/duckdb-worker-wrapper.js".parse::<Uri>().unwrap();
+        let response = static_handler(uri, headers).await.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ETAG)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            etag
+        );
+        let body = axum::body::to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap();
+        assert!(body.is_empty(), "304 response must have an empty body");
     }
 }
