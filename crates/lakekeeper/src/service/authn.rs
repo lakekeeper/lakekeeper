@@ -173,7 +173,7 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
     // API at boot means we can't authenticate service-account tokens at all,
     // which would silently degrade authn — so we fail closed via `?` below.
     let authn_k8s_audience = if CONFIG.enable_kubernetes_authentication {
-        Some(
+        let mut authenticator =
             limes::kubernetes::KubernetesAuthenticator::try_new_with_default_client(
                 Some(K8S_IDP_ID),
                 CONFIG
@@ -182,9 +182,11 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
                     .unwrap_or_default(),
             )
             .await
-            .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))
-            .inspect(|v| tracing::info!("K8s authorizer created {:?}", v))?,
-        )
+            .inspect_err(|e| tracing::error!("Failed to create K8s authorizer: {e}"))?;
+        authenticator
+            .set_subject_source(CONFIG.kubernetes_authentication_subject_source.to_limes());
+        tracing::info!("K8s authorizer created {authenticator:?}");
+        Some(authenticator)
     } else {
         tracing::info!("Running without Kubernetes authentication.");
         None
@@ -204,6 +206,8 @@ pub async fn get_default_authenticator_from_config() -> anyhow::Result<Option<Bu
             "kubernetes/serviceaccount".to_string(),
             "https://kubernetes.default.svc.cluster.local".to_string(),
         ]);
+        authenticator
+            .set_subject_source(CONFIG.kubernetes_authentication_subject_source.to_limes());
         tracing::info!(
             "K8s authorizer for legacy service account tokens created {:?}",
             authenticator
@@ -435,7 +439,9 @@ pub(crate) async fn auth_middleware_fn<
         .into_response();
     };
 
-    let authentication = match authenticator.authenticate(authorization.token()).await {
+    let token = authorization.token();
+    let introspection = limes::introspect::introspect(token);
+    let authentication = match authenticator.authenticate(token, &introspection).await {
         Ok(principal) => principal,
         Err(e) => {
             return ErrorModel::unauthorized(
