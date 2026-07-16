@@ -100,13 +100,12 @@ pub(crate) async fn load_view(
             is_identifier: r.is_identifier,
         })
         .collect();
-    // Anchor-driven assembly: reconstruct a legitimately-empty schema (anchor present, no field
-    // rows) instead of dropping it. Only seed anchors NOT referenced by any version — a
-    // version-referenced schema that produced no rows stays absent, so if the *current* version
-    // references it `ViewMetadata::try_from_parts` fails loud (lost rows) rather than loading it as
-    // empty. (A non-current version referencing a missing schema still surfaces during validation.)
-    let version_referenced: std::collections::HashSet<i32> =
-        version_schema_ids.iter().flatten().copied().collect();
+    // Seed EVERY anchor so assembly never drops a schema a version references — `try_from_parts`
+    // only validates the *current* version's schema id, so a missing non-current one would otherwise
+    // slip through. A view's schema is its SQL query's output and always has >=1 column, so a
+    // zero-row anchor means lost field rows, never a legitimate empty schema (unlike tables, where a
+    // zero-column schema is format-legal). Non-current such schemas load as empty (inert); the
+    // current one is rejected below.
     let schema_anchor_rows = sqlx::query!(
         r#"SELECT schema_id FROM view_schema WHERE warehouse_id = $1 AND view_id = $2"#,
         *warehouse_id,
@@ -118,7 +117,6 @@ pub(crate) async fn load_view(
     let seed_empty_schema_ids: Vec<i32> = schema_anchor_rows
         .into_iter()
         .map(|r| r.schema_id)
-        .filter(|id| !version_referenced.contains(id))
         .collect();
 
     let schemas =
@@ -153,26 +151,41 @@ pub(crate) async fn load_view(
         Location::from_str(&metadata_location).map_err(InternalParseLocationError::from)?;
     let location = join_location(&view_fs_protocol, &view_fs_location)
         .map_err(InternalParseLocationError::from)?;
+    let metadata = ViewMetadata::try_from_parts(ViewMetadataParts {
+        format_version: match view_format_version {
+            ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
+        },
+        view_uuid: *view_id,
+        location: location.to_string(),
+        current_version_id,
+        versions,
+        version_log,
+        schemas,
+        properties,
+    })
+    .map(Arc::new)
+    .map_err(|e| {
+        ViewMetadataValidationFailedInternal::new(warehouse_id, view_id).append_detail(e.message())
+    })?;
+
+    // The current version's schema must be non-empty. A view's schema comes from its SQL query, which
+    // always yields >=1 column, so an empty current schema can only mean the field rows were lost —
+    // fail loud rather than serve a truncated view. This never false-rejects a valid view: an empty
+    // view schema is not a legitimate state (unlike a zero-column table).
+    if metadata.current_schema().as_struct().fields().is_empty() {
+        return Err(RequiredViewComponentMissing::new(warehouse_id, view_id)
+            .append_detail(format!(
+                "Current view version {} schema {} has no fields (schema_field rows missing).",
+                metadata.current_version_id(),
+                metadata.current_schema().schema_id()
+            ))
+            .into());
+    }
+
     Ok(CatalogView {
         metadata_location,
         warehouse_version: warehouse_version.into(),
-        metadata: ViewMetadata::try_from_parts(ViewMetadataParts {
-            format_version: match view_format_version {
-                ViewFormatVersion::V1 => iceberg::spec::ViewFormatVersion::V1,
-            },
-            view_uuid: *view_id,
-            location: location.to_string(),
-            current_version_id,
-            versions,
-            version_log,
-            schemas,
-            properties,
-        })
-        .map(Arc::new)
-        .map_err(|e| {
-            ViewMetadataValidationFailedInternal::new(warehouse_id, view_id)
-                .append_detail(e.message())
-        })?,
+        metadata,
         location,
     })
 }

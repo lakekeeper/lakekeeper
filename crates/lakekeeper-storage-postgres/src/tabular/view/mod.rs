@@ -922,6 +922,32 @@ pub mod tests {
         assert_eq!(&*metadata.metadata, &request);
     }
 
+    /// A view whose current-version schema lost its `schema_field` rows (anchors intact) must fail
+    /// loud on load rather than serve a truncated/empty current schema. Only the current schema is
+    /// guarded — legitimately zero-column historical schemas still load (seeded empty).
+    #[sqlx::test]
+    async fn load_view_fails_loud_when_current_schema_rows_missing(pool: sqlx::PgPool) {
+        let (_state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool.clone()).await;
+        let view_uuid = created_meta.uuid();
+
+        // Simulate lost field rows: delete every schema_field row for the view (anchors remain).
+        sqlx::query("DELETE FROM schema_field WHERE warehouse_id = $1 AND tabular_id = $2")
+            .bind(*warehouse_id)
+            .bind(view_uuid)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let err = load_view(warehouse_id, view_uuid.into(), false, &mut tx)
+            .await
+            .expect_err("view with missing current-schema field rows must fail to load");
+        assert!(
+            matches!(err, LoadViewError::RequiredViewComponentMissing(_)),
+            "expected RequiredViewComponentMissing, got {err:?}"
+        );
+    }
+
     #[sqlx::test]
     async fn drop_view_unconditionally(pool: sqlx::PgPool) {
         let (state, created_meta, warehouse_id, _, _, _, _) = prepare_view(pool).await;
