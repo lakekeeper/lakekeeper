@@ -30,7 +30,9 @@ pub(crate) use authorize_load::*;
 
 use super::{
     CatalogServer,
-    commit_tables::{apply_commit, ensure_format_version_upgrades_allowed},
+    commit_tables::{
+        apply_commit, ensure_format_version_upgrades_allowed, refs_from_updates, update_kinds,
+    },
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
@@ -1341,6 +1343,8 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
                 let action = CatalogTableAction::Commit {
                     updated_properties: Arc::new(updated_properties),
                     removed_properties: Arc::new(removed_properties),
+                    target_refs: Arc::new(refs_from_updates(&c.updates)),
+                    update_kinds: Arc::new(update_kinds(&c.updates)),
                 };
 
                 (ti.clone(), action)
