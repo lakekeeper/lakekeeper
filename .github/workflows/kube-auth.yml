@@ -66,13 +66,31 @@ jobs:
           version: v3.18.3
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
-      - name: Install lakekeeper (wait 300s)
-        run: helm install -f tests/kube-auth/values.yaml --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 && sleep 300
-      - name: Run tests
-        run: kubectl run bootstrap-test --image=curlimages/curl -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)"
+      - name: Install lakekeeper - uid subject source
+        # `helm --wait` blocks until pods are ready (values sets helmWait: true to
+        # make this work); faster and less flaky than a fixed sleep.
+        run: helm install -f tests/kube-auth/values.yaml --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      - name: Run tests - uid subject source
+        run: kubectl run bootstrap-test-uid --image=curlimages/curl -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh uid
+      # Reinstall with a fresh database: whoami only returns a user that was
+      # bootstrapped, and switching the subject source changes the caller's ID,
+      # so the username run needs its own bootstrap. Wiping the postgres PVC
+      # (retained across `helm uninstall`) keeps the release/service name stable.
+      - name: Reinstall lakekeeper - username subject source
+        run: |
+          helm uninstall my-lakekeeper --wait
+          kubectl delete pvc --all --wait
+          helm install -f tests/kube-auth/values.yaml \
+            --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 \
+            --set-string catalog.config.LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username \
+            my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      - name: Run tests - username subject source
+        run: kubectl run bootstrap-test-username --image=curlimages/curl -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh username
       - name: bootstrap-logs
         if: failure()
-        run: kubectl logs bootstrap-test
+        run: |
+          kubectl logs bootstrap-test-uid || true
+          kubectl logs bootstrap-test-username || true
       - name: server-logs
         if: failure()
-        run : kubectl logs deployments/my-lakekeeper
+        run : kubectl logs deployments/my-lakekeeper || true
