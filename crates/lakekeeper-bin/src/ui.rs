@@ -171,23 +171,6 @@ fn cache_policy(path: &str) -> &'static str {
     }
 }
 
-/// Bare weak-`ETag` hash (opaque tag without the `W/"…"` wrapper) over the
-/// response bytes. The value is served weak because the compression layer
-/// re-encodes the body, which would break a strong byte-for-byte validator.
-///
-/// This hashes the full body on the request path. For large, rarely-changing
-/// assets (the multi-MB `DuckDB` WASM) that is wasted work on every revalidation;
-/// the proper fix is to precompute the validator alongside the rendered bytes in
-/// the file cache (console-side) so it is computed once per cache entry rather
-/// than per request. Hashing only a length/prefix is not a safe alternative —
-/// distinct assets would collide and get an incorrect `304`.
-fn weak_etag(data: &[u8]) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    data.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
-}
-
 /// Whether the request's `If-None-Match` matches our bare weak `etag` under RFC
 /// 9110 weak comparison, or is the `*` wildcard. Delegates parsing to the
 /// catalog's [`parse_if_none_match`], which reads every field value (`get_all`)
@@ -202,9 +185,10 @@ fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
 fn cache_item_to_response(path: &str, req_headers: &HeaderMap, item: CacheItem) -> Response {
     match item {
         CacheItem::NotFound => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
-        CacheItem::Found { mime, data } => {
+        CacheItem::Found { mime, data, etag } => {
             let cache_control = cache_policy(path);
-            let etag = weak_etag(&data);
+            // `etag` is the bare opaque tag, precomputed once per cache entry by
+            // the console (weak — the compression layer re-encodes the body).
             let etag_header = format!("W/\"{etag}\"");
             if if_none_match(req_headers, &etag) {
                 return (
