@@ -65,7 +65,7 @@ use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
 
-use super::user::UserType;
+use super::{role::reject_managed_role, user::UserType};
 use crate::{
     api::{
         ApiContext,
@@ -763,7 +763,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogRoleAction::ManageRoleAssignments,
             )
             .await;
-        let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // A provider-managed role's member list is authoritative from its role
+        // provider and converged by sync; reject manual (un)assignment via the
+        // API so it cannot drift from what the next sync would produce.
+        reject_managed_role::<_, ErrorModel>(&authorizer, &role)?;
 
         // Dedup on the typed identifier so a member named twice (the request is
         // already typed, so no string-spelling ambiguity remains) collapses to one
@@ -850,7 +855,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 CatalogRoleAction::ManageRoleAssignments,
             )
             .await;
-        let (event_ctx, _role) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // A provider-managed role's member list is maintained by provider sync;
+        // reject manual removal via the API so it cannot drift from sync.
+        reject_managed_role::<_, ErrorModel>(&authorizer, &role)?;
 
         let subject = parse_member(member_type, &member_id)?;
         match authorizer.role_assignments() {

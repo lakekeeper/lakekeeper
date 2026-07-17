@@ -33,7 +33,7 @@ figment = { workspace = true }
 http = { workspace = true }
 lakekeeper = { path = "../lakekeeper", features = ["s3-signer", "router"] }
 lakekeeper-authz-openfga = { path = "../authz-openfga" }
-lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.19.0", optional = true }
+lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.21.0", optional = true }
 lakekeeper-events-kafka = { path = "../lakekeeper-events-kafka" }
 lakekeeper-events-nats = { path = "../lakekeeper-events-nats" }
 lakekeeper-secrets-kv2 = { path = "../lakekeeper-secrets-kv2" }

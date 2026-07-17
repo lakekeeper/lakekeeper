@@ -1592,6 +1592,27 @@ where
     /// the IDs internally. The default implementation is a no-op.
     fn set_registered_idp_ids(&mut self, _idp_ids: Arc<[RoleProviderId]>) {}
 
+    /// Provider IDs whose roles are maintained by a configured role provider
+    /// (LDAP/Entra/Okta/token). Roles in these namespaces are the provider's to
+    /// create, modify, delete, and (un)assign — the management API rejects those
+    /// mutations to avoid drift that provider sync would clobber. Used as the
+    /// deny-set by the role-management guard; the reserved `system` namespace is
+    /// handled separately and never appears here.
+    ///
+    /// The default returns an empty set: without a role provider (OSS, `AllowAll`,
+    /// OpenFGA) only the reserved `system` namespace is protected, so
+    /// `lakekeeper`-native and unmanaged roles stay writable exactly as before.
+    ///
+    /// Implementors MUST NOT include the native `lakekeeper` namespace or the
+    /// reserved `system` namespace in the returned set — doing so would wrongly
+    /// block writes to API-native or catalog-managed roles. (`system` is also
+    /// rejected independently by the guard, but native roles are not.)
+    fn managed_role_provider_ids(&self) -> &std::collections::HashSet<RoleProviderId> {
+        static EMPTY: std::sync::LazyLock<std::collections::HashSet<RoleProviderId>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
+        &EMPTY
+    }
+
     /// API Doc
     #[cfg(feature = "open-api")]
     fn api_doc() -> utoipa::openapi::OpenApi;
