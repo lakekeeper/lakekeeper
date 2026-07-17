@@ -164,6 +164,11 @@ mod tests {
     /// Each kind must serialize to exactly the `action` tag its `TableUpdate`
     /// serializes to — the kind is a faithful discriminant of the wire type.
     /// This catches both a wrong `From` arm and any drift from iceberg's names.
+    ///
+    /// Also pins `Display` (strum) to the same string as serde: the two are
+    /// independent kebab-case encodings, and both feed authorization (the action
+    /// descriptor uses `Display`, the wire contract uses serde), so they must not
+    /// drift apart.
     #[test]
     fn kind_serializes_to_iceberg_action_tag() {
         for update in sample_updates() {
@@ -174,6 +179,11 @@ mod tests {
             let kind = TableUpdateKind::from(&update);
             let kind_json = serde_json::to_value(kind).unwrap();
             assert_eq!(&kind_json, action, "kind mismatch for update {update:?}");
+            assert_eq!(
+                serde_json::Value::String(kind.to_string()),
+                *action,
+                "Display disagrees with serde for {kind:?}"
+            );
         }
     }
 
