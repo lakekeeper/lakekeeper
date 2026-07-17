@@ -73,14 +73,15 @@ simple string arrays this is syntactically identical to a JSON array:
 # e.g. in a Kubernetes deployment's env block
 env:
   - name: LAKEKEEPER__INSTANCE_ADMINS
-    value: '["kubernetes~system:serviceaccount:lakekeeper:operator","oidc~alice"]'
+    value: '["kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284","oidc~alice"]'
 ```
 
 Each entry is a Lakekeeper user ID of the form `<idp_id>~<subject>`. The
 `idp_id` matches the identifier of a configured Authenticator (for example,
 `kubernetes` or `oidc`). The `subject` is the resolved subject claim — for
-Kubernetes ServiceAccount tokens that is
-`system:serviceaccount:<namespace>:<sa-name>`; for OIDC it is whatever the
+Kubernetes ServiceAccount tokens that is the service account's `uid` (as
+returned by the `TokenReview` API, e.g.
+`eb952f26-3a1a-4020-bcb4-3f7d43049284`); for OIDC it is whatever the
 configured subject claim produces.
 
 A bare string (e.g. `oidc~alice`) is **rejected** — even a single admin must

@@ -382,6 +382,41 @@ impl From<SystemRoleImmutable> for ErrorModel {
     }
 }
 
+// Raised when a customer-facing role-management endpoint targets a role whose
+// provider namespace is owned by a configured role provider (LDAP/Entra/Okta/
+// token). Such roles are maintained by provider sync and are immutable through
+// the role-management API — they change only when the provider re-syncs. The
+// `system` namespace has its own error (`SystemRoleImmutable`); this covers the
+// external, configurable providers.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "Cannot create, modify, delete, or assign a role in the `{provider_id}` namespace through the role-management API: it is managed by a configured role provider and is maintained by provider sync."
+)]
+pub struct ManagedRoleImmutable {
+    pub provider_id: String,
+    pub stack: Vec<String>,
+}
+impl ManagedRoleImmutable {
+    #[must_use]
+    pub fn new(provider_id: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(ManagedRoleImmutable);
+impl From<ManagedRoleImmutable> for ErrorModel {
+    fn from(err: ManagedRoleImmutable) -> Self {
+        ErrorModel::builder()
+            .r#type("ManagedRoleImmutable")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
 // --------------------------- DELETE ERROR ---------------------------
 define_transparent_error! {
     pub enum DeleteRoleError,
@@ -389,7 +424,8 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         RoleIdNotFoundInProject,
-        SystemRoleImmutable
+        SystemRoleImmutable,
+        ManagedRoleImmutable
     ]
 }
 
@@ -403,6 +439,7 @@ define_transparent_error! {
         RoleNameAlreadyExists,
         RoleIdNotFoundInProject,
         SystemRoleImmutable,
+        ManagedRoleImmutable,
     ]
 }
 

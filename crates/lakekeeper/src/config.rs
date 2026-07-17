@@ -418,6 +418,15 @@ pub struct DynAppConfig {
     /// Accept legacy k8s token without audience and issuer
     /// set to kubernetes/serviceaccount or `https://kubernetes.default.svc.cluster.local`
     pub kubernetes_authentication_accept_legacy_serviceaccount: bool,
+    /// Which Kubernetes `TokenReview` field becomes the user's subject in the
+    /// Lakekeeper user ID (`kubernetes~<subject>`). Defaults to `uid`.
+    ///
+    /// Set to `username` to use `system:serviceaccount:<namespace>:<name>`,
+    /// which is stable across clusters. Changing this after users exist changes
+    /// their IDs and orphans existing role assignments, so choose it at initial
+    /// setup.
+    #[serde(default)]
+    pub kubernetes_authentication_subject_source: KubernetesSubjectSource,
     /// Claim(s) to use in provided JWT tokens as the subject.
     /// Accepts a comma-separated list of claim names; the first claim present
     /// in the token is used. A single claim name (without a comma) is also
@@ -727,6 +736,31 @@ impl Serialize for AuthZBackend {
         match self {
             AuthZBackend::AllowAll => "allowall".serialize(serializer),
             AuthZBackend::External(s) => s.to_lowercase().serialize(serializer),
+        }
+    }
+}
+
+/// Which Kubernetes `TokenReview` field is used as the subject in the
+/// Lakekeeper user ID (`kubernetes~<subject>`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KubernetesSubjectSource {
+    /// `user.uid` — the service account's Kubernetes UID (default). Assigned
+    /// per cluster, so the same service account has a different UID in each
+    /// cluster.
+    #[default]
+    Uid,
+    /// `user.username` — `system:serviceaccount:<namespace>:<name>`. Stable
+    /// across clusters, which makes it suitable for pre-provisioning identities.
+    Username,
+}
+
+impl KubernetesSubjectSource {
+    #[must_use]
+    pub fn to_limes(self) -> limes::kubernetes::KubernetesSubjectSource {
+        match self {
+            Self::Uid => limes::kubernetes::KubernetesSubjectSource::Uid,
+            Self::Username => limes::kubernetes::KubernetesSubjectSource::Username,
         }
     }
 }
@@ -1052,6 +1086,7 @@ impl Default for DynAppConfig {
             enable_kubernetes_authentication: false,
             kubernetes_authentication_audience: None,
             kubernetes_authentication_accept_legacy_serviceaccount: false,
+            kubernetes_authentication_subject_source: KubernetesSubjectSource::default(),
             openid_subject_claim: None,
             openid_roles_claim: None,
             openid_providers: HashMap::new(),
@@ -1217,6 +1252,36 @@ mod test {
             jail.set_env("LAKEKEEPER_TEST__AUTHZ_BACKEND", "allow-all");
             let config = get_config();
             assert_eq!(config.authz_backend, AuthZBackend::AllowAll);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kubernetes_subject_source() {
+        assert_eq!(
+            DynAppConfig::default().kubernetes_authentication_subject_source,
+            KubernetesSubjectSource::Uid
+        );
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE",
+                "username",
+            );
+            assert_eq!(
+                get_config().kubernetes_authentication_subject_source,
+                KubernetesSubjectSource::Username
+            );
+            Ok(())
+        });
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE",
+                "uid",
+            );
+            assert_eq!(
+                get_config().kubernetes_authentication_subject_source,
+                KubernetesSubjectSource::Uid
+            );
             Ok(())
         });
     }
