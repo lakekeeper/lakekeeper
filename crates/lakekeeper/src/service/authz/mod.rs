@@ -1013,14 +1013,15 @@ pub enum CatalogTableAction {
         updated_properties: Arc<BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed_properties: Arc<Vec<String>>,
-        /// Branch/tag refs the commit explicitly targets, from its
-        /// `SetSnapshotRef` / `RemoveSnapshotRef` updates. Empty when the commit
-        /// names no ref. Lets a policy authorize per branch (e.g. protect `main`).
+        /// The branch and tag names this commit creates, moves, or removes.
+        /// Empty when the commit targets no ref by name.
+        // Populated from the commit's `SetSnapshotRef`/`RemoveSnapshotRef` updates;
+        // lets an authorizer decide per branch (e.g. protect `main`).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         target_refs: Arc<BTreeSet<String>>,
-        /// The distinct kinds of updates in the commit. Lets a policy require
-        /// table-wide authority for anything beyond a branch-ref move (schema,
-        /// spec, properties, snapshot expiry, …).
+        /// The kinds of metadata updates this commit contains.
+        // Lets an authorizer require table-wide authority for anything beyond a
+        // branch-ref move (schema, spec, properties, snapshot expiry, …).
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         update_kinds: Arc<BTreeSet<TableUpdateKind>>,
     },

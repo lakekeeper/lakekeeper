@@ -1,18 +1,14 @@
 use iceberg::TableUpdate;
 use serde::{Deserialize, Serialize};
 
-/// The kind of a [`TableUpdate`], independent of its payload.
-///
-/// `iceberg-rust`'s [`TableUpdate`] is a `#[serde(tag = "action")]` enum with no
-/// companion discriminant type, and we cannot derive one onto a foreign type.
-/// This mirrors its variants so callers can reason about *what kinds* of changes
-/// a commit contains — e.g. to decide whether a commit only moves a branch ref or
-/// also carries table-global changes — without cloning payloads or matching on
-/// stringly-typed names.
-///
-/// The `serde` representation is kept identical to [`TableUpdate`]'s `action`
-/// tag (kebab-case), so a kind serializes to exactly the action string a client
-/// sent. This is enforced by a test.
+/// The kind of a table metadata update, identified by its Iceberg action name
+/// (for example `set-snapshot-ref`, `add-schema`, or `remove-snapshots`).
+//
+// Implementation note (not part of the public schema): iceberg's `TableUpdate`
+// is a foreign `#[serde(tag = "action")]` enum with no discriminant type, and a
+// derive can't be added to a foreign type — so this mirrors its variants. The
+// serde/`Display` names are kept identical to `TableUpdate`'s `action` tag
+// (kebab-case), test-locked, so a kind maps 1:1 to the action a client sent.
 #[derive(
     Clone,
     Copy,

@@ -6842,6 +6842,20 @@ components:
               type: array
               items:
                 type: string
+            target_refs:
+              type: array
+              items:
+                type: string
+              description: |-
+                The branch and tag names this commit creates, moves, or removes.
+                Empty when the commit targets no ref by name.
+              uniqueItems: true
+            update_kinds:
+              type: array
+              items:
+                $ref: '#/components/schemas/TableUpdateKind'
+              description: The kinds of metadata updates this commit contains.
+              uniqueItems: true
             updated_properties:
               type: object
               additionalProperties:
@@ -9562,6 +9576,35 @@ components:
         - describe
         - select
         - modify
+    TableUpdateKind:
+      type: string
+      description: |-
+        The kind of a table metadata update, identified by its Iceberg action name
+        (for example `set-snapshot-ref`, `add-schema`, or `remove-snapshots`).
+      enum:
+        - upgrade-format-version
+        - assign-uuid
+        - add-schema
+        - set-current-schema
+        - add-spec
+        - set-default-spec
+        - add-sort-order
+        - set-default-sort-order
+        - add-snapshot
+        - set-snapshot-ref
+        - remove-snapshots
+        - remove-snapshot-ref
+        - set-location
+        - set-properties
+        - remove-properties
+        - remove-partition-specs
+        - set-statistics
+        - remove-statistics
+        - set-partition-statistics
+        - remove-partition-statistics
+        - remove-schemas
+        - add-encryption-key
+        - remove-encryption-key
     TabularDeleteProfile:
       oneOf:
         - type: object
