@@ -46,6 +46,9 @@ cp java/.env.local.example java/.env.local
 | `TOKEN` | Static bearer token **—or—** the `OAUTH_*` variables below |
 | `OAUTH_TOKEN_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_SCOPE` | OAuth2 client-credentials flow (alternative to `TOKEN`) |
 
+!!! note "Interactive login isn't for streaming jobs"
+    The Java client also ships `DeviceCodeFlow` (RFC 8628) and `AuthorizationCodeFlow` with PKCE (RFC 7636) for signing a **human** in from a CLI or desktop — see [Client Authentication](generic-tables-auth.md). A Flink job runs unattended with no browser, so authenticate it as a **service account** with `ClientCredentials` (the `OAUTH_*` variables above) or a static `TOKEN` — not an interactive flow.
+
 **Optional tuning:**
 
 | Variable | Default | Description |

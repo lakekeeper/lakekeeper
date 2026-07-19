@@ -55,7 +55,7 @@ spark = (
 
 ## Build the Lakekeeper client via py4j
 
-`spark._jvm` gives direct access to any class on the Spark JVM classpath:
+`spark._jvm` gives direct access to any class on the Spark JVM classpath. The auth classes are the same ones described in [Client Authentication](generic-tables-auth.md) — from PySpark you construct them through `spark._jvm` instead of a Python import:
 
 ```python
 jvm = spark._jvm
@@ -81,6 +81,27 @@ client = (
     .build()
 )
 ```
+
+!!! note "Interactive login (device code / PKCE)"
+    For a **human** signing in from a laptop or notebook — rather than a service account — the Java client also offers `DeviceCodeFlow` and `AuthorizationCodeFlow` (PKCE); see [Client Authentication](generic-tables-auth.md) for what each flow does. Reach them the same way via `spark._jvm`:
+
+    ```python
+    # Device code — prints a URL + code to approve in a browser, then polls until you do.
+    auth = jvm.io.lakekeeper.client.auth.DeviceCodeFlow(
+        os.environ["OAUTH_DEVICE_URL"],   # .../protocol/openid-connect/auth/device
+        os.environ["OAUTH_TOKEN_URL"],
+        os.environ["OAUTH_CLIENT_ID"],    # a public client — no secret
+    )
+
+    # ...or authorization code + PKCE (opens a browser, captures a loopback redirect):
+    auth = jvm.io.lakekeeper.client.auth.AuthorizationCodeFlow(
+        os.environ["OAUTH_AUTH_URL"],     # .../protocol/openid-connect/auth
+        os.environ["OAUTH_TOKEN_URL"],
+        os.environ["OAUTH_CLIENT_ID"],
+    )
+    ```
+
+    These fit **local / interactive** Spark. A **cluster job** has no browser and no human at the keyboard — use `ClientCredentials` (above) there.
 
 ## Create the Lance table
 
