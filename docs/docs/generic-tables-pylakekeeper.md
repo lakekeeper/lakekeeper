@@ -172,19 +172,20 @@ The `lance` format stores a columnar dataset — here, vector embeddings. Create
                                     format=GenericTableFormat.LANCE, properties={"embedding-dim": "768"})
         except ConflictError:
             pass
-        t = c.generic_tables.load("ai.test", "image_embeddings", vended=True)  # location is abfss://...
+        # Rebuild storage options from the freshly-loaded table each time — the SAS token is short-lived.
+        def adls_opts(t):   # map the vended SAS token to Lance/object-store Azure options (verify names)
+            creds = {**{k: v for cred in (t.storage_credentials or []) for k, v in cred.config.items()},
+                     **(t.config or {})}
+            return {
+                "azure_storage_account_name": creds.get("adls.account-name"),
+                "azure_storage_sas_key": next(v for k, v in creds.items() if k.startswith("adls.sas-token.")),
+            }
 
-        # Vended SAS token → Lance/object-store Azure storage_options (verify option names).
-        creds = {k: v for cred in (t.storage_credentials or []) for k, v in cred.config.items()}
-        creds.update(t.config or {})
-        opts = {
-            "azure_storage_account_name": creds.get("adls.account-name"),
-            "azure_storage_sas_key": next(v for k, v in creds.items() if k.startswith("adls.sas-token.")),
-        }
-        lance.write_dataset(my_arrow_table, t.location, storage_options=opts, mode="overwrite")
+        t = c.generic_tables.load("ai.test", "image_embeddings", vended=True)  # location is abfss://...
+        lance.write_dataset(my_arrow_table, t.location, storage_options=adls_opts(t), mode="overwrite")
 
         t = c.generic_tables.load("ai.test", "image_embeddings", vended=True)   # refresh SAS
-        print("rows:", lance.dataset(t.location, storage_options=opts).count_rows())
+        print("rows:", lance.dataset(t.location, storage_options=adls_opts(t)).count_rows())
     ```
 
 === "GCS"
