@@ -135,35 +135,48 @@ jobs:
           done
           kubectl logs bootstrap-test-uid
           [ "$phase" = Succeeded ]
-      # Reinstall with a fresh database: whoami only returns a user that was
-      # bootstrapped, and switching the subject source changes the caller's ID,
-      # so the username run needs its own bootstrap. Wiping the postgres PVC
-      # (retained across `helm uninstall`) keeps the release/service name stable.
-      - name: Reinstall lakekeeper - username subject source
+      # A second, independent release in its own namespace — deliberately NOT a
+      # reinstall of the uid release. Reinstalling recreates the same
+      # Service/ClusterIP; kube-proxy blackholes new connections to a reused
+      # ClusterIP until stale conntrack entries expire (~60s), so the bootstrap
+      # pod times out connecting to the freshly reinstalled server. A separate
+      # release gets a fresh ClusterIP and mirrors the always-working uid install.
+      # It also gives the username run its own fresh DB to bootstrap into, and its
+      # namespace becomes the caller's SA namespace — so bootstrap.sh derives the
+      # expected `system:serviceaccount:<namespace>:default`.
+      - name: Install lakekeeper - username subject source
         run: |
-          helm uninstall my-lakekeeper --wait
-          kubectl delete pvc --all --wait
           helm install -f tests/kube-auth/values.yaml \
+            --namespace lk-username --create-namespace \
             --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 \
             --set-string catalog.config.LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username \
-            my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
-      # Detached + phase poll, same rationale as the uid step above.
+            lakekeeper-username lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      # Detached + phase poll, same rationale as the uid step above. Runs in the
+      # username release's namespace and targets its Service (2nd script arg).
       - name: Run tests - username subject source
         run: |
-          kubectl run bootstrap-test-username --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent \
-            --restart=Never --command=true -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh username
+          kubectl run bootstrap-test-username --namespace lk-username \
+            --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent \
+            --restart=Never --command=true -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh username lakekeeper-username
           for _ in $(seq 60); do
-            phase="$(kubectl get pod bootstrap-test-username -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            phase="$(kubectl get pod bootstrap-test-username --namespace lk-username -o jsonpath='{.status.phase}' 2>/dev/null || true)"
             case "$phase" in Succeeded|Failed) break ;; esac
             sleep 2
           done
-          kubectl logs bootstrap-test-username
+          kubectl logs bootstrap-test-username --namespace lk-username
           [ "$phase" = Succeeded ]
       - name: bootstrap-logs
         if: failure()
         run: |
           kubectl logs bootstrap-test-uid || true
-          kubectl logs bootstrap-test-username || true
+          kubectl logs bootstrap-test-username --namespace lk-username || true
+          # Phase + events distinguish a stuck pod (Pending/unschedulable) from a
+          # server that accepted the request but never answered (pod Running, curl
+          # blocked). Both otherwise present as an empty log above.
+          kubectl describe pod bootstrap-test-uid || true
+          kubectl describe pod bootstrap-test-username --namespace lk-username || true
       - name: server-logs
         if: failure()
-        run : kubectl logs deployments/my-lakekeeper || true
+        run: |
+          kubectl logs deployments/my-lakekeeper || true
+          kubectl logs deployments/lakekeeper-username --namespace lk-username || true
