@@ -119,8 +119,22 @@ jobs:
         # `helm --wait` blocks until pods are ready (values sets helmWait: true to
         # make this work); faster and less flaky than a fixed sleep.
         run: helm install -f tests/kube-auth/values.yaml --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      # Run detached, then wait for a terminal phase and read the pod's exit
+      # code. `kubectl run -it` races to attach a TTY to this short-lived
+      # `--restart=Never` pod; when it loses, the log-stream fallback dies with
+      # "error stream protocol error" and kubectl blocks until a 60s timeout —
+      # masking the real test result. Polling the phase avoids the race.
       - name: Run tests - uid subject source
-        run: kubectl run bootstrap-test-uid --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh uid
+        run: |
+          kubectl run bootstrap-test-uid --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent \
+            --restart=Never --command=true -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh uid
+          for _ in $(seq 60); do
+            phase="$(kubectl get pod bootstrap-test-uid -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          kubectl logs bootstrap-test-uid
+          [ "$phase" = Succeeded ]
       # Reinstall with a fresh database: whoami only returns a user that was
       # bootstrapped, and switching the subject source changes the caller's ID,
       # so the username run needs its own bootstrap. Wiping the postgres PVC
@@ -133,8 +147,18 @@ jobs:
             --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 \
             --set-string catalog.config.LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username \
             my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      # Detached + phase poll, same rationale as the uid step above.
       - name: Run tests - username subject source
-        run: kubectl run bootstrap-test-username --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh username
+        run: |
+          kubectl run bootstrap-test-username --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent \
+            --restart=Never --command=true -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh username
+          for _ in $(seq 60); do
+            phase="$(kubectl get pod bootstrap-test-username -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          kubectl logs bootstrap-test-username
+          [ "$phase" = Succeeded ]
       - name: bootstrap-logs
         if: failure()
         run: |

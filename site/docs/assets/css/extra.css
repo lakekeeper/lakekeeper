@@ -44,6 +44,77 @@
   color: var(--md-default-fg-color);
 }
 
+/* Release-notes email subscribe callout (Buttondown embed).
+   Theme-aware: uses Material's own fg/bg/primary variables so it renders
+   cleanly in both light and dark schemes. */
+.lk-subscribe {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  margin: 1.2rem 0 2rem;
+  background: var(--md-code-bg-color);
+}
+.lk-subscribe > p:first-child {
+  margin-top: 0;
+  font-weight: 600;
+}
+.lk-subscribe form {
+  margin: 0;
+}
+.lk-subscribe .lk-subscribe-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.lk-subscribe input[type="email"] {
+  flex: 1 1 16rem;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--md-default-fg-color--light);
+  border-radius: 6px;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  font-size: 0.8rem;
+}
+.lk-subscribe input[type="email"]:focus {
+  outline: none;
+  border-color: var(--md-accent-fg-color);
+}
+.lk-subscribe input[type="submit"] {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.lk-subscribe input[type="submit"]:hover {
+  background: var(--md-accent-fg-color);
+}
+.lk-subscribe .lk-subscribe-fine {
+  margin: 0.6rem 0 0;
+  font-size: 0.65rem;
+  color: var(--md-default-fg-color--light);
+}
+.lk-subscribe .lk-subscribe-fine a {
+  color: inherit;
+}
+.lk-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0); /* fallback for older browsers */
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Short Lakekeeper Plus Badge with auto-generated content */
 .lkp::after {
   content: "★ lakekeeper +";
