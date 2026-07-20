@@ -263,18 +263,11 @@ async fn populate_view_metadata(
     Ok(())
 }
 
-// Clears view sub-metadata so a commit can repopulate it, WITHOUT touching schemas.
-//
-// Schemas are reconciled incrementally by `sync_view_schemas` so that
-// `column_identity` for persisting columns survives a commit (stable governance
-// spine). This function therefore clears only the version-family and properties.
-//
-// The version-family is cleared with a single `DELETE FROM view_version`: per the
-// FK graph in `20240620151544_views.sql` as amended by `20250904142650`,
-// `view_representation`, `view_version_log`, and `current_view_metadata_version`
-// all REFERENCE `view_version` ON DELETE CASCADE, so all three are removed
-// transitively. If a future migration weakens any of those CASCADE links, delete
-// from the affected tables explicitly here.
+// Clears view sub-metadata for a commit to repopulate, WITHOUT touching schemas: schemas are
+// reconciled incrementally by `sync_view_schemas`, so `tabular_field` for persisting columns
+// survives. `DELETE FROM view_version` cascades to view_representation, view_version_log, and
+// current_view_metadata_version. If a future migration weakens one of those CASCADEs, delete from
+// the affected table explicitly here.
 async fn clear_view_metadata(
     warehouse_id: WarehouseId,
     view_id: Uuid,
@@ -381,7 +374,7 @@ async fn set_view_properties(
 
 /// Reconcile the persisted schema set for a view to exactly `metadata`'s schemas, incrementally:
 /// add anchors + normalized fields for new schema_ids, delete them for removed ones, leave
-/// persisting schema_ids untouched so their `column_identity` survives (stable governance spine).
+/// persisting schema_ids untouched so their `tabular_field` survives (stable governance spine).
 /// Works for create (no existing rows -> add all) and commit (diff).
 async fn sync_view_schemas(
     warehouse_id: WarehouseId,
@@ -1349,19 +1342,9 @@ pub mod tests {
 
     #[sqlx::test]
     async fn commit_existing_view_cleans_old_sub_metadata(pool: PgPool) {
-        // On commit, `clear_view_metadata` clears the version-family (versions +
-        // representations/log/current via ON DELETE CASCADE) and properties, while
-        // schemas are reconciled incrementally by `sync_view_schemas`. If a future
-        // migration weakens any CASCADE link off `view_version`, the second
-        // `populate_view_metadata` call below hits a PK collision because prior
-        // version/representation/log rows weren't cleared. This test asserts the
-        // version-family cascade works end-to-end and that the persisted schema set
-        // matches the committed metadata exactly.
-        //
-        // The committed metadata equals the created metadata, so the schema diff is
-        // empty: the two original schema versions persist untouched (their
-        // `column_identity` survives). Versions/representations are cleared and
-        // repopulated to the same counts.
+        // Asserts the version-family cascade works end-to-end (a weakened CASCADE off view_version
+        // would make the second populate hit a PK collision) and that the persisted schema set
+        // matches the committed metadata — here unchanged, so both schema versions persist untouched.
         let (state, metadata, warehouse_id, namespace, _, metadata_location, _) =
             prepare_view(pool.clone()).await;
         let namespace_id =
@@ -1650,7 +1633,7 @@ pub mod tests {
 
     /// Commit that adds a schema while retaining existing ones: spine stability.
     /// Create a view with schema A (field_ids {1,2,3}); commit NEW metadata that
-    /// retains A and adds schema B (field_id 4). Assert column_identity exactly
+    /// retains A and adds schema B (field_id 4). Assert tabular_field exactly
     /// equals {1,2,3,4} and both schema versions assemble correctly.
     #[sqlx::test]
     async fn normalized_commit_adds_schema_stable_spine(pool: PgPool) {
@@ -1685,9 +1668,9 @@ pub mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        // After create: column_identity should have exactly {1,2,3}
+        // After create: tabular_field should have exactly {1,2,3}
         let mut ids: Vec<i32> = sqlx::query_scalar(
-            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+            "SELECT field_id FROM tabular_field WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
         )
         .bind(*warehouse_id)
         .bind(view_uuid)
@@ -1697,7 +1680,7 @@ pub mod tests {
         assert_eq!(
             ids,
             vec![1, 2, 3],
-            "initial column_identity must be {{1,2,3}}"
+            "initial tabular_field must be {{1,2,3}}"
         );
 
         // Commit: schema A retained (field_ids {1,2,3}) + new schema B (field_ids {1,2,3,4})
@@ -1722,9 +1705,9 @@ pub mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        // column_identity must be exactly {1,2,3,4} — field 4 added, {1,2,3} survived.
+        // tabular_field must be exactly {1,2,3,4} — field 4 added, {1,2,3} survived.
         ids = sqlx::query_scalar(
-            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+            "SELECT field_id FROM tabular_field WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
         )
         .bind(*warehouse_id)
         .bind(view_uuid)
@@ -1734,7 +1717,7 @@ pub mod tests {
         assert_eq!(
             ids,
             vec![1, 2, 3, 4],
-            "after add-schema commit column_identity must be {{1,2,3,4}}"
+            "after add-schema commit tabular_field must be {{1,2,3,4}}"
         );
 
         // Both schema versions must assemble correctly via load.
@@ -1774,9 +1757,9 @@ pub mod tests {
         );
     }
 
-    /// Commit that drops a schema: GC reaps column_identity for removed fields.
+    /// Commit that drops a schema: GC reaps tabular_field for removed fields.
     /// Create view with schemas {A(fields 1,2), B(fields 1,3)}. Commit retaining
-    /// only A. Assert column_identity == {1,2} and schema_field for B is gone.
+    /// only A. Assert tabular_field == {1,2} and schema_field for B is gone.
     #[sqlx::test]
     async fn normalized_commit_drops_schema_gc(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -1811,9 +1794,9 @@ pub mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        // After create: column_identity == {1,2,3} (field 1 shared, 2 in A only, 3 in B only).
+        // After create: tabular_field == {1,2,3} (field 1 shared, 2 in A only, 3 in B only).
         let mut ids: Vec<i32> = sqlx::query_scalar(
-            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+            "SELECT field_id FROM tabular_field WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
         )
         .bind(*warehouse_id)
         .bind(view_uuid)
@@ -1823,7 +1806,7 @@ pub mod tests {
         assert_eq!(
             ids,
             vec![1, 2, 3],
-            "before GC column_identity must be {{1,2,3}}"
+            "before GC tabular_field must be {{1,2,3}}"
         );
 
         // Commit metadata retaining only schema A.
@@ -1844,9 +1827,9 @@ pub mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
-        // column_identity must be exactly {1,2} — field 3 reaped by GC.
+        // tabular_field must be exactly {1,2} — field 3 reaped by GC.
         ids = sqlx::query_scalar(
-            "SELECT field_id FROM column_identity WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
+            "SELECT field_id FROM tabular_field WHERE warehouse_id=$1 AND tabular_id=$2 ORDER BY field_id",
         )
         .bind(*warehouse_id)
         .bind(view_uuid)
@@ -1856,7 +1839,7 @@ pub mod tests {
         assert_eq!(
             ids,
             vec![1, 2],
-            "after GC column_identity must be exactly {{1,2}}"
+            "after GC tabular_field must be exactly {{1,2}}"
         );
 
         // schema_field rows for schema_id=1 (schema B) must be gone.

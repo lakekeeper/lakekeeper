@@ -1035,7 +1035,7 @@ pub mod tests {
         }
     }
 
-    /// Create a real table (via the production `create_table` path, which now writes `schema_field`)
+    /// Create a real table (via the production `create_table` path, which writes `schema_field`)
     /// whose current schema is `schema`, in a fresh namespace. Returns the table id and the PERSISTED
     /// current schema — create-time normalization may reassign field ids, so assertions should use
     /// the returned schema, not the input.
@@ -2467,7 +2467,7 @@ pub mod tests {
         );
     }
 
-    // ── B. column_identity refcount GC ───────────────────────────────────────
+    // ── B. tabular_field refcount GC ───────────────────────────────────────
 
     #[sqlx::test]
     async fn gc_reaps_identity_when_last_schema_removed(pool: sqlx::PgPool) {
@@ -2475,7 +2475,7 @@ pub mod tests {
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let (table_id, s0) = create_table_with_schema(state.clone(), wh, two_col()).await;
 
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 2);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 2);
         assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 2);
 
         let mut txn = pool.begin().await.unwrap();
@@ -2484,7 +2484,7 @@ pub mod tests {
             .unwrap();
         txn.commit().await.unwrap();
 
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 0);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
         assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
     }
 
@@ -2521,7 +2521,7 @@ pub mod tests {
         txn.commit().await.unwrap();
 
         // id, name, age → 3 identities after both schemas exist.
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 3);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 3);
 
         // Remove s0 — s1 still references id + name, so identities stay at 3.
         let mut txn = pool.begin().await.unwrap();
@@ -2529,7 +2529,7 @@ pub mod tests {
             .await
             .unwrap();
         txn.commit().await.unwrap();
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 3);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 3);
 
         // Remove s1 — last schema gone, all identities reaped.
         let mut txn = pool.begin().await.unwrap();
@@ -2537,7 +2537,7 @@ pub mod tests {
             .await
             .unwrap();
         txn.commit().await.unwrap();
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 0);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
     }
 
     #[sqlx::test]
@@ -2546,7 +2546,7 @@ pub mod tests {
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
         let (table_id, _) = create_table_with_schema(state.clone(), wh, two_col()).await;
 
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 2);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 2);
 
         sqlx::query(r#"DELETE FROM tabular WHERE warehouse_id=$1 AND tabular_id=$2"#)
             .bind(*wh)
@@ -2556,7 +2556,255 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(row_count(&pool, "schema_field", wh, table_id).await, 0);
-        assert_eq!(row_count(&pool, "column_identity", wh, table_id).await, 0);
+        assert_eq!(row_count(&pool, "tabular_field", wh, table_id).await, 0);
+    }
+
+    /// Create-side invariant: the schema_field -> tabular_field FK rejects a field row with no
+    /// identity anchor.
+    #[sqlx::test]
+    async fn schema_field_requires_tabular_field_anchor(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let (table_id, _) = create_table_with_schema(state.clone(), wh, two_col()).await;
+
+        // field_id 9999 has no tabular_field anchor; (warehouse_id, tabular_id) is valid and
+        // (schema_id 0, field_id 9999) is free, so only the tabular_field FK can fail here.
+        let err = sqlx::query(
+            r#"INSERT INTO schema_field
+                (warehouse_id, tabular_id, schema_id, field_id, ordinal, name, required,
+                 type_kind, is_identifier)
+               VALUES ($1, $2, 0, 9999, 0, 'ghost', false, 'int'::iceberg_type_kind, false)"#,
+        )
+        .bind(*wh)
+        .bind(*table_id)
+        .execute(&pool)
+        .await
+        .expect_err("schema_field insert with no tabular_field anchor must fail");
+
+        let db_err = err.as_database_error().expect("must be a database error");
+        assert_eq!(
+            db_err.code().as_deref(),
+            Some("23503"),
+            "expected FK violation (23503 foreign_key_violation), got: {err:?}"
+        );
+    }
+
+    // ── B2. Storage benchmark (ignored) ──────────────────────────────────────
+
+    /// Rough old-vs-new gate: one JSONB blob per schema vs normalized schema_field rows, for a wide
+    /// table with many overlapping schema versions. Run with:
+    ///   cargo test -p lakekeeper-storage-postgres --all-features \
+    ///     bench_old_jsonb_vs_new_normalized -- --ignored --nocapture
+    #[sqlx::test]
+    #[ignore = "benchmark: run explicitly with --ignored --nocapture"]
+    async fn bench_old_jsonb_vs_new_normalized(pool: sqlx::PgPool) {
+        use std::time::Instant;
+
+        use iceberg::spec::{NestedField, NestedFieldRef, PrimitiveType, Schema, Type};
+        use sqlx::Row;
+
+        const NCOLS: i32 = 500;
+        const NVERS: i32 = 20;
+        const BASE: i32 = 1000;
+
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // NVERS versions, each NCOLS columns, sharing field_ids 1..=NCOLS (overlapping — the worst
+        // case for row count: NCOLS*NVERS schema_field rows against NCOLS tabular_field rows).
+        let schemas: Vec<std::sync::Arc<Schema>> = (0..NVERS)
+            .map(|v| {
+                let fields: Vec<NestedFieldRef> = (1..=NCOLS)
+                    .map(|i| {
+                        NestedField::optional(
+                            i,
+                            format!("col_{i}"),
+                            Type::Primitive(PrimitiveType::Long),
+                        )
+                        .into()
+                    })
+                    .collect();
+                std::sync::Arc::new(
+                    Schema::builder()
+                        .with_schema_id(BASE + v)
+                        .with_fields(fields)
+                        .build()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let expected: Vec<i32> = (0..NVERS).map(|v| BASE + v).collect();
+
+        // ---- NEW: normalized schema_field (real write path) ----
+        let (tbl_new, _) = create_table_with_schema(state.clone(), wh, two_col()).await;
+        let t = Instant::now();
+        let mut txn = pool.begin().await.unwrap();
+        crate::tabular::table::common::insert_schemas(schemas.iter(), &mut txn, wh, tbl_new)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        let new_write = t.elapsed();
+
+        let new_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2 AND schema_id>=$3",
+        )
+        .bind(*wh)
+        .bind(*tbl_new)
+        .bind(BASE)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let med = |mut v: Vec<std::time::Duration>| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let (mut new_fetch, mut new_decode_name, mut new_decode_pos, mut new_assemble) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..5 {
+            let q = r#"SELECT schema_id, field_id, parent_field_id, ordinal, name, required, doc,
+                          type_kind::text AS type_kind, type_params, initial_default, write_default,
+                          is_identifier
+                   FROM schema_field WHERE warehouse_id=$1 AND tabular_id=$2 AND schema_id>=$3
+                   ORDER BY schema_id, parent_field_id, ordinal"#;
+            let t = Instant::now();
+            let rows = sqlx::query(q)
+                .bind(*wh)
+                .bind(*tbl_new)
+                .bind(BASE)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            new_fetch.push(t.elapsed());
+
+            // decode by column name (what this bench first used)
+            let t = Instant::now();
+            let by_name: Vec<normalized_schema::SchemaFieldRow> = rows
+                .iter()
+                .map(|r| normalized_schema::SchemaFieldRow {
+                    schema_id: r.get("schema_id"),
+                    field_id: r.get("field_id"),
+                    parent_field_id: r.get("parent_field_id"),
+                    ordinal: r.get("ordinal"),
+                    name: r.get("name"),
+                    required: r.get("required"),
+                    doc: r.get("doc"),
+                    type_kind: r.get("type_kind"),
+                    type_params: r.get("type_params"),
+                    initial_default: r.get("initial_default"),
+                    write_default: r.get("write_default"),
+                    is_identifier: r.get("is_identifier"),
+                })
+                .collect();
+            new_decode_name.push(t.elapsed());
+
+            // decode by column index (what the production `query!` path effectively does)
+            let t = Instant::now();
+            let by_pos: Vec<normalized_schema::SchemaFieldRow> = rows
+                .iter()
+                .map(|r| normalized_schema::SchemaFieldRow {
+                    schema_id: r.get(0),
+                    field_id: r.get(1),
+                    parent_field_id: r.get(2),
+                    ordinal: r.get(3),
+                    name: r.get(4),
+                    required: r.get(5),
+                    doc: r.get(6),
+                    type_kind: r.get(7),
+                    type_params: r.get(8),
+                    initial_default: r.get(9),
+                    write_default: r.get(10),
+                    is_identifier: r.get(11),
+                })
+                .collect();
+            new_decode_pos.push(t.elapsed());
+            assert_eq!(by_pos.len(), new_rows as usize);
+
+            let t = Instant::now();
+            let assembled = normalized_schema::assemble_schemas(by_name, &expected).unwrap();
+            assert_eq!(assembled.len(), NVERS as usize);
+            new_assemble.push(t.elapsed());
+        }
+        let (new_fetch, new_decode_name, new_decode_pos, new_assemble) = (
+            med(new_fetch),
+            med(new_decode_name),
+            med(new_decode_pos),
+            med(new_assemble),
+        );
+        // production-equivalent read = fetch + by-index decode + assemble
+        let new_read = new_fetch + new_decode_pos + new_assemble;
+
+        // ---- OLD: one JSONB blob per schema ----
+        let (tbl_old, _) = create_table_with_schema(state.clone(), wh, two_col()).await;
+        let blobs: Vec<serde_json::Value> = schemas
+            .iter()
+            .map(|s| serde_json::to_value(s).unwrap())
+            .collect();
+        let old_bytes: usize = blobs
+            .iter()
+            .map(|b| serde_json::to_vec(b).unwrap().len())
+            .sum();
+        let tblids = vec![*tbl_old; NVERS as usize];
+
+        let t = Instant::now();
+        let mut txn = pool.begin().await.unwrap();
+        sqlx::query(
+            r#"INSERT INTO table_schema(schema_id, table_id, warehouse_id, schema)
+               SELECT sid, tid, $3, s FROM UNNEST($1::int[], $2::uuid[], $4::jsonb[]) u(sid, tid, s)"#,
+        )
+        .bind(&expected)
+        .bind(&tblids)
+        .bind(*wh)
+        .bind(&blobs)
+        .execute(&mut *txn)
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+        let old_write = t.elapsed();
+
+        let (mut old_fetch, mut old_deser) = (Vec::new(), Vec::new());
+        for _ in 0..5 {
+            let t = Instant::now();
+            let got: Vec<serde_json::Value> = sqlx::query_scalar(
+                "SELECT schema FROM table_schema WHERE warehouse_id=$1 AND table_id=$2 AND schema_id>=$3 AND schema IS NOT NULL",
+            )
+            .bind(*wh)
+            .bind(*tbl_old)
+            .bind(BASE)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            old_fetch.push(t.elapsed());
+            // from_value consumes the Value (no clone) — the fair deserialize cost.
+            let t = Instant::now();
+            let parsed: Vec<Schema> = got
+                .into_iter()
+                .map(|b| serde_json::from_value(b).unwrap())
+                .collect();
+            assert_eq!(parsed.len(), NVERS as usize);
+            old_deser.push(t.elapsed());
+        }
+        let (old_fetch, old_deser) = (med(old_fetch), med(old_deser));
+        let old_read = old_fetch + old_deser;
+
+        println!(
+            "\n=== read breakdown: {NCOLS} cols x {NVERS} versions (overlapping), medians of 5 ==="
+        );
+        println!("NEW normalized  ({new_rows} rows)");
+        println!("  fetch (query round-trip):        {new_fetch:?}");
+        println!("  row->struct decode by-NAME:      {new_decode_name:?}");
+        println!("  row->struct decode by-INDEX:     {new_decode_pos:?}  (prod query! path)");
+        println!("  assemble_schemas:                {new_assemble:?}");
+        println!("  read total (fetch+by-index+asm): {new_read:?}");
+        println!("OLD JSONB blob  (~{} KiB)", old_bytes / 1024);
+        println!("  fetch (query round-trip):        {old_fetch:?}");
+        println!("  from_value deserialize:          {old_deser:?}");
+        println!("  read total:                      {old_read:?}");
+        println!("write:  new {new_write:?}  vs old {old_write:?}");
+        println!(
+            "read ratio new/old = {:.1}x",
+            new_read.as_secs_f64() / old_read.as_secs_f64()
+        );
     }
 
     // ── C. Backfill + freeze ─────────────────────────────────────────────────

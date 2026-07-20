@@ -17,16 +17,24 @@ use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SchemaNormError {
-    #[error("non-null default is invalid for {kind} field_id={field_id} (must default to null)")]
-    NonNullDefaultUnsupported { field_id: i32, kind: &'static str },
+    #[error(
+        "non-null default is invalid for {kind} field '{name}' (field_id={field_id}); must default to null"
+    )]
+    NonNullDefaultUnsupported {
+        field_id: i32,
+        name: String,
+        kind: &'static str,
+    },
     #[error("schema assembly failed: {detail}")]
     Assembly { detail: String },
 }
 
 // ─── IcebergTypeKind ─────────────────────────────────────────────────────────
 
-/// Discriminator matching the PG `iceberg_type_kind` enum labels exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Discriminator matching the PG `iceberg_type_kind` enum labels exactly: snake_case of the variant
+/// name (see `as_str`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::VariantArray, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum IcebergTypeKind {
     Boolean,
     Int,
@@ -51,55 +59,10 @@ pub enum IcebergTypeKind {
 }
 
 impl IcebergTypeKind {
-    /// Every variant. A new variant must be added here and to `as_str`; the wildcard-free
-    /// `match`es force the variant to exist, and `pg_enum_db_test` checks PG carries its label.
-    #[cfg(test)] // exhaustive catalog; only consumed by the pg_enum_db_test parity guard
-    pub const ALL: [IcebergTypeKind; 20] = [
-        IcebergTypeKind::Boolean,
-        IcebergTypeKind::Int,
-        IcebergTypeKind::Long,
-        IcebergTypeKind::Float,
-        IcebergTypeKind::Double,
-        IcebergTypeKind::Decimal,
-        IcebergTypeKind::Date,
-        IcebergTypeKind::Time,
-        IcebergTypeKind::Timestamp,
-        IcebergTypeKind::Timestamptz,
-        IcebergTypeKind::TimestampNs,
-        IcebergTypeKind::TimestamptzNs,
-        IcebergTypeKind::String,
-        IcebergTypeKind::Uuid,
-        IcebergTypeKind::Fixed,
-        IcebergTypeKind::Binary,
-        IcebergTypeKind::Variant,
-        IcebergTypeKind::Struct,
-        IcebergTypeKind::List,
-        IcebergTypeKind::Map,
-    ];
-
+    /// PG `iceberg_type_kind` label for this kind, derived from the variant name via
+    /// `serialize_all = "snake_case"`. `test_type_kind_as_str` pins every expected value.
     pub fn as_str(self) -> &'static str {
-        match self {
-            IcebergTypeKind::Boolean => "boolean",
-            IcebergTypeKind::Int => "int",
-            IcebergTypeKind::Long => "long",
-            IcebergTypeKind::Float => "float",
-            IcebergTypeKind::Double => "double",
-            IcebergTypeKind::Decimal => "decimal",
-            IcebergTypeKind::Date => "date",
-            IcebergTypeKind::Time => "time",
-            IcebergTypeKind::Timestamp => "timestamp",
-            IcebergTypeKind::Timestamptz => "timestamptz",
-            IcebergTypeKind::TimestampNs => "timestamp_ns",
-            IcebergTypeKind::TimestamptzNs => "timestamptz_ns",
-            IcebergTypeKind::String => "string",
-            IcebergTypeKind::Uuid => "uuid",
-            IcebergTypeKind::Fixed => "fixed",
-            IcebergTypeKind::Binary => "binary",
-            IcebergTypeKind::Variant => "variant",
-            IcebergTypeKind::Struct => "struct",
-            IcebergTypeKind::List => "list",
-            IcebergTypeKind::Map => "map",
-        }
+        self.into()
     }
 
     /// Per the Iceberg spec, `unknown`/`variant`/`geometry`/`geography` columns must default to
@@ -204,16 +167,15 @@ fn flatten_field(
     out: &mut Vec<FlatField>,
 ) -> Result<(), SchemaNormError> {
     let (type_kind, type_params) = type_kind_and_params(&field.field_type);
-    // Mirror build_field: the pinned iceberg-rust cannot round-trip fixed/binary default values
-    // (try_into_json corrupts them, try_from_json panics on load), so reject at flatten time rather
-    // than persist an unreadable default. Remove once upstream implements hex encode/decode.
+    // Mirror build_field: fixed/binary defaults can't round-trip through the pinned codec, so reject
+    // at flatten time rather than persist an unreadable value.
     if matches!(type_kind, IcebergTypeKind::Fixed | IcebergTypeKind::Binary)
         && (field.initial_default.is_some() || field.write_default.is_some())
     {
         return Err(SchemaNormError::Assembly {
             detail: format!(
-                "default values for fixed/binary fields are not yet supported (field_id={})",
-                field.id
+                "default values for fixed/binary fields are not yet supported (field '{}', field_id={})",
+                field.name, field.id
             ),
         });
     }
@@ -223,14 +185,15 @@ fn flatten_field(
             if !type_kind.permits_non_null_default() {
                 return Err(SchemaNormError::NonNullDefaultUnsupported {
                     field_id: field.id,
+                    name: field.name.clone(),
                     kind: type_kind.as_str(),
                 });
             }
             let json = lit.clone().try_into_json(&field.field_type).map_err(|e| {
                 SchemaNormError::Assembly {
                     detail: format!(
-                        "initial_default serialize failed for field_id={}: {e}",
-                        field.id
+                        "initial_default serialize failed for field '{}' (field_id={}): {e}",
+                        field.name, field.id
                     ),
                 }
             })?;
@@ -243,14 +206,15 @@ fn flatten_field(
             if !type_kind.permits_non_null_default() {
                 return Err(SchemaNormError::NonNullDefaultUnsupported {
                     field_id: field.id,
+                    name: field.name.clone(),
                     kind: type_kind.as_str(),
                 });
             }
             let json = lit.clone().try_into_json(&field.field_type).map_err(|e| {
                 SchemaNormError::Assembly {
                     detail: format!(
-                        "write_default serialize failed for field_id={}: {e}",
-                        field.id
+                        "write_default serialize failed for field '{}' (field_id={}): {e}",
+                        field.name, field.id
                     ),
                 }
             })?;
@@ -405,8 +369,7 @@ pub fn assemble_schemas(
         result.insert(schema_id, Arc::new(schema));
     }
 
-    // Anchor-driven: seed an empty-fields schema for any expected id that produced no rows. A valid
-    // zero-column schema persists an anchor but no `schema_field` rows, so it would otherwise vanish.
+    // Seed any expected anchor that produced no rows as an empty-fields schema (see doc above).
     for &schema_id in expected_schema_ids {
         if result.contains_key(&schema_id) {
             continue;
@@ -458,17 +421,15 @@ fn build_field<'row>(
     if !consumed.insert(row.field_id) {
         return Err(SchemaNormError::Assembly {
             detail: format!(
-                "field_id={} reached more than once during assembly (duplicate row or cycle)",
-                row.field_id
+                "field '{}' (field_id={}) reached more than once during assembly (duplicate row or cycle)",
+                row.name, row.field_id
             ),
         });
     }
     let field_type = build_type(row, children, consumed)?;
-    // The pinned iceberg-rust's `Literal::try_from_json` is unimplemented (panics) for fixed/binary
-    // values, so a fixed/binary default below would panic the whole load. Such a default cannot arrive
-    // via the JSON request or JSONB backfill path (upstream deserialization hits the same gap first),
-    // but a programmatically-built schema could persist one — reject it with a typed error rather than
-    // reaching the panic. Remove once upstream implements hex encode/decode for these literals.
+    // The pinned iceberg-rust panics in `Literal::try_from_json` for fixed/binary values, so a default
+    // here would panic the load. It can't arrive via JSON/JSONB (upstream fails first), but a
+    // programmatic schema could persist one — reject it with a typed error instead.
     if matches!(
         field_type,
         Type::Primitive(PrimitiveType::Fixed(_) | PrimitiveType::Binary)
@@ -476,8 +437,8 @@ fn build_field<'row>(
     {
         return Err(SchemaNormError::Assembly {
             detail: format!(
-                "default values for fixed/binary fields are not yet supported (field_id={})",
-                row.field_id
+                "default values for fixed/binary fields are not yet supported (field '{}', field_id={})",
+                row.name, row.field_id
             ),
         });
     }
@@ -495,14 +456,14 @@ fn build_field<'row>(
         let lit = iceberg::spec::Literal::try_from_json(json_val.clone(), &field.field_type)
             .map_err(|e| SchemaNormError::Assembly {
                 detail: format!(
-                    "initial_default parse failed for field_id={}: {e}",
-                    row.field_id
+                    "initial_default parse failed for field '{}' (field_id={}): {e}",
+                    row.name, row.field_id
                 ),
             })?
             .ok_or_else(|| SchemaNormError::Assembly {
                 detail: format!(
-                    "initial_default was null JSON for field_id={}",
-                    row.field_id
+                    "initial_default was null JSON for field '{}' (field_id={})",
+                    row.name, row.field_id
                 ),
             })?;
         field = field.with_initial_default(lit);
@@ -512,12 +473,15 @@ fn build_field<'row>(
         let lit = iceberg::spec::Literal::try_from_json(json_val.clone(), &field.field_type)
             .map_err(|e| SchemaNormError::Assembly {
                 detail: format!(
-                    "write_default parse failed for field_id={}: {e}",
-                    row.field_id
+                    "write_default parse failed for field '{}' (field_id={}): {e}",
+                    row.name, row.field_id
                 ),
             })?
             .ok_or_else(|| SchemaNormError::Assembly {
-                detail: format!("write_default was null JSON for field_id={}", row.field_id),
+                detail: format!(
+                    "write_default was null JSON for field '{}' (field_id={})",
+                    row.name, row.field_id
+                ),
             })?;
         field = field.with_write_default(lit);
     }
@@ -547,7 +511,8 @@ fn build_type<'row>(
             if kids.len() != 1 {
                 return Err(SchemaNormError::Assembly {
                     detail: format!(
-                        "list field_id={} must have exactly 1 child, found {}",
+                        "list field '{}' (field_id={}) must have exactly 1 child, found {}",
+                        row.name,
                         row.field_id,
                         kids.len()
                     ),
@@ -558,8 +523,8 @@ fn build_type<'row>(
             if kids[0].ordinal != 0 {
                 return Err(SchemaNormError::Assembly {
                     detail: format!(
-                        "list field_id={} element must have ordinal 0, found {}",
-                        row.field_id, kids[0].ordinal
+                        "list field '{}' (field_id={}) element must have ordinal 0, found {}",
+                        row.name, row.field_id, kids[0].ordinal
                     ),
                 });
             }
@@ -571,7 +536,8 @@ fn build_type<'row>(
             if kids.len() != 2 {
                 return Err(SchemaNormError::Assembly {
                     detail: format!(
-                        "map field_id={} must have exactly 2 children (key, value), found {}",
+                        "map field '{}' (field_id={}) must have exactly 2 children (key, value), found {}",
+                        row.name,
                         row.field_id,
                         kids.len()
                     ),
@@ -583,8 +549,8 @@ fn build_type<'row>(
             if kids[0].ordinal != 0 || kids[1].ordinal != 1 {
                 return Err(SchemaNormError::Assembly {
                     detail: format!(
-                        "map field_id={} children must have ordinals 0 (key) and 1 (value), found {} and {}",
-                        row.field_id, kids[0].ordinal, kids[1].ordinal
+                        "map field '{}' (field_id={}) children must have ordinals 0 (key) and 1 (value), found {} and {}",
+                        row.name, row.field_id, kids[0].ordinal, kids[1].ordinal
                     ),
                 });
             }
@@ -609,22 +575,25 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
                 .type_params
                 .as_ref()
                 .ok_or_else(|| SchemaNormError::Assembly {
-                    detail: format!("decimal field_id={} missing type_params", row.field_id),
+                    detail: format!(
+                        "decimal field '{}' (field_id={}) missing type_params",
+                        row.name, row.field_id
+                    ),
                 })?;
             let precision_u64 = params
                 .get("precision")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| SchemaNormError::Assembly {
                     detail: format!(
-                        "decimal field_id={} missing precision in type_params",
-                        row.field_id
+                        "decimal field '{}' (field_id={}) missing precision in type_params",
+                        row.name, row.field_id
                     ),
                 })?;
             let precision =
                 u32::try_from(precision_u64).map_err(|_| SchemaNormError::Assembly {
                     detail: format!(
-                        "decimal field_id={} precision {precision_u64} out of u32 range",
-                        row.field_id
+                        "decimal field '{}' (field_id={}) precision {precision_u64} out of u32 range",
+                        row.name, row.field_id
                     ),
                 })?;
             let scale_u64 = params
@@ -632,14 +601,14 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| SchemaNormError::Assembly {
                     detail: format!(
-                        "decimal field_id={} missing scale in type_params",
-                        row.field_id
+                        "decimal field '{}' (field_id={}) missing scale in type_params",
+                        row.name, row.field_id
                     ),
                 })?;
             let scale = u32::try_from(scale_u64).map_err(|_| SchemaNormError::Assembly {
                 detail: format!(
-                    "decimal field_id={} scale {scale_u64} out of u32 range",
-                    row.field_id
+                    "decimal field '{}' (field_id={}) scale {scale_u64} out of u32 range",
+                    row.name, row.field_id
                 ),
             })?;
             PrimitiveType::Decimal { precision, scale }
@@ -657,15 +626,18 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
                 .type_params
                 .as_ref()
                 .ok_or_else(|| SchemaNormError::Assembly {
-                    detail: format!("fixed field_id={} missing type_params", row.field_id),
+                    detail: format!(
+                        "fixed field '{}' (field_id={}) missing type_params",
+                        row.name, row.field_id
+                    ),
                 })?;
             let length = params
                 .get("length")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| SchemaNormError::Assembly {
                     detail: format!(
-                        "fixed field_id={} missing length in type_params",
-                        row.field_id
+                        "fixed field '{}' (field_id={}) missing length in type_params",
+                        row.name, row.field_id
                     ),
                 })?;
             PrimitiveType::Fixed(length)
@@ -673,7 +645,10 @@ fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNo
         "binary" => PrimitiveType::Binary,
         other => {
             return Err(SchemaNormError::Assembly {
-                detail: format!("unknown type_kind '{other}' for field_id={}", row.field_id),
+                detail: format!(
+                    "unknown type_kind '{other}' for field '{}' (field_id={})",
+                    row.name, row.field_id
+                ),
             });
         }
     };
@@ -966,9 +941,8 @@ mod tests {
 
     #[test]
     fn test_fixed_binary_default_rejected_by_flatten() {
-        // Write-side symmetry with build_field: a fixed/binary default cannot round-trip through the
-        // pinned iceberg-rust codec, so flatten must reject it (typed Assembly error) rather than
-        // persist a corrupt value. Reachable only via a programmatically-built schema.
+        // Write-side mirror of build_field: a fixed/binary default can't round-trip the pinned codec,
+        // so flatten must reject it. Reachable only via a programmatically-built schema.
         let cases = [
             NestedField::optional(1, "b", Type::Primitive(PrimitiveType::Binary))
                 .with_initial_default(iceberg::spec::Literal::Primitive(
@@ -1363,6 +1337,8 @@ mod tests {
 
 #[cfg(test)]
 mod pg_enum_db_test {
+    use strum::VariantArray;
+
     use super::*;
 
     // PG-side guard (DB test): the `iceberg_type_kind` enum must contain every kind Rust can
@@ -1377,7 +1353,7 @@ mod pg_enum_db_test {
         .fetch_all(&pool)
         .await
         .expect("query pg_enum");
-        for kind in IcebergTypeKind::ALL {
+        for &kind in IcebergTypeKind::VARIANTS {
             assert!(
                 labels.iter().any(|l| l == kind.as_str()),
                 "PG iceberg_type_kind enum is missing '{}' — add it via migration",

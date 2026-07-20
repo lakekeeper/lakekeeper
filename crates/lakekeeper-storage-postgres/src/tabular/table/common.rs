@@ -28,7 +28,7 @@ pub(super) async fn remove_schemas(
     }
 
     // Delete schema_field rows explicitly (before the anchor) so the AFTER DELETE statement
-    // trigger fires with a populated transition table and reaps orphaned column_identity rows.
+    // trigger fires with a populated transition table and reaps orphaned tabular_field rows.
     let _ = sqlx::query!(
         r#"DELETE FROM schema_field
            WHERE warehouse_id = $1 AND tabular_id = $2 AND schema_id = ANY($3::INT[])"#,
@@ -75,8 +75,8 @@ pub(super) async fn insert_schemas(
     let ids: Vec<i32> = schemas.iter().map(|s| s.schema_id()).collect();
     let table_ids = vec![*table_id; num_schemas];
 
-    // Anchor rows only — the schema content lives in `schema_field` (written below). The legacy
-    // `schema` JSONB column is left NULL (dropped in a follow-up release).
+    // Anchor rows only — content lives in `schema_field` (written below); the legacy `schema` JSONB
+    // column is left NULL.
     let _ = sqlx::query!(
         r#"INSERT INTO table_schema(schema_id, table_id, warehouse_id)
            SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[])"#,
@@ -879,7 +879,7 @@ pub(crate) async fn remove_table_encryption_keys(
     Ok(())
 }
 
-/// Accumulator for a bulk `schema_field` + `column_identity` write. The 14 parallel arrays are the
+/// Accumulator for a bulk `schema_field` + `tabular_field` write. The 14 parallel arrays are the
 /// query's UNNEST columns. Reusable across flushes: `flush` clears them so the same batch can be
 /// refilled — the migration backfill uses this to bound statement size independent of the read page.
 #[derive(Default)]
@@ -937,8 +937,8 @@ impl SchemaFieldBatch {
         self.field_ids.is_empty()
     }
 
-    /// Issue the two bulk INSERTs (schema_field, then the column_identity spine) and clear all
-    /// arrays so the batch can be reused. No-op when empty.
+    /// Issue the two bulk INSERTs (the tabular_field spine first so the schema_field FK is
+    /// satisfied, then schema_field) and clear all arrays so the batch can be reused. No-op when empty.
     pub(crate) async fn flush(
         &mut self,
         transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -966,6 +966,26 @@ impl SchemaFieldBatch {
                 && self.is_identifiers.len() == n,
             "SchemaFieldBatch arrays must be length-aligned"
         );
+
+        // The tabular_field spine goes first: schema_field has an FK to it, so the parent rows must
+        // exist before the child insert. Reuse the same warehouse/tabular/field arrays. ON CONFLICT
+        // DO NOTHING absorbs both intra-statement duplicate triples (a field_id repeats across schema
+        // versions) and rows already present, so no Rust-side dedup is needed.
+        sqlx::query!(
+            r#"INSERT INTO tabular_field (warehouse_id, tabular_id, field_id)
+            SELECT u.warehouse_id, u.tabular_id, u.field_id
+            FROM UNNEST($1::uuid[], $2::uuid[], $3::int[]) AS u(warehouse_id, tabular_id, field_id)
+            ON CONFLICT DO NOTHING"#,
+            &self.warehouse_ids,
+            &self.tabular_ids,
+            &self.field_ids,
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(|e| {
+            e.into_catalog_backend_error()
+                .append_detail("Failed to write column identity")
+        })?;
 
         sqlx::query!(
             r#"INSERT INTO schema_field
@@ -1003,25 +1023,6 @@ impl SchemaFieldBatch {
                 .append_detail("Failed to write normalized schema")
         })?;
 
-        // Reuse the same warehouse/tabular/field arrays. ON CONFLICT DO NOTHING absorbs both
-        // intra-statement duplicate triples (a field_id repeats across schema versions) and rows
-        // already present, so no Rust-side dedup is needed.
-        sqlx::query!(
-            r#"INSERT INTO column_identity (warehouse_id, tabular_id, field_id)
-            SELECT u.warehouse_id, u.tabular_id, u.field_id
-            FROM UNNEST($1::uuid[], $2::uuid[], $3::int[]) AS u(warehouse_id, tabular_id, field_id)
-            ON CONFLICT DO NOTHING"#,
-            &self.warehouse_ids,
-            &self.tabular_ids,
-            &self.field_ids,
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(|e| {
-            e.into_catalog_backend_error()
-                .append_detail("Failed to write column identity")
-        })?;
-
         self.warehouse_ids.clear();
         self.tabular_ids.clear();
         self.schema_ids.clear();
@@ -1041,9 +1042,6 @@ impl SchemaFieldBatch {
     }
 }
 
-// Write chokepoint for one schema: its `schema_field` rows + the `column_identity` spine.
-// Used by `insert_schemas` (commit path) and view sync. A thin wrapper over `SchemaFieldBatch` so
-// the array-keyed bulk query is the single source of truth.
 #[cfg(test)]
 mod tests {
     use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
@@ -1077,16 +1075,16 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn create_writes_schema_field_and_column_identity(pool: sqlx::PgPool) {
+    async fn create_writes_schema_field_and_tabular_field(pool: sqlx::PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (_, wh) = initialize_warehouse(state.clone(), None, None, None, true).await;
-        // create_table -> insert_schemas writes schema_field + column_identity for the current schema
+        // create_table -> insert_schemas writes schema_field + tabular_field for the current schema
         // (SchemaFieldBatch::flush is the chokepoint it calls).
         let (table_id, schema) =
             create_table_with_schema(state.clone(), wh, two_col_schema()).await;
 
         assert_eq!(count(&pool, "schema_field", wh, table_id).await, 2);
-        assert_eq!(count(&pool, "column_identity", wh, table_id).await, 2);
+        assert_eq!(count(&pool, "tabular_field", wh, table_id).await, 2);
 
         // is_identifier flags match the persisted schema's identifier_field_ids.
         let ids: Vec<i32> = sqlx::query_scalar(

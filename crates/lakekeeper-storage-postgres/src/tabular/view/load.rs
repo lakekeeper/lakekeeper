@@ -100,12 +100,9 @@ pub(crate) async fn load_view(
             is_identifier: r.is_identifier,
         })
         .collect();
-    // Seed EVERY anchor so assembly never drops a schema a version references — `try_from_parts`
-    // only validates the *current* version's schema id, so a missing non-current one would otherwise
-    // slip through. A view's schema is its SQL query's output and always has >=1 column, so a
-    // zero-row anchor means lost field rows, never a legitimate empty schema (unlike tables, where a
-    // zero-column schema is format-legal). Non-current such schemas load as empty (inert); the
-    // current one is rejected below.
+    // Seed EVERY anchor, not just the current schema's: `try_from_parts` only validates the current
+    // version's schema id, so a missing non-current anchor would otherwise silently vanish. Such
+    // non-current schemas load as empty (inert); an empty current schema is rejected below.
     let schema_anchor_rows = sqlx::query!(
         r#"SELECT schema_id FROM view_schema WHERE warehouse_id = $1 AND view_id = $2"#,
         *warehouse_id,
@@ -168,10 +165,8 @@ pub(crate) async fn load_view(
         ViewMetadataValidationFailedInternal::new(warehouse_id, view_id).append_detail(e.message())
     })?;
 
-    // The current version's schema must be non-empty. A view's schema comes from its SQL query, which
-    // always yields >=1 column, so an empty current schema can only mean the field rows were lost —
-    // fail loud rather than serve a truncated view. This never false-rejects a valid view: an empty
-    // view schema is not a legitimate state (unlike a zero-column table).
+    // The current schema must be non-empty: a view's schema is its SQL query's output (always >=1
+    // column, unlike a zero-column table), so zero rows here means lost field rows — fail loud.
     if metadata.current_schema().as_struct().fields().is_empty() {
         return Err(RequiredViewComponentMissing::new(warehouse_id, view_id)
             .append_detail(format!(

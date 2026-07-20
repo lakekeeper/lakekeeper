@@ -33,24 +33,15 @@ impl MigrationHook for NormalizeSchemaHook {
 }
 
 async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
-    // Bound every lock this migration takes. The four lock-taking statements below (two SHARE LOCKs,
-    // two ALTER ... DROP NOT NULL) can each wait on concurrent traffic: the SHARE LOCKs on in-flight
-    // writers (the store FKs `tabular`, not table_schema/view_schema, so these are the txn's first
-    // locks on those tables), the DROP NOT NULLs — ACCESS EXCLUSIVE — on the maintenance-mode reads.
-    // Cap the wait so any of them fails fast and the whole migration rolls back to retry on the next
-    // boot, rather than queueing the catalog behind an unbounded wait. SET LOCAL reverts at txn end,
-    // so a managed-Postgres / role lock_timeout default is untouched outside this migration. 5s never
-    // clips the long work: the backfill statements take no contended lock, and each CREATE TRIGGER is
-    // satisfied by the ACCESS EXCLUSIVE its ALTER already holds. Those are each capped instead by the
-    // migrator's per-statement 60min statement_timeout (which does not bound the backfill as a whole).
+    // Cap every lock wait (below: two SHARE LOCKs, two ALTER DROP NOT NULL) so a busy catalog fails
+    // fast and the migration rolls back to retry next boot, rather than queueing behind an unbounded
+    // wait. SET LOCAL reverts at txn end. The backfills take no contended lock, so 5s never clips
+    // them — they are bounded only by the migrator's per-statement timeout.
     sqlx::query("SET LOCAL lock_timeout = '5s'")
         .execute(&mut **txn)
         .await?;
-    // Run both backfills first under SHARE locks (writers blocked, maintenance-mode reads allowed),
-    // so no JSONB schema is written behind a cursor and missed. The two ACCESS EXCLUSIVE DROP NOT
-    // NULLs — which also block reads — are deferred to the tail, after both backfills complete, so a
-    // table's read-blocking window is the brief end of the transaction rather than the whole
-    // (minutes-long) backfill. table_schema goes dead last, after the view side.
+    // Backfill both under SHARE locks first so no in-flight JSONB write is missed; defer the
+    // read-blocking DROP NOT NULLs to the tail so that window is brief. table_schema goes last.
     sqlx::query("LOCK TABLE table_schema IN SHARE MODE")
         .execute(&mut **txn)
         .await
@@ -68,11 +59,9 @@ async fn run(txn: &mut sqlx::Transaction<'_, Postgres>) -> anyhow::Result<()> {
         )?;
     backfill_view_schemas(txn).await?;
 
-    // Freeze legacy JSONB schema writes: reject any write that sets a non-null `schema` (an old-pod
-    // write during the brief roll-over) while permitting the new NULL-anchor writes. Blanking an
-    // existing `schema` back to NULL is also permitted, so a later cleanup migration can clear the
-    // column before dropping it. Rejected writes fail loud (SQLSTATE object_not_in_prerequisite_state)
-    // and are retried against a new pod. Shared by both freeze triggers below.
+    // Reject any write setting a non-null `schema` (an old-pod write); new NULL anchors, and blanking
+    // an existing `schema` to NULL, are both allowed so a later migration can clear the column before
+    // dropping it. Shared by both freeze triggers below.
     sqlx::query(
         r#"CREATE FUNCTION reject_schema_write() RETURNS trigger LANGUAGE plpgsql AS $f$
            BEGIN
@@ -208,8 +197,8 @@ pub(crate) async fn backfill_view_schemas(
     let started = std::time::Instant::now();
     let (mut schemas_done, mut fields_done): (u64, u64) = (0, 0);
     loop {
-        // Keyset pagination (bounded memory) — one page at a time. Raw-Value fetch + per-row
-        // deserialize so a corrupt blob names its (warehouse, view, schema); see `backfill`.
+        // Keyset pagination (bounded memory). Raw-Value fetch + per-row deserialize so a corrupt
+        // blob names its (warehouse, view, schema).
         let rows = sqlx::query!(
             r#"SELECT warehouse_id, view_id, schema_id,
                       schema as "schema!: sqlx::types::Json<serde_json::Value>"
@@ -231,7 +220,7 @@ pub(crate) async fn backfill_view_schemas(
             let (wh, view, sid, schema_json) = (r.warehouse_id, r.view_id, r.schema_id, r.schema.0);
             let schema: iceberg::spec::Schema = serde_json::from_value(schema_json)
                 .map_err(|e| anyhow::anyhow!("deserialize view {wh}/{view} schema {sid}: {e}"))?;
-            // Same anchor/embedded schema-id integrity check as `backfill`.
+            // Reject a blob whose embedded schema-id disagrees with its anchor row.
             if schema.schema_id() != sid {
                 anyhow::bail!(
                     "schema-id mismatch for view {wh}/{view}: anchor row schema_id={sid}, embedded schema-id={}",
@@ -748,12 +737,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Insert into tabular. Columns required (after all migrations):
-        //   warehouse_id, tabular_id, namespace_id, name, typ, fs_protocol, fs_location,
-        //   tabular_namespace_name (text[], NOT NULL, FK-backed by namespace.namespace_name).
-        // `location` was dropped in migration 20250216.
-        // `tabular_namespace_name` was added (NOT NULL) in migration 20250923.
-        // We look it up from namespace so the FK is satisfied.
+        // Insert into tabular. Required columns: warehouse_id, tabular_id, namespace_id, name, typ,
+        // fs_protocol, fs_location, and tabular_namespace_name (text[], NOT NULL, FK to
+        // namespace.namespace_name — looked up below so the FK is satisfied).
         sqlx::query(
             "INSERT INTO tabular (warehouse_id, tabular_id, namespace_id, name, typ, fs_protocol, fs_location, tabular_namespace_name)
              SELECT $1, b.tabular_id, $2, 'bench_tbl_' || b.tabular_id, 'table',
@@ -770,8 +756,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Insert into "table". After migration 20250923, table_format_version, last_column_id,
-        // last_sequence_number, last_updated_ms, last_partition_id, and next_row_id are all NOT NULL.
+        // Insert into "table". table_format_version, last_column_id, last_sequence_number,
+        // last_updated_ms, last_partition_id, and next_row_id are all NOT NULL.
         sqlx::query(
             "INSERT INTO \"table\" (warehouse_id, table_id, table_format_version, last_column_id, last_sequence_number, last_updated_ms, last_partition_id, next_row_id)
              SELECT $1, b.tabular_id, '2', 20, 0, 0, 999, 0 FROM _bench_ids b",
