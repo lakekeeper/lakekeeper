@@ -5,12 +5,14 @@ set -eu
 # Verifies Kubernetes service-account authentication end-to-end against a real
 # TokenReview: bootstraps as the calling SA, then checks that the resolved user
 # ID matches the configured subject source ($1: "uid" (default) or "username").
+# $2 is the in-cluster host of the catalog Service (defaults to the uid release).
 
 MODE="${1:-uid}"
+HOST="${2:-my-lakekeeper}"
 TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
 NAMESPACE="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
 AUTH="Authorization: Bearer $TOKEN"
-BASE="my-lakekeeper:8181/management/v1"
+BASE="$HOST:8181/management/v1"
 
 # First authenticated call bootstraps the server; the caller becomes the first user.
 # Bounded timeouts + retry ride through the brief window after a fresh (re)install
