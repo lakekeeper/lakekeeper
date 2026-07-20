@@ -312,7 +312,10 @@ impl S3Profile {
         &self,
         credential: Option<&S3Credential>,
     ) -> Result<S3Storage, CredentialsError> {
-        let s3_settings = storage_profile_to_s3_settings(self);
+        let mut s3_settings = storage_profile_to_s3_settings(self);
+        // Alibaba Cloud OSS does not implement chunked encoding, so we need the fallback
+        // to "strict s3 compatibility behavious"; see `S3Settings`
+        s3_settings.s3_compat_checksums = matches!(credential, Some(S3Credential::AliyunOss(_)));
         let auth = credential
             .map(|c| S3Auth::try_from(c.clone()))
             .transpose()?;
@@ -1454,6 +1457,18 @@ impl S3Profile {
         self.flavor = S3Flavor::S3Compat;
         self.sts_enabled = true;
 
+        // OSS does not support path-style-access
+        // See https://www.alibabacloud.com/help/en/oss/developer-reference/use-amazon-s3-sdks-to-access-oss
+        if self.path_style_access == Some(true) {
+            return Err(InvalidProfileError {
+                source: None,
+                reason: "`path-style-access` must not be enabled for Alibaba Cloud OSS; OSS \
+                         supports only virtual-hosted-style addressing."
+                    .to_string(),
+                entity: "path-style-access".to_string(),
+            });
+        }
+
         if self.endpoint.is_none() {
             return Err(InvalidProfileError {
                 source: None,
@@ -1503,6 +1518,9 @@ fn storage_profile_to_s3_settings(profile: &S3Profile) -> S3Settings {
         aws_kms_key_arn: profile.aws_kms_key_arn.clone(),
         sts_session_tags: profile.sts_session_tags.clone(),
         legacy_md5_behavior: profile.legacy_md5_behavior,
+        // Set to true if S3 compatible storage does not support chunked encoding for transfers.
+        // Currently set per-credential by `lakekeeper_io` for Alibaba OSS; see `S3Settings`.
+        s3_compat_checksums: false,
     }
 }
 
@@ -2102,6 +2120,17 @@ pub(crate) mod test {
         profile.normalize(Some(&cred)).unwrap();
         assert_eq!(profile.flavor, S3Flavor::S3Compat);
         assert!(profile.sts_enabled);
+
+        let mut profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("cn-hangzhou".to_string())
+            .endpoint("https://oss-cn-hangzhou.aliyuncs.com".parse().unwrap())
+            .assume_role_arn("acs:ram::123456789012:role/oss-role".to_string())
+            .path_style_access(true)
+            .sts_enabled(false)
+            .flavor(S3Flavor::Aws)
+            .build();
+        assert!(profile.normalize(Some(&cred)).is_err());
     }
 
     #[test]
@@ -2794,6 +2823,183 @@ pub(crate) mod test {
                     ))
                     .await
                     .unwrap();
+                },
+                true,
+            );
+        }
+    }
+
+    pub(crate) mod oss_integration_tests {
+        use super::{super::*, test_block_on};
+        use crate::service::storage::{StorageCredential, StorageProfile};
+
+        pub(crate) fn get_storage_profile() -> (S3Profile, S3Credential) {
+            let profile = S3Profile::builder()
+                .bucket(std::env::var("LAKEKEEPER_TEST__OSS_BUCKET").unwrap())
+                .key_prefix(uuid::Uuid::now_v7().to_string())
+                .endpoint(
+                    std::env::var("LAKEKEEPER_TEST__OSS_ENDPOINT")
+                        .unwrap()
+                        .parse()
+                        .unwrap(),
+                )
+                .region(std::env::var("LAKEKEEPER_TEST__OSS_REGION").unwrap())
+                .sts_role_arn(std::env::var("LAKEKEEPER_TEST__OSS_STS_ROLE_ARN").unwrap())
+                // `normalize_oss` forces flavor=S3Compat and sts_enabled=true; set them for clarity.
+                .flavor(S3Flavor::S3Compat)
+                .sts_enabled(true)
+                .remote_signing_enabled(true)
+                .allow_alternative_protocols(false)
+                .legacy_md5_behavior(false)
+                .push_s3_delete_disabled(false)
+                .build();
+            let cred = S3Credential::AliyunOss(S3AccessKeyCredential {
+                access_key_id: std::env::var("LAKEKEEPER_TEST__OSS_ACCESS_KEY_ID").unwrap(),
+                secret_access_key: std::env::var("LAKEKEEPER_TEST__OSS_SECRET_ACCESS_KEY").unwrap(),
+                external_id: std::env::var("LAKEKEEPER_TEST__OSS_EXTERNAL_ID").ok(),
+            });
+
+            (profile, cred)
+        }
+
+        #[test]
+        fn test_can_validate() {
+            // we need to use a shared runtime since the static client is shared between tests here
+            // and tokio::test creates a new runtime for each test. For now, we only encounter the
+            // issue here, eventually, we may want to move this to a proc macro like tokio::test or
+            // sqlx::test
+            test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let cred: StorageCredential = cred.into();
+                    let mut profile: StorageProfile = profile.into();
+
+                    profile.normalize(Some(&cred)).unwrap();
+                    Box::pin(profile.validate_access(
+                        Some(&cred),
+                        None,
+                        &RequestMetadata::new_unauthenticated(),
+                    ))
+                    .await
+                    .unwrap();
+                },
+                true,
+            );
+        }
+
+        #[test]
+        #[allow(clippy::too_many_lines)]
+        fn test_multipart_upload_with_vended_credentials() {
+            test_block_on(
+                async {
+                    let (profile, cred) = get_storage_profile();
+                    let mut profile = profile;
+                    profile.normalize(Some(&cred)).unwrap();
+
+                    let table_location: lakekeeper_io::Location = format!(
+                        "s3://{}/{}",
+                        profile.bucket,
+                        profile.key_prefix.as_deref().unwrap_or("test")
+                    )
+                    .parse()
+                    .unwrap();
+
+                    // The downscoped policy must cover multipart writes but never the bucket-wide
+                    // `oss:ListMultipartUploads`.
+                    let policy = S3Profile::get_aliyun_oss_sts_policy_string(
+                        &table_location,
+                        StoragePermissions::ReadWriteDelete,
+                    )
+                    .unwrap();
+                    assert!(policy.contains("oss:AbortMultipartUpload"));
+                    assert!(policy.contains("oss:ListParts"));
+                    assert!(!policy.contains("oss:ListMultipartUploads"));
+
+                    let warehouse_id = WarehouseId::new_random();
+                    let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
+                    let sts_request = ShortTermCredentialsRequest {
+                        table_location: table_location.clone(),
+                        storage_permissions: StoragePermissions::ReadWriteDelete,
+                        warehouse_id,
+                        tabular_id: tabular_info.tabular_id(),
+                    };
+                    let sts_creds = profile
+                        .get_temporary_credentials(&sts_request, Some(&cred))
+                        .await
+                        .unwrap();
+
+                    let s3_creds = aws_credential_types::Credentials::new(
+                        sts_creds.access_key_id(),
+                        sts_creds.secret_access_key(),
+                        Some(sts_creds.session_token().to_string()),
+                        None,
+                        "lakekeeper-test",
+                    );
+                    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                        .region(aws_config::Region::new(profile.region.clone()))
+                        .credentials_provider(s3_creds)
+                        .load()
+                        .await;
+                    let mut s3_builder = aws_sdk_s3::config::Config::from(&sdk_config).to_builder();
+                    if let Some(ref endpoint) = profile.endpoint {
+                        s3_builder = s3_builder.endpoint_url(endpoint.to_string());
+                    }
+                    s3_builder = s3_builder.request_checksum_calculation(
+                        aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired,
+                    );
+                    let s3_client = aws_sdk_s3::Client::from_conf(s3_builder.build());
+
+                    let key = format!(
+                        "{}/multipart-test-{}",
+                        profile.key_prefix.as_deref().unwrap_or("test"),
+                        uuid::Uuid::now_v7()
+                    );
+                    let create_resp = s3_client
+                        .create_multipart_upload()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .send()
+                        .await
+                        .expect("create_multipart_upload must succeed with vended credentials");
+                    let upload_id = create_resp.upload_id().unwrap();
+
+                    s3_client
+                        .upload_part()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .part_number(1)
+                        .body(aws_sdk_s3::primitives::ByteStream::from(vec![
+                            b'x';
+                            5 * 1024
+                                * 1024
+                        ]))
+                        .send()
+                        .await
+                        .expect("upload_part must succeed with vended credentials");
+
+                    let list_resp = s3_client
+                        .list_parts()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .expect("list_parts must succeed with vended credentials");
+                    assert_eq!(
+                        list_resp.parts().len(),
+                        1,
+                        "list_parts should return the uploaded part"
+                    );
+
+                    s3_client
+                        .abort_multipart_upload()
+                        .bucket(&profile.bucket)
+                        .key(&key)
+                        .upload_id(upload_id)
+                        .send()
+                        .await
+                        .expect("abort_multipart_upload must succeed with vended credentials");
                 },
                 true,
             );
