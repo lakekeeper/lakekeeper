@@ -1069,7 +1069,8 @@ pub mod tests {
             table_id,
             request,
             &AllowedFormatVersions::default(),
-            None,
+            // v3: test schemas may carry non-null column defaults, invalid before v3.
+            Some(FormatVersion::V3),
         )
         .unwrap();
         let table_ident = TableIdent { namespace, name };
