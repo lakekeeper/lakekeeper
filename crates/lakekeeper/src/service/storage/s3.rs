@@ -472,10 +472,13 @@ impl S3Profile {
                     remote_signing = false;
                 }
                 let can_use_vended_credentials = self.sts_enabled
-                    || matches!(s3_credential, Some(S3Credential::CloudflareR2(..)));
+                    || matches!(
+                        s3_credential,
+                        Some(S3Credential::CloudflareR2(..) | S3Credential::AliyunOss(..))
+                    );
                 if vended_credentials && !(can_use_vended_credentials) {
                     tracing::debug!(
-                        "vended_credentials is explicitly requested but STS is disabled for this S3 warehouse and the credential type is not Cloudflare R2."
+                        "vended_credentials is explicitly requested but STS is disabled for this S3 warehouse and the credential type is not Cloudflare R2 or Alibaba Cloud OSS."
                     );
                     vended_credentials = false;
                 }
@@ -910,7 +913,7 @@ impl S3Profile {
         let table_location = S3Location::try_from_location(table_location, true).map_err(|e| {
             CredentialsError::ShortTermCredential {
                 source: None,
-                reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}").to_string(),
+                reason: format!("Could not generate downscoped policy for temporary credentials as location is no valid S3 location: {e}"),
             }
         })?;
         let bucket = table_location.bucket_name().trim_end_matches('/');
@@ -1967,6 +1970,8 @@ pub(crate) mod test {
         // policy — it would let the credential enumerate uploads across the whole bucket.
         let object_actions = parsed["Statement"][0]["Action"].as_array().unwrap();
         assert!(object_actions.contains(&json!("oss:ListParts")));
+        // ReadWriteDelete is the only arm that grants delete.
+        assert!(object_actions.contains(&json!("oss:DeleteObject")));
         assert!(!policy.contains("oss:ListMultipartUploads"));
 
         // The prefix-conditioned statement constrains only `oss:ListObjects`.
@@ -1998,6 +2003,28 @@ pub(crate) mod test {
             S3Profile::get_aliyun_oss_sts_policy_string(&table_location, StoragePermissions::Read)
                 .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        assert_eq!(
+            parsed["Statement"][2]["Action"],
+            json!(["oss:GetBucketLocation"])
+        );
+        assert!(!policy.contains("oss:ListMultipartUploads"));
+    }
+
+    #[test]
+    fn test_aliyun_oss_read_write_policy_grants_writes_but_not_delete() {
+        let table_location: Location = "s3://bucket-name/wh/db/table".parse().unwrap();
+        let policy = S3Profile::get_aliyun_oss_sts_policy_string(
+            &table_location,
+            StoragePermissions::ReadWrite,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+        let object_actions = parsed["Statement"][0]["Action"].as_array().unwrap();
+        assert!(object_actions.contains(&json!("oss:GetObject")));
+        assert!(object_actions.contains(&json!("oss:PutObject")));
+        assert!(object_actions.contains(&json!("oss:AbortMultipartUpload")));
+        assert!(object_actions.contains(&json!("oss:ListParts")));
+        assert!(!object_actions.contains(&json!("oss:DeleteObject")));
         assert_eq!(
             parsed["Statement"][2]["Action"],
             json!(["oss:GetBucketLocation"])
