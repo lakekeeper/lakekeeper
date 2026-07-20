@@ -37,7 +37,7 @@ The flow is the same for every format: create the table, load it with *vended* c
 
 You don't need to hand-roll these HTTP calls:
 
-- **Python** — the [Python client (`pylakekeeper`)](generic-tables-pylakekeeper.md) wraps create/load/list/drop and maps vended credentials into the keys Lance, `boto3`, and `fsspec` expect. See its [Lance example](generic-tables-pylakekeeper.md#example-lance-table).
+- **Python** — the [Python client (`pylakekeeper`)](generic-tables-pylakekeeper.md) wraps create/load/list/drop and maps vended credentials into the keys Lance, `boto3`, and `fsspec` expect. See its [Lance example](generic-tables-pylakekeeper.md#lance).
 - **PySpark** — [Apache Spark](generic-tables-spark.md) reads and writes generic tables through the same vending flow.
 - **Java / Flink** — [Apache Flink](generic-tables-flink.md) shows the same vending flow.
 

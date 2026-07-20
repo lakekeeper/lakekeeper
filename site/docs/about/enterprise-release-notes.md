@@ -1,5 +1,9 @@
 # Lakekeeper Plus Release Notes
 
+--8<-- "_includes/subscribe-form.html"
+
+_[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
+
 ## v0.13.0 (2026-06-30)
 
 _Based on Lakekeeper OSS v0.13.1._

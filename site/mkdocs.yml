@@ -64,6 +64,7 @@ nav:
       - Release 0.6.x: "!include docs/docs/0.6.x/mkdocs.yml"
       - Release 0.5.x: "!include docs/docs/0.5.x/mkdocs.yml"
   - Release Notes:
+      - Stay Updated: about/subscribe.md
       - Lakekeeper (OSS): about/release-notes.md
       - Lakekeeper Plus: about/enterprise-release-notes.md
   - Community: support.md
