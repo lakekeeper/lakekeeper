@@ -681,7 +681,7 @@ mod tests {
         .unwrap();
 
         // Pick up the task to make it active
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -771,7 +771,7 @@ mod tests {
         .unwrap();
 
         // Pick up the task
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -842,7 +842,7 @@ mod tests {
 
         // Pick and fail terminally (max_retries = 1 => attempt 1 is terminal,
         // mirroring how remove_orphan_files runs as a single-attempt task).
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -899,7 +899,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -910,7 +910,7 @@ mod tests {
             .unwrap();
 
         // Second attempt - pick and fail
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -921,7 +921,7 @@ mod tests {
             .unwrap();
 
         // Third attempt - pick and succeed
-        let task3 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task3 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -995,7 +995,7 @@ mod tests {
         .unwrap();
 
         // First attempt - pick and fail
-        let task1 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task1 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1005,7 +1005,7 @@ mod tests {
             .unwrap();
 
         // Second attempt - pick but keep running
-        let task2 = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task2 = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
 
         // Create 5 failed attempts
         for i in 1..=5 {
-            let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
                 .await
                 .unwrap()
                 .unwrap();
@@ -1085,7 +1085,7 @@ mod tests {
         }
 
         // 6th attempt succeeds
-        let task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();
@@ -1164,7 +1164,7 @@ mod tests {
         .unwrap();
 
         // Pick up child task
-        let _child_task = pick_task(&pool, &tq_name, DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+        let _child_task = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
             .await
             .unwrap()
             .unwrap();

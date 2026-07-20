@@ -74,6 +74,8 @@ ignore = [
     "RUSTSEC-2024-0436", # paste is unmaintained but has no direct harm. We already removed direct dependencies.
     "RUSTSEC-2025-0134", # https://github.com/nats-io/nats.rs/issues/1502, will be fixed in v0.47
     "RUSTSEC-2026-0174", # http-types unsound auth ASCII-invariant. Not affected: only transitive path is azure_core 0.21 (ADLS), which uses http-types solely for Method/StatusCode and never the vulnerable Authorization/WwwAuthenticate types, so that code is never reached. Unmaintained crate, no upgrade available.
+    "RUSTSEC-2026-0194", # quick-xml <0.41 O(N²) attribute-parse DoS. The client-facing path (S3 remote-signer DeleteObjects body) is on the patched 0.41. The only remaining <0.41 instance is 0.40.1 via the azure_core 0.21 fork (ADLS), which parses Azure storage API responses, not attacker input — not reachable. Remove when the azure fork bumps quick-xml to ≥0.41.
+    "RUSTSEC-2026-0195", # quick-xml <0.41 NsReader namespace-declaration memory-exhaustion DoS. Same exposure as RUSTSEC-2026-0194: core is on the patched 0.41; only remaining instance is 0.40.1 via the azure_core 0.21 fork (ADLS), parsing Azure responses not attacker input. Remove when the azure fork bumps quick-xml to ≥0.41.
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

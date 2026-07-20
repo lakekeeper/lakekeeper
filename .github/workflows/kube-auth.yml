@@ -27,10 +27,26 @@ jobs:
   kube_auth:
     needs: docker
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      # Pinned so the test pod defaults to imagePullPolicy IfNotPresent (an
+      # untagged/`:latest` image defaults to Always, which re-pulls Docker Hub
+      # on every run and hits the per-IP rate limit). Sideloaded below.
+      CURL_IMAGE: curlimages/curl:8.16.0
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      # Authenticated Docker Hub pulls avoid anonymous per-IP rate limits on
+      # shared CI runners. Applies to every host `docker pull` below (the kind
+      # node image and the sideloaded chart/test images). Skipped when the
+      # secret is absent (e.g. fork PRs) so those still run with anonymous pulls.
+      - name: Login to Docker Hub
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
       # Pre-pull the kind node image. Docker Hub flakily times out on shared CI
       # IPs; the retried pull means cluster creation below uses the cached image.
       - name: Pre-pull kind node image
@@ -66,13 +82,101 @@ jobs:
           version: v3.18.3
       - run: helm repo add lakekeeper https://lakekeeper.github.io/lakekeeper-charts/
         name: Add lakekeeper helm repo
-      - name: Install lakekeeper (wait 300s)
-        run: helm install -f tests/kube-auth/values.yaml --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 && sleep 300
-      - name: Run tests
-        run: kubectl run bootstrap-test --image=curlimages/curl -it --command=true --restart=Never -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)"
+      # kind's containerd can't see the host docker credentials, so anonymous
+      # in-cluster pulls hit Docker Hub's per-IP rate limit. Resolve every image
+      # the rendered chart references plus the curl test image, then
+      # authenticated-pull them on the host and load them into the node so
+      # nothing is pulled from inside the cluster. Image strings come straight
+      # from `helm template`, so the loaded refs match what the pods request.
+      # `templates/tests/` (helm-test) resources are dropped: they are never
+      # deployed here (no `helm test`) and would pull unrelated images.
+      - name: Sideload chart and test images into kind
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4
+        with:
+          max_attempts: 5
+          timeout_minutes: 5
+          retry_wait_seconds: 15
+          command: |
+            set -euo pipefail
+            images="$(helm template my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 \
+              -f tests/kube-auth/values.yaml \
+              --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 \
+              | awk '/^# Source:/ { skip = ($0 ~ /\/tests\//) } !skip' \
+              | grep -E '^[[:space:]]*image:[[:space:]]' \
+              | sed -E "s/^[[:space:]]*image:[[:space:]]*//; s/[\"']//g" \
+              | sort -u)"
+            echo "Sideloading images:"
+            printf '%s\n' $images "$CURL_IMAGE"
+            for img in $images "$CURL_IMAGE"; do
+              case "$img" in
+                # Built in the `docker` job and loaded from the artifact above.
+                localhost/lakekeeper-local:*) continue ;;
+              esac
+              docker pull "$img"
+              kind load docker-image "$img"
+            done
+      - name: Install lakekeeper - uid subject source
+        # `helm --wait` blocks until pods are ready (values sets helmWait: true to
+        # make this work); faster and less flaky than a fixed sleep.
+        run: helm install -f tests/kube-auth/values.yaml --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 my-lakekeeper lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      # Run detached, then wait for a terminal phase and read the pod's exit
+      # code. `kubectl run -it` races to attach a TTY to this short-lived
+      # `--restart=Never` pod; when it loses, the log-stream fallback dies with
+      # "error stream protocol error" and kubectl blocks until a 60s timeout —
+      # masking the real test result. Polling the phase avoids the race.
+      - name: Run tests - uid subject source
+        run: |
+          kubectl run bootstrap-test-uid --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent \
+            --restart=Never --command=true -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh uid
+          for _ in $(seq 60); do
+            phase="$(kubectl get pod bootstrap-test-uid -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          kubectl logs bootstrap-test-uid
+          [ "$phase" = Succeeded ]
+      # A second, independent release in its own namespace — deliberately NOT a
+      # reinstall of the uid release. Reinstalling recreates the same
+      # Service/ClusterIP; kube-proxy blackholes new connections to a reused
+      # ClusterIP until stale conntrack entries expire (~60s), so the bootstrap
+      # pod times out connecting to the freshly reinstalled server. A separate
+      # release gets a fresh ClusterIP and mirrors the always-working uid install.
+      # It also gives the username run its own fresh DB to bootstrap into, and its
+      # namespace becomes the caller's SA namespace — so bootstrap.sh derives the
+      # expected `system:serviceaccount:<namespace>:default`.
+      - name: Install lakekeeper - username subject source
+        run: |
+          helm install -f tests/kube-auth/values.yaml \
+            --namespace lk-username --create-namespace \
+            --set catalog.image.repository=localhost/lakekeeper-local --set catalog.image.tag=amd64 \
+            --set-string catalog.config.LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE=username \
+            lakekeeper-username lakekeeper/lakekeeper --version 0.7.1 --wait --timeout 6m
+      # Detached + phase poll, same rationale as the uid step above. Runs in the
+      # username release's namespace and targets its Service (2nd script arg).
+      - name: Run tests - username subject source
+        run: |
+          kubectl run bootstrap-test-username --namespace lk-username \
+            --image="$CURL_IMAGE" --image-pull-policy=IfNotPresent \
+            --restart=Never --command=true -- /bin/sh -c "$(cat tests/kube-auth/bootstrap.sh)" sh username lakekeeper-username
+          for _ in $(seq 60); do
+            phase="$(kubectl get pod bootstrap-test-username --namespace lk-username -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          kubectl logs bootstrap-test-username --namespace lk-username
+          [ "$phase" = Succeeded ]
       - name: bootstrap-logs
         if: failure()
-        run: kubectl logs bootstrap-test
+        run: |
+          kubectl logs bootstrap-test-uid || true
+          kubectl logs bootstrap-test-username --namespace lk-username || true
+          # Phase + events distinguish a stuck pod (Pending/unschedulable) from a
+          # server that accepted the request but never answered (pod Running, curl
+          # blocked). Both otherwise present as an empty log above.
+          kubectl describe pod bootstrap-test-uid || true
+          kubectl describe pod bootstrap-test-username --namespace lk-username || true
       - name: server-logs
         if: failure()
-        run : kubectl logs deployments/my-lakekeeper
+        run: |
+          kubectl logs deployments/my-lakekeeper || true
+          kubectl logs deployments/lakekeeper-username --namespace lk-username || true

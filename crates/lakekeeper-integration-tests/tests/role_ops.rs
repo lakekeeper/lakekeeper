@@ -926,7 +926,7 @@ async fn test_create_role_rejects_system_provider_id(pool: PgPool) {
 }
 
 /// Create a system role directly via the catalog layer (bypasses the
-/// `reject_system_provider` API guard). Used as fixture by tests that need
+/// `reject_managed_provider` API guard). Used as fixture by tests that need
 /// an existing system row to verify the immutability guards.
 async fn seed_test_system_role(
     ctx: &lakekeeper::api::ApiContext<

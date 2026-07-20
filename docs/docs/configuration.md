@@ -118,7 +118,7 @@ Lakekeeper uses task queues internally to remove soft-deleted tabulars and purge
 | Variable                                                                          | Example    | Description |
 |-----------------------------------------------------------------------------------|------------|-----|
 | <nobr>`LAKEKEEPER__TASK_POLL_INTERVAL`</nobr>                                     | 3600ms/30s | Interval between polling for new tasks. Default: 10s. Supported units: ms (milliseconds) and s (seconds), leaving the unit out is deprecated, it'll default to seconds but is due to be removed in a future release. |
-| `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS`                                     | 2          | Number of workers spawned to expire soft-deleted tables and views. |
+| `LAKEKEEPER__TASK_SOFT_DELETION_WORKERS`                                          | 2          | Number of workers spawned to finalize soft-deleted tables and views once their expiration elapses. The former name `LAKEKEEPER__TASK_TABULAR_EXPIRATION_WORKERS` is still accepted. |
 | `LAKEKEEPER__TASK_TABULAR_PURGE_WORKERS`                                          | 2          | Number of workers spawned to purge table files after dropping a table with the purge option. |
 | <nobr>`LAKEKEEPER__TASK_EXPIRE_SNAPSHOTS_WORKERS`</nobr><span class="lkp"></span> | 2          | Number of workers spawned that work on expire Snapshots tasks. See [Expire Snapshots Docs](./table-maintenance.md#expire-snapshots) for more information. |
 
@@ -234,6 +234,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE`                    | `uid`                                        | Which `TokenReview` field becomes the user's subject in the user ID (`kubernetes~<subject>`). `uid` (default) uses the service account's Kubernetes UID, which differs per cluster. `username` uses `system:serviceaccount:<namespace>:<name>`, which is stable across clusters and suitable for pre-provisioning users and roles. Changing this after users exist changes their IDs and orphans existing role assignments — choose it at initial setup. One-of: [`uid`, `username`]. |
 
 #### Multiple OIDC Providers
 
@@ -282,7 +283,7 @@ We strongly recommend bootstrapping new deployments with authorization already e
 | Variable                                 | Example                                                              | Description          |
 |------------------------------------------|----------------------------------------------------------------------|----------------------|
 | <nobr>`LAKEKEEPER__AUTHZ_BACKEND`</nobr> | `allowall`                                                           | The authorization backend to use. If `openfga` or `cedar` is chosen, additional parameters are required (see below). The `allowall` backend disables authorization - authenticated users can access all endpoints. Default: `allowall`, one-of: [`openfga`, `allowall`, `cedar`] |
-| <nobr>`LAKEKEEPER__INSTANCE_ADMINS`</nobr> | `["kubernetes~system:serviceaccount:lakekeeper:operator","oidc~alice"]` | TOML inline array of user IDs (`<idp_id>~<subject>`) that are granted instance-admin privileges via deployment config. Even a single admin must be wrapped in brackets. See [Instance Admins](./authorization.md#instance-admins) for scope and rationale. Default: `[]`. |
+| <nobr>`LAKEKEEPER__INSTANCE_ADMINS`</nobr> | `["kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284","oidc~alice"]` | TOML inline array of user IDs (`<idp_id>~<subject>`) that are granted instance-admin privileges via deployment config. For Kubernetes the subject is the service account's `uid`. Even a single admin must be wrapped in brackets. See [Instance Admins](./authorization.md#instance-admins) for scope and rationale. Default: `[]`. |
 
 ##### OpenFGA
 | Variable                                                 | Example                                                                    | Description |
@@ -341,9 +342,12 @@ When using the built-in UI which is hosted as part of the Lakekeeper binary, mos
 | <nobr>`LAKEKEEPER__UI__OPENID_SCOPE`</nobr>        | `openid email`                               | Scopes to request from the IdP. Defaults to `openid profile email`. |
 | <nobr>`LAKEKEEPER__UI__OPENID_RESOURCE`</nobr>     | `lakekeeper-api`                             | Resources to request from the IdP. If not specified, the `resource` field is omitted (default). |
 | `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH` | `/logout`                                    | Path the UI calls when users are logged out from the IdP. Defaults to `/logout` |
+| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_URL`  | `https://portal.cloud.example/login`         | Absolute URL sent as `post_logout_redirect_uri` on logout, overriding the value derived from `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_PATH`. Use for IdPs that only allow pre-registered post-logout URLs (e.g. a cloud portal's own login page). If unset, the redirect is derived from the logout path. |
+| `LAKEKEEPER__UI__OPENID_POST_LOGOUT_REDIRECT_DISABLED` | `false`                                  | If `true`, the UI omits the `post_logout_redirect_uri` parameter entirely on logout (it is optional per the OIDC RFC). Use for IdPs that reject any non-registered post-logout URL. Defaults to `false`. |
 | `LAKEKEEPER__UI__LAKEKEEPER_URL`                   | `https://example.com/lakekeeper`             | URI where the users browser can reach Lakekeeper. Defaults to the value of `LAKEKEEPER__BASE_URI`. |
 | `LAKEKEEPER__UI__OPENID_TOKEN_TYPE`                | `access_token`                               | The token type to use for authenticating to Lakekeeper. The default value `access_token` works for most IdPs. Some IdPs, such as the Google Identity Platform, recommend the use of the OIDC ID Token instead. To use the ID token instead of the access token for Authentication, specify a value of `id_token`. Possible values are `access_token` and `id_token`. |
 | `LAKEKEEPER__UI__ENABLE_SURVEYS`              | `true`                                       | The UI occasionally shows in-app user surveys to gather feedback on Lakekeeper. All responses are collected anonymously. Set to `false` to opt out; the UI then never initializes the survey SDK and makes no third-party requests. Defaults to `true`. |
+| `LAKEKEEPER__UI__BRANDING`<span class="lkp"></span> | `eyJ0aGVtZXMiOns...`                | Base64-encoded JSON that white-labels the UI with custom theme colors and partner logos. See [UI Branding](./ui-branding.md). Lakekeeper Plus only. |
 
 ### Caching
 Lakekeeper uses in-memory caches to speed up certain operations.
@@ -775,6 +779,8 @@ LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-passwor
 
 ##### Microsoft Graph (Entra ID) role provider
 
+*Available since Lakekeeper Plus 0.13.0*
+
 Resolves a user's **transitive** Microsoft Entra ID group memberships via the Microsoft Graph API and maps each group to a role — keyed by the group's object id, with the group `displayName` as the role name. Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
 
 The app registration this provider authenticates as needs the Microsoft Graph **application** permissions `GroupMember.Read.All` and `User.Read.All`, admin-consented.
@@ -790,10 +796,10 @@ The app registration this provider authenticates as needs the Microsoft Graph **
 
 | Method | Fields |
 |--------|--------|
-| `secret`            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
-| `certificate`       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
-| `managed_identity`  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
-| `workload_identity` | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
+| <nobr>`secret`</nobr>            | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CLIENT_SECRET` (all required) |
+| <nobr>`certificate`</nobr>       | `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__CERTIFICATE_PATH` (PKCS#12 / PFX, read at startup); optional `…__CREDENTIAL__CERTIFICATE_PASSWORD` |
+| <nobr>`managed_identity`</nobr>  | Omit `…__CREDENTIAL__USER_ASSIGNED_ID` for the system-assigned identity. For a user-assigned identity set `…__CREDENTIAL__USER_ASSIGNED_ID__KIND` (`client_id`, `object_id`, or `resource_id`) and `…__CREDENTIAL__USER_ASSIGNED_ID__VALUE`. |
+| <nobr>`workload_identity`</nobr> | Optional `…__CREDENTIAL__TENANT_ID`, `…__CREDENTIAL__CLIENT_ID`, `…__CREDENTIAL__TOKEN_FILE_PATH`; each falls back to the standard `AZURE_*` environment variables when omitted. |
 
 **Cloud / endpoints:**
 
@@ -807,10 +813,10 @@ Built-in cloud endpoints:
 
 | Cloud | Graph base | Authority |
 |-------|------------|-----------|
-| `public`        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
-| `us_government` | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
-| `china`         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
-| `custom`        | *(none — set `…__GRAPH_BASE`)*             | *(none — set `…__AUTHORITY_HOST`)*  |
+| <nobr>`public`</nobr>        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
+| <nobr>`us_government`</nobr> | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
+| <nobr>`china`</nobr>         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
+| <nobr>`custom`</nobr>        | *(none — set `…__GRAPH_BASE`)*             | *(none — set `…__AUTHORITY_HOST`)*  |
 
 **HTTP timeouts:**
 
@@ -849,6 +855,88 @@ LAKEKEEPER__ROLE_PROVIDER__ENTRA__CREDENTIAL__CLIENT_SECRET=<app-client-secret>
 # Only resolve users who logged in via the OIDC provider with id `oidc`
 # (the default provider's reserved id; a multi-OIDC provider uses its own id).
 LAKEKEEPER__ROLE_PROVIDER__ENTRA__IDP_IDS=["oidc"]
+```
+
+##### Okta role provider
+
+*Available since Lakekeeper Plus 0.13.1*
+
+Resolves a user's Okta group memberships via the Okta management API and maps each group to a role — keyed by the group's immutable `id`, with the group `profile.name` as the role name and `profile.description` as the description. Okta groups are flat, so a single call returns the user's effective membership (direct plus group-rule assignments). Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
+
+Authentication uses OAuth 2.0 client-credentials with a **private-key-JWT** client assertion — the only client-auth method Okta supports for org-scoped service apps. No static client secret is stored.
+
+**Okta setup:** In the Admin Console, create an **API Services** app integration. Under General → Client Credentials, set Client authentication to **Public key / Private key** and **Save keys in Okta**, then **Generate new key** and copy the private key (Okta shows a JWK by default; click **PEM** for PEM) — this is your only chance to save it. Grant the app the `okta.users.read` scope (admin-consented), and under **Admin roles** assign a **read-only admin role** (e.g. Read-only Administrator).
+
+**Required fields:**
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| <nobr>`…__TYPE`</nobr>      | `okta`                    | Provider type. Must be `okta`. |
+| <nobr>`…__ORG_URL`</nobr>   | `https://acme.okta.com`   | Okta org base URL. Must use `https`. Base for both the token endpoint and the API. |
+| <nobr>`…__CLIENT_ID`</nobr> | `0oa…`                    | The service app's client id. |
+
+**Signing key** — supply the service app's private key via exactly one of:
+
+| Variable | Description |
+|----------|-------------|
+| <nobr>`…__PRIVATE_KEY`</nobr>      | Inline private key — the JWK (Okta's default "Copy to clipboard") **or** a PEM block. |
+| <nobr>`…__PRIVATE_KEY_FILE`</nobr> | Path to a file holding the private key (JWK or PEM), read at startup. |
+| <nobr>`…__KEY_ID`</nobr>           | Public key id. **Required** when the key is PEM; a JWK carries its own `kid`. |
+
+**Scopes (optional):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__SCOPES`</nobr> | `["okta.users.read"]` | JSON array of OAuth scopes requested for the token. |
+
+**HTTP timeouts:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__CONNECT_TIMEOUT_SECS`</nobr> | `10` | Seconds to wait when establishing a connection to Okta. |
+| <nobr>`…__REQUEST_TIMEOUT_SECS`</nobr> | `30` | Seconds to wait for an Okta response. |
+
+Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connection/timeout errors) are retried a few times with exponential backoff before the request fails and the cache falls back to the last good result. Outbound requests honor the standard `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables.
+
+**Caching:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__SYNC_INTERVAL_SECS`</nobr> | `300` | Maximum age of a cached role-assignment record before Lakekeeper re-fetches from Okta. Uses the same two-layer (in-memory + database) cache as the LDAP and Entra providers, including stale-fallback on an Okta outage. |
+
+**Startup:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | `false` | When `true`, Lakekeeper refuses to start if it cannot acquire an Okta token on startup. |
+
+**DPoP:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__DPOP`</nobr> | `true` | Sender-constrain the access token with [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) (RFC 9449): each token and API request carries an ES256 proof signed by an ephemeral in-memory key, so a leaked token is useless without it. Okta accepts DPoP whether or not the app has *Require DPoP* set, so leave it on. Set `false` only if an org rejects DPoP. |
+
+**IDP filtering (optional):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
+
+**Example — inline JWK key (env vars):**
+```bash
+LAKEKEEPER__ROLE_PROVIDER__OKTA__TYPE=okta
+LAKEKEEPER__ROLE_PROVIDER__OKTA__ORG_URL=https://acme.okta.com
+LAKEKEEPER__ROLE_PROVIDER__OKTA__CLIENT_ID=<service-app-client-id>
+# The JWK Okta shows on "Generate new key" (carries its own kid):
+LAKEKEEPER__ROLE_PROVIDER__OKTA__PRIVATE_KEY='{"kty":"RSA","kid":"…","n":"…","e":"AQAB","d":"…","p":"…","q":"…"}'
+# Only resolve users who logged in via the OIDC provider with id `oidc`:
+LAKEKEEPER__ROLE_PROVIDER__OKTA__IDP_IDS=["oidc"]
+```
+
+For a PEM key, click **PEM** when copying the key, then supply it plus its Key ID:
+```bash
+LAKEKEEPER__ROLE_PROVIDER__OKTA__PRIVATE_KEY_FILE=/run/secrets/okta-key.pem
+LAKEKEEPER__ROLE_PROVIDER__OKTA__KEY_ID=<public-key-id>
 ```
 
 ##### File-based configuration

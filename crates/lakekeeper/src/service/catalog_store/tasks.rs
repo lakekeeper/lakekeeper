@@ -155,10 +155,17 @@ where
     )]
     async fn pick_new_task(
         queue_name: &TaskQueueName,
+        legacy_queue_names: &[&TaskQueueName],
         default_max_time_since_last_heartbeat: chrono::Duration,
         state: Self::State,
     ) -> Result<Option<Task>> {
-        Self::pick_new_task_impl(queue_name, default_max_time_since_last_heartbeat, state).await
+        Self::pick_new_task_impl(
+            queue_name,
+            legacy_queue_names,
+            default_max_time_since_last_heartbeat,
+            state,
+        )
+        .await
     }
 
     async fn record_task_success(
@@ -184,12 +191,14 @@ where
     /// If `queue_name` is `None`, cancel tasks in all queues.
     async fn cancel_scheduled_tasks(
         queue_name: Option<&TaskQueueName>,
+        legacy_queue_names: &[&TaskQueueName],
         filter: CancelTasksFilter,
         cancel_running_and_should_stop: bool,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<()> {
         Self::cancel_scheduled_tasks_impl(
             queue_name,
+            legacy_queue_names,
             filter,
             cancel_running_and_should_stop,
             transaction,

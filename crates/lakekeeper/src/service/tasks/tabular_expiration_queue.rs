@@ -19,20 +19,28 @@ use crate::{
     },
 };
 
-const QN_STR: &str = "tabular_expiration";
+const QN_STR: &str = "soft_deletion";
 pub static QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| QN_STR.into());
+
+// Name this queue used before it was renamed to `soft_deletion`. Tasks
+// enqueued by older versions still carry this name in `task`/`task_log`, so
+// the worker dual-reads both names and drop/force-delete cancels both. These
+// rows drain on their own once every pre-rename soft-deletion has expired,
+// after which the alias can be removed.
+const LEGACY_QN_STR: &str = "tabular_expiration";
+pub static LEGACY_QUEUE_NAME: LazyLock<TaskQueueName> = LazyLock::new(|| LEGACY_QN_STR.into());
 #[cfg(feature = "open-api")]
 pub(crate) static API_CONFIG: LazyLock<super::QueueApiConfig> =
     LazyLock::new(|| super::QueueApiConfig {
         queue_name: &QUEUE_NAME,
-        utoipa_type_name: TabularExpirationQueueConfig::name(),
-        utoipa_schema: TabularExpirationQueueConfig::schema(),
+        utoipa_type_name: SoftDeletionQueueConfig::name(),
+        utoipa_schema: SoftDeletionQueueConfig::schema(),
         scope: super::QueueScope::Warehouse,
         user_scheduling: super::UserScheduling::Disabled,
     });
 
 pub type TabularExpirationTask = SpecializedTask<
-    TabularExpirationQueueConfig,
+    SoftDeletionQueueConfig,
     TabularExpirationPayload,
     TabularExpirationExecutionDetails,
 >;
@@ -59,12 +67,16 @@ impl TaskExecutionDetails for TabularExpirationExecutionDetails {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
-/// Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
-pub struct TabularExpirationQueueConfig {}
+/// Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
+pub struct SoftDeletionQueueConfig {}
 
-impl TaskConfig for TabularExpirationQueueConfig {
+impl TaskConfig for SoftDeletionQueueConfig {
     fn queue_name() -> &'static TaskQueueName {
         &QUEUE_NAME
+    }
+
+    fn legacy_queue_names() -> Vec<&'static TaskQueueName> {
+        vec![&LEGACY_QUEUE_NAME]
     }
 
     fn max_time_since_last_heartbeat() -> chrono::Duration {

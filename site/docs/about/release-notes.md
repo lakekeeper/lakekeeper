@@ -8,6 +8,15 @@ For Lakekeeper Plus releases, see the [Lakekeeper Plus Release Notes](enterprise
 
 <!-- Maintainers: how to update this page at release → .github/RELEASING.md -->
 
+--8<-- "_includes/subscribe-form.html"
+
+_[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
+
+## v0.13.1 (2026-06-30)
+
+### Bug Fixes
+- Console updated to v0.19.0; the default OAuth `client_id` no longer carries a leading slash ([ac1094a](https://github.com/lakekeeper/lakekeeper/commit/ac1094a52e51da586c60a27159f9720784eb66e7)).
+
 ## v0.13.0 (2026-06-28)
 
 ### Highlights

@@ -3943,13 +3943,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
-  /management/v1/warehouse/{warehouse_id}/task-queue/tabular_expiration/config:
+  /management/v1/warehouse/{warehouse_id}/task-queue/soft_deletion/config:
     get:
       tags:
         - tasks
       summary: Get the configuration for a Task Queue.
       description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: get_task_queue_config_tabular_expiration
+      operationId: get_task_queue_config_soft_deletion
       parameters:
         - name: warehouse_id
           in: path
@@ -3969,7 +3969,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetTabularExpirationQueueConfig'
+                $ref: '#/components/schemas/GetSoftDeletionQueueConfig'
         4XX:
           description: ''
           content:
@@ -3981,7 +3981,7 @@ paths:
         - tasks
       summary: Set the configuration for a Task Queue.
       description: These configurations are global per warehouse and shared across all instances of this kind of task.
-      operationId: set_task_queue_config_tabular_expiration
+      operationId: set_task_queue_config_soft_deletion
       parameters:
         - name: warehouse_id
           in: path
@@ -3993,7 +3993,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SetTabularExpirationQueueConfig'
+              $ref: '#/components/schemas/SetSoftDeletionQueueConfig'
         required: true
       responses:
         '204':
@@ -5788,6 +5788,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ServerAssignment'
+    GetSoftDeletionQueueConfig:
+      type: object
+      required:
+        - queue-config
+      properties:
+        max-seconds-since-last-heartbeat:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        queue-config:
+          $ref: '#/components/schemas/SoftDeletionQueueConfig'
     GetTableAccessResponse:
       type: object
       required:
@@ -5806,18 +5818,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
-    GetTabularExpirationQueueConfig:
-      type: object
-      required:
-        - queue-config
-      properties:
-        max-seconds-since-last-heartbeat:
-          type:
-            - integer
-            - 'null'
-          format: int64
-        queue-config:
-          $ref: '#/components/schemas/TabularExpirationQueueConfig'
     GetTaskDetailsResponse:
       allOf:
         - $ref: '#/components/schemas/WarehouseTaskInfo'
@@ -9089,7 +9089,7 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/PurgeQueueConfig'
-    SetTabularExpirationQueueConfig:
+    SetSoftDeletionQueueConfig:
       type: object
       required:
         - queue-config
@@ -9100,7 +9100,7 @@ components:
             - 'null'
           format: int64
         queue-config:
-          $ref: '#/components/schemas/TabularExpirationQueueConfig'
+          $ref: '#/components/schemas/SoftDeletionQueueConfig'
     SetTaskLogCleanupConfig:
       type: object
       required:
@@ -9123,6 +9123,9 @@ components:
           description: |-
             New managed-by marker. Use `self-managed` to clear. Setting or clearing the
             marker requires instance-admin privilege.
+    SoftDeletionQueueConfig:
+      type: object
+      description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
     StorageCredential:
       oneOf:
         - allOf:
@@ -9583,9 +9586,6 @@ components:
               type: string
               enum:
                 - soft
-    TabularExpirationQueueConfig:
-      type: object
-      description: Warehouse-specific configuration for the tabular expiration (Soft-Deletion) queue.
     TabularIdentOrUuid:
       oneOf:
         - type: object
