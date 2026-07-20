@@ -167,18 +167,6 @@ fn flatten_field(
     out: &mut Vec<FlatField>,
 ) -> Result<(), SchemaNormError> {
     let (type_kind, type_params) = type_kind_and_params(&field.field_type);
-    // Mirror build_field: fixed/binary defaults can't round-trip through the pinned codec, so reject
-    // at flatten time rather than persist an unreadable value.
-    if matches!(type_kind, IcebergTypeKind::Fixed | IcebergTypeKind::Binary)
-        && (field.initial_default.is_some() || field.write_default.is_some())
-    {
-        return Err(SchemaNormError::Assembly {
-            detail: format!(
-                "default values for fixed/binary fields are not yet supported (field '{}', field_id={})",
-                field.name, field.id
-            ),
-        });
-    }
     let initial_default = match &field.initial_default {
         None => None,
         Some(lit) => {
@@ -427,21 +415,6 @@ fn build_field<'row>(
         });
     }
     let field_type = build_type(row, children, consumed)?;
-    // The pinned iceberg-rust panics in `Literal::try_from_json` for fixed/binary values, so a default
-    // here would panic the load. It can't arrive via JSON/JSONB (upstream fails first), but a
-    // programmatic schema could persist one — reject it with a typed error instead.
-    if matches!(
-        field_type,
-        Type::Primitive(PrimitiveType::Fixed(_) | PrimitiveType::Binary)
-    ) && (row.initial_default.is_some() || row.write_default.is_some())
-    {
-        return Err(SchemaNormError::Assembly {
-            detail: format!(
-                "default values for fixed/binary fields are not yet supported (field '{}', field_id={})",
-                row.name, row.field_id
-            ),
-        });
-    }
     let mut field = if row.required {
         NestedField::required(row.field_id, row.name.clone(), field_type)
     } else {
@@ -835,6 +808,73 @@ mod tests {
             .unwrap()
     }
 
+    // One field of every IcebergTypeKind (primitives + variant + struct/list/map containers).
+    fn all_types_schema() -> Schema {
+        let fields = vec![
+            NestedField::required(1, "f_bool", Type::Primitive(PrimitiveType::Boolean)).into(),
+            NestedField::required(2, "f_int", Type::Primitive(PrimitiveType::Int)).into(),
+            NestedField::required(3, "f_long", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::required(4, "f_float", Type::Primitive(PrimitiveType::Float)).into(),
+            NestedField::required(5, "f_double", Type::Primitive(PrimitiveType::Double)).into(),
+            NestedField::required(
+                6,
+                "f_decimal",
+                Type::Primitive(PrimitiveType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                }),
+            )
+            .into(),
+            NestedField::required(7, "f_date", Type::Primitive(PrimitiveType::Date)).into(),
+            NestedField::required(8, "f_time", Type::Primitive(PrimitiveType::Time)).into(),
+            NestedField::required(9, "f_ts", Type::Primitive(PrimitiveType::Timestamp)).into(),
+            NestedField::required(10, "f_tstz", Type::Primitive(PrimitiveType::Timestamptz)).into(),
+            NestedField::required(11, "f_tsns", Type::Primitive(PrimitiveType::TimestampNs)).into(),
+            NestedField::required(
+                12,
+                "f_tstzns",
+                Type::Primitive(PrimitiveType::TimestamptzNs),
+            )
+            .into(),
+            NestedField::required(13, "f_string", Type::Primitive(PrimitiveType::String)).into(),
+            NestedField::required(14, "f_uuid", Type::Primitive(PrimitiveType::Uuid)).into(),
+            NestedField::required(15, "f_fixed", Type::Primitive(PrimitiveType::Fixed(16))).into(),
+            NestedField::required(16, "f_binary", Type::Primitive(PrimitiveType::Binary)).into(),
+            NestedField::required(17, "f_variant", Type::Variant(VariantType)).into(),
+            NestedField::required(
+                18,
+                "f_struct",
+                Type::Struct(StructType::new(vec![
+                    NestedField::required(19, "s_int", Type::Primitive(PrimitiveType::Int)).into(),
+                ])),
+            )
+            .into(),
+            NestedField::required(
+                20,
+                "f_list",
+                Type::List(ListType::new(
+                    NestedField::list_element(21, Type::Primitive(PrimitiveType::Int), true).into(),
+                )),
+            )
+            .into(),
+            NestedField::required(
+                22,
+                "f_map",
+                Type::Map(MapType::new(
+                    NestedField::map_key_element(23, Type::Primitive(PrimitiveType::String)).into(),
+                    NestedField::map_value_element(24, Type::Primitive(PrimitiveType::Int), false)
+                        .into(),
+                )),
+            )
+            .into(),
+        ];
+        Schema::builder()
+            .with_schema_id(0)
+            .with_fields(fields)
+            .build()
+            .unwrap()
+    }
+
     fn round_trip(schema: &Schema) {
         let flat = flatten_schema(schema).expect("flatten failed");
         let schema_id = schema.schema_id();
@@ -861,6 +901,44 @@ mod tests {
     #[test]
     fn test_flat_round_trip() {
         round_trip(&flat_schema());
+    }
+
+    /// Every `IcebergTypeKind` must survive flatten → assemble. `build_type`/`primitive_from_row`
+    /// match on `type_kind` strings with a wildcard, so a new type added to the enum + `flatten` but
+    /// forgotten on the read side would write OK yet fail to load. The coverage assertion (produced
+    /// kinds == all `VARIANTS`) forces the new type into this schema, and the round-trip then proves
+    /// assemble handles it.
+    #[test]
+    fn test_all_type_kinds_round_trip() {
+        use strum::VariantArray;
+
+        let schema = all_types_schema();
+        let flat = flatten_schema(&schema).expect("flatten failed");
+
+        let produced: std::collections::BTreeSet<&str> =
+            flat.iter().map(|f| f.type_kind.as_str()).collect();
+        let all: std::collections::BTreeSet<&str> = IcebergTypeKind::VARIANTS
+            .iter()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            produced, all,
+            "all_types_schema must exercise every IcebergTypeKind (add the missing type here)"
+        );
+
+        let rows: Vec<SchemaFieldRow> = flat
+            .iter()
+            .map(|f| flat_to_row(f, schema.schema_id()))
+            .collect();
+        let assembled = assemble_schemas(rows, &[]).expect("assemble failed");
+        assert_eq!(
+            assembled
+                .get(&schema.schema_id())
+                .expect("assembled schema missing")
+                .as_ref(),
+            &schema,
+            "all-types flatten/assemble round-trip mismatch"
+        );
     }
 
     #[test]
@@ -940,35 +1018,23 @@ mod tests {
     }
 
     #[test]
-    fn test_fixed_binary_default_rejected_by_flatten() {
-        // Write-side mirror of build_field: a fixed/binary default can't round-trip the pinned codec,
-        // so flatten must reject it. Reachable only via a programmatically-built schema.
-        let cases = [
-            NestedField::optional(1, "b", Type::Primitive(PrimitiveType::Binary))
-                .with_initial_default(iceberg::spec::Literal::Primitive(
-                    iceberg::spec::PrimitiveLiteral::Binary(vec![0xca, 0xfe]),
-                )),
-            NestedField::optional(1, "f", Type::Primitive(PrimitiveType::Fixed(2)))
-                .with_write_default(iceberg::spec::Literal::Primitive(
-                    iceberg::spec::PrimitiveLiteral::Binary(vec![0x00, 0x01]),
-                )),
-        ];
-        for field in cases {
-            // If iceberg-rust's builder rejects the default upstream, there's nothing for flatten to
-            // catch — an acceptable outcome too (as in test_variant_default_rejected).
-            let Ok(schema) = Schema::builder()
-                .with_schema_id(1)
-                .with_fields(vec![Arc::new(field)])
-                .build()
-            else {
-                continue;
-            };
-            let err = flatten_schema(&schema).unwrap_err();
-            assert!(
-                matches!(err, SchemaNormError::Assembly { .. }),
-                "expected Assembly rejection for fixed/binary default, got {err:?}"
-            );
-        }
+    fn test_fixed_binary_defaults_round_trip() {
+        // The pinned iceberg-rust codec round-trips fixed/binary defaults (JSON hex), so flatten →
+        // assemble must preserve them (they were rejected before the rev that implemented the codec).
+        let fixed = NestedField::optional(1, "f", Type::Primitive(PrimitiveType::Fixed(2)))
+            .with_initial_default(iceberg::spec::Literal::Primitive(
+                iceberg::spec::PrimitiveLiteral::Binary(vec![0x00, 0x01]),
+            ));
+        let binary = NestedField::optional(2, "b", Type::Primitive(PrimitiveType::Binary))
+            .with_write_default(iceberg::spec::Literal::Primitive(
+                iceberg::spec::PrimitiveLiteral::Binary(vec![0xca, 0xfe]),
+            ));
+        let schema = Schema::builder()
+            .with_schema_id(1)
+            .with_fields(vec![Arc::new(fixed), Arc::new(binary)])
+            .build()
+            .expect("schema with fixed/binary defaults must build");
+        round_trip(&schema);
     }
 
     #[test]
@@ -992,9 +1058,9 @@ mod tests {
     }
 
     #[test]
-    fn fixed_and_binary_defaults_are_rejected_not_panicked() {
-        // iceberg-rust's `Literal::try_from_json` is unimplemented (panics) for fixed/binary; a
-        // persisted default of those types must surface as a typed Assembly error, not a panic.
+    fn assemble_reconstructs_fixed_binary_defaults() {
+        // The codec implements the fixed/binary JSON path, so assemble must reconstruct persisted
+        // defaults (JSON hex) rather than error.
         let fixed_with_default = SchemaFieldRow {
             schema_id: 1,
             field_id: 1,
@@ -1009,10 +1075,17 @@ mod tests {
             write_default: None,
             is_identifier: false,
         };
-        let err = assemble_schemas(vec![fixed_with_default], &[]).unwrap_err();
+        let fixed_schema = assemble_schemas(vec![fixed_with_default], &[])
+            .expect("fixed default must assemble")
+            .remove(&1)
+            .expect("schema 1");
         assert!(
-            matches!(err, SchemaNormError::Assembly { .. }),
-            "got {err:?}"
+            fixed_schema
+                .field_by_id(1)
+                .unwrap()
+                .initial_default
+                .is_some(),
+            "fixed initial_default must survive assembly"
         );
 
         let binary_with_default = SchemaFieldRow {
@@ -1029,10 +1102,17 @@ mod tests {
             write_default: Some(serde_json::json!("cafe")),
             is_identifier: false,
         };
-        let err = assemble_schemas(vec![binary_with_default], &[]).unwrap_err();
+        let binary_schema = assemble_schemas(vec![binary_with_default], &[])
+            .expect("binary default must assemble")
+            .remove(&1)
+            .expect("schema 1");
         assert!(
-            matches!(err, SchemaNormError::Assembly { .. }),
-            "got {err:?}"
+            binary_schema
+                .field_by_id(1)
+                .unwrap()
+                .write_default
+                .is_some(),
+            "binary write_default must survive assembly"
         );
     }
 

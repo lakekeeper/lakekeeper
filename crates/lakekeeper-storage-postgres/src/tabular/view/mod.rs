@@ -393,8 +393,33 @@ async fn sync_view_schemas(
     let existing: HashSet<i32> = existing.into_iter().collect();
     let desired: HashSet<i32> = metadata.schemas_iter().map(|s| s.schema_id()).collect();
 
-    // Remove schema versions no longer present. Delete schema_field first (explicit DELETE fires
-    // the GC statement trigger with a populated transition table), then the anchor.
+    // Add new schema versions BEFORE removing old ones (mirrors the table commit path): a column
+    // persisting across the commit keeps a live schema_field row throughout, so the GC trigger never
+    // transiently reaps then recreates its tabular_field. NULL anchor (JSONB frozen) + normalized
+    // fields, batched into one bulk write.
+    let mut batch = SchemaFieldBatch::default();
+    for s in metadata.schemas_iter() {
+        if existing.contains(&s.schema_id()) {
+            continue;
+        }
+        sqlx::query!(
+            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
+               VALUES ($1, $2, $3, NULL)"#,
+            *warehouse_id,
+            view_id,
+            s.schema_id(),
+        )
+        .execute(&mut **transaction)
+        .await
+        .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
+        let flat = flatten_schema(s)
+            .map_err(|e| ConversionError::new("Failed to flatten view schema", e))?;
+        batch.push_schema(*warehouse_id, view_id, s.schema_id(), &flat);
+    }
+    batch.flush(transaction).await?;
+
+    // Remove schema versions no longer present. Delete schema_field first (explicit DELETE fires the
+    // GC statement trigger with a populated transition table), then the anchor.
     let to_remove: Vec<i32> = existing.difference(&desired).copied().collect();
     if !to_remove.is_empty() {
         sqlx::query!(
@@ -418,29 +443,6 @@ async fn sync_view_schemas(
         .await
         .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
     }
-
-    // Add new schema versions: NULL anchor (JSONB frozen) + normalized fields. Accumulate every new
-    // schema's fields into one batch and issue a single bulk write after the loop.
-    let mut batch = SchemaFieldBatch::default();
-    for s in metadata.schemas_iter() {
-        if existing.contains(&s.schema_id()) {
-            continue;
-        }
-        sqlx::query!(
-            r#"INSERT INTO view_schema (warehouse_id, view_id, schema_id, schema)
-               VALUES ($1, $2, $3, NULL)"#,
-            *warehouse_id,
-            view_id,
-            s.schema_id(),
-        )
-        .execute(&mut **transaction)
-        .await
-        .map_err(super::super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
-        let flat = flatten_schema(s)
-            .map_err(|e| ConversionError::new("Failed to flatten view schema", e))?;
-        batch.push_schema(*warehouse_id, view_id, s.schema_id(), &flat);
-    }
-    batch.flush(transaction).await?;
     Ok(())
 }
 
