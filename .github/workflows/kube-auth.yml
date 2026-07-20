@@ -164,6 +164,11 @@ jobs:
         run: |
           kubectl logs bootstrap-test-uid || true
           kubectl logs bootstrap-test-username || true
+          # Phase + events distinguish a stuck pod (Pending/unschedulable) from a
+          # server that accepted the request but never answered (pod Running, curl
+          # blocked). Both otherwise present as an empty log above.
+          kubectl describe pod bootstrap-test-uid || true
+          kubectl describe pod bootstrap-test-username || true
       - name: server-logs
         if: failure()
         run : kubectl logs deployments/my-lakekeeper || true

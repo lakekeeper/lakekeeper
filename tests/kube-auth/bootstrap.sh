@@ -13,9 +13,14 @@ AUTH="Authorization: Bearer $TOKEN"
 BASE="my-lakekeeper:8181/management/v1"
 
 # First authenticated call bootstraps the server; the caller becomes the first user.
-curl -f -H "Content-Type: application/json" -H "$AUTH" "$BASE/bootstrap" -d '{"accept-terms-of-use": true}'
+# Bounded timeouts + retry ride through the brief window after a fresh (re)install
+# where the server's TokenReview RBAC is still settling, while still failing hard
+# if the request never completes (so a genuine server hang can't hide as a pod-wait
+# timeout). --retry-all-errors also retries a --max-time abort, not just 5xx/connrefused.
+CURL="curl -f --connect-timeout 5 --max-time 20 --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors"
+$CURL -H "Content-Type: application/json" -H "$AUTH" "$BASE/bootstrap" -d '{"accept-terms-of-use": true}'
 
-body="$(curl -f -s -H "$AUTH" "$BASE/whoami")"
+body="$($CURL -s -H "$AUTH" "$BASE/whoami")"
 echo "whoami: $body"
 # The whoami response is compact JSON with a single `"id":"..."` (the user ID);
 # no other field serializes that key ahead of it. jq isn't in curlimages/curl.
