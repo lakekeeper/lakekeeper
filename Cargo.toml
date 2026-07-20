@@ -109,7 +109,7 @@ heck = "0.5.0"
 hostname = "0.4.0"
 http = "1.3.1"
 http-body-util = "^0.1"
-iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "bb7017339f778de44830b4f970d9d5e1e84f5599" }
+iceberg = { git = "https://github.com/lakekeeper/iceberg-rust.git", rev = "2056f3e4d53129039f2229f3b326aa538289be27" }
 iso8601 = "0.6.2"
 itertools = "0.14.0"
 # `limes` pulls k8s-openapi transitively without picking a Kubernetes version.
