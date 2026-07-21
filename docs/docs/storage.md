@@ -604,6 +604,9 @@ It is required to specify the `endpoint`. Use a [Data Location Hint](https://dev
 
 ### Alibaba Cloud OSS
 
+!!! warning "Beta"
+    Alibaba Cloud OSS support is in **beta**. The API and behavior may change in a future release.
+
 Lakekeeper supports Alibaba Cloud Object Storage Service (OSS) with all S3 compatible clients, including vended credentials via the Alibaba Cloud STS [`AssumeRole`](https://www.alibabacloud.com/help/en/ram/developer-reference/api-sts-2015-04-01-assumerole) API. OSS is S3-compatible for data-plane operations, but its STS uses the Alibaba Cloud RPC signing scheme rather than AWS SigV4, so a dedicated `aliyun-oss` credential type is required.
 
 First, create a Bucket in the OSS console and note down its name and the region (e.g. `cn-hangzhou`). Lakekeeper accesses OSS through its S3-compatible interface, so use the S3-compatible endpoint — the `s3.`-prefixed host `https://s3.oss-<region>.aliyuncs.com` (e.g. `https://s3.oss-cn-hangzhou.aliyuncs.com`), as documented in [Use Amazon S3 SDKs to access OSS](https://www.alibabacloud.com/help/en/oss/developer-reference/use-amazon-s3-sdks-to-access-oss).

@@ -8651,6 +8651,9 @@ components:
         - allOf:
             - $ref: '#/components/schemas/S3AccessKeyCredential'
               description: |-
+                **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+                future release.
+
                 Authenticate to Alibaba Cloud OSS using access-key and secret-key.
                 Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
             - type: object
@@ -8662,6 +8665,9 @@ components:
                   enum:
                     - aliyun-oss
           description: |-
+            **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+            future release.
+
             Authenticate to Alibaba Cloud OSS using access-key and secret-key.
             Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
     S3CredentialType:

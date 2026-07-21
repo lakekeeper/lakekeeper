@@ -210,6 +210,9 @@ pub enum S3Credential {
     ///  that runs lakekeeper. The AWS SDK is used to load the credentials.
     AwsSystemIdentity(S3AwsSystemIdentityCredential),
     CloudflareR2(S3CloudflareR2Credential),
+    /// **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+    /// future release.
+    ///
     /// Authenticate to Alibaba Cloud OSS using access-key and secret-key.
     /// Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
     AliyunOss(S3AccessKeyCredential),
