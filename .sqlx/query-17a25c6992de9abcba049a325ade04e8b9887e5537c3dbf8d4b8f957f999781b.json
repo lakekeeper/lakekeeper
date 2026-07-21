@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO tag\n            (tag_id, tag_definition_id, warehouse_id, namespace_id, tabular_id, field_id,\n             value, source, updated_by)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n        ON CONFLICT ON CONSTRAINT tag_unique_target_definition_source\n        DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by\n        RETURNING tag_id, value, created_at, updated_at, updated_by\n        ",
+  "query": "\n        INSERT INTO tag\n            (tag_id, tag_definition_id, warehouse_id, namespace_id, tabular_id, field_id,\n             value, source)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n        ON CONFLICT ON CONSTRAINT tag_unique_target_definition_source\n        DO UPDATE SET value = EXCLUDED.value\n        RETURNING tag_id, value, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -46,17 +46,6 @@
             "name": "updated_at"
           }
         }
-      },
-      {
-        "ordinal": 4,
-        "name": "updated_by",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "tag",
-            "name": "updated_by"
-          }
-        }
       }
     ],
     "parameters": {
@@ -77,17 +66,15 @@
               ]
             }
           }
-        },
-        "Text"
+        }
       ]
     },
     "nullable": [
       false,
       true,
       false,
-      true,
-      false
+      true
     ]
   },
-  "hash": "473f90c38114a69c31aa9a318d7d126f2438692dc1e417e89680b02b07ed6910"
+  "hash": "17a25c6992de9abcba049a325ade04e8b9887e5537c3dbf8d4b8f957f999781b"
 }

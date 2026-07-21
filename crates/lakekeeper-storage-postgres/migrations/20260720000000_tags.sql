@@ -24,7 +24,6 @@ create table tag_definition (
     value_kind        tag_value_kind not null,   -- marker | free_text | enumerated (explicit)
     created_at        timestamptz    not null default now(),
     updated_at        timestamptz,
-    updated_by        text           not null,
     constraint tag_definition_project_id_fkey foreign key (project_id)
         references project (project_id) on delete cascade,
     constraint tag_definition_scope_not_empty check (cardinality(scope) > 0)
@@ -57,7 +56,6 @@ create table tag (
     source            tag_source  not null,
     created_at        timestamptz not null default now(),
     updated_at        timestamptz,
-    updated_by        text        not null,
     constraint tag_definition_id_fkey foreign key (tag_definition_id)
         references tag_definition (tag_definition_id) on delete restrict,
     constraint tag_warehouse_id_fkey foreign key (warehouse_id)

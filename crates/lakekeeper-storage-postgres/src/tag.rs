@@ -31,7 +31,6 @@ struct TagDefinitionRow {
     value_kind: TagValueKind,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
-    updated_by: String,
 }
 
 fn unknown_enum(kind: &str, value: &str) -> std::io::Error {
@@ -49,8 +48,9 @@ impl TryFrom<TagDefinitionRow> for TagDefinition {
             .scope
             .iter()
             .map(|s| {
-                TagScope::parse(s)
-                    .ok_or_else(|| CatalogBackendError::new_unexpected(unknown_enum("tag scope", s)))
+                TagScope::parse(s).ok_or_else(|| {
+                    CatalogBackendError::new_unexpected(unknown_enum("tag scope", s))
+                })
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(TagDefinition {
@@ -62,7 +62,6 @@ impl TryFrom<TagDefinitionRow> for TagDefinition {
             value_kind: row.value_kind,
             created_at: row.created_at,
             updated_at: row.updated_at,
-            updated_by: row.updated_by,
         })
     }
 }
@@ -82,7 +81,6 @@ pub(crate) async fn create_tag_definition(
         description,
         scope,
         value_spec,
-        updated_by,
     } = request;
     let value_kind = value_spec.kind();
     let allowed_values = value_spec.allowed_values();
@@ -93,8 +91,8 @@ pub(crate) async fn create_tag_definition(
         TagDefinitionRow,
         r#"
         INSERT INTO tag_definition
-            (tag_definition_id, project_id, name, description, scope, value_kind, updated_by)
-        VALUES ($1, $2, $3, $4, $5::text[], $6, $7)
+            (tag_definition_id, project_id, name, description, scope, value_kind)
+        VALUES ($1, $2, $3, $4, $5::text[], $6)
         RETURNING
             tag_definition_id,
             project_id,
@@ -103,8 +101,7 @@ pub(crate) async fn create_tag_definition(
             scope,
             value_kind AS "value_kind: TagValueKind",
             created_at,
-            updated_at,
-            updated_by
+            updated_at
         "#,
         *tag_definition_id,
         &**project_id,
@@ -112,7 +109,6 @@ pub(crate) async fn create_tag_definition(
         description,
         &scope,
         value_kind as _,
-        updated_by,
     )
     .fetch_one(&mut **transaction)
     .await
@@ -175,8 +171,7 @@ where
             scope,
             value_kind AS "value_kind: TagValueKind",
             created_at,
-            updated_at,
-            updated_by
+            updated_at
         FROM tag_definition
         WHERE project_id = $1 AND tag_definition_id = $2
         "#,
@@ -229,8 +224,7 @@ where
             scope,
             value_kind AS "value_kind: TagValueKind",
             created_at,
-            updated_at,
-            updated_by
+            updated_at
         FROM tag_definition
         WHERE project_id = $1
             AND ((created_at > $2 OR $2 IS NULL) OR (created_at = $2 AND tag_definition_id > $3))
@@ -298,7 +292,6 @@ pub(crate) async fn update_tag_definition(
         description,
         scope,
         add_allowed_values,
-        updated_by,
     } = request;
     let scope: Vec<String> = scope.iter().map(|s| s.as_str().to_string()).collect();
 
@@ -306,7 +299,7 @@ pub(crate) async fn update_tag_definition(
         TagDefinitionRow,
         r#"
         UPDATE tag_definition
-        SET name = $3, description = $4, scope = $5::text[], updated_by = $6
+        SET name = $3, description = $4, scope = $5::text[]
         WHERE project_id = $1 AND tag_definition_id = $2
         RETURNING
             tag_definition_id,
@@ -316,15 +309,13 @@ pub(crate) async fn update_tag_definition(
             scope,
             value_kind AS "value_kind: TagValueKind",
             created_at,
-            updated_at,
-            updated_by
+            updated_at
         "#,
         &**project_id,
         *tag_definition_id,
         name,
         description,
         &scope,
-        updated_by,
     )
     .fetch_optional(&mut **transaction)
     .await
@@ -451,7 +442,6 @@ pub(crate) async fn apply_tag(
     target: TagTarget,
     value: Option<&str>,
     source: TagSource,
-    updated_by: &str,
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<Tag, ApplyTagError> {
     let cols = TagTargetColumns::from_target(target);
@@ -460,11 +450,11 @@ pub(crate) async fn apply_tag(
         r#"
         INSERT INTO tag
             (tag_id, tag_definition_id, warehouse_id, namespace_id, tabular_id, field_id,
-             value, source, updated_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             value, source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT ON CONSTRAINT tag_unique_target_definition_source
-        DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by
-        RETURNING tag_id, value, created_at, updated_at, updated_by
+        DO UPDATE SET value = EXCLUDED.value
+        RETURNING tag_id, value, created_at, updated_at
         "#,
         *tag_id,
         *tag_definition_id,
@@ -474,7 +464,6 @@ pub(crate) async fn apply_tag(
         cols.field_id,
         value,
         source as _,
-        updated_by,
     )
     .fetch_one(&mut **transaction)
     .await
@@ -504,7 +493,6 @@ pub(crate) async fn apply_tag(
         source,
         created_at: row.created_at,
         updated_at: row.updated_at,
-        updated_by: row.updated_by,
     })
 }
 
@@ -540,8 +528,7 @@ where
             value,
             source AS "source: TagSource",
             created_at,
-            updated_at,
-            updated_by
+            updated_at
         FROM tag
         WHERE warehouse_id = $1
           AND namespace_id IS NOT DISTINCT FROM $2
@@ -568,7 +555,6 @@ where
             source: r.source,
             created_at: r.created_at,
             updated_at: r.updated_at,
-            updated_by: r.updated_by,
         })
         .collect())
 }
@@ -578,7 +564,9 @@ mod tests {
     use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
     use lakekeeper::{
         api::iceberg::types::PageToken,
-        service::{CatalogStore, TabularId, TagScope, TagValueKind, TagValueSpec, Transaction as _},
+        service::{
+            CatalogStore, TabularId, TagScope, TagValueKind, TagValueSpec, Transaction as _,
+        },
     };
 
     use super::*;
@@ -600,10 +588,16 @@ mod tests {
     }
 
     async fn create_project(state: &CatalogState, project_id: &ProjectId) {
-        let mut t = PostgresTransaction::begin_write(state.clone()).await.unwrap();
-        PostgresBackend::create_project(project_id, format!("Project {project_id}"), t.transaction())
+        let mut t = PostgresTransaction::begin_write(state.clone())
             .await
             .unwrap();
+        PostgresBackend::create_project(
+            project_id,
+            format!("Project {project_id}"),
+            t.transaction(),
+        )
+        .await
+        .unwrap();
         t.commit().await.unwrap();
     }
 
@@ -622,13 +616,15 @@ mod tests {
                 .description(Some("PII classification"))
                 .scope(&[TagScope::Column, TagScope::Table])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, CreateTagDefinitionError::ProjectIdNotFoundError(_)));
+        assert!(matches!(
+            err,
+            CreateTagDefinitionError::ProjectIdNotFoundError(_)
+        ));
         drop(txn);
 
         create_project(&state, &project_id).await;
@@ -643,7 +639,6 @@ mod tests {
                 .description(Some("PII classification"))
                 .scope(&[TagScope::Column, TagScope::Table])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -656,7 +651,6 @@ mod tests {
         assert_eq!(&def.project_id, &project_id);
         assert_eq!(def.scope, vec![TagScope::Column, TagScope::Table]);
         assert_eq!(def.value_kind, TagValueKind::Marker);
-        assert_eq!(def.updated_by, "alice");
         assert_eq!(def.updated_at, None);
 
         // Duplicate name (case-insensitive) -> TagNameAlreadyExists.
@@ -668,13 +662,15 @@ mod tests {
                 .name("PII.Classification")
                 .scope(&[TagScope::Column])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("bob")
                 .build(),
             &mut txn,
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, CreateTagDefinitionError::TagNameAlreadyExists(_)));
+        assert!(matches!(
+            err,
+            CreateTagDefinitionError::TagNameAlreadyExists(_)
+        ));
     }
 
     #[sqlx::test]
@@ -694,7 +690,6 @@ mod tests {
                 .value_spec(TagValueSpec::Enumerated {
                     allowed_values: &["restricted", "public", "internal"],
                 })
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -745,7 +740,6 @@ mod tests {
                 .description(Some("PII classification"))
                 .scope(&[TagScope::Column, TagScope::Table])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -772,7 +766,10 @@ mod tests {
         // Empty project.
         let empty = list_tag_definitions(
             &project_id,
-            PaginationQuery { page_size: Some(10), page_token: PageToken::Empty },
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
             &pool,
         )
         .await
@@ -791,7 +788,6 @@ mod tests {
                     .name(name)
                     .scope(&[TagScope::Table])
                     .value_spec(TagValueSpec::Marker)
-                    .updated_by("alice")
                     .build(),
                 &mut txn,
             )
@@ -802,34 +798,55 @@ mod tests {
 
         let all = list_tag_definitions(
             &project_id,
-            PaginationQuery { page_size: Some(10), page_token: PageToken::Empty },
+            PaginationQuery {
+                page_size: Some(10),
+                page_token: PageToken::Empty,
+            },
             &pool,
         )
         .await
         .unwrap();
-        let got: Vec<&str> = all.tag_definitions.iter().map(|d| d.name.as_str()).collect();
+        let got: Vec<&str> = all
+            .tag_definitions
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
         assert_eq!(got, vec!["a.one", "b.two", "c.three"]);
 
         // Page size 2: first page + cursor, then the remaining one.
         let page1 = list_tag_definitions(
             &project_id,
-            PaginationQuery { page_size: Some(2), page_token: PageToken::Empty },
+            PaginationQuery {
+                page_size: Some(2),
+                page_token: PageToken::Empty,
+            },
             &pool,
         )
         .await
         .unwrap();
-        let p1: Vec<&str> = page1.tag_definitions.iter().map(|d| d.name.as_str()).collect();
+        let p1: Vec<&str> = page1
+            .tag_definitions
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
         assert_eq!(p1, vec!["a.one", "b.two"]);
         assert!(page1.next_page_token.is_some());
 
         let page2 = list_tag_definitions(
             &project_id,
-            PaginationQuery { page_size: Some(2), page_token: page1.next_page_token.into() },
+            PaginationQuery {
+                page_size: Some(2),
+                page_token: page1.next_page_token.into(),
+            },
             &pool,
         )
         .await
         .unwrap();
-        let p2: Vec<&str> = page2.tag_definitions.iter().map(|d| d.name.as_str()).collect();
+        let p2: Vec<&str> = page2
+            .tag_definitions
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
         assert_eq!(p2, vec!["c.three"]);
     }
 
@@ -851,7 +868,6 @@ mod tests {
                 .value_spec(TagValueSpec::Enumerated {
                     allowed_values: &["restricted", "public", "internal"],
                 })
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -864,7 +880,6 @@ mod tests {
                 .name("pii")
                 .scope(&[TagScope::Column])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -884,7 +899,12 @@ mod tests {
         );
 
         // Marker -> empty; unknown id -> empty.
-        assert!(get_tag_allowed_values(marker_id, &pool).await.unwrap().is_empty());
+        assert!(
+            get_tag_allowed_values(marker_id, &pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             get_tag_allowed_values(TagDefinitionId::new_random(), &pool)
                 .await
@@ -907,13 +927,15 @@ mod tests {
             UpdateTagDefinitionRequest::builder()
                 .name("whatever")
                 .scope(&[TagScope::Table])
-                .updated_by("bob")
                 .build(),
             &mut txn,
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, UpdateTagDefinitionError::TagDefinitionIdNotFound(_)));
+        assert!(matches!(
+            err,
+            UpdateTagDefinitionError::TagDefinitionIdNotFound(_)
+        ));
         drop(txn);
 
         // Create an enumerated definition, then widen it: rename, set description,
@@ -929,7 +951,6 @@ mod tests {
                 .value_spec(TagValueSpec::Enumerated {
                     allowed_values: &["public", "internal"],
                 })
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -946,7 +967,6 @@ mod tests {
                 .description(Some("Sensitivity level"))
                 .scope(&[TagScope::Table, TagScope::Column])
                 .add_allowed_values(&["restricted"])
-                .updated_by("bob")
                 .build(),
             &mut txn,
         )
@@ -958,7 +978,6 @@ mod tests {
         assert_eq!(updated.description, Some("Sensitivity level".to_string()));
         assert_eq!(updated.scope, vec![TagScope::Table, TagScope::Column]);
         assert_eq!(updated.value_kind, TagValueKind::Enumerated);
-        assert_eq!(updated.updated_by, "bob");
         assert!(updated.updated_at.is_some());
 
         let values = get_tag_allowed_values(id, &pool).await.unwrap();
@@ -981,7 +1000,6 @@ mod tests {
                 .name("pii")
                 .scope(&[TagScope::Column])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -996,13 +1014,15 @@ mod tests {
             UpdateTagDefinitionRequest::builder()
                 .name("DATA.Sensitivity")
                 .scope(&[TagScope::Column])
-                .updated_by("bob")
                 .build(),
             &mut txn,
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, UpdateTagDefinitionError::TagNameAlreadyExists(_)));
+        assert!(matches!(
+            err,
+            UpdateTagDefinitionError::TagNameAlreadyExists(_)
+        ));
     }
 
     #[sqlx::test]
@@ -1021,7 +1041,6 @@ mod tests {
                 .name("pii")
                 .scope(&[TagScope::Warehouse, TagScope::Table, TagScope::Column])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -1037,7 +1056,6 @@ mod tests {
             TagTarget::Warehouse(warehouse_id),
             None,
             TagSource::Manual,
-            "alice",
             &mut txn,
         )
         .await
@@ -1047,7 +1065,6 @@ mod tests {
         assert_eq!(tag.target, TagTarget::Warehouse(warehouse_id));
         assert_eq!(tag.value, None);
         assert_eq!(tag.source, TagSource::Manual);
-        assert_eq!(tag.updated_by, "alice");
 
         // Apply to a column — exercises tag_field_fkey against the tabular_field spine.
         let (table_id, _schema) =
@@ -1064,7 +1081,6 @@ mod tests {
             column,
             None,
             TagSource::Manual,
-            "alice",
             &mut txn,
         )
         .await
@@ -1085,7 +1101,6 @@ mod tests {
             ghost,
             None,
             TagSource::Manual,
-            "alice",
             &mut txn,
         )
         .await
@@ -1101,7 +1116,6 @@ mod tests {
             TagTarget::Warehouse(warehouse_id),
             None,
             TagSource::Manual,
-            "alice",
             &mut txn,
         )
         .await
@@ -1125,7 +1139,6 @@ mod tests {
                 .name("pii")
                 .scope(&[TagScope::Warehouse])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -1138,7 +1151,6 @@ mod tests {
                 .name("tier")
                 .scope(&[TagScope::Warehouse])
                 .value_spec(TagValueSpec::FreeText)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -1154,7 +1166,7 @@ mod tests {
         // Apply pii, then tier (separate transactions -> strictly increasing created_at).
         let pii_tag_id = TagId::new_random();
         let mut txn = pool.begin().await.unwrap();
-        apply_tag(pii_tag_id, def_pii, wh, None, TagSource::Manual, "alice", &mut txn)
+        apply_tag(pii_tag_id, def_pii, wh, None, TagSource::Manual, &mut txn)
             .await
             .unwrap();
         txn.commit().await.unwrap();
@@ -1166,7 +1178,6 @@ mod tests {
             wh,
             Some("gold"),
             TagSource::Manual,
-            "alice",
             &mut txn,
         )
         .await
@@ -1189,14 +1200,12 @@ mod tests {
             wh,
             None,
             TagSource::Manual,
-            "bob",
             &mut txn,
         )
         .await
         .unwrap();
         txn.commit().await.unwrap();
         assert_eq!(reapplied.tag_id, pii_tag_id);
-        assert_eq!(reapplied.updated_by, "bob");
         assert_eq!(list_tags_for_target(wh, &pool).await.unwrap().len(), 2);
 
         // Remove pii; tier remains.
@@ -1224,7 +1233,10 @@ mod tests {
         let err = delete_tag_definition(&project_id, TagDefinitionId::new_random(), &mut txn)
             .await
             .unwrap_err();
-        assert!(matches!(err, DeleteTagDefinitionError::TagDefinitionIdNotFound(_)));
+        assert!(matches!(
+            err,
+            DeleteTagDefinitionError::TagDefinitionIdNotFound(_)
+        ));
         drop(txn);
 
         // Enumerated definition deletes, cascading its allowed values.
@@ -1239,7 +1251,6 @@ mod tests {
                 .value_spec(TagValueSpec::Enumerated {
                     allowed_values: &["a", "b"],
                 })
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -1248,10 +1259,22 @@ mod tests {
         txn.commit().await.unwrap();
 
         let mut txn = pool.begin().await.unwrap();
-        delete_tag_definition(&project_id, enum_def, &mut txn).await.unwrap();
+        delete_tag_definition(&project_id, enum_def, &mut txn)
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
-        assert_eq!(get_tag_definition(&project_id, enum_def, &pool).await.unwrap(), None);
-        assert!(get_tag_allowed_values(enum_def, &pool).await.unwrap().is_empty());
+        assert_eq!(
+            get_tag_definition(&project_id, enum_def, &pool)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            get_tag_allowed_values(enum_def, &pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         // A definition with an attachment cannot be deleted (RESTRICT).
         let used_def = TagDefinitionId::new_random();
@@ -1263,7 +1286,6 @@ mod tests {
                 .name("pii")
                 .scope(&[TagScope::Warehouse])
                 .value_spec(TagValueSpec::Marker)
-                .updated_by("alice")
                 .build(),
             &mut txn,
         )
@@ -1279,7 +1301,6 @@ mod tests {
             TagTarget::Warehouse(warehouse_id),
             None,
             TagSource::Manual,
-            "alice",
             &mut txn,
         )
         .await
@@ -1290,14 +1311,24 @@ mod tests {
         let err = delete_tag_definition(&project_id, used_def, &mut txn)
             .await
             .unwrap_err();
-        assert!(matches!(err, DeleteTagDefinitionError::TagDefinitionInUse(_)));
+        assert!(matches!(
+            err,
+            DeleteTagDefinitionError::TagDefinitionInUse(_)
+        ));
         drop(txn);
 
         // Remove the attachment, then the definition deletes (same transaction).
         let mut txn = pool.begin().await.unwrap();
         remove_tag(tag_id, &mut txn).await.unwrap();
-        delete_tag_definition(&project_id, used_def, &mut txn).await.unwrap();
+        delete_tag_definition(&project_id, used_def, &mut txn)
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
-        assert_eq!(get_tag_definition(&project_id, used_def, &pool).await.unwrap(), None);
+        assert_eq!(
+            get_tag_definition(&project_id, used_def, &pool)
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

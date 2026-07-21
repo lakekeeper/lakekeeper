@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            tag_id,\n            tag_definition_id,\n            value,\n            source AS \"source: TagSource\",\n            created_at,\n            updated_at,\n            updated_by\n        FROM tag\n        WHERE warehouse_id = $1\n          AND namespace_id IS NOT DISTINCT FROM $2\n          AND tabular_id IS NOT DISTINCT FROM $3\n          AND field_id IS NOT DISTINCT FROM $4\n        ORDER BY created_at, tag_id\n        ",
+  "query": "\n        SELECT\n            tag_id,\n            tag_definition_id,\n            value,\n            source AS \"source: TagSource\",\n            created_at,\n            updated_at\n        FROM tag\n        WHERE warehouse_id = $1\n          AND namespace_id IS NOT DISTINCT FROM $2\n          AND tabular_id IS NOT DISTINCT FROM $3\n          AND field_id IS NOT DISTINCT FROM $4\n        ORDER BY created_at, tag_id\n        ",
   "describe": {
     "columns": [
       {
@@ -77,17 +77,6 @@
             "name": "updated_at"
           }
         }
-      },
-      {
-        "ordinal": 6,
-        "name": "updated_by",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "tag",
-            "name": "updated_by"
-          }
-        }
       }
     ],
     "parameters": {
@@ -104,9 +93,8 @@
       true,
       false,
       false,
-      true,
-      false
+      true
     ]
   },
-  "hash": "85762e42eeeb3cec3cef230d35fa18f9447aab733a4996e764b651e65c16b49b"
+  "hash": "6f50b05aef541dbe8c4a36af356bc1a951ca696f280e6dad8f020e32d258a25c"
 }

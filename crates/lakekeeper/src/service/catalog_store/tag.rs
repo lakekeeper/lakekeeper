@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ProjectId,
     service::{
-        CatalogBackendError, InvalidPaginationToken, NamespaceId, ProjectIdNotFoundError, TabularId,
-        TagDefinitionId, TagId, WarehouseId, define_transparent_error, impl_error_stack_methods,
-        impl_from_with_detail,
+        CatalogBackendError, InvalidPaginationToken, NamespaceId, ProjectIdNotFoundError,
+        TabularId, TagDefinitionId, TagId, WarehouseId, define_transparent_error,
+        impl_error_stack_methods, impl_from_with_detail,
     },
 };
 
@@ -237,7 +237,6 @@ pub struct TagDefinition {
     pub value_kind: TagValueKind,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
-    pub updated_by: String,
 }
 
 impl TagDefinition {
@@ -259,7 +258,6 @@ pub struct Tag {
     pub source: TagSource,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
-    pub updated_by: String,
 }
 
 /// The value contract of a tag definition at write time. Bundling `allowed_values`
@@ -307,7 +305,6 @@ pub struct CatalogCreateTagDefinitionRequest<'a> {
     pub description: Option<&'a str>,
     pub scope: &'a [TagScope],
     pub value_spec: TagValueSpec<'a>,
-    pub updated_by: &'a str,
 }
 
 // --------------------------- CREATE TAG DEFINITION ERROR ---------------------------
@@ -375,7 +372,6 @@ pub struct UpdateTagDefinitionRequest<'a> {
     pub scope: &'a [TagScope],
     #[builder(default)]
     pub add_allowed_values: &'a [&'a str],
-    pub updated_by: &'a str,
 }
 
 // --------------------------- UPDATE TAG DEFINITION ERROR ---------------------------
@@ -561,7 +557,10 @@ mod tests {
     #[test]
     fn invalid_names_rejected() {
         for name in ["", " leading", "trailing ", ".pii", "pii.", "pii..ssn"] {
-            assert!(validate_tag_name(name).is_err(), "{name} should be rejected");
+            assert!(
+                validate_tag_name(name).is_err(),
+                "{name} should be rejected"
+            );
         }
         assert!(validate_tag_name(&"x".repeat(257)).is_err());
         assert!(validate_tag_name(&"x".repeat(256)).is_ok());
@@ -586,7 +585,10 @@ mod tests {
 
     #[test]
     fn tag_source_round_trips() {
-        assert_eq!(TagSource::parse(TagSource::Manual.as_str()), Some(TagSource::Manual));
+        assert_eq!(
+            TagSource::parse(TagSource::Manual.as_str()),
+            Some(TagSource::Manual)
+        );
         assert_eq!(TagSource::parse("manual"), Some(TagSource::Manual));
         // values not yet added to the enum do not parse
         assert_eq!(TagSource::parse("external_catalog"), None);
@@ -595,7 +597,11 @@ mod tests {
 
     #[test]
     fn tag_value_kind_round_trips() {
-        for kind in [TagValueKind::Marker, TagValueKind::FreeText, TagValueKind::Enumerated] {
+        for kind in [
+            TagValueKind::Marker,
+            TagValueKind::FreeText,
+            TagValueKind::Enumerated,
+        ] {
             assert_eq!(TagValueKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(TagValueKind::Enumerated.as_str(), "enumerated");
@@ -608,13 +614,19 @@ mod tests {
         let id = Uuid::from_u128(1);
         assert_eq!(TagTarget::Warehouse(w).scope(), TagScope::Warehouse);
         assert_eq!(
-            TagTarget::Tabular { warehouse_id: w, tabular_id: TabularId::Table(TableId::new(id)) }
-                .scope(),
+            TagTarget::Tabular {
+                warehouse_id: w,
+                tabular_id: TabularId::Table(TableId::new(id))
+            }
+            .scope(),
             TagScope::Table
         );
         assert_eq!(
-            TagTarget::Tabular { warehouse_id: w, tabular_id: TabularId::View(ViewId::new(id)) }
-                .scope(),
+            TagTarget::Tabular {
+                warehouse_id: w,
+                tabular_id: TabularId::View(ViewId::new(id))
+            }
+            .scope(),
             TagScope::View
         );
         assert_eq!(

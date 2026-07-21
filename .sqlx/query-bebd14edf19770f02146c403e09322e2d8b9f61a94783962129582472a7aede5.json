@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            tag_definition_id,\n            project_id,\n            name,\n            description,\n            scope,\n            value_kind AS \"value_kind: TagValueKind\",\n            created_at,\n            updated_at,\n            updated_by\n        FROM tag_definition\n        WHERE project_id = $1\n            AND ((created_at > $2 OR $2 IS NULL) OR (created_at = $2 AND tag_definition_id > $3))\n        ORDER BY created_at, tag_definition_id ASC\n        LIMIT $4\n        ",
+  "query": "\n        INSERT INTO tag_definition\n            (tag_definition_id, project_id, name, description, scope, value_kind)\n        VALUES ($1, $2, $3, $4, $5::text[], $6)\n        RETURNING\n            tag_definition_id,\n            project_id,\n            name,\n            description,\n            scope,\n            value_kind AS \"value_kind: TagValueKind\",\n            created_at,\n            updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -101,25 +101,27 @@
             "name": "updated_at"
           }
         }
-      },
-      {
-        "ordinal": 8,
-        "name": "updated_by",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "tag_definition",
-            "name": "updated_by"
-          }
-        }
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Timestamptz",
         "Uuid",
-        "Int8"
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "tag_value_kind",
+            "kind": {
+              "Enum": [
+                "marker",
+                "free_text",
+                "enumerated"
+              ]
+            }
+          }
+        }
       ]
     },
     "nullable": [
@@ -130,9 +132,8 @@
       false,
       false,
       false,
-      true,
-      false
+      true
     ]
   },
-  "hash": "8d29d22744456f45c69fb701a1ac74a601bfa02e8eb4e7e9f566f625f0f70bb1"
+  "hash": "bebd14edf19770f02146c403e09322e2d8b9f61a94783962129582472a7aede5"
 }
