@@ -1037,6 +1037,29 @@ pub mod test {
     use super::*;
     use crate::{PostgresBackend, PostgresTransaction};
 
+    /// Simulate the post-migration steady state (Release N+1): unfreeze schema writes and make the
+    /// legacy `table_schema.schema` column nullable, so the normalized-schema write path is
+    /// exercisable in tests. Idempotent. The freeze trigger only exists after the data-migration
+    /// hook runs (which `#[sqlx::test]` does not run), so the `DROP TRIGGER` is a no-op there.
+    pub async fn advance_to_steady_state(pool: &sqlx::PgPool) {
+        sqlx::query("DROP TRIGGER IF EXISTS table_schema_freeze_jsonb ON table_schema")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE table_schema ALTER COLUMN schema DROP NOT NULL")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TRIGGER IF EXISTS view_schema_freeze_jsonb ON view_schema")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE view_schema ALTER COLUMN schema DROP NOT NULL")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
     pub async fn initialize_warehouse(
         state: CatalogState,
         storage_profile: Option<StorageProfile>,
@@ -1086,6 +1109,11 @@ pub mod test {
         .unwrap();
 
         t.commit().await.unwrap();
+
+        // Every table-touching test needs the normalized-schema write path, which requires the
+        // post-migration steady state; applied here so tests don't each have to repeat it.
+        advance_to_steady_state(&state.write_pool()).await;
+
         (project_id, warehouse.warehouse_id)
     }
 

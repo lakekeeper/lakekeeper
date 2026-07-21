@@ -1,12 +1,15 @@
 use std::{collections::HashMap, str::FromStr as _};
 
-use iceberg::{TableRequirement, TableUpdate, spec::TableMetadata};
+use iceberg::{
+    TableRequirement, TableUpdate,
+    spec::{SchemaRef, TableMetadata},
+};
 use iceberg_ext::spec::{TableMetadataBuildResult, TableMetadataBuilder};
 use lakekeeper_io::Location;
 
 use crate::{
     server::tables::create_table::ensure_format_version_allowed,
-    service::{AllowedFormatVersions, ErrorModel, Result},
+    service::{AllowedFormatVersions, ErrorModel, IcebergErrorResponse, Result},
 };
 
 /// Table properties that must not be modified or removed once set.
@@ -25,6 +28,47 @@ pub(crate) fn ensure_format_version_upgrades_allowed(
     for update in updates {
         if let TableUpdate::UpgradeFormatVersion { format_version } = update {
             ensure_format_version_allowed(*format_version, allowed_format_versions)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reject a commit that would rebind an existing schema id to different content.
+///
+/// Iceberg treats a schema id as an immutable handle to a fixed set of columns, and the
+/// normalized schema store diffs stored schemas by id — so silently changing the content of a
+/// shared id would leave stale columns persisted (and desync any identity keyed on them).
+/// Ordinary schema evolution never trips this (new content always gets a fresh id), but a commit
+/// that removes a schema and adds another in the same request can make the builder recycle the
+/// freed id onto different content. Compare by structural content (fields + identifier ids),
+/// ignoring the id itself — mirrors iceberg's own `is_same_schema`.
+pub(crate) fn ensure_schema_content_stable<'a>(
+    previous: impl Iterator<Item = &'a SchemaRef>,
+    new: impl Iterator<Item = &'a SchemaRef>,
+) -> Result<()> {
+    let previous: HashMap<i32, &SchemaRef> = previous.map(|s| (s.schema_id(), s)).collect();
+    for n in new {
+        let Some(p) = previous.get(&n.schema_id()) else {
+            continue;
+        };
+        // Compare identifier fields as a SET: `identifier_field_ids()` iterates a randomized HashSet,
+        // so an order-sensitive comparison would spuriously differ for the same set. Sort both.
+        let (mut p_ids, mut n_ids): (Vec<i32>, Vec<i32>) = (
+            p.identifier_field_ids().collect(),
+            n.identifier_field_ids().collect(),
+        );
+        p_ids.sort_unstable();
+        n_ids.sort_unstable();
+        if p.as_struct() != n.as_struct() || p_ids != n_ids {
+            return Err(ErrorModel::bad_request(
+                format!(
+                    "Commit would reassign schema id {} to different content; schema ids are immutable.",
+                    n.schema_id()
+                ),
+                "SchemaIdContentChanged",
+                None,
+            )
+            .into());
         }
     }
     Ok(())
@@ -60,6 +104,9 @@ pub(super) fn apply_commit(
         .iter()
         .filter_map(|&key| metadata.properties().get(key).map(|val| (key, val.clone())))
         .collect();
+    // Snapshot the persisted schemas before the builder consumes `metadata`, to guard against a
+    // commit that recycles a schema id onto different content (see `ensure_schema_content_stable`).
+    let previous_schemas: Vec<SchemaRef> = metadata.schemas_iter().cloned().collect();
 
     let mut builder = TableMetadataBuilder::new_from_metadata(
         metadata,
@@ -112,19 +159,24 @@ pub(super) fn apply_commit(
             }
         }
     }
-    builder
-        .build()
-        .map_err(|e| {
-            tracing::debug!("Table metadata build failed: {}", e);
-            let msg = e.message().to_string();
-            ErrorModel::conflict(msg, "CommitFailedException", Some(Box::new(e))).into()
-        })
-        .inspect(|r| {
-            tracing::debug!(
-                "Table metadata updated, at: {}",
-                r.metadata.last_updated_ms()
-            );
-        })
+    let build_result = builder.build().map_err(|e| {
+        tracing::debug!("Table metadata build failed: {}", e);
+        let msg = e.message().to_string();
+        IcebergErrorResponse::from(ErrorModel::conflict(
+            msg,
+            "CommitFailedException",
+            Some(Box::new(e)),
+        ))
+    })?;
+    ensure_schema_content_stable(
+        previous_schemas.iter(),
+        build_result.metadata.schemas_iter(),
+    )?;
+    tracing::debug!(
+        "Table metadata updated, at: {}",
+        build_result.metadata.last_updated_ms()
+    );
+    Ok(build_result)
 }
 
 fn table_update_as_str(update: &TableUpdate) -> &str {
@@ -207,7 +259,10 @@ mod tests {
     };
     use iceberg_ext::spec::TableMetadataBuilder;
 
-    use super::{AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed};
+    use super::{
+        AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed,
+        ensure_schema_content_stable,
+    };
 
     fn test_metadata_with_properties(
         props: HashMap<String, String>,
@@ -371,5 +426,136 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err.error.r#type, "FormatVersionNotAllowed");
+    }
+
+    #[test]
+    fn adding_a_new_schema_preserves_existing_content_ok() {
+        // Base metadata has schema id 0 (current) = [1: id int]. Adding a structurally different
+        // schema must NOT trip the stability guard — shared id 0 is unchanged.
+        let metadata = test_metadata_with_properties(HashMap::new());
+        let schema_b = Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                    .into(),
+                NestedField::optional(
+                    2,
+                    "name",
+                    iceberg::spec::Type::Primitive(PrimitiveType::String),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap();
+
+        let result = apply_commit(
+            metadata,
+            None,
+            &[],
+            vec![TableUpdate::AddSchema { schema: schema_b }],
+        )
+        .unwrap();
+        // Builder assigned the new schema id 1; current stays 0.
+        assert!(result.metadata.schema_by_id(1).is_some());
+        assert_eq!(result.metadata.current_schema_id(), 0);
+    }
+
+    #[test]
+    fn recycling_a_schema_id_onto_different_content_is_rejected() {
+        // Base: schema 0 (current) = [1: id int].
+        let metadata = test_metadata_with_properties(HashMap::new());
+        let schema_b = Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                    .into(),
+                NestedField::optional(
+                    2,
+                    "name",
+                    iceberg::spec::Type::Primitive(PrimitiveType::String),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap();
+        // Add schema B: builder assigns it id 1 (highest+1), current stays 0.
+        let m1 = apply_commit(
+            metadata,
+            None,
+            &[],
+            vec![TableUpdate::AddSchema { schema: schema_b }],
+        )
+        .unwrap()
+        .metadata;
+        assert!(m1.schema_by_id(1).is_some());
+        assert_eq!(m1.current_schema_id(), 0);
+
+        // In ONE commit: remove schema 1 and add a structurally different schema. Because 1 was the
+        // highest (non-current) id, the builder recycles id 1 onto the new content. The normalized
+        // store diffs schemas by id, so it would leave schema 1's old columns persisted — the guard
+        // must reject this outright.
+        let schema_c = Schema::builder()
+            .with_fields(vec![
+                NestedField::required(1, "id", iceberg::spec::Type::Primitive(PrimitiveType::Int))
+                    .into(),
+                NestedField::optional(
+                    3,
+                    "value",
+                    iceberg::spec::Type::Primitive(PrimitiveType::Long),
+                )
+                .into(),
+            ])
+            .build()
+            .unwrap();
+
+        let err = apply_commit(
+            m1,
+            None,
+            &[],
+            vec![
+                TableUpdate::RemoveSchemas {
+                    schema_ids: vec![1],
+                },
+                TableUpdate::AddSchema { schema: schema_c },
+            ],
+        )
+        .unwrap_err();
+
+        assert_eq!(err.error.r#type, "SchemaIdContentChanged");
+    }
+
+    #[test]
+    fn identical_composite_identifier_schema_is_not_flagged() {
+        // Regression: identifier fields must compare as a SET. `identifier_field_ids()` iterates a
+        // randomized HashSet, so an order-sensitive comparison would spuriously differ (~50% for a
+        // 2-field identifier) and wrongly reject a legitimate remove-and-re-add of an identical
+        // schema. Rebuild both schemas each iteration (fresh HashSet orders) and repeat so an
+        // order-sensitive regression fails with overwhelming probability.
+        let build = || -> iceberg::spec::SchemaRef {
+            std::sync::Arc::new(
+                Schema::builder()
+                    .with_schema_id(1)
+                    .with_identifier_field_ids(vec![1, 2])
+                    .with_fields(vec![
+                        NestedField::required(
+                            1,
+                            "a",
+                            iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                        )
+                        .into(),
+                        NestedField::required(
+                            2,
+                            "b",
+                            iceberg::spec::Type::Primitive(PrimitiveType::Int),
+                        )
+                        .into(),
+                    ])
+                    .build()
+                    .unwrap(),
+            )
+        };
+        for _ in 0..64 {
+            let (p, n) = (build(), build());
+            ensure_schema_content_stable(std::iter::once(&p), std::iter::once(&n))
+                .expect("identical schemas with the same identifier set must not be flagged");
+        }
     }
 }

@@ -393,6 +393,10 @@ fn build_new_metadata(
     before_location: &Location,
 ) -> Result<(ViewMetadata, Option<DeleteLocation<'_>>)> {
     let previous_location = before_update_metadata.location().to_string();
+    // Snapshot persisted schemas before the builder consumes the metadata, to reject a commit that
+    // recycles a schema id onto different content (defense-in-depth: views have no RemoveSchema
+    // update today, so this cannot currently trip — but the storage store diffs schemas by id).
+    let previous_schemas: Vec<_> = before_update_metadata.schemas_iter().cloned().collect();
 
     let mut m = ViewMetadataBuilder::new_from_metadata(before_update_metadata);
     let mut delete_old_location = None;
@@ -456,6 +460,10 @@ fn build_new_metadata(
             Some(Box::new(e)),
         )
     })?;
+    crate::server::commit_tables::ensure_schema_content_stable(
+        previous_schemas.iter(),
+        requested_update_metadata.metadata.schemas_iter(),
+    )?;
     Ok((requested_update_metadata.metadata, delete_old_location))
 }
 

@@ -58,6 +58,7 @@ sqlx = { workspace = true, features = [
 strum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+thiserror = { workspace = true }
 tryhard = { workspace = true }
 typed-builder = { workspace = true }
 url = { workspace = true }
@@ -70,4 +71,5 @@ lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router"] }
 lakekeeper-storage-postgres = { path = ".", features = ["test-utils"] }
 pretty_assertions = { workspace = true }
 similar = { workspace = true }
+tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
