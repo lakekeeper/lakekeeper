@@ -66,6 +66,13 @@ create table tag (
         references namespace (warehouse_id, namespace_id) on delete cascade,
     constraint tag_tabular_fkey foreign key (warehouse_id, tabular_id)
         references tabular (warehouse_id, tabular_id) on delete cascade,
+    -- Column integrity: field_id must name a live field of the tabular. MATCH SIMPLE skips this
+    -- when field_id is null (warehouse/namespace/table tags), enforces it only for column tags.
+    -- References the tabular_field spine, which survives schema evolution and is reaped only when
+    -- the field leaves the last schema version -- so a column tag outlives ordinary commits and
+    -- cascades away exactly when the column truly disappears.
+    constraint tag_field_fkey foreign key (warehouse_id, tabular_id, field_id)
+        references tabular_field (warehouse_id, tabular_id, field_id) on delete cascade,
     constraint tag_single_target
         check ((namespace_id is not null)::int + (tabular_id is not null)::int <= 1),
     constraint tag_field_requires_tabular
