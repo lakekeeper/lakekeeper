@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO tag_allowed_value (tag_definition_id, value)\n            SELECT $1, v FROM UNNEST($2::text[]) v\n            ON CONFLICT (tag_definition_id, value) DO NOTHING\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dab7d2c0557edf0e2d20661c526fa8d262c8ffc30756ad47a0043624f7abf006"
+}

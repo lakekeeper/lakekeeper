@@ -4,13 +4,17 @@
 //! the schema.
 
 use chrono::{DateTime, Utc};
+use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
     ProjectId,
-    service::{NamespaceId, TabularId, WarehouseId},
+    service::{
+        CatalogBackendError, InvalidPaginationToken, NamespaceId, ProjectIdNotFoundError, TabularId,
+        TagDefinitionId, TagId, WarehouseId, define_transparent_error, impl_error_stack_methods,
+        impl_from_with_detail,
+    },
 };
 
 /// Name prefixes only internal (catalog-managed) code may write. Derived from
@@ -108,6 +112,11 @@ impl TagScope {
 /// they ship — mirrors the `tag_source` DB enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx-postgres",
+    sqlx(type_name = "tag_source", rename_all = "snake_case")
+)]
 pub enum TagSource {
     Manual,
 }
@@ -133,6 +142,11 @@ impl TagSource {
 /// inferred from allowed-value rows) — mirrors the `tag_value_kind` DB enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx-postgres",
+    sqlx(type_name = "tag_value_kind", rename_all = "snake_case")
+)]
 pub enum TagValueKind {
     /// Presence only; no value (e.g. `Pii`, `Deprecated`).
     Marker,
@@ -215,7 +229,7 @@ impl TagTarget {
 /// A registered tag name in a project's vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagDefinition {
-    pub tag_definition_id: Uuid,
+    pub tag_definition_id: TagDefinitionId,
     pub project_id: ProjectId,
     pub name: String,
     pub description: Option<String>,
@@ -238,14 +252,273 @@ impl TagDefinition {
 /// A tag applied to a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
-    pub tag_id: Uuid,
-    pub tag_definition_id: Uuid,
+    pub tag_id: TagId,
+    pub tag_definition_id: TagDefinitionId,
     pub target: TagTarget,
     pub value: Option<String>,
     pub source: TagSource,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
     pub updated_by: String,
+}
+
+/// The value contract of a tag definition at write time. Bundling `allowed_values`
+/// into `Enumerated` makes the illegal combinations — a marker carrying values, an
+/// enumerated definition with none — unrepresentable for callers. Borrowed and never
+/// serialized: the customer-facing DTO stays a flat `{value_kind, allowed_values}`,
+/// so this is a zero-wire-cost internal ergonomics win. `Enumerated { allowed_values:
+/// &[] }` is still constructible, so non-empty/per-value validation stays the caller's
+/// job (it produces a typed `400`, not a raw constraint violation).
+#[derive(Debug, Clone)]
+pub enum TagValueSpec<'a> {
+    Marker,
+    FreeText,
+    Enumerated { allowed_values: &'a [&'a str] },
+}
+
+impl TagValueSpec<'_> {
+    /// The scalar discriminant persisted in the `value_kind` column.
+    #[must_use]
+    pub fn kind(&self) -> TagValueKind {
+        match self {
+            TagValueSpec::Marker => TagValueKind::Marker,
+            TagValueSpec::FreeText => TagValueKind::FreeText,
+            TagValueSpec::Enumerated { .. } => TagValueKind::Enumerated,
+        }
+    }
+
+    /// The permitted values; empty for non-enumerated kinds.
+    #[must_use]
+    pub fn allowed_values(&self) -> &[&str] {
+        match self {
+            TagValueSpec::Marker | TagValueSpec::FreeText => &[],
+            TagValueSpec::Enumerated { allowed_values } => allowed_values,
+        }
+    }
+}
+
+/// Spec for creating a [`TagDefinition`]; `project_id` is supplied separately
+/// (the parent scope), mirroring [`crate::service::CatalogCreateRoleRequest`].
+#[derive(Debug, typed_builder::TypedBuilder)]
+pub struct CatalogCreateTagDefinitionRequest<'a> {
+    pub tag_definition_id: TagDefinitionId,
+    pub name: &'a str,
+    #[builder(default)]
+    pub description: Option<&'a str>,
+    pub scope: &'a [TagScope],
+    pub value_spec: TagValueSpec<'a>,
+    pub updated_by: &'a str,
+}
+
+// --------------------------- CREATE TAG DEFINITION ERROR ---------------------------
+define_transparent_error! {
+    pub enum CreateTagDefinitionError,
+    stack_message: "Error creating tag definition in catalog",
+    variants: [
+        TagNameAlreadyExists,
+        ProjectIdNotFoundError,
+        CatalogBackendError
+    ]
+}
+
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("A tag definition with the specified name already exists in the specified project")]
+pub struct TagNameAlreadyExists {
+    pub stack: Vec<String>,
+}
+impl TagNameAlreadyExists {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(TagNameAlreadyExists);
+impl From<TagNameAlreadyExists> for ErrorModel {
+    fn from(err: TagNameAlreadyExists) -> Self {
+        ErrorModel::builder()
+            .r#type("TagNameAlreadyExists")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// --------------------------- LIST TAG DEFINITIONS ---------------------------
+define_transparent_error! {
+    pub enum ListTagDefinitionsError,
+    stack_message: "Error listing tag definitions in catalog",
+    variants: [
+        CatalogBackendError,
+        InvalidPaginationToken
+    ]
+}
+
+/// A page of tag definitions plus the cursor for the next page (`None` when there
+/// are no further rows). Definitions are scalar — allowed values are not loaded on
+/// the list path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListTagDefinitionsResponse {
+    pub tag_definitions: Vec<TagDefinition>,
+    pub next_page_token: Option<String>,
+}
+
+/// The mutable fields of a tag definition. Storage primitive: `scope` is replaced
+/// wholesale and `add_allowed_values` are inserted (never removed) — the widen-only
+/// and kind-immutable policy is enforced one layer up, where the current state is
+/// read to emit typed `400`s.
+#[derive(Debug, typed_builder::TypedBuilder)]
+pub struct UpdateTagDefinitionRequest<'a> {
+    pub name: &'a str,
+    #[builder(default)]
+    pub description: Option<&'a str>,
+    pub scope: &'a [TagScope],
+    #[builder(default)]
+    pub add_allowed_values: &'a [&'a str],
+    pub updated_by: &'a str,
+}
+
+// --------------------------- UPDATE TAG DEFINITION ERROR ---------------------------
+define_transparent_error! {
+    pub enum UpdateTagDefinitionError,
+    stack_message: "Error updating tag definition in catalog",
+    variants: [
+        TagNameAlreadyExists,
+        TagDefinitionIdNotFound,
+        CatalogBackendError
+    ]
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("No tag definition with id '{tag_definition_id}' exists in the project")]
+pub struct TagDefinitionIdNotFound {
+    pub tag_definition_id: TagDefinitionId,
+    pub stack: Vec<String>,
+}
+impl TagDefinitionIdNotFound {
+    #[must_use]
+    pub fn new(tag_definition_id: TagDefinitionId) -> Self {
+        Self {
+            tag_definition_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(TagDefinitionIdNotFound);
+impl From<TagDefinitionIdNotFound> for ErrorModel {
+    fn from(err: TagDefinitionIdNotFound) -> Self {
+        ErrorModel::builder()
+            .r#type("TagDefinitionIdNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// --------------------------- APPLY TAG ERROR ---------------------------
+define_transparent_error! {
+    pub enum ApplyTagError,
+    stack_message: "Error applying tag in catalog",
+    variants: [
+        TagDefinitionIdNotFound,
+        TagTargetNotFound,
+        CatalogBackendError
+    ]
+}
+
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("The target of the tag does not exist")]
+pub struct TagTargetNotFound {
+    pub stack: Vec<String>,
+}
+impl TagTargetNotFound {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(TagTargetNotFound);
+impl From<TagTargetNotFound> for ErrorModel {
+    fn from(err: TagTargetNotFound) -> Self {
+        ErrorModel::builder()
+            .r#type("TagTargetNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// --------------------------- REMOVE TAG ERROR ---------------------------
+define_transparent_error! {
+    pub enum RemoveTagError,
+    stack_message: "Error removing tag in catalog",
+    variants: [
+        TagNotFound,
+        CatalogBackendError
+    ]
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("No tag with id '{tag_id}' exists")]
+pub struct TagNotFound {
+    pub tag_id: TagId,
+    pub stack: Vec<String>,
+}
+impl TagNotFound {
+    #[must_use]
+    pub fn new(tag_id: TagId) -> Self {
+        Self {
+            tag_id,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(TagNotFound);
+impl From<TagNotFound> for ErrorModel {
+    fn from(err: TagNotFound) -> Self {
+        ErrorModel::builder()
+            .r#type("TagNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+// --------------------------- DELETE TAG DEFINITION ERROR ---------------------------
+define_transparent_error! {
+    pub enum DeleteTagDefinitionError,
+    stack_message: "Error deleting tag definition in catalog",
+    variants: [
+        TagDefinitionInUse,
+        TagDefinitionIdNotFound,
+        CatalogBackendError
+    ]
+}
+
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error("The tag definition is still applied to one or more targets and cannot be deleted")]
+pub struct TagDefinitionInUse {
+    pub stack: Vec<String>,
+}
+impl TagDefinitionInUse {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(TagDefinitionInUse);
+impl From<TagDefinitionInUse> for ErrorModel {
+    fn from(err: TagDefinitionInUse) -> Self {
+        ErrorModel::builder()
+            .r#type("TagDefinitionInUse")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
 }
 
 #[cfg(test)]
