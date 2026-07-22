@@ -21,6 +21,7 @@ default-filter = """
     and not test(::minio_integration_tests::)
     and not test(::openfga_integration_tests::)
     and not test(::r2_integration_tests::)
+    and not test(::oss_integration_tests::)
 """
 
 [profile.debug]
@@ -58,6 +59,7 @@ default-filter = """
     and not test(::gcs_hns_integration_tests::)
     and not test(::gcp_system_credentials_integration_tests::)
     and not test(::r2_integration_tests::)
+    and not test(::oss_integration_tests::)
 """
 failure-output = "immediate-final"
 fail-fast = false

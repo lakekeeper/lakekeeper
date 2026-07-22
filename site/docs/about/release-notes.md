@@ -8,6 +8,10 @@ For Lakekeeper Plus releases, see the [Lakekeeper Plus Release Notes](enterprise
 
 <!-- Maintainers: how to update this page at release → .github/RELEASING.md -->
 
+--8<-- "_includes/subscribe-form.html"
+
+_[Subscribe by email](subscribe.md) to hear about new releases, or **Watch → Releases** on [GitHub](https://github.com/lakekeeper/lakekeeper/releases)._
+
 ## v0.13.1 (2026-06-30)
 
 ### Bug Fixes

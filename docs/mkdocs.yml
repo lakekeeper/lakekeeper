@@ -17,6 +17,7 @@ nav:
     - Query Engines: engines.md
     - Generic Tables:
           - Overview: generic-tables.md
+          - Client Authentication: generic-tables-auth.md
           - Python Client: generic-tables-pylakekeeper.md
           - Apache Spark (PySpark): generic-tables-spark.md
           - Apache Flink (Java): generic-tables-flink.md

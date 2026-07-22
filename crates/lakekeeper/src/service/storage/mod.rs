@@ -1120,6 +1120,7 @@ pub enum S3CredentialType {
     AccessKey,
     AwsSystemIdentity,
     CloudflareR2,
+    AliyunOss,
 }
 
 /// The type of Azure credential.
@@ -1150,6 +1151,7 @@ impl StorageCredential {
                 S3Credential::AccessKey(_) => S3CredentialType::AccessKey,
                 S3Credential::AwsSystemIdentity(_) => S3CredentialType::AwsSystemIdentity,
                 S3Credential::CloudflareR2(_) => S3CredentialType::CloudflareR2,
+                S3Credential::AliyunOss(_) => S3CredentialType::AliyunOss,
             }),
             StorageCredential::Az(az) => StorageCredentialType::Az(match az {
                 AzCredential::ClientCredentials { .. } => AzCredentialType::ClientCredentials,

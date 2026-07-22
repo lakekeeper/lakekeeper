@@ -52,7 +52,7 @@ namespace Lakekeeper {
   //
   //   User       "<provider_id>~<subject-in-provider>"
   //              "oidc~alice@example.com"
-  //              "kubernetes~system:serviceaccount:default:my-sa"
+  //              "kubernetes~eb952f26-3a1a-4020-bcb4-3f7d43049284"
   //
   //   Role       "<project-id>/<provider_id>~<source_id>"
   //              "my-project/lakekeeper~01943e3d-43c5-7a4e-b6dd-a88f0029gcgd"

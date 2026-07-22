@@ -9,7 +9,8 @@ use aws_config::{
     timeout::TimeoutConfig,
 };
 use aws_sdk_s3::config::{
-    IdentityCache, SharedAsyncSleep, SharedCredentialsProvider, SharedHttpClient, http::HttpRequest,
+    IdentityCache, RequestChecksumCalculation, SharedAsyncSleep, SharedCredentialsProvider,
+    SharedHttpClient, http::HttpRequest,
 };
 use aws_smithy_async::{
     rt::sleep::{self, TokioSleep},
@@ -166,6 +167,15 @@ pub struct S3Settings {
     pub aws_kms_key_arn: Option<String>,
     #[builder(default)]
     pub legacy_md5_behavior: Option<bool>,
+    /// Strict s3 compatible behaviour (currently required for Alibaba Cloud OSS):
+    /// - Sets request-checksum calculation to `WhenRequired` instead of the SDK default (`WhenSupported`).
+    ///   The default makes the SDK add a CRC32 checksum to `PutObject`/`UploadPart`
+    ///   and transmit it via `aws-chunked` + `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, which OSS rejects
+    ///   with `NotImplemented: Aws MultiChunkedEncoding ... is not supported`.
+    /// - Applies the [`LegacyMD5Interceptor`] so checksum-required operations such as `DeleteObjects`
+    ///   carry a `Content-MD5` header, which OSS requires (it returns `MissingArgument` otherwise).
+    #[builder(default)]
+    pub s3_compat_checksums: bool,
 }
 
 impl S3Settings {
@@ -178,8 +188,13 @@ impl S3Settings {
             s3_builder.set_force_path_style(Some(true));
         }
 
-        if self.legacy_md5_behavior.unwrap_or(false) {
+        if self.legacy_md5_behavior.unwrap_or(false) || self.s3_compat_checksums {
             s3_builder = s3_builder.interceptor(LegacyMD5Interceptor);
+        }
+
+        if self.s3_compat_checksums {
+            s3_builder =
+                s3_builder.request_checksum_calculation(RequestChecksumCalculation::WhenRequired);
         }
 
         let client = aws_sdk_s3::Client::from_conf(s3_builder.build());
@@ -197,6 +212,7 @@ impl S3Settings {
             path_style_access: _,
             aws_kms_key_arn: _,
             legacy_md5_behavior: _,
+            s3_compat_checksums: _,
         } = self;
 
         let region = aws_config::Region::new(region.clone());
