@@ -60,8 +60,9 @@ if [ -f .env ]; then
   OLD=$(grep '^S3_ENDPOINT=' .env 2>/dev/null | cut -d= -f2-)
   if [ -n "$OLD" ] && [ "$OLD" != "$S3_ENDPOINT" ]; then
     echo "!! S3 endpoint changed since last run: $OLD -> $S3_ENDPOINT"
-    echo "!! An existing warehouse still points at the OLD address and will 408."
-    echo "!! Run ./down.sh first, then ./up.sh, to recreate the catalog with the new IP."
+    echo "!! An existing warehouse still points at the OLD address and will 408 / refuse."
+    echo "!! Fastest fix (keeps your data): ./refresh-ip.sh  — re-points the endpoint in place."
+    echo "!! (Full reset instead: ./down.sh && ./up.sh, then re-run the notebooks.)"
     echo
   fi
 fi

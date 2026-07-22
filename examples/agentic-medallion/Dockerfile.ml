@@ -16,6 +16,10 @@ WORKDIR /work
 COPY requirements-spike.txt requirements-ml.txt ./
 RUN pip install --no-cache-dir -r requirements-spike.txt -r requirements-ml.txt
 
+# Quiet the HF Hub "unauthenticated request" notice (anonymous downloads are fine
+# for these public weights). Set HF_TOKEN at runtime if you hit rate limits.
+ENV HF_HUB_VERBOSITY=error
+
 # Pre-download the CLIP weights (open_clip ViT-B/32, laion2b — ~600 MB) at BUILD
 # time so the first Gold/agent run doesn't stall on a large HuggingFace fetch. Keep
 # the model id + pretrained tag in sync with clip_util.py (MODEL_NAME / PRETRAINED).

@@ -221,8 +221,10 @@ tool, differing only in their grant:
   Silver captions — proof the wall is at **Gold specifically**, not a blanket lockout
 - the **chat widget** → type any query and ask *both* agents at once; the analyst
   returns artworks + thumbnails + a written answer, the contractor stays denied
-- *(optional)* the **last cell** logs in as peter again and grants the contractor
-  read on Gold live; re-run the contractor cell and it now succeeds
+- *(optional)* flip the lever live — grant the contractor `select` on Gold **in the
+  Lakekeeper console** (warehouse `medallion` → namespace `gold` → Permissions →
+  `service-account-contractor-agent`), or via the code cell; re-run the contractor
+  cell and it now succeeds
 
 The 404-not-403 is deliberate: Lakekeeper doesn't leak the existence of resources a
 principal can't see.
@@ -250,10 +252,28 @@ default; add `--purge` to drop those too.
 ./down.sh --purge    # reset everything, including the models
 ```
 
+## If your IP changes (laptop / Wi-Fi / hotspot)
+
+`up.sh` bakes your host LAN IP into the warehouse's S3 endpoint (so a browser and
+the in-network kernel share one endpoint). When your machine's IP changes — Wi-Fi
+switch, phone hotspot, sleep/wake — that baked address goes dead and the notebooks
+fail with `408` / `Connection refused` / `ShortTermCredentialError`.
+
+Fix it **without a teardown** — re-point the warehouse at your current IP and keep
+all your data:
+
+```bash
+./refresh-ip.sh      # detects the current IP, updates the warehouse endpoint in place
+```
+
+Then just re-run the failing cell. (It uses the `PIPELINE` account's `modify` right,
+so no login prompt.) A full `./down.sh && ./up.sh` also works but rebuilds everything.
+
 ## Layout
 
 ```
 up.sh                   bring the stack up (detects browser/LAN host, applies CORS)
+refresh-ip.sh           re-point the warehouse at your current LAN IP (no teardown) after a network change
 down.sh                 tear the stack down and reset to a clean pre-run state
 docker-compose.yaml     stack: catalog + JupyterLab (workbench) + Ollama (ml profile)
 Dockerfile.ml           the workbench image (JupyterLab + torch/open_clip/pyiceberg)
