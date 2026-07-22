@@ -1,0 +1,262 @@
+# Governed multimodal medallion for AI agents.
+#
+# Iceberg (Bronze/Silver) + Lance generic table (Gold) under ONE catalog and
+# ONE authz model. Two agent identities (analyst-agent, contractor-agent) prove
+# that Lakekeeper enforces AI data access at the credential-vending layer:
+# the analyst gets scoped STS creds for the Gold Lance table, the contractor
+# is denied and physically cannot read the data.
+#
+# Every notebook runs INSIDE this network (the `workbench` JupyterLab service) so
+# vended credentials — which carry the internal `http://seaweedfs:8333` endpoint
+# — resolve, and the interactive device-code login reaches Keycloak.
+#
+#   docker compose --profile ml up -d --build   # full stack + JupyterLab + Ollama
+#   # then open http://localhost:8888 and run notebooks/ top to bottom
+services:
+  # --- Object storage (S3 with STS) -----------------------------------------
+  # SeaweedFS in single-process `mini` mode (master+volume+filer+S3). STS is
+  # enabled via the IAM config so Lakekeeper can vend short-lived, prefix-scoped
+  # credentials — the mechanism this whole example hinges on.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.36
+    # AWS_* must match the iam.json identity or STS AssumeRole can't authenticate
+    # the caller (fails with an opaque "Unknown S3 error during write").
+    environment:
+      AWS_ACCESS_KEY_ID: seaweedfs-root-user
+      AWS_SECRET_ACCESS_KEY: seaweedfs-root-password
+    command:
+      - mini
+      - -dir=/data
+      - -bucket=medallion
+      - -s3.config=/etc/seaweedfs/iam.json
+      - -s3.iam.config=/etc/seaweedfs/iam.json
+    volumes:
+      - ./seaweedfs-iam.json:/etc/seaweedfs/iam.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8333/status"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+    ports:
+      - "8333:8333"   # S3 API (in-network clients use seaweedfs:8333)
+    networks: [medallion]
+
+  # One-shot: wildcard CORS on the `medallion` bucket so a host browser (the LK UI
+  # navigating dataset files, or an in-browser query engine) can read objects with
+  # vended credentials. CORS is volume metadata, so this re-runs on a fresh volume.
+  bucket-cors:
+    image: amazon/aws-cli:latest
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      AWS_ACCESS_KEY_ID: seaweedfs-root-user
+      AWS_SECRET_ACCESS_KEY: seaweedfs-root-password
+      AWS_DEFAULT_REGION: local-01
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "for i in $$(seq 1 30); do aws --endpoint-url http://seaweedfs:8333 s3api put-bucket-cors --bucket medallion --cors-configuration '{\"CORSRules\":[{\"AllowedOrigins\":[\"*\"],\"AllowedMethods\":[\"GET\",\"PUT\",\"POST\",\"DELETE\",\"HEAD\"],\"AllowedHeaders\":[\"*\"],\"ExposeHeaders\":[\"ETag\"]}]}' && echo CORS-applied-to-medallion && exit 0; echo waiting for seaweedfs s3...; sleep 2; done; echo CORS-FAILED >&2; exit 1"
+    networks: [medallion]
+
+  # --- Catalog metadata + authz backing stores -----------------------------
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks: [medallion]
+
+  openfga-db:
+    image: postgres:17
+    command: postgres -c max_connections=1000
+    environment:
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 5432 -d postgres"]
+      interval: 2s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks: [medallion]
+
+  openfga-migrate:
+    image: openfga/openfga:v1.8
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
+    depends_on:
+      openfga-db:
+        condition: service_healthy
+    networks: [medallion]
+
+  openfga:
+    image: openfga/openfga:v1.12
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://postgres:postgres@openfga-db:5432/postgres?sslmode=disable
+      OPENFGA_PLAYGROUND_ENABLED: "false"
+    depends_on:
+      openfga-db:
+        condition: service_healthy
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=openfga:8081"]
+      interval: 5s
+      timeout: 30s
+      retries: 3
+    networks: [medallion]
+
+  # --- Identity provider (two agent identities live here) -------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/8080; echo -e 'GET /realms/iceberg/.well-known/openid-configuration HTTP/1.1\\r\\nhost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep jwks_uri <&3"
+      interval: 3s
+      timeout: 10s
+      retries: 20
+      start_period: 45s
+    ports:
+      - "30080:8080"
+    networks: [medallion]
+
+  # --- Lakekeeper -----------------------------------------------------------
+  migrate:
+    image: ${LAKEKEEPER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: always
+    entrypoint: ["/home/nonroot/lakekeeper", "migrate"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: This-is-NOT-Secure!
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__AUTHZ_BACKEND: openfga
+      LAKEKEEPER__OPENFGA__ENDPOINT: http://openfga:8081
+    depends_on:
+      db:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+    restart: "no"
+    networks: [medallion]
+
+  lakekeeper:
+    image: ${LAKEKEEPER_IMAGE:-quay.io/lakekeeper/catalog:latest-main}
+    pull_policy: always
+    command: ["serve"]
+    environment:
+      LAKEKEEPER__PG_ENCRYPTION_KEY: This-is-NOT-Secure!
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://postgres:postgres@db:5432/postgres
+      LAKEKEEPER__AUTHZ_BACKEND: openfga
+      LAKEKEEPER__OPENFGA__ENDPOINT: http://openfga:8081
+      # Trust tokens from Keycloak. Two issuer URLs: the in-network one the
+      # server validates against, and the host-facing one (browser/UI).
+      LAKEKEEPER__OPENID_PROVIDER_URI: http://keycloak:8080/realms/iceberg
+      LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS: http://localhost:30080/realms/iceberg
+      LAKEKEEPER__OPENID_AUDIENCE: lakekeeper
+      LAKEKEEPER__UI__OPENID_CLIENT_ID: lakekeeper
+      LAKEKEEPER__UI__OPENID_PROVIDER_URI: http://localhost:30080/realms/iceberg
+      RUST_LOG: info,lakekeeper=debug
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 2s
+      timeout: 10s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    ports:
+      - "8181:8181"
+    networks: [medallion]
+
+  # --- Local OSS LLM (vision extraction + agent chat) -----------------------
+  # Behind the `ml` profile so the default `up` stays lean. Pull a model with:
+  #   docker compose exec ollama ollama pull moondream
+  #   docker compose exec ollama ollama pull gemma2:2b
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [ml]
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks: [medallion]
+
+  # --- Workbench: JupyterLab where every notebook runs -----------------------
+  # All Python runs INSIDE the network here, so vended STS creds (which carry
+  # the internal `seaweedfs:8333` endpoint) resolve, and the device-code login
+  # reaches Keycloak in-network. Carries the heavy ML deps (torch/open_clip) for
+  # the Silver/Gold pipeline and the CLIP retrieval agent, so it lives behind the
+  # `ml` profile. JupyterLab on :8888.
+  workbench:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml
+    image: agentic-medallion-workbench:latest
+    profiles: [ml]
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+    environment:
+      LAKEKEEPER_URL: http://lakekeeper:8181
+      # The kernel fetches tokens from Keycloak in-network (keycloak:8080). The
+      # device-login verification URL it prints is rewritten to the host-facing
+      # address so you can open it in your browser. `up.sh` sets this to the
+      # address your browser uses (localhost by default; a host IP/DNS remotely).
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/iceberg
+      KEYCLOAK_BROWSER_URL: ${KEYCLOAK_BROWSER_URL:-http://localhost:30080}
+      # up.sh sets S3_ENDPOINT to the host LAN IP so the warehouse endpoint resolves
+      # from BOTH the in-network kernel AND a host browser (LK UI data-file access).
+      # Defaults to the in-network name for plain `docker compose up`.
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://seaweedfs:8333}
+      OLLAMA_URL: http://ollama:11434
+      WAREHOUSE_NAME: medallion
+      # Swap models via env (see the README Requirements). Chat model is small by
+      # default — it only writes the prose answer.
+      VISION_MODEL: ${VISION_MODEL:-moondream}
+      CHAT_MODEL: ${CHAT_MODEL:-gemma2:2b}
+    volumes:
+      - ./:/work
+    working_dir: /work
+    ports:
+      - "8888:8888"   # JupyterLab
+    command:
+      - jupyter
+      - lab
+      - --ip=0.0.0.0
+      - --port=8888
+      - --no-browser
+      - --allow-root
+      - --ServerApp.token=
+      - --ServerApp.password=
+      - --ServerApp.root_dir=/work
+      - --ServerApp.default_url=/lab/tree/notebooks
+    networks: [medallion]
+
+networks:
+  medallion:
+
+volumes:
+  ollama-models:

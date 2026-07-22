@@ -1,0 +1,8 @@
+# Fetched by notebooks/01-build-medallion.ipynb — re-fetch locally, don't commit.
+data/images/
+data/manifest.json
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# Written by up.sh (browser-facing host for the device-code login).
+.env
