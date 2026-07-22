@@ -10,7 +10,8 @@ use strum_macros::{EnumString, IntoStaticStr};
 
 use super::{
     CatalogStore, GenericTableId, NamespaceId, ProjectId, RoleId, RoleProviderId, RoleSourceId,
-    SecretStore, State, TableId, ViewId, WarehouseId, health::HealthExt,
+    SecretStore, State, TableId, TagDefinition, TagDefinitionId, ViewId, WarehouseId,
+    health::HealthExt,
 };
 use crate::{
     api::{
@@ -38,6 +39,8 @@ mod namespace;
 pub use namespace::*;
 mod role;
 pub use role::*;
+mod tag;
+pub use tag::*;
 mod table;
 pub use table::*;
 mod view;
@@ -472,8 +475,16 @@ pub enum CatalogProjectAction {
     GetTaskQueueConfig,
     GetProjectTasks,
     ControlProjectTasks,
+    /// Create a new governance tag definition in this project.
+    CreateTag {
+        /// Name of the tag to create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// List tag definitions in this project.
+    ListTags,
 }
-static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 14]> = LazyLock::new(|| {
+static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 16]> = LazyLock::new(|| {
     [
         CatalogProjectAction::CreateWarehouse { name: None },
         CatalogProjectAction::Delete,
@@ -489,11 +500,13 @@ static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 14]> = LazyLock:
         CatalogProjectAction::GetTaskQueueConfig,
         CatalogProjectAction::GetProjectTasks,
         CatalogProjectAction::ControlProjectTasks,
+        CatalogProjectAction::CreateTag { name: None },
+        CatalogProjectAction::ListTags,
     ]
 });
 impl CatalogProjectAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogProjectAction; 14] {
+    pub fn variants() -> &'static [CatalogProjectAction; 16] {
         &PROJECT_ACTION_VARIANTS
     }
 }
@@ -501,7 +514,9 @@ impl CatalogAction for CatalogProjectAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         let mut b = ActionDescriptor::builder().action_name(self.into());
         match self {
-            Self::CreateWarehouse { name: Some(n) } | Self::CreateRole { name: Some(n) } => {
+            Self::CreateWarehouse { name: Some(n) }
+            | Self::CreateRole { name: Some(n) }
+            | Self::CreateTag { name: Some(n) } => {
                 b = b.context_string("name", n.clone());
             }
             _ => {}
@@ -662,8 +677,10 @@ pub enum CatalogWarehouseAction {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    /// Attach/detach governance tags on this warehouse.
+    ManageTags,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -690,11 +707,12 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyL
         CatalogWarehouseAction::SetProtection,
         CatalogWarehouseAction::SetFormatVersionPolicy,
         CatalogWarehouseAction::GetEndpointStatistics,
+        CatalogWarehouseAction::ManageTags,
     ]
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 22] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 23] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -735,7 +753,9 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::GetTaskQueueConfig
             | CatalogWarehouseAction::GetAllTasks
             | CatalogWarehouseAction::ControlAllTasks
-            | CatalogWarehouseAction::GetEndpointStatistics => false,
+            | CatalogWarehouseAction::GetEndpointStatistics
+            // Governance tag attachment is metadata, not part of the reconciled spec.
+            | CatalogWarehouseAction::ManageTags => false,
         }
     }
 }
@@ -847,8 +867,10 @@ pub enum CatalogNamespaceAction {
         properties: Arc<BTreeMap<String, String>>,
     },
     ListGenericTables,
+    /// Attach/detach governance tags on this namespace.
+    ManageTags,
 }
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 15]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -887,11 +909,12 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 14]> = LazyL
             properties: Arc::new(BTreeMap::new()),
         },
         CatalogNamespaceAction::ListGenericTables,
+        CatalogNamespaceAction::ManageTags,
     ]
 });
 impl CatalogNamespaceAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 14] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 15] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1019,8 +1042,10 @@ pub enum CatalogTableAction {
     GetTasks,
     ControlTasks,
     SetProtection,
+    /// Attach/detach governance tags on this table.
+    ManageTags,
 }
-static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new(|| {
+static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 12]> = LazyLock::new(|| {
     [
         CatalogTableAction::Drop {
             force: false,
@@ -1039,11 +1064,12 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new
         CatalogTableAction::GetTasks,
         CatalogTableAction::ControlTasks,
         CatalogTableAction::SetProtection,
+        CatalogTableAction::ManageTags,
     ]
 });
 impl CatalogTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogTableAction; 11] {
+    pub fn variants() -> &'static [CatalogTableAction; 12] {
         &TABLE_ACTION_VARIANTS
     }
 }
@@ -1117,8 +1143,10 @@ pub enum CatalogViewAction {
     GetTasks,
     ControlTasks,
     SetProtection,
+    /// Attach/detach governance tags on this view.
+    ManageTags,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 11]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop {
             force: false,
@@ -1136,11 +1164,12 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 10]> = LazyLock::new(|
         CatalogViewAction::GetTasks,
         CatalogViewAction::ControlTasks,
         CatalogViewAction::SetProtection,
+        CatalogViewAction::ManageTags,
     ]
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 10] {
+    pub fn variants() -> &'static [CatalogViewAction; 11] {
         &VIEW_ACTION_VARIANTS
     }
 }
@@ -1199,8 +1228,10 @@ pub enum CatalogGenericTableAction {
     GetTasks,
     ControlTasks,
     SetProtection,
+    /// Attach/detach governance tags on this generic table.
+    ManageTags,
 }
-static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 10]> =
+static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 11]> =
     LazyLock::new(|| {
         [
             CatalogGenericTableAction::Drop,
@@ -1213,15 +1244,56 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 10]> 
             CatalogGenericTableAction::GetTasks,
             CatalogGenericTableAction::ControlTasks,
             CatalogGenericTableAction::SetProtection,
+            CatalogGenericTableAction::ManageTags,
         ]
     });
 impl CatalogGenericTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogGenericTableAction; 10] {
+    pub fn variants() -> &'static [CatalogGenericTableAction; 11] {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }
 impl CatalogAction for CatalogGenericTableAction {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+
+#[derive(
+    Debug, Clone, Eq, PartialEq, Serialize, Deserialize, IntoStaticStr, strum_macros::EnumCount,
+)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "open-api", schema(as=LakekeeperTagAction))]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CatalogTagAction {
+    /// Read the tag definition (name, description, value kind, allowed values).
+    Read,
+    /// Update the tag definition (name/description, widen scope, add allowed values).
+    Update,
+    /// Delete the tag definition.
+    Delete,
+    /// Attach this tag to a target. Also requires `manage_tags` on the target.
+    Apply,
+    /// Detach this tag from a target. Also requires `manage_tags` on the target.
+    Remove,
+}
+static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 5]> = LazyLock::new(|| {
+    [
+        CatalogTagAction::Read,
+        CatalogTagAction::Update,
+        CatalogTagAction::Delete,
+        CatalogTagAction::Apply,
+        CatalogTagAction::Remove,
+    ]
+});
+impl CatalogTagAction {
+    #[must_use]
+    pub fn variants() -> &'static [CatalogTagAction; 5] {
+        &TAG_ACTION_VARIANTS
+    }
+}
+impl CatalogAction for CatalogTagAction {
     fn action_descriptor(&self) -> ActionDescriptor {
         ActionDescriptor::builder().action_name(self.into()).build()
     }
@@ -1283,6 +1355,8 @@ pub enum CatalogProjectActionKind {
     GetTaskQueueConfig,
     GetProjectTasks,
     ControlProjectTasks,
+    CreateTag,
+    ListTags,
 }
 impl From<&CatalogProjectAction> for CatalogProjectActionKind {
     fn from(action: &CatalogProjectAction) -> Self {
@@ -1301,6 +1375,8 @@ impl From<&CatalogProjectAction> for CatalogProjectActionKind {
             CatalogProjectAction::GetTaskQueueConfig => Self::GetTaskQueueConfig,
             CatalogProjectAction::GetProjectTasks => Self::GetProjectTasks,
             CatalogProjectAction::ControlProjectTasks => Self::ControlProjectTasks,
+            CatalogProjectAction::CreateTag { .. } => Self::CreateTag,
+            CatalogProjectAction::ListTags => Self::ListTags,
         }
     }
 }
@@ -1359,6 +1435,7 @@ pub enum CatalogWarehouseActionKind {
     SetProtection,
     SetFormatVersionPolicy,
     GetEndpointStatistics,
+    ManageTags,
 }
 impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
     fn from(action: &CatalogWarehouseAction) -> Self {
@@ -1385,6 +1462,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetProtection => Self::SetProtection,
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
+            CatalogWarehouseAction::ManageTags => Self::ManageTags,
         }
     }
 }
@@ -1408,6 +1486,7 @@ pub enum CatalogNamespaceActionKind {
     IncludeInList,
     CreateGenericTable,
     ListGenericTables,
+    ManageTags,
 }
 impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
     fn from(action: &CatalogNamespaceAction) -> Self {
@@ -1426,6 +1505,7 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::IncludeInList => Self::IncludeInList,
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
             CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
+            CatalogNamespaceAction::ManageTags => Self::ManageTags,
         }
     }
 }
@@ -1446,6 +1526,7 @@ pub enum CatalogTableActionKind {
     GetTasks,
     ControlTasks,
     SetProtection,
+    ManageTags,
 }
 impl From<&CatalogTableAction> for CatalogTableActionKind {
     fn from(action: &CatalogTableAction) -> Self {
@@ -1461,6 +1542,7 @@ impl From<&CatalogTableAction> for CatalogTableActionKind {
             CatalogTableAction::GetTasks => Self::GetTasks,
             CatalogTableAction::ControlTasks => Self::ControlTasks,
             CatalogTableAction::SetProtection => Self::SetProtection,
+            CatalogTableAction::ManageTags => Self::ManageTags,
         }
     }
 }
@@ -1480,6 +1562,7 @@ pub enum CatalogViewActionKind {
     GetTasks,
     ControlTasks,
     SetProtection,
+    ManageTags,
 }
 impl From<&CatalogViewAction> for CatalogViewActionKind {
     fn from(action: &CatalogViewAction) -> Self {
@@ -1494,6 +1577,7 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::GetTasks => Self::GetTasks,
             CatalogViewAction::ControlTasks => Self::ControlTasks,
             CatalogViewAction::SetProtection => Self::SetProtection,
+            CatalogViewAction::ManageTags => Self::ManageTags,
         }
     }
 }
@@ -1579,6 +1663,7 @@ where
     type GenericTableAction: GenericTableAction;
     type UserAction: UserAction;
     type RoleAction: RoleAction;
+    type TagAction: TagAction;
 
     fn implementation_name() -> &'static str;
 
@@ -1663,6 +1748,13 @@ where
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         roles_with_actions: &[(&Role, Self::RoleAction)],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
+
+    async fn are_allowed_tag_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        tags_with_actions: &[(&TagDefinition, Self::TagAction)],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError>;
 
     async fn are_allowed_server_actions_impl(
@@ -1762,6 +1854,23 @@ where
     /// Hook that is called when a role is deleted.
     /// This is used to clean up permissions for the role.
     async fn delete_role(&self, metadata: &RequestMetadata, role_id: RoleId) -> Result<()>;
+
+    /// Hook that is called when a new tag definition is created.
+    /// Sets up its parent (project) and ownership permissions.
+    async fn create_tag(
+        &self,
+        metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+        parent_project_id: ArcProjectId,
+    ) -> Result<()>;
+
+    /// Hook that is called when a tag definition is deleted.
+    /// This is used to clean up permissions for the tag definition.
+    async fn delete_tag(
+        &self,
+        metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+    ) -> Result<()>;
 
     /// Returns the role-assignment management facet if this authorizer is the
     /// source of truth for assignments; `None` means assignments live in the catalog.
@@ -1976,6 +2085,12 @@ pub mod tests {
         // base-capability marker, so the full set is introspectable.
         let variants = CatalogRoleAction::variants();
         assert_eq!(variants.len(), CatalogRoleAction::COUNT);
+    }
+
+    #[test]
+    fn test_tag_action_variant_completeness() {
+        let variants = CatalogTagAction::variants();
+        assert_eq!(variants.len(), CatalogTagAction::COUNT);
     }
 
     #[test]
@@ -2644,6 +2759,7 @@ pub mod tests {
         type GenericTableAction = CatalogGenericTableAction;
         type UserAction = CatalogUserAction;
         type RoleAction = CatalogRoleAction;
+        type TagAction = CatalogTagAction;
 
         fn implementation_name() -> &'static str {
             "test-hiding-authorizer"
@@ -2720,6 +2836,27 @@ pub mod tests {
                         return false;
                     }
                     self.check_available(format!("role:{}", role.id).as_str())
+                })
+                .collect();
+            Ok(results
+                .into_iter()
+                .map(AuthorizationDecision::from)
+                .collect())
+        }
+
+        async fn are_allowed_tag_actions_impl(
+            &self,
+            _metadata: &RequestMetadata,
+            _for_user: Option<&UserOrRole>,
+            tags_with_actions: &[(&TagDefinition, Self::TagAction)],
+        ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            let results: Vec<bool> = tags_with_actions
+                .iter()
+                .map(|(tag, action)| {
+                    if self.action_is_blocked(format!("tag:{action:?}").as_str()) {
+                        return false;
+                    }
+                    self.check_available(format!("tag:{}", tag.tag_definition_id).as_str())
                 })
                 .collect();
             Ok(results
@@ -2921,6 +3058,23 @@ pub mod tests {
         }
 
         async fn delete_role(&self, _metadata: &RequestMetadata, _role_id: RoleId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn create_tag(
+            &self,
+            _metadata: &RequestMetadata,
+            _tag_definition_id: TagDefinitionId,
+            _parent_project_id: ArcProjectId,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_tag(
+            &self,
+            _metadata: &RequestMetadata,
+            _tag_definition_id: TagDefinitionId,
+        ) -> Result<()> {
             Ok(())
         }
 

@@ -13,15 +13,15 @@ use crate::{
     service::{
         ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo, AuthZViewInfo,
         CatalogStore, GenericTableId, NamespaceId, NamespaceWithParent, ProjectId,
-        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, ViewId,
-        WarehouseId,
+        ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State, TableId, TagDefinition,
+        TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogUserAction, CatalogViewAction, CatalogWarehouseAction, IsAllowedActionError,
-            ListProjectsResponse, NamespaceParent, UserOrRole,
+            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
+            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -67,6 +67,7 @@ impl Authorizer for AllowAllAuthorizer {
     type GenericTableAction = CatalogGenericTableAction;
     type UserAction = CatalogUserAction;
     type RoleAction = CatalogRoleAction;
+    type TagAction = CatalogTagAction;
 
     fn implementation_name() -> &'static str {
         "allow-all"
@@ -137,6 +138,18 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![
             AuthorizationDecision::allow();
             roles_with_actions.len()
+        ])
+    }
+
+    async fn are_allowed_tag_actions_impl(
+        &self,
+        _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
+        tags_with_actions: &[(&TagDefinition, Self::TagAction)],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![
+            AuthorizationDecision::allow();
+            tags_with_actions.len()
         ])
     }
 
@@ -239,6 +252,23 @@ impl Authorizer for AllowAllAuthorizer {
     }
 
     async fn delete_role(&self, _metadata: &RequestMetadata, _role_id: RoleId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn create_tag(
+        &self,
+        _metadata: &RequestMetadata,
+        _tag_definition_id: TagDefinitionId,
+        _parent_project_id: ArcProjectId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn delete_tag(
+        &self,
+        _metadata: &RequestMetadata,
+        _tag_definition_id: TagDefinitionId,
+    ) -> Result<()> {
         Ok(())
     }
 

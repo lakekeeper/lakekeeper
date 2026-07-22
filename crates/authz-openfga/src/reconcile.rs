@@ -504,7 +504,9 @@ impl CatalogIndex {
                     .map(GenericTableId::new)
                     .map(|g| self.generic_tables.contains_key(&g))
             }
-            FgaType::User | FgaType::ModelVersion | FgaType::AuthModelId => None,
+            // Tag definitions are managed via the create_tag/delete_tag hooks and are
+            // not part of the catalog hierarchy index, so reconcile leaves them alone.
+            FgaType::User | FgaType::Tag | FgaType::ModelVersion | FgaType::AuthModelId => None,
         }
     }
 }
