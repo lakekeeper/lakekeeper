@@ -4,6 +4,29 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
+## `v4.8`
+
+```
+MODIFIES_TUPLES: FALSE
+ADDS_TUPLES:     FALSE
+```
+
+Adds governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+
+New type `lakekeeper_catalog_tag` (one instance per tag definition):
+
+- `project` parent, `ownership`, and a directly-assignable `apply` relation — the per-tag delegation point ("may attach/detach THIS tag" without owning the definition).
+- Actions `can_read`, `can_update`, `can_delete`, `can_apply`; grants `can_grant_apply`, `can_change_ownership`, `can_read_assignments`. Management derives from `ownership` or `security_admin from project`.
+
+`project`:
+
+- Add `tag_creator` relation (`[user, role#assignee] or security_admin`) — delegates tag-definition creation without granting full `security_admin`, mirroring `role_creator`.
+- Add `can_create_tag` (from `tag_creator`), `can_list_tags` (from `can_get_metadata`), and `can_grant_tag_creator` (from `security_admin or admin from server`).
+
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`:
+
+- Add `manage_tags` relation, `can_manage_tags` action, `can_grant_manage_tags` grant. `manage_tags` is independent of `modify` (separation of duties: classify without holding data/DDL rights) and inherits down the resource hierarchy. Attaching a tag to a resource requires `can_manage_tags` on the resource **and** `can_apply` on the tag definition.
+
 ## `v4.7`
 
 ```

@@ -17,6 +17,9 @@ type project
     define data_admin: [user, role#assignee] or project_admin
     # Can create new roles - cannot add assignees to existing roles
     define role_creator: [user, role#assignee] or security_admin
+    # Can create new tag definitions - cannot manage existing ones (those key
+    # off ownership / security_admin per lakekeeper_catalog_tag.fga)
+    define tag_creator: [user, role#assignee] or security_admin
 
     # ------------------ Assignable Privileges ------------------
     # Privileges relevant for the warehouse and sub-objects
@@ -45,6 +48,10 @@ type project
     # the transitive member/member-of listings. Describe-level bar.
     define can_list_roles: can_get_metadata or admin from server
     define can_search_roles: can_list_roles or admin from server
+    # Tags (governance vocabulary — project-scoped). Definition lifecycle:
+    # create/list here; per-definition update/delete/apply on lakekeeper_catalog_tag.
+    define can_create_tag: tag_creator
+    define can_list_tags: can_get_metadata
     # Read PROJECT-level privilege grants (who holds security_admin/data_admin/etc.).
     # Distinct from role.can_read_assignments (role membership): only grantors may list
     # project grants. "Only if we can GRANT a privilege, we can LIST them for now."
@@ -57,6 +64,7 @@ type project
 
     # GRANT Permissions
     define can_grant_role_creator: security_admin or admin from server
+    define can_grant_tag_creator: security_admin or admin from server
     define can_grant_create: security_admin or admin from server
     define can_grant_describe: security_admin or admin from server
     define can_grant_modify: security_admin or admin from server

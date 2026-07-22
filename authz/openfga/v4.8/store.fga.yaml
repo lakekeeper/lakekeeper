@@ -165,7 +165,123 @@ tuples:
   - user: user:owner_of_role_namespace_2_1_owner
     relation: ownership
     object: role:namespace_2_1_owner
+  # ---- Governance tags (v4.8) ----
+  # A tag definition parented to project_1
+  - user: project:project_1
+    relation: project
+    object: lakekeeper_catalog_tag:tag_pii
+  # Project security admin (governs the tag vocabulary + attachment)
+  - user: user:sec_admin
+    relation: security_admin
+    object: project:project_1
+  # Plain data admin: has `modify` everywhere, must NOT get manage_tags (SoD)
+  - user: user:data_admin_u
+    relation: data_admin
+    object: project:project_1
+  # Tag owner
+  - user: user:tag_owner
+    relation: ownership
+    object: lakekeeper_catalog_tag:tag_pii
+  # Per-tag apply delegation: may apply tag_pii, nothing else
+  - user: user:tag_applier
+    relation: apply
+    object: lakekeeper_catalog_tag:tag_pii
+  # Steward: manage_tags on table_1 only (no modify, no tag grant)
+  - user: user:steward
+    relation: manage_tags
+    object: lakekeeper_table:warehouse_1/table_1
+  # Tag steward: may create tag definitions, but is not a security admin
+  - user: user:tag_steward
+    relation: tag_creator
+    object: project:project_1
 tests:
+  - name: Tags - project security admin governs vocabulary and attachment
+    check:
+      - user: user:sec_admin
+        object: project:project_1
+        assertions:
+          can_create_tag: true
+          can_list_tags: true
+      - user: user:sec_admin
+        object: lakekeeper_catalog_tag:tag_pii
+        assertions:
+          can_read: true
+          can_update: true
+          can_delete: true
+          can_apply: true
+          can_grant_apply: true
+      - user: user:sec_admin
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_manage_tags: true
+  - name: Tags - SoD, data_admin has modify but never manage_tags
+    check:
+      - user: user:data_admin_u
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_write_data: true
+          can_manage_tags: false
+      - user: user:data_admin_u
+        object: lakekeeper_catalog_tag:tag_pii
+        assertions:
+          can_apply: false
+          can_update: false
+  - name: Tags - owner manages the definition, attaching still needs target manage_tags
+    check:
+      - user: user:tag_owner
+        object: lakekeeper_catalog_tag:tag_pii
+        assertions:
+          can_read: true
+          can_update: true
+          can_delete: true
+          can_apply: true
+          can_grant_apply: true
+      - user: user:tag_owner
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_manage_tags: false
+  - name: Tags - per-tag apply delegation is scoped to the definition
+    check:
+      - user: user:tag_applier
+        object: lakekeeper_catalog_tag:tag_pii
+        assertions:
+          can_read: true
+          can_apply: true
+          can_update: false
+          can_delete: false
+          can_grant_apply: false
+      - user: user:tag_applier
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_manage_tags: false
+  - name: Tags - steward manages tags on a resource without modify or a tag grant
+    check:
+      - user: user:steward
+        object: lakekeeper_table:warehouse_1/table_1
+        assertions:
+          can_manage_tags: true
+          can_write_data: false
+      - user: user:steward
+        object: lakekeeper_catalog_tag:tag_pii
+        assertions:
+          can_apply: false
+  - name: Tags - tag_creator delegates definition creation without security_admin
+    check:
+      - user: user:tag_steward
+        object: project:project_1
+        assertions:
+          can_create_tag: true
+          can_grant_tag_creator: false   # not a security admin / server admin
+          can_read_assignments: false    # not a security admin
+      - user: user:sec_admin
+        object: project:project_1
+        assertions:
+          can_create_tag: true           # security_admin still creates (superset)
+          can_grant_tag_creator: true
+      - user: user:data_admin_u
+        object: project:project_1
+        assertions:
+          can_create_tag: false          # data admin cannot create tags (SoD)
   - name: Test Almighty Operator
     check:
       - user: user:operator

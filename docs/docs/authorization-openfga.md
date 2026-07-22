@@ -13,13 +13,14 @@ The default permission model is focused on collaborating on data. Permissions ar
 | Entity    | Grant                                                            |
 |-----------|------------------------------------------------------------------|
 | server    | admin, operator                                                  |
-| project   | project_admin, security_admin, data_admin, role_creator, describe, select, create, modify |
-| warehouse | ownership, pass_grants, manage_grants, describe, select, create, modify |
-| namespace | ownership, pass_grants, manage_grants, describe, select, create, modify |
-| table     | ownership, pass_grants, manage_grants, describe, select, modify  |
-| view      | ownership, pass_grants, manage_grants, describe, select, modify  |
-| generic table | ownership, pass_grants, manage_grants, describe, select, modify |
+| project   | project_admin, security_admin, data_admin, role_creator, tag_creator, describe, select, create, modify |
+| warehouse | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, modify |
+| namespace | ownership, pass_grants, manage_grants, manage_tags, describe, select, create, modify |
+| table     | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify  |
+| view      | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify  |
+| generic table | ownership, pass_grants, manage_grants, manage_tags, describe, select, modify |
 | role      | assignee, ownership                                              |
+| tag       | ownership, apply                                                 |
 
 
 ##### Ownership
@@ -43,6 +44,9 @@ A `project_admin` in a project has the combined responsibilities of both `securi
 ##### Project: Role Creator
 A `role_creator` in a project can create new roles within it. This role is essential for delegating the creation of roles without granting broader administrative privileges.
 
+##### Project: Tag Creator
+A `tag_creator` in a project can create new governance tag definitions within it, without holding broader administrative privileges — the tag analogue of `role_creator`. Managing an *existing* definition (update, delete, delegating who may apply it) is not conferred by `tag_creator`; it keys off the definition's `ownership` or `security_admin`. See [Tags](#tags).
+
 ##### Describe
 The `describe` grant allows a user to view metadata and details about an object without modifying it. This includes listing objects and viewing their properties. The `describe` grant is inherited down the object hierarchy, meaning if a user has the `describe` grant on a higher-level entity, they can also describe all child entities within it. The `describe` grant is implicitly included with the `select`, `create`, and `modify` grants.
 
@@ -60,6 +64,14 @@ The `pass_grants` grant allows a user to pass their own privileges to other user
 
 ##### Manage Grants
 The `manage_grants` grant allows a user to manage all grants on an object, including creating, modifying, and revoking grants. This also includes `manage_grants` and `pass_grants`.
+
+##### Manage Tags
+The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
+
+## Tags
+Governance tags are project-scoped definitions, each represented in the model as a `lakekeeper_catalog_tag` object parented to its project. A [`tag_creator`](#project-tag-creator) creates definitions and becomes the definition's `ownership`, which — together with a project `security_admin` — allows updating it, deleting it, and delegating who may apply it. The directly-assignable `apply` grant lets a principal attach and detach that specific tag ("may apply *this* tag") without owning the definition.
+
+Attaching a tag to a resource requires **both** `apply` on the tag definition **and** `manage_tags` on the target resource. Detaching requires the same pair, so a governance tag cannot be stripped from a resource with target-side rights alone.
 
 ## Inheritance
 

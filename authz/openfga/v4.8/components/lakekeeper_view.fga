@@ -14,6 +14,9 @@ type lakekeeper_view
     define describe: [user, role#assignee] or ownership or select or describe from parent
     define select: [user, role#assignee] or ownership or modify or select from parent
     define modify: [user, role#assignee] or ownership or modify from parent
+    # Governance tag attachment. Independent of `modify` (separation of duties);
+    # inherits from the parent namespace.
+    define manage_tags: [user, role#assignee] or manage_tags from parent
 
     # ------------------ Actions ------------------
     define can_drop: modify
@@ -23,8 +26,9 @@ type lakekeeper_view
     define can_select: select
     define can_rename: modify
     define can_include_in_list: can_get_metadata
-    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_change_ownership
+    define can_read_assignments: can_grant_pass_grants or can_grant_manage_grants or can_grant_describe or can_grant_select or can_grant_modify or can_grant_manage_tags or can_change_ownership
     define can_set_protection: modify
+    define can_manage_tags: manage_tags
     # Task permissions
     define can_get_tasks: describe
     define can_control_tasks: modify
@@ -35,4 +39,5 @@ type lakekeeper_view
     define can_grant_describe: manage_grants or (describe and pass_grants)
     define can_grant_select: manage_grants or (select and pass_grants)
     define can_grant_modify: manage_grants or (modify and pass_grants)
+    define can_grant_manage_tags: manage_grants
     define can_change_ownership: manage_grants
