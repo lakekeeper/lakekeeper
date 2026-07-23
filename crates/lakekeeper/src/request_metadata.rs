@@ -575,6 +575,12 @@ pub struct RequestMetadataTestBuilder {
     pub is_instance_admin: bool,
     #[builder(default, setter(strip_option))]
     pub token_roles: Option<TokenRoles>,
+    /// Roles a post-authentication admission gate resolved for the caller. In
+    /// production only the auth middleware sets these (via the `pub(crate)`
+    /// [`RequestMetadata::set_admission_roles`]); this builder field lets tests
+    /// construct a request that carries them.
+    #[builder(default, setter(strip_option))]
+    pub admission_roles: Option<TokenRoles>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -591,7 +597,7 @@ impl From<RequestMetadataTestBuilder> for RequestMetadata {
             user_agent: None,
             engines: MatchedEngines::default(),
             token_roles: b.token_roles,
-            admission_roles: None,
+            admission_roles: b.admission_roles,
             idempotency_key: None,
             is_instance_admin: b.is_instance_admin,
         }
