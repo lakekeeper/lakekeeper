@@ -6,6 +6,7 @@ pub mod role;
 pub mod server;
 pub mod table;
 pub mod tabular;
+pub mod tag;
 pub mod view;
 pub mod warehouse;
 
@@ -18,5 +19,6 @@ pub use role::*;
 pub use server::*;
 pub use table::*;
 pub use tabular::*;
+pub use tag::*;
 pub use view::*;
 pub use warehouse::*;

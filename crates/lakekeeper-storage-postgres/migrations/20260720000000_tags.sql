@@ -87,3 +87,30 @@ select trigger_updated_at('tag');
 create index tag_tabular_idx on tag (warehouse_id, tabular_id) where tabular_id is not null;
 -- serves the tag_definition_id_fkey ON DELETE RESTRICT check and reverse lookup by definition + value
 create index tag_definition_idx on tag (tag_definition_id, value);
+
+-- Register the tag management endpoints in the api_endpoints enum (endpoint
+-- statistics). Added here, not used in this migration, so the in-txn ADD VALUE
+-- is safe.
+alter type api_endpoints add value if not exists 'management-v1-create-tag-definition';
+alter type api_endpoints add value if not exists 'management-v1-list-tag-definitions';
+alter type api_endpoints add value if not exists 'management-v1-get-tag-definition';
+alter type api_endpoints add value if not exists 'management-v1-update-tag-definition';
+alter type api_endpoints add value if not exists 'management-v1-delete-tag-definition';
+alter type api_endpoints add value if not exists 'management-v1-set-warehouse-tag';
+alter type api_endpoints add value if not exists 'management-v1-delete-warehouse-tag';
+alter type api_endpoints add value if not exists 'management-v1-list-warehouse-tags';
+alter type api_endpoints add value if not exists 'management-v1-set-namespace-tag';
+alter type api_endpoints add value if not exists 'management-v1-delete-namespace-tag';
+alter type api_endpoints add value if not exists 'management-v1-list-namespace-tags';
+alter type api_endpoints add value if not exists 'management-v1-set-table-tag';
+alter type api_endpoints add value if not exists 'management-v1-delete-table-tag';
+alter type api_endpoints add value if not exists 'management-v1-list-table-tags';
+alter type api_endpoints add value if not exists 'management-v1-set-table-column-tag';
+alter type api_endpoints add value if not exists 'management-v1-delete-table-column-tag';
+alter type api_endpoints add value if not exists 'management-v1-list-table-column-tags';
+alter type api_endpoints add value if not exists 'management-v1-set-view-tag';
+alter type api_endpoints add value if not exists 'management-v1-delete-view-tag';
+alter type api_endpoints add value if not exists 'management-v1-list-view-tags';
+alter type api_endpoints add value if not exists 'management-v1-set-generic-table-tag';
+alter type api_endpoints add value if not exists 'management-v1-delete-generic-table-tag';
+alter type api_endpoints add value if not exists 'management-v1-list-generic-table-tags';

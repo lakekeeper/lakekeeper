@@ -11,6 +11,7 @@ pub mod v1 {
     pub mod server;
     pub mod table;
     pub mod tabular;
+    pub mod tag;
     pub mod task_queue;
     pub mod tasks;
     pub mod user;
@@ -61,6 +62,11 @@ pub mod v1 {
     use server::{BootstrapRequest, ServerInfo, Service as _};
     use table::TableManagementService as _;
     use tabular::TabularManagementService as _;
+    use tag::{
+        AppliedTag, CreateTagDefinitionRequest, ListTagDefinitionsQuery,
+        ListTagDefinitionsResponse, ListTagsResponse, Service as _, SetTagRequest, TagDefinition,
+        UpdateTagDefinitionRequest,
+    };
     use typed_builder::TypedBuilder;
     use user::{
         CreateUserRequest, SearchUserRequest, SearchUserResponse, Service as _, UpdateUserRequest,
@@ -144,7 +150,7 @@ pub mod v1 {
         request_metadata::RequestMetadata,
         service::{
             Actor, CatalogStore, CreateOrUpdateUserResponse, GenericTableId, NamespaceId, RoleId,
-            SecretStore, State, TableId, TabularId, ViewId,
+            SecretStore, State, TableId, TabularId, TagDefinitionId, ViewId,
             authn::UserId,
             authz::Authorizer,
             tasks::{TaskId, TaskQueueName},
@@ -629,6 +635,660 @@ pub mod v1 {
         ApiServer::<C, A, S>::update_role_source_system(api_context, metadata, role_id, request)
             .await
             .map(|role| (StatusCode::OK, Json(role)))
+    }
+
+    /// Create Tag Definition
+    ///
+    /// Registers a tag definition in the project's vocabulary.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tag",
+        path = ManagementV1Endpoint::CreateTagDefinition.path(),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION),),
+        request_body = CreateTagDefinitionRequest,
+        responses(
+            (status = 201, description = "Tag definition successfully created", body = TagDefinition),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn create_tag_definition<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<CreateTagDefinitionRequest>,
+    ) -> Response {
+        match ApiServer::<C, A, S>::create_tag_definition(request, api_context, metadata).await {
+            Ok(tag_definition) => (StatusCode::CREATED, Json(tag_definition)).into_response(),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// List Tag Definitions
+    ///
+    /// Returns the tag definitions of the project.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListTagDefinitions.path(),
+        params(ListTagDefinitionsQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "List of tag definitions", body = ListTagDefinitionsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_tag_definitions<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Query(query): Query<ListTagDefinitionsQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagDefinitionsResponse> {
+        let response =
+            ApiServer::<C, A, S>::list_tag_definitions(api_context, query, metadata).await?;
+        Ok(response)
+    }
+
+    /// Get Tag Definition
+    ///
+    /// Retrieves a tag definition, including the allowed values of an
+    /// enumerated definition.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::GetTagDefinition.path(),
+        params(("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tag definition details", body = TagDefinition),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_tag_definition<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, Json<TagDefinition>)> {
+        ApiServer::<C, A, S>::get_tag_definition(api_context, metadata, tag_definition_id)
+            .await
+            .map(|tag_definition| (StatusCode::OK, Json(tag_definition)))
+    }
+
+    /// Update Tag Definition
+    ///
+    /// Replaces name, description and scope, and adds allowed values. Scope can
+    /// only be widened; the value kind is immutable.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "tag",
+        path = ManagementV1Endpoint::UpdateTagDefinition.path(),
+        params(("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = UpdateTagDefinitionRequest,
+        responses(
+            (status = 200, description = "Tag definition updated successfully", body = TagDefinition),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn update_tag_definition<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateTagDefinitionRequest>,
+    ) -> Result<(StatusCode, Json<TagDefinition>)> {
+        ApiServer::<C, A, S>::update_tag_definition(
+            api_context,
+            metadata,
+            tag_definition_id,
+            request,
+        )
+        .await
+        .map(|tag_definition| (StatusCode::OK, Json(tag_definition)))
+    }
+
+    /// Delete Tag Definition
+    ///
+    /// Removes a tag definition that is no longer applied to any target.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteTagDefinition.path(),
+        params(("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag definition deleted successfully"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_tag_definition<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_tag_definition(api_context, metadata, tag_definition_id)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// Set Warehouse Tag
+    ///
+    /// Applies a tag to the warehouse, or updates its value if already applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetWarehouseTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_warehouse_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, tag_name)): Path<(WarehouseId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_warehouse_tag(
+            warehouse_id,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete Warehouse Tag
+    ///
+    /// Removes a tag from the warehouse. Succeeds without change if the tag
+    /// is not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteWarehouseTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_warehouse_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, tag_name)): Path<(WarehouseId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_warehouse_tag(warehouse_id, tag_name, api_context, metadata)
+            .await
+            .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Warehouse Tags
+    ///
+    /// Returns the tags applied to the warehouse.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListWarehouseTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the warehouse", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_warehouse_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_warehouse_tags(warehouse_id, api_context, metadata).await
+    }
+
+    /// Set Namespace Tag
+    ///
+    /// Applies a tag to the namespace, or updates its value if already applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetNamespaceTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_namespace_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id, tag_name)): Path<(WarehouseId, NamespaceId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_namespace_tag(
+            warehouse_id,
+            namespace_id,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete Namespace Tag
+    ///
+    /// Removes a tag from the namespace. Succeeds without change if the tag
+    /// is not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteNamespaceTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_namespace_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id, tag_name)): Path<(WarehouseId, NamespaceId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_namespace_tag(
+            warehouse_id,
+            namespace_id,
+            tag_name,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Namespace Tags
+    ///
+    /// Returns the tags applied to the namespace.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListNamespaceTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the namespace", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_namespace_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_namespace_tags(warehouse_id, namespace_id, api_context, metadata)
+            .await
+    }
+
+    /// Set Table Tag
+    ///
+    /// Applies a tag to the table, or updates its value if already applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetTableTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_table_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id, tag_name)): Path<(WarehouseId, TableId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_table_tag(
+            warehouse_id,
+            table_id,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete Table Tag
+    ///
+    /// Removes a tag from the table. Succeeds without change if the tag is
+    /// not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteTableTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_table_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id, tag_name)): Path<(WarehouseId, TableId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_table_tag(
+            warehouse_id,
+            table_id,
+            tag_name,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Table Tags
+    ///
+    /// Returns the tags applied to the table.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListTableTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the table", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_table_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_table_tags(warehouse_id, table_id, api_context, metadata).await
+    }
+
+    /// Set Table Column Tag
+    ///
+    /// Applies a tag to a column of the table's current schema, or updates
+    /// its value if already applied. Nested columns are addressed with `.`
+    /// as separator (e.g. `address.zip`).
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetTableColumnTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("column_name" = String, Path, description = "Column name in the table's current schema"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_table_column_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id, column_name, tag_name)): Path<(
+            WarehouseId,
+            TableId,
+            String,
+            String,
+        )>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_table_column_tag(
+            warehouse_id,
+            table_id,
+            column_name,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete Table Column Tag
+    ///
+    /// Removes a tag from a column of the table's current schema. Succeeds
+    /// without change if the tag is not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteTableColumnTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("column_name" = String, Path, description = "Column name in the table's current schema"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_table_column_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id, column_name, tag_name)): Path<(
+            WarehouseId,
+            TableId,
+            String,
+            String,
+        )>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_table_column_tag(
+            warehouse_id,
+            table_id,
+            column_name,
+            tag_name,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Table Column Tags
+    ///
+    /// Returns the tags applied to a column of the table's current schema.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListTableColumnTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("column_name" = String, Path, description = "Column name in the table's current schema"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the column", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_table_column_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id, column_name)): Path<(WarehouseId, TableId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_table_column_tags(
+            warehouse_id,
+            table_id,
+            column_name,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Set View Tag
+    ///
+    /// Applies a tag to the view, or updates its value if already applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetViewTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_view_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, view_id, tag_name)): Path<(WarehouseId, ViewId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_view_tag(
+            warehouse_id,
+            view_id,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete View Tag
+    ///
+    /// Removes a tag from the view. Succeeds without change if the tag is
+    /// not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteViewTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_view_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, view_id, tag_name)): Path<(WarehouseId, ViewId, String)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_view_tag(
+            warehouse_id,
+            view_id,
+            tag_name,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List View Tags
+    ///
+    /// Returns the tags applied to the view.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListViewTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the view", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_view_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_view_tags(warehouse_id, view_id, api_context, metadata).await
+    }
+
+    /// Set Generic Table Tag
+    ///
+    /// Applies a tag to the generic table, or updates its value if already
+    /// applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        put,
+        tag = "tag",
+        path = ManagementV1Endpoint::SetGenericTableTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = SetTagRequest,
+        responses(
+            (status = 200, description = "Tag applied", body = AppliedTag),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn set_generic_table_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, generic_table_id, tag_name)): Path<(
+            WarehouseId,
+            GenericTableId,
+            String,
+        )>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<SetTagRequest>,
+    ) -> Result<(StatusCode, Json<AppliedTag>)> {
+        ApiServer::<C, A, S>::set_generic_table_tag(
+            warehouse_id,
+            generic_table_id,
+            tag_name,
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|applied| (StatusCode::OK, Json(applied)))
+    }
+
+    /// Delete Generic Table Tag
+    ///
+    /// Removes a tag from the generic table. Succeeds without change if the
+    /// tag is not applied.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        delete,
+        tag = "tag",
+        path = ManagementV1Endpoint::DeleteGenericTableTag.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("tag_name" = String, Path, description = "Name of the tag definition"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 204, description = "Tag removed"),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn delete_generic_table_tag<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, generic_table_id, tag_name)): Path<(
+            WarehouseId,
+            GenericTableId,
+            String,
+        )>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<(StatusCode, ())> {
+        ApiServer::<C, A, S>::delete_generic_table_tag(
+            warehouse_id,
+            generic_table_id,
+            tag_name,
+            api_context,
+            metadata,
+        )
+        .await
+        .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// List Generic Table Tags
+    ///
+    /// Returns the tags applied to the generic table.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListGenericTableTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on the generic table", body = ListTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_generic_table_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagsResponse> {
+        ApiServer::<C, A, S>::list_generic_table_tags(
+            warehouse_id,
+            generic_table_id,
+            api_context,
+            metadata,
+        )
+        .await
     }
 
     /// Get allowed actions for a role
@@ -2513,6 +3173,65 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::GetRoleMetadata.path_in_management_v1(),
                     get(get_role_metadata),
+                )
+                // Tag management
+                .route(
+                    "/tag-definition",
+                    get(list_tag_definitions).post(create_tag_definition),
+                )
+                .route(
+                    "/tag-definition/{tag_definition_id}",
+                    get(get_tag_definition)
+                        .post(update_tag_definition)
+                        .delete(delete_tag_definition),
+                )
+                .route(
+                    ManagementV1Endpoint::SetWarehouseTag.path_in_management_v1(),
+                    put(set_warehouse_tag).delete(delete_warehouse_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListWarehouseTags.path_in_management_v1(),
+                    get(list_warehouse_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::SetNamespaceTag.path_in_management_v1(),
+                    put(set_namespace_tag).delete(delete_namespace_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListNamespaceTags.path_in_management_v1(),
+                    get(list_namespace_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::SetTableTag.path_in_management_v1(),
+                    put(set_table_tag).delete(delete_table_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTableTags.path_in_management_v1(),
+                    get(list_table_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::SetTableColumnTag.path_in_management_v1(),
+                    put(set_table_column_tag).delete(delete_table_column_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTableColumnTags.path_in_management_v1(),
+                    get(list_table_column_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::SetViewTag.path_in_management_v1(),
+                    put(set_view_tag).delete(delete_view_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListViewTags.path_in_management_v1(),
+                    get(list_view_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::SetGenericTableTag.path_in_management_v1(),
+                    put(set_generic_table_tag).delete(delete_generic_table_tag),
+                )
+                .route(
+                    ManagementV1Endpoint::ListGenericTableTags.path_in_management_v1(),
+                    get(list_generic_table_tags),
                 )
                 // Role membership management
                 .route(

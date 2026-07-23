@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ProjectId,
+    api::iceberg::v1::PaginationQuery,
     service::{
-        CatalogBackendError, InvalidPaginationToken, NamespaceId, ProjectIdNotFoundError,
-        TabularId, TagDefinitionId, TagId, WarehouseId, define_transparent_error,
-        impl_error_stack_methods, impl_from_with_detail,
+        CatalogBackendError, CatalogStore, InvalidPaginationToken, NamespaceId,
+        ProjectIdNotFoundError, TabularId, TagDefinitionId, TagId, Transaction, WarehouseId,
+        define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
     },
 };
 
@@ -64,12 +65,170 @@ pub fn validate_tag_name(name: &str) -> Result<(), ErrorModel> {
     Ok(())
 }
 
-/// Target types a `TagDefinition` may be applied to. Stored as `text` so adding
-/// a type is a Rust-only change.
+/// Validate a value against a definition's value contract.
+///
+/// # Errors
+/// `400` if a marker carries a value, a value is missing/empty for a value-taking
+/// kind, or an enumerated value is not in `allowed_values` (case-sensitive exact).
+pub fn validate_tag_value(
+    value_kind: TagValueKind,
+    allowed_values: &[String],
+    value: Option<&str>,
+) -> Result<(), InvalidTagValue> {
+    match value_kind {
+        TagValueKind::Marker => {
+            if value.is_some() {
+                return Err(InvalidTagValue::new("Marker tags do not take a value"));
+            }
+        }
+        TagValueKind::FreeText => {
+            if value.is_none_or(str::is_empty) {
+                return Err(InvalidTagValue::new("A value is required for this tag"));
+            }
+        }
+        TagValueKind::Enumerated => {
+            let Some(value) = value else {
+                return Err(InvalidTagValue::new("A value is required for this tag"));
+            };
+            if !allowed_values.iter().any(|v| v == value) {
+                return Err(InvalidTagValue::new(
+                    "Value is not in the allowed values for this tag",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("{message}")]
+pub struct InvalidTagValue {
+    pub message: String,
+    pub stack: Vec<String>,
+}
+impl InvalidTagValue {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(InvalidTagValue);
+impl From<InvalidTagValue> for ErrorModel {
+    fn from(err: InvalidTagValue) -> Self {
+        ErrorModel::builder()
+            .r#type("InvalidTagValue")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.message.clone())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// Validate that a definition's scope permits attaching to a target of
+/// `target_scope`.
+///
+/// # Errors
+/// `400` naming the disallowed scope.
+pub fn validate_tag_scope(
+    allowed: &[TagScope],
+    target_scope: TagScope,
+) -> Result<(), TagScopeNotAllowed> {
+    if allowed.contains(&target_scope) {
+        return Ok(());
+    }
+    Err(TagScopeNotAllowed::new(format!(
+        "Tag does not allow scope `{}`",
+        target_scope.as_str()
+    )))
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("{message}")]
+pub struct TagScopeNotAllowed {
+    pub message: String,
+    pub stack: Vec<String>,
+}
+impl TagScopeNotAllowed {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(TagScopeNotAllowed);
+impl From<TagScopeNotAllowed> for ErrorModel {
+    fn from(err: TagScopeNotAllowed) -> Self {
+        ErrorModel::builder()
+            .r#type("TagScopeNotAllowed")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.message.clone())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// Enforce the widen-only scope policy: every element of `current` must still be
+/// present in `requested` (set-superset; order-free).
+///
+/// # Errors
+/// `400` listing the scopes that would be removed.
+pub fn validate_scope_widening(
+    current: &[TagScope],
+    requested: &[TagScope],
+) -> Result<(), TagScopeNarrowed> {
+    let mut removed: Vec<&'static str> = current
+        .iter()
+        .filter(|s| !requested.contains(s))
+        .map(|s| s.as_str())
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    removed.sort_unstable();
+    removed.dedup();
+    Err(TagScopeNarrowed::new(
+        removed.into_iter().map(String::from).collect(),
+    ))
+}
+
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("Tag definition scope cannot be narrowed. Removed scopes: {}", removed_scopes.join(", "))]
+pub struct TagScopeNarrowed {
+    /// The scopes that would be removed, sorted.
+    pub removed_scopes: Vec<String>,
+    pub stack: Vec<String>,
+}
+impl TagScopeNarrowed {
+    #[must_use]
+    pub fn new(removed_scopes: Vec<String>) -> Self {
+        Self {
+            removed_scopes,
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(TagScopeNarrowed);
+impl From<TagScopeNarrowed> for ErrorModel {
+    fn from(err: TagScopeNarrowed) -> Self {
+        ErrorModel::builder()
+            .r#type("TagScopeNarrowed")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// Target types a tag definition may be applied to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum TagScope {
-    Project,
     Warehouse,
     Namespace,
     Table,
@@ -82,7 +241,6 @@ impl TagScope {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            TagScope::Project => "project",
             TagScope::Warehouse => "warehouse",
             TagScope::Namespace => "namespace",
             TagScope::Table => "table",
@@ -95,7 +253,6 @@ impl TagScope {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
-            "project" => TagScope::Project,
             "warehouse" => TagScope::Warehouse,
             "namespace" => TagScope::Namespace,
             "table" => TagScope::Table,
@@ -107,11 +264,10 @@ impl TagScope {
     }
 }
 
-/// How a tag came to exist. Server-stamped; only `Manual` from a public write.
-/// Automated producers (classification, external-catalog sync) add variants when
-/// they ship — mirrors the `tag_source` DB enum.
+/// How a tag came to exist. Server-assigned; currently always `manual`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -138,10 +294,11 @@ impl TagSource {
     }
 }
 
-/// How a definition's value is constrained. Explicit per definition (never
-/// inferred from allowed-value rows) — mirrors the `tag_value_kind` DB enum.
+/// How a tag definition's value is constrained: presence-only, arbitrary text,
+/// or one of a fixed set of allowed values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
 #[cfg_attr(
     feature = "sqlx-postgres",
@@ -381,8 +538,69 @@ define_transparent_error! {
     variants: [
         TagNameAlreadyExists,
         TagDefinitionIdNotFound,
+        TagScopeNarrowed,
+        TagDefinitionReserved,
+        InvalidTagDefinition,
         CatalogBackendError
     ]
+}
+
+/// The definition's name (current or requested) lives in a reserved namespace
+/// (see [`RESERVED_TAG_PREFIXES`]) — such definitions are catalog-managed and
+/// read-only through this API.
+#[derive(thiserror::Error, PartialEq, Debug, Default)]
+#[error(
+    "The tag name is in a reserved namespace; such tags are managed by the catalog \
+     and cannot be written through this API"
+)]
+pub struct TagDefinitionReserved {
+    pub stack: Vec<String>,
+}
+impl TagDefinitionReserved {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+impl_error_stack_methods!(TagDefinitionReserved);
+impl From<TagDefinitionReserved> for ErrorModel {
+    fn from(err: TagDefinitionReserved) -> Self {
+        ErrorModel::builder()
+            .r#type("ReservedTagNamespace")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// The requested definition shape is inconsistent (e.g. allowed values on a
+/// non-enumerated kind, or an enumerated kind without allowed values).
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("{message}")]
+pub struct InvalidTagDefinition {
+    pub message: String,
+    pub stack: Vec<String>,
+}
+impl InvalidTagDefinition {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(InvalidTagDefinition);
+impl From<InvalidTagDefinition> for ErrorModel {
+    fn from(err: InvalidTagDefinition) -> Self {
+        ErrorModel::builder()
+            .r#type("InvalidTagDefinition")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.message.clone())
+            .stack(err.stack)
+            .build()
+    }
 }
 
 #[derive(thiserror::Error, PartialEq, Debug)]
@@ -419,8 +637,66 @@ define_transparent_error! {
     variants: [
         TagDefinitionIdNotFound,
         TagTargetNotFound,
+        TagScopeNotAllowed,
+        InvalidTagValue,
         CatalogBackendError
     ]
+}
+
+/// No tag definition with the requested name exists in the project.
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("No tag definition with name '{name}' exists in the project")]
+pub struct TagNameNotFound {
+    pub name: String,
+    pub stack: Vec<String>,
+}
+impl TagNameNotFound {
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(TagNameNotFound);
+impl From<TagNameNotFound> for ErrorModel {
+    fn from(err: TagNameNotFound) -> Self {
+        ErrorModel::builder()
+            .r#type("TagNameNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// The named column does not exist in the table's current schema.
+#[derive(thiserror::Error, PartialEq, Debug)]
+#[error("Column '{column}' does not exist in the table's current schema")]
+pub struct ColumnNotFound {
+    pub column: String,
+    pub stack: Vec<String>,
+}
+impl ColumnNotFound {
+    #[must_use]
+    pub fn new(column: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl_error_stack_methods!(ColumnNotFound);
+impl From<ColumnNotFound> for ErrorModel {
+    fn from(err: ColumnNotFound) -> Self {
+        ErrorModel::builder()
+            .r#type("ColumnNotFound")
+            .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
 }
 
 #[derive(thiserror::Error, PartialEq, Debug, Default)]
@@ -490,6 +766,7 @@ define_transparent_error! {
     variants: [
         TagDefinitionInUse,
         TagDefinitionIdNotFound,
+        TagDefinitionReserved,
         CatalogBackendError
     ]
 }
@@ -516,6 +793,115 @@ impl From<TagDefinitionInUse> for ErrorModel {
             .build()
     }
 }
+
+use crate::service::events::impl_authorization_failure_source;
+
+impl_authorization_failure_source!(CreateTagDefinitionError => InternalCatalogError);
+impl_authorization_failure_source!(ListTagDefinitionsError => InternalCatalogError);
+impl_authorization_failure_source!(UpdateTagDefinitionError => InternalCatalogError);
+impl_authorization_failure_source!(DeleteTagDefinitionError => InternalCatalogError);
+impl_authorization_failure_source!(ApplyTagError => InternalCatalogError);
+impl_authorization_failure_source!(RemoveTagError => InternalCatalogError);
+impl_authorization_failure_source!(TagNameNotFound => ResourceNotFound);
+impl_authorization_failure_source!(ColumnNotFound => ResourceNotFound);
+impl_authorization_failure_source!(TagTargetNotFound => ResourceNotFound);
+
+#[async_trait::async_trait]
+pub trait CatalogTagOps
+where
+    Self: CatalogStore,
+{
+    async fn create_tag_definition<'a>(
+        project_id: &ProjectId,
+        request: CatalogCreateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<TagDefinition, CreateTagDefinitionError> {
+        Self::create_tag_definition_impl(project_id, request, transaction).await
+    }
+
+    async fn get_tag_definition(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        Self::get_tag_definition_impl(project_id, tag_definition_id, catalog_state).await
+    }
+
+    async fn get_tag_definition_by_name(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        Self::get_tag_definition_by_name_impl(project_id, name, catalog_state).await
+    }
+
+    async fn list_tag_definitions(
+        project_id: &ProjectId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagDefinitionsResponse, ListTagDefinitionsError> {
+        Self::list_tag_definitions_impl(project_id, pagination, catalog_state).await
+    }
+
+    async fn get_tag_allowed_values(
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<String>, CatalogBackendError> {
+        Self::get_tag_allowed_values_impl(tag_definition_id, catalog_state).await
+    }
+
+    async fn update_tag_definition<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        request: UpdateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<TagDefinition, UpdateTagDefinitionError> {
+        Self::update_tag_definition_impl(project_id, tag_definition_id, request, transaction).await
+    }
+
+    async fn delete_tag_definition<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), DeleteTagDefinitionError> {
+        Self::delete_tag_definition_impl(project_id, tag_definition_id, transaction).await
+    }
+
+    async fn apply_tag<'a>(
+        tag_id: TagId,
+        tag_definition_id: TagDefinitionId,
+        target: TagTarget,
+        value: Option<&str>,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Tag, ApplyTagError> {
+        Self::apply_tag_impl(
+            tag_id,
+            tag_definition_id,
+            target,
+            value,
+            source,
+            transaction,
+        )
+        .await
+    }
+
+    async fn remove_tag<'a>(
+        tag_id: TagId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), RemoveTagError> {
+        Self::remove_tag_impl(tag_id, transaction).await
+    }
+
+    async fn list_tags_for_target(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<Tag>, CatalogBackendError> {
+        Self::list_tags_for_target_impl(target, catalog_state).await
+    }
+}
+
+impl<T> CatalogTagOps for T where T: CatalogStore {}
 
 #[cfg(test)]
 mod tests {
@@ -567,9 +953,127 @@ mod tests {
     }
 
     #[test]
+    fn validate_tag_value_marker() {
+        assert_eq!(validate_tag_value(TagValueKind::Marker, &[], None), Ok(()));
+        assert_eq!(
+            validate_tag_value(TagValueKind::Marker, &[], Some("x")),
+            Err(InvalidTagValue::new("Marker tags do not take a value"))
+        );
+    }
+
+    #[test]
+    fn validate_tag_value_free_text() {
+        assert_eq!(
+            validate_tag_value(TagValueKind::FreeText, &[], Some("anything")),
+            Ok(())
+        );
+        assert_eq!(
+            validate_tag_value(TagValueKind::FreeText, &[], None),
+            Err(InvalidTagValue::new("A value is required for this tag"))
+        );
+        assert_eq!(
+            validate_tag_value(TagValueKind::FreeText, &[], Some("")),
+            Err(InvalidTagValue::new("A value is required for this tag"))
+        );
+    }
+
+    #[test]
+    fn validate_tag_value_enumerated() {
+        let allowed = vec!["public".to_string(), "internal".to_string()];
+        assert_eq!(
+            validate_tag_value(TagValueKind::Enumerated, &allowed, Some("public")),
+            Ok(())
+        );
+        assert_eq!(
+            validate_tag_value(TagValueKind::Enumerated, &allowed, None),
+            Err(InvalidTagValue::new("A value is required for this tag"))
+        );
+        // Case-sensitive exact match.
+        assert_eq!(
+            validate_tag_value(TagValueKind::Enumerated, &allowed, Some("Public")),
+            Err(InvalidTagValue::new(
+                "Value is not in the allowed values for this tag"
+            ))
+        );
+        assert_eq!(
+            validate_tag_value(TagValueKind::Enumerated, &allowed, Some("restricted")),
+            Err(InvalidTagValue::new(
+                "Value is not in the allowed values for this tag"
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_tag_scope_accepts_allowed_scope() {
+        assert_eq!(
+            validate_tag_scope(&[TagScope::Table, TagScope::Column], TagScope::Table),
+            Ok(())
+        );
+        assert_eq!(
+            validate_tag_scope(&[TagScope::Table, TagScope::Column], TagScope::Column),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_tag_scope_rejects_disallowed_scope() {
+        let err = validate_tag_scope(&[TagScope::Warehouse, TagScope::Column], TagScope::Table)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TagScopeNotAllowed::new("Tag does not allow scope `table`")
+        );
+        assert_eq!(err.to_string(), "Tag does not allow scope `table`");
+        // Serde name is used for multi-word scopes.
+        let err = validate_tag_scope(&[TagScope::Table], TagScope::GenericTable).unwrap_err();
+        assert_eq!(err.to_string(), "Tag does not allow scope `generic-table`");
+        // Empty scope list allows nothing.
+        let err = validate_tag_scope(&[], TagScope::Warehouse).unwrap_err();
+        assert_eq!(err.to_string(), "Tag does not allow scope `warehouse`");
+    }
+
+    #[test]
+    fn validate_scope_widening_accepts_supersets() {
+        // Identical sets, order-free.
+        assert_eq!(
+            validate_scope_widening(
+                &[TagScope::Table, TagScope::Column],
+                &[TagScope::Column, TagScope::Table]
+            ),
+            Ok(())
+        );
+        // Strict superset.
+        assert_eq!(
+            validate_scope_widening(
+                &[TagScope::Table],
+                &[TagScope::Table, TagScope::View, TagScope::Column]
+            ),
+            Ok(())
+        );
+        // Empty current widens to anything.
+        assert_eq!(validate_scope_widening(&[], &[TagScope::Warehouse]), Ok(()));
+    }
+
+    #[test]
+    fn validate_scope_widening_rejects_narrowing() {
+        let err = validate_scope_widening(
+            &[TagScope::Warehouse, TagScope::Table, TagScope::Column],
+            &[TagScope::Table],
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            TagScopeNarrowed::new(vec!["column".to_string(), "warehouse".to_string()])
+        );
+        assert_eq!(
+            err.to_string(),
+            "Tag definition scope cannot be narrowed. Removed scopes: column, warehouse"
+        );
+    }
+
+    #[test]
     fn tag_scope_round_trips() {
         for scope in [
-            TagScope::Project,
             TagScope::Warehouse,
             TagScope::Namespace,
             TagScope::Table,

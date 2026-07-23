@@ -185,6 +185,43 @@ where
     row.map(TagDefinition::try_from).transpose()
 }
 
+/// Fetch a single tag definition by case-insensitive name within the project
+/// (matches the `lower(name)` unique index). Returns `None` if no definition with
+/// that name exists in the project. Scalar only — allowed values are fetched
+/// separately.
+pub(crate) async fn get_tag_definition_by_name<'e, 'c: 'e, E>(
+    project_id: &ProjectId,
+    name: &str,
+    connection: E,
+) -> Result<Option<TagDefinition>, CatalogBackendError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
+    let row = sqlx::query_as!(
+        TagDefinitionRow,
+        r#"
+        SELECT
+            tag_definition_id,
+            project_id,
+            name,
+            description,
+            scope,
+            value_kind AS "value_kind: TagValueKind",
+            created_at,
+            updated_at
+        FROM tag_definition
+        WHERE project_id = $1 AND lower(name) = lower($2)
+        "#,
+        &**project_id,
+        name,
+    )
+    .fetch_optional(connection)
+    .await
+    .map_err(|e| e.into_catalog_backend_error())?;
+
+    row.map(TagDefinition::try_from).transpose()
+}
+
 /// List a project's tag definitions, keyset-paginated by `(created_at, tag_definition_id)`.
 /// Scalar only — the allowed-value child table is never joined here.
 pub(crate) async fn list_tag_definitions<'e, 'c: 'e, E>(
@@ -754,6 +791,50 @@ mod tests {
         let other_project = ProjectId::new_random();
         create_project(&state, &other_project).await;
         let cross = get_tag_definition(&other_project, id, &pool).await.unwrap();
+        assert_eq!(cross, None);
+    }
+
+    #[sqlx::test]
+    async fn test_get_tag_definition_by_name(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let project_id = ProjectId::new_random();
+        create_project(&state, &project_id).await;
+
+        let id = TagDefinitionId::new_random();
+        let mut txn = pool.begin().await.unwrap();
+        let created = create_tag_definition(
+            &project_id,
+            CatalogCreateTagDefinitionRequest::builder()
+                .tag_definition_id(id)
+                .name("PII.Email")
+                .description(Some("Email addresses"))
+                .scope(&[TagScope::Column])
+                .value_spec(TagValueSpec::Marker)
+                .build(),
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        // Lookup is case-insensitive.
+        let got = get_tag_definition_by_name(&project_id, "pii.email", &pool)
+            .await
+            .unwrap();
+        assert_eq!(got, Some(created));
+
+        // Unknown name -> None.
+        let absent = get_tag_definition_by_name(&project_id, "pii.phone", &pool)
+            .await
+            .unwrap();
+        assert_eq!(absent, None);
+
+        // A definition is invisible from a different project (no cross-project reads).
+        let other_project = ProjectId::new_random();
+        create_project(&state, &other_project).await;
+        let cross = get_tag_definition_by_name(&other_project, "PII.Email", &pool)
+            .await
+            .unwrap();
         assert_eq!(cross, None);
     }
 

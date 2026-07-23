@@ -77,8 +77,8 @@ use super::{
     tabular::table::load_tables,
     tag::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
-        get_tag_definition, list_tag_definitions, list_tags_for_target, remove_tag,
-        update_tag_definition,
+        get_tag_definition, get_tag_definition_by_name, list_tag_definitions, list_tags_for_target,
+        remove_tag, update_tag_definition,
     },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -412,6 +412,14 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Option<TagDefinition>, CatalogBackendError> {
         get_tag_definition(project_id, tag_definition_id, &catalog_state.read_pool()).await
+    }
+
+    async fn get_tag_definition_by_name_impl(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        get_tag_definition_by_name(project_id, name, &catalog_state.read_pool()).await
     }
 
     async fn list_tag_definitions_impl(

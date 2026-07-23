@@ -783,6 +783,14 @@ where
         catalog_state: Self::State,
     ) -> Result<Option<TagDefinition>, CatalogBackendError>;
 
+    /// Case-insensitive name lookup within the project (matches the `lower(name)`
+    /// unique index).
+    async fn get_tag_definition_by_name_impl(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError>;
+
     async fn list_tag_definitions_impl(
         project_id: &ProjectId,
         pagination: PaginationQuery,
