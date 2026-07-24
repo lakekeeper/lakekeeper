@@ -1,5 +1,28 @@
 # Lakekeeper Plus Release Notes
 
+## v0.13.3 (2026-07-24)
+
+_Based on Lakekeeper OSS v0.13.3._
+
+### Highlights
+- **Admission-gate roles now take effect.** Roles granted by a `role_granting` admission check are finally evaluated by authorization — completing the external admission gate shipped in v0.13.0, whose granted roles previously never reached Cedar.
+
+### Features
+- **Apply admission-gate roles in Cedar authorization.** A new `AdmissionRoleProvider` (an uncached role-provider-chain leaf, mirroring the token role provider) serves the caller's admission-granted roles under their configured provider id; Cedar materialises them as `Role` entities and evaluates policies against them. Plus wires one provider per role-provider id the gate can mint under, so a gate-only deployment still resolves roles.
+- **No-Access page for instance-level 403.** An authenticated caller denied access to the instance (e.g. rejected by the admission gate) now lands on a dedicated No-Access page with proper 403 routing, instead of a broken view. (console v0.16.4)
+
+
+### Upgrade Notes
+- **Conflicting role-provider ids now fail fast.** A gate-minted `role_provider_id` that collides with a configured or token role-provider id is rejected at startup with `ExtraProviderIdConflict` — give the gate's minted roles a distinct provider id.
+- **Admission roles apply under Cedar only.** With the OpenFGA authorizer, or Cedar in externally-managed mode, admission-granted roles are not applied; the server logs a warning at startup so a misconfiguration is visible.
+
+## v0.13.2 (2026-07-23)
+
+_Based on Lakekeeper OSS v0.13.3._
+
+### Bug Fixes
+- **Maintenance page.** Console bump to 0.16.3 (console-components 0.17.2, console-plus-components 0.11.0). Redesigned maintenance date-range filters, suppressed spurious 403 notifications for maintenance tasks, and fixed the Home page chart title.
+
 ## v0.13.1 (2026-07-20)
 
 _Based on Lakekeeper OSS v0.13.3._
