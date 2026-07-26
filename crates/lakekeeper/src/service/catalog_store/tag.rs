@@ -417,6 +417,67 @@ pub struct Tag {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+// --------------------------- EFFECTIVE TAGS (inheritance) ---------------------------
+
+/// Where an effective tag is attached, relative to the queried object. `Direct` =
+/// the queried object itself; otherwise an ancestor it is inherited from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EffectiveTagSource {
+    Direct,
+    Namespace {
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+    },
+    Warehouse {
+        warehouse_id: WarehouseId,
+    },
+}
+
+/// A candidate effective tag before visibility filtering and most-specific-wins
+/// resolution. `distance` 0 = attached directly to the queried object; larger =
+/// farther ancestor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveTagCandidate {
+    pub tag_id: TagId,
+    pub tag_definition_id: TagDefinitionId,
+    pub name: String,
+    pub value: Option<String>,
+    pub source: TagSource,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub distance: i32,
+    pub origin: EffectiveTagSource,
+}
+
+/// Producer-source priority for the resolution tiebreak (lower wins). Distinct from
+/// `distance` (containment): this only breaks a same-distance, same-definition tie
+/// between producers, which cannot occur today (only `Manual`) but is defined now
+/// because the `tag` unique key includes `source` and more producers are planned.
+fn source_priority(source: TagSource) -> u8 {
+    match source {
+        TagSource::Manual => 0,
+    }
+}
+
+/// Resolve candidates to the effective set: keep one row per definition under the
+/// total order `(distance, source_priority, tag_id)` — the nearest (most specific)
+/// attachment wins, the queried object's own `Direct` tag (distance 0) beating any
+/// inherited copy. Pure and deterministic.
+#[must_use]
+pub fn resolve_effective_tags(
+    mut candidates: Vec<EffectiveTagCandidate>,
+) -> Vec<EffectiveTagCandidate> {
+    candidates.sort_by(|a, b| {
+        a.distance
+            .cmp(&b.distance)
+            .then_with(|| source_priority(a.source).cmp(&source_priority(b.source)))
+            .then_with(|| a.tag_id.cmp(&b.tag_id))
+    });
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|c| seen.insert(*c.tag_definition_id));
+    candidates
+}
+
 /// The value contract of a tag definition at write time. Bundling `allowed_values`
 /// into `Enumerated` makes the illegal combinations — a marker carrying values, an
 /// enumerated definition with none — unrepresentable for callers. Borrowed and never
@@ -514,6 +575,26 @@ define_transparent_error! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListTagDefinitionsResponse {
     pub tag_definitions: Vec<TagDefinition>,
+    pub next_page_token: Option<String>,
+}
+
+// --------------------------- LIST TAG ATTACHMENTS ---------------------------
+define_transparent_error! {
+    pub enum ListTagAttachmentsError,
+    stack_message: "Error listing tag attachments in catalog",
+    variants: [
+        CatalogBackendError,
+        InvalidPaginationToken
+    ]
+}
+
+/// A page of the targets a definition is directly attached to, plus the cursor for
+/// the next page (`None` when there are no further rows). Reverse of
+/// [`CatalogTagOps::list_tags_for_target`]: keyed by definition, it answers "which
+/// objects carry this tag". Direct attachments only — no hierarchy expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListTagAttachmentsResponse {
+    pub tags: Vec<Tag>,
     pub next_page_token: Option<String>,
 }
 
@@ -798,6 +879,7 @@ use crate::service::events::impl_authorization_failure_source;
 
 impl_authorization_failure_source!(CreateTagDefinitionError => InternalCatalogError);
 impl_authorization_failure_source!(ListTagDefinitionsError => InternalCatalogError);
+impl_authorization_failure_source!(ListTagAttachmentsError => InternalCatalogError);
 impl_authorization_failure_source!(UpdateTagDefinitionError => InternalCatalogError);
 impl_authorization_failure_source!(DeleteTagDefinitionError => InternalCatalogError);
 impl_authorization_failure_source!(ApplyTagError => InternalCatalogError);
@@ -867,6 +949,8 @@ where
         Self::delete_tag_definition_impl(project_id, tag_definition_id, transaction).await
     }
 
+    /// Returns the attachment and whether it changed (`false` = idempotent re-apply of an
+    /// identical value → no write, no change event).
     async fn apply_tag<'a>(
         tag_id: TagId,
         tag_definition_id: TagDefinitionId,
@@ -874,7 +958,7 @@ where
         value: Option<&str>,
         source: TagSource,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Tag, ApplyTagError> {
+    ) -> Result<(Tag, bool), ApplyTagError> {
         Self::apply_tag_impl(
             tag_id,
             tag_definition_id,
@@ -898,6 +982,33 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<Tag>, CatalogBackendError> {
         Self::list_tags_for_target_impl(target, catalog_state).await
+    }
+
+    /// The targets a definition is directly attached to (reverse lookup), optionally
+    /// filtered to a single `value`, keyset-paginated. Callers must resolve and
+    /// authorize the definition first; all attachments of a project-scoped definition
+    /// are in-project by construction.
+    async fn list_tag_attachments(
+        tag_definition_id: TagDefinitionId,
+        value_filter: Option<&str>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError> {
+        Self::list_tag_attachments_impl(tag_definition_id, value_filter, pagination, catalog_state)
+            .await
+    }
+
+    /// Gather the candidate effective tags for `target`: its own direct tags plus
+    /// tags on its ancestors (parent namespaces + warehouse), each annotated with a
+    /// containment `distance` and its [`EffectiveTagSource`]. Unresolved and
+    /// unfiltered — the caller applies per-ancestor visibility and most-specific-wins
+    /// resolution via [`resolve_effective_tags`]. Direct-only targets (warehouse has
+    /// no ancestors; columns never inherit) return only distance-0 candidates.
+    async fn list_effective_tag_candidates(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError> {
+        Self::list_effective_tag_candidates_impl(target, catalog_state).await
     }
 }
 
@@ -1110,6 +1221,102 @@ mod tests {
         }
         assert_eq!(TagValueKind::Enumerated.as_str(), "enumerated");
         assert_eq!(TagValueKind::parse("unknown"), None);
+    }
+
+    fn eff_cand(
+        def: u128,
+        distance: i32,
+        origin: EffectiveTagSource,
+        tag: u128,
+        value: Option<&str>,
+    ) -> EffectiveTagCandidate {
+        EffectiveTagCandidate {
+            tag_id: TagId::new(Uuid::from_u128(tag)),
+            tag_definition_id: TagDefinitionId::new(Uuid::from_u128(def)),
+            name: format!("def-{def}"),
+            value: value.map(String::from),
+            source: TagSource::Manual,
+            created_at: DateTime::from_timestamp(0, 0).unwrap(),
+            updated_at: None,
+            distance,
+            origin,
+        }
+    }
+
+    fn ns_source(ns: u128) -> EffectiveTagSource {
+        EffectiveTagSource::Namespace {
+            warehouse_id: WarehouseId::new(Uuid::from_u128(1)),
+            namespace_id: NamespaceId::new(Uuid::from_u128(ns)),
+        }
+    }
+
+    fn wh_source() -> EffectiveTagSource {
+        EffectiveTagSource::Warehouse {
+            warehouse_id: WarehouseId::new(Uuid::from_u128(1)),
+        }
+    }
+
+    #[test]
+    fn resolve_most_specific_wins_with_provenance() {
+        // def 10 attached directly (distance 0) and at the warehouse (distance 2);
+        // def 20 only at a namespace (distance 1).
+        let candidates = vec![
+            eff_cand(10, 2, wh_source(), 1, Some("wh")),
+            eff_cand(20, 1, ns_source(5), 2, Some("ns")),
+            eff_cand(10, 0, EffectiveTagSource::Direct, 3, Some("direct")),
+        ];
+        let resolved = resolve_effective_tags(candidates);
+        // Ordered by distance: def 10 (direct) then def 20 (namespace). def 10's
+        // warehouse copy is shadowed.
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(*resolved[0].tag_definition_id, Uuid::from_u128(10));
+        assert_eq!(resolved[0].value.as_deref(), Some("direct"));
+        assert_eq!(resolved[0].origin, EffectiveTagSource::Direct);
+        assert_eq!(*resolved[1].tag_definition_id, Uuid::from_u128(20));
+        assert_eq!(resolved[1].origin, ns_source(5));
+    }
+
+    #[test]
+    fn resolve_nearest_ancestor_wins() {
+        // Same definition on two non-Direct ancestors: namespace (distance 1) and
+        // warehouse (distance 2). The nearer must win. The farther copy is listed
+        // first and given the smaller tag_id, so a sort that ignored distance (or
+        // keyed only on tag_id) would wrongly pick the warehouse.
+        let candidates = vec![
+            eff_cand(10, 2, wh_source(), 1, Some("far")),
+            eff_cand(10, 1, ns_source(5), 2, Some("near")),
+        ];
+        let resolved = resolve_effective_tags(candidates);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].origin, ns_source(5));
+        assert_eq!(resolved[0].value.as_deref(), Some("near"));
+    }
+
+    #[test]
+    fn resolve_marker_dedup_across_levels() {
+        // Marker def 10 present directly and at the warehouse -> one entry (nearest).
+        let candidates = vec![
+            eff_cand(10, 2, wh_source(), 2, None),
+            eff_cand(10, 0, EffectiveTagSource::Direct, 1, None),
+        ];
+        let resolved = resolve_effective_tags(candidates);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].origin, EffectiveTagSource::Direct);
+        assert_eq!(resolved[0].value, None);
+    }
+
+    #[test]
+    fn resolve_same_distance_tiebreak_is_deterministic() {
+        // Synthetic same-(distance, source) tie for one definition (cannot arise via
+        // the unique key, but the resolver must still be deterministic): smaller
+        // tag_id wins.
+        let candidates = vec![
+            eff_cand(10, 1, ns_source(5), 9, Some("high-tag-id")),
+            eff_cand(10, 1, ns_source(5), 2, Some("low-tag-id")),
+        ];
+        let resolved = resolve_effective_tags(candidates);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].value.as_deref(), Some("low-tag-id"));
     }
 
     #[test]

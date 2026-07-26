@@ -1277,19 +1277,23 @@ pub enum CatalogTagAction {
     Apply,
     /// Detach this tag from a target. Also requires `manage_tags` on the target.
     Remove,
+    /// List the targets this tag is attached to (reverse lookup). Broader disclosure
+    /// than `Read`, so restricted to tag owners / project security admins.
+    ReadAssignments,
 }
-static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 5]> = LazyLock::new(|| {
+static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 6]> = LazyLock::new(|| {
     [
         CatalogTagAction::Read,
         CatalogTagAction::Update,
         CatalogTagAction::Delete,
         CatalogTagAction::Apply,
         CatalogTagAction::Remove,
+        CatalogTagAction::ReadAssignments,
     ]
 });
 impl CatalogTagAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogTagAction; 5] {
+    pub fn variants() -> &'static [CatalogTagAction; 6] {
         &TAG_ACTION_VARIANTS
     }
 }

@@ -827,7 +827,7 @@ where
         value: Option<&str>,
         source: TagSource,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<Tag, ApplyTagError>;
+    ) -> Result<(Tag, bool), ApplyTagError>;
 
     async fn remove_tag_impl<'a>(
         tag_id: TagId,
@@ -838,6 +838,23 @@ where
         target: TagTarget,
         catalog_state: Self::State,
     ) -> Result<Vec<Tag>, CatalogBackendError>;
+
+    /// Reverse lookup: the targets a definition is directly attached to, optionally
+    /// filtered to a single `value`, keyset-paginated. No hierarchy expansion.
+    async fn list_tag_attachments_impl(
+        tag_definition_id: TagDefinitionId,
+        value_filter: Option<&str>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError>;
+
+    /// Gather candidate effective tags for `target` (direct + ancestor tags with
+    /// containment distance and source). Unresolved/unfiltered; caller applies
+    /// visibility + most-specific-wins.
+    async fn list_effective_tag_candidates_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError>;
 
     // ---------------- Role Assignment Management ----------------
     async fn sync_role_members_by_ident_impl<'a>(

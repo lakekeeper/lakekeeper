@@ -217,6 +217,7 @@ generate_endpoints! {
         GetTagDefinition(GET, "/management/v1/tag-definition/{tag_definition_id}"),
         UpdateTagDefinition(POST, "/management/v1/tag-definition/{tag_definition_id}"),
         DeleteTagDefinition(DELETE, "/management/v1/tag-definition/{tag_definition_id}"),
+        ListTagAttachments(GET, "/management/v1/tag-definition/{tag_definition_id}/attachments"),
         SetWarehouseTag(PUT, "/management/v1/warehouse/{warehouse_id}/tags/{tag_name}"),
         DeleteWarehouseTag(DELETE, "/management/v1/warehouse/{warehouse_id}/tags/{tag_name}"),
         ListWarehouseTags(GET, "/management/v1/warehouse/{warehouse_id}/tags"),

@@ -243,16 +243,185 @@ impl IntoResponse for ListTagsResponse {
     }
 }
 
-/// A tag attached to a target.
+/// A tag on a target. With `effective=true` an entry may be inherited from an
+/// ancestor — see `inherited-from`. The `value`/`source`/`created-at`/`updated-at`
+/// fields describe the attachment that supplies the tag: the queried object itself
+/// when `inherited-from` is absent, otherwise the ancestor named there.
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct TargetTag {
-    /// ID of the applied tag definition
+    /// ID of the tag definition
     #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
     pub tag_definition_id: TagDefinitionId,
-    /// Name of the applied tag definition
+    /// Name of the tag definition
     pub name: String,
+    /// Value the tag carries on the supplying attachment
+    pub value: Option<String>,
+    /// How the supplying attachment was produced (producer axis, e.g. `manual`;
+    /// independent of direct-vs-inherited, which is `inherited-from`)
+    pub source: TagSource,
+    /// Timestamp when the supplying attachment was created
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Timestamp when the supplying attachment's value was last updated
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// For an effective tag inherited from an ancestor, the object it is attached
+    /// to. Absent when the tag is attached directly to the queried object. Only
+    /// ever populated with `effective=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherited_from: Option<TagInheritanceSource>,
+}
+
+/// The ancestor an inherited effective tag is attached to. Restricted to the levels
+/// that can actually be ancestors (warehouse / namespace).
+// Body fields use per-field `#[serde(rename)]` (not the enum-level
+// `rename_all_fields`) because utoipa's ToSchema honors per-field serde renames but
+// NOT `rename_all_fields` — the explicit renames keep the generated OpenAPI schema
+// and the runtime JSON in kebab-case agreement with the rest of the tag payloads.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum TagInheritanceSource {
+    Warehouse {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+    },
+    Namespace {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "namespace-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        namespace_id: NamespaceId,
+    },
+}
+
+impl TagInheritanceSource {
+    /// `None` for a directly-attached tag; the ancestor otherwise.
+    fn from_origin(origin: crate::service::EffectiveTagSource) -> Option<Self> {
+        use crate::service::EffectiveTagSource;
+        match origin {
+            EffectiveTagSource::Direct => None,
+            EffectiveTagSource::Warehouse { warehouse_id } => {
+                Some(Self::Warehouse { warehouse_id })
+            }
+            EffectiveTagSource::Namespace {
+                warehouse_id,
+                namespace_id,
+            } => Some(Self::Namespace {
+                warehouse_id,
+                namespace_id,
+            }),
+        }
+    }
+}
+
+/// The object a tag is attached to in a reverse-lookup listing. `type`
+/// discriminates the target kind; columns are addressed by Iceberg field-id.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum TagAttachmentTarget {
+    Warehouse {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+    },
+    Namespace {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "namespace-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        namespace_id: NamespaceId,
+    },
+    Table {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "table-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        table_id: TableId,
+    },
+    View {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "view-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        view_id: ViewId,
+    },
+    GenericTable {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "generic-table-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        generic_table_id: GenericTableId,
+    },
+    Column {
+        #[serde(rename = "warehouse-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        warehouse_id: WarehouseId,
+        #[serde(rename = "table-id")]
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        table_id: TableId,
+        /// Iceberg field-id of the column within the table's schema.
+        #[serde(rename = "field-id")]
+        field_id: i32,
+    },
+}
+
+impl From<TagTarget> for TagAttachmentTarget {
+    fn from(target: TagTarget) -> Self {
+        match target {
+            TagTarget::Warehouse(warehouse_id) => Self::Warehouse { warehouse_id },
+            TagTarget::Namespace {
+                warehouse_id,
+                namespace_id,
+            } => Self::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+            TagTarget::Tabular {
+                warehouse_id,
+                tabular_id,
+            } => match tabular_id {
+                TabularId::Table(table_id) => Self::Table {
+                    warehouse_id,
+                    table_id,
+                },
+                TabularId::View(view_id) => Self::View {
+                    warehouse_id,
+                    view_id,
+                },
+                TabularId::GenericTable(generic_table_id) => Self::GenericTable {
+                    warehouse_id,
+                    generic_table_id,
+                },
+            },
+            // Column tags are only creatable on tables, so the parent is a table.
+            TagTarget::Column {
+                warehouse_id,
+                tabular_id,
+                field_id,
+            } => Self::Column {
+                warehouse_id,
+                table_id: TableId::new(*tabular_id.as_ref()),
+                field_id,
+            },
+        }
+    }
+}
+
+/// One target a tag definition is attached to (reverse lookup).
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct TagAttachment {
+    /// The object the tag is attached to
+    pub target: TagAttachmentTarget,
     /// Value the tag carries on this target
     pub value: Option<String>,
     /// How the tag came to exist on this target
@@ -261,6 +430,72 @@ pub struct TargetTag {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp when the tag's value was last updated on this target
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl From<crate::service::Tag> for TagAttachment {
+    fn from(tag: crate::service::Tag) -> Self {
+        Self {
+            target: tag.target.into(),
+            value: tag.value,
+            source: tag.source,
+            created_at: tag.created_at,
+            updated_at: tag.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub struct ListTagAttachmentsResponse {
+    /// The targets carrying this tag (direct attachments only — no hierarchy expansion)
+    pub attachments: Vec<TagAttachment>,
+    pub next_page_token: Option<String>,
+}
+
+impl From<crate::service::ListTagAttachmentsResponse> for ListTagAttachmentsResponse {
+    fn from(value: crate::service::ListTagAttachmentsResponse) -> Self {
+        Self {
+            attachments: value.tags.into_iter().map(Into::into).collect(),
+            next_page_token: value.next_page_token,
+        }
+    }
+}
+
+impl IntoResponse for ListTagAttachmentsResponse {
+    fn into_response(self) -> axum::response::Response {
+        (http::StatusCode::OK, Json(self)).into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+#[serde(rename_all = "camelCase")]
+pub struct ListTagAttachmentsQuery {
+    /// Next page token
+    #[serde(default)]
+    pub page_token: Option<String>,
+    /// Signals an upper bound of the number of results that a client will receive.
+    /// Default: 100
+    #[serde(default)]
+    pub page_size: Option<i64>,
+    /// Return only attachments carrying exactly this value (case-sensitive). Omit to
+    /// return all. Marker tags carry no value, so a value filter excludes them.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl ListTagAttachmentsQuery {
+    #[must_use]
+    pub fn pagination_query(&self) -> PaginationQuery {
+        PaginationQuery {
+            page_token: self
+                .page_token
+                .clone()
+                .map_or(PageToken::Empty, PageToken::Present),
+            page_size: self.page_size,
+        }
+    }
 }
 
 impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
@@ -382,6 +617,35 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         Ok(tag_definition)
     }
 
+    async fn list_tag_attachments(
+        context: ApiContext<State<A, C, S>>,
+        request_metadata: RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+        query: ListTagAttachmentsQuery,
+    ) -> Result<ListTagAttachmentsResponse> {
+        let project_id = request_metadata.require_project_id(None)?;
+
+        // -------------------- AUTHZ --------------------
+        let event_ctx = APIEventContext::for_tag(
+            request_metadata.into(),
+            context.v1_state.events.clone(),
+            tag_definition_id,
+            CatalogTagAction::ReadAssignments,
+        );
+        let authorizer = context.v1_state.authz;
+        let catalog_state = context.v1_state.catalog;
+        let authz_result = authorize_list_tag_attachments::<A, C>(
+            authorizer,
+            catalog_state,
+            &event_ctx,
+            project_id,
+            query,
+        )
+        .await;
+        let (_event_ctx, attachments) = event_ctx.emit_authz(authz_result)?;
+        Ok(attachments.into())
+    }
+
     async fn update_tag_definition(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -482,10 +746,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (event_ctx, (tag, tag_definition)) = event_ctx.emit_authz(authz_result)?;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
-        event_ctx.emit_tag_applied();
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
         Ok(result)
     }
 
@@ -526,6 +800,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        query: ListTagsQuery,
     ) -> Result<ListTagsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -543,6 +818,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             catalog_state,
             &event_ctx,
             &project_id,
+            query.effective(),
         )
         .await;
         let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
@@ -581,10 +857,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (event_ctx, (tag, tag_definition)) = event_ctx.emit_authz(authz_result)?;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
-        event_ctx.emit_tag_applied();
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
         Ok(result)
     }
 
@@ -629,6 +915,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         namespace_id: NamespaceId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        query: ListTagsQuery,
     ) -> Result<ListTagsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -648,6 +935,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &event_ctx,
             namespace_id,
             &project_id,
+            query.effective(),
         )
         .await;
         let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
@@ -686,10 +974,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (event_ctx, (tag, tag_definition)) = event_ctx.emit_authz(authz_result)?;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
-        event_ctx.emit_tag_applied();
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
         Ok(result)
     }
 
@@ -734,6 +1032,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         table_id: TableId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        query: ListTagsQuery,
     ) -> Result<ListTagsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -753,6 +1052,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &event_ctx,
             table_id,
             &project_id,
+            query.effective(),
         )
         .await;
         let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
@@ -794,10 +1094,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (event_ctx, (tag, tag_definition)) = event_ctx.emit_authz(authz_result)?;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
-        event_ctx.emit_tag_applied();
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
         Ok(result)
     }
 
@@ -845,6 +1155,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         column_name: String,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        query: ListTagsQuery,
     ) -> Result<ListTagsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -865,6 +1176,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             table_id,
             &column_name,
             &project_id,
+            query.effective(),
         )
         .await;
         let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
@@ -903,10 +1215,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (event_ctx, (tag, tag_definition)) = event_ctx.emit_authz(authz_result)?;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
-        event_ctx.emit_tag_applied();
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
         Ok(result)
     }
 
@@ -951,6 +1273,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         view_id: ViewId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        query: ListTagsQuery,
     ) -> Result<ListTagsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -970,6 +1293,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &event_ctx,
             view_id,
             &project_id,
+            query.effective(),
         )
         .await;
         let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
@@ -1008,10 +1332,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (event_ctx, (tag, tag_definition)) = event_ctx.emit_authz(authz_result)?;
+        let (
+            event_ctx,
+            AppliedTagResult {
+                tag,
+                tag_definition,
+                changed,
+            },
+        ) = event_ctx.emit_authz(authz_result)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
-        event_ctx.emit_tag_applied();
+        // An idempotent re-apply of an identical value changed nothing — no event.
+        if changed {
+            event_ctx.emit_tag_applied();
+        }
         Ok(result)
     }
 
@@ -1056,6 +1390,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         generic_table_id: GenericTableId,
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
+        query: ListTagsQuery,
     ) -> Result<ListTagsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
 
@@ -1075,6 +1410,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &event_ctx,
             generic_table_id,
             &project_id,
+            query.effective(),
         )
         .await;
         let (_event_ctx, tags) = event_ctx.emit_authz(authz_result)?;
@@ -1207,6 +1543,44 @@ async fn authorize_get_tag_definition<A: Authorizer, C: CatalogStore>(
     Ok(result)
 }
 
+async fn authorize_list_tag_attachments<A: Authorizer, C: CatalogStore>(
+    authorizer: A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<TagDefinitionId, Unresolved, CatalogTagAction>,
+    project_id: ArcProjectId,
+    query: ListTagAttachmentsQuery,
+) -> Result<crate::service::ListTagAttachmentsResponse, AuthZError> {
+    let tag_definition_id = *event_ctx.user_provided_entity();
+    let request_metadata = event_ctx.request_metadata();
+    let action = event_ctx.action();
+
+    // Resolve + authorize the definition in the request's project. `ReadAssignments`
+    // is restricted to tag owners / project security admins (broader disclosure than
+    // `Read`); non-existence is hidden as not-found.
+    let tag_definition =
+        C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
+    let _tag_definition = authorizer
+        .require_tag_action(
+            request_metadata,
+            tag_definition_id,
+            tag_definition,
+            action.clone(),
+        )
+        .await?;
+
+    // -------------------- Business Logic --------------------
+    // All attachments of a project-scoped definition are in-project by construction
+    // (apply reconciles the target's project), so no per-row project check is needed.
+    let attachments = C::list_tag_attachments(
+        tag_definition_id,
+        query.value.as_deref(),
+        query.pagination_query(),
+        catalog_state,
+    )
+    .await?;
+    Ok(attachments)
+}
+
 async fn authorize_update_tag_definition<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
@@ -1328,6 +1702,17 @@ async fn authorize_delete_tag_definition<A: Authorizer, C: CatalogStore>(
 }
 
 type TagWithDefinition = (Arc<crate::service::Tag>, Arc<crate::service::TagDefinition>);
+
+/// Outcome of applying a tag to a target: the tag, its definition, and whether
+/// the apply changed anything. `changed == false` means an idempotent re-apply
+/// of the same value — nothing was written (`updated_at` unchanged) and the
+/// handler skips the `tag_applied` event. The apply itself is still recorded on
+/// the authorization-succeeded audit stream regardless.
+struct AppliedTagResult {
+    tag: Arc<crate::service::Tag>,
+    tag_definition: Arc<crate::service::TagDefinition>,
+    changed: bool,
+}
 
 // -------------------- Target-side authorization --------------------
 // Each helper mirrors the target type's protection handler: it loads the
@@ -1571,7 +1956,7 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
     tag_name: &str,
     value: Option<&str>,
     target: TagTarget,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let definition = require_tag_definition_by_name::<A, C>(
         authorizer,
         request_metadata,
@@ -1596,7 +1981,7 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
         .await
         .map_err(|e| CatalogBackendError::new_unexpected(e.error))
         .map_err(ApplyTagError::from)?;
-    let tag = C::apply_tag(
+    let (tag, changed) = C::apply_tag(
         TagId::new_random(),
         definition.tag_definition_id,
         target,
@@ -1608,7 +1993,11 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
     t.commit()
         .await
         .map_err::<ApplyTagError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-    Ok((Arc::new(tag), Arc::new(definition)))
+    Ok(AppliedTagResult {
+        tag: Arc::new(tag),
+        tag_definition: Arc::new(definition),
+        changed,
+    })
 }
 
 /// Remove the manual tag of the given definition from the target. Returns
@@ -1682,9 +2071,76 @@ async fn list_tags_on_target<C: CatalogStore>(
             source: tag.source,
             created_at: tag.created_at,
             updated_at: tag.updated_at,
+            inherited_from: None,
         });
     }
     Ok(ListTagsResponse { tags: result })
+}
+
+/// Effective (inheritance) view of a target's tags: the target's own direct tags
+/// plus tags inherited from ancestors (namespace chain + warehouse), resolved
+/// most-specific-wins. Each entry carries `inherited_from` — absent for the target's
+/// own tag, otherwise the ancestor it is inherited from.
+///
+/// Gated solely on the caller's access to the target itself (already authorized by
+/// the caller before dispatch): an inherited tag is part of the target's effective
+/// governance, so anyone who can read the target's metadata sees it — including the
+/// value and the ancestor it comes from. Granting metadata access on a sub-object
+/// therefore also discloses the tags it inherits.
+async fn list_effective_tags_on_target<C: CatalogStore>(
+    catalog_state: C::State,
+    target: TagTarget,
+) -> Result<ListTagsResponse, AuthZError> {
+    let candidates = C::list_effective_tag_candidates(target, catalog_state)
+        .await
+        .map_err(RequireTagActionError::from)?;
+    let tags = crate::service::resolve_effective_tags(candidates)
+        .into_iter()
+        .map(|c| TargetTag {
+            tag_definition_id: c.tag_definition_id,
+            name: c.name,
+            value: c.value,
+            source: c.source,
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+            inherited_from: TagInheritanceSource::from_origin(c.origin),
+        })
+        .collect();
+    Ok(ListTagsResponse { tags })
+}
+
+/// Route a resolved+authorized target to the direct or effective (inheritance) list.
+async fn list_tags_dispatch<C: CatalogStore>(
+    effective: bool,
+    catalog_state: C::State,
+    project_id: &ProjectId,
+    target: TagTarget,
+) -> Result<ListTagsResponse, AuthZError> {
+    if effective {
+        list_effective_tags_on_target::<C>(catalog_state, target).await
+    } else {
+        list_tags_on_target::<C>(catalog_state, project_id, target).await
+    }
+}
+
+/// Query parameters for the tag list endpoints.
+#[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+#[serde(rename_all = "camelCase")]
+pub struct ListTagsQuery {
+    /// When `true`, return the resolved *effective* tags — the target's own tags
+    /// plus tags inherited from its ancestor namespaces and warehouse
+    /// (most-specific-wins) — instead of only directly-attached tags. No-op for a
+    /// warehouse (no ancestors) and for a column (columns do not inherit).
+    #[serde(default)]
+    pub effective: Option<bool>,
+}
+
+impl ListTagsQuery {
+    #[must_use]
+    pub fn effective(&self) -> bool {
+        self.effective.unwrap_or(false)
+    }
 }
 
 // -------------------- Per-endpoint authorization --------------------
@@ -1696,7 +2152,7 @@ async fn authorize_set_warehouse_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let target = authorize_warehouse_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -1746,6 +2202,7 @@ async fn authorize_list_warehouse_tags<A: Authorizer, C: CatalogStore>(
     catalog_state: C::State,
     event_ctx: &APIEventContext<WarehouseId, Unresolved, CatalogWarehouseAction>,
     project_id: &ProjectId,
+    effective: bool,
 ) -> Result<ListTagsResponse, AuthZError> {
     let target = authorize_warehouse_tag_target::<A, C>(
         authorizer,
@@ -1754,7 +2211,7 @@ async fn authorize_list_warehouse_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_on_target::<C>(catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
 }
 
 async fn authorize_set_namespace_tag<A: Authorizer, C: CatalogStore>(
@@ -1765,7 +2222,7 @@ async fn authorize_set_namespace_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let target = authorize_namespace_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -1819,6 +2276,7 @@ async fn authorize_list_namespace_tags<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<UserProvidedNamespace, Unresolved, CatalogNamespaceAction>,
     namespace_id: NamespaceId,
     project_id: &ProjectId,
+    effective: bool,
 ) -> Result<ListTagsResponse, AuthZError> {
     let target = authorize_namespace_tag_target::<A, C>(
         authorizer,
@@ -1828,7 +2286,7 @@ async fn authorize_list_namespace_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_on_target::<C>(catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
 }
 
 async fn authorize_set_table_tag<A: Authorizer, C: CatalogStore>(
@@ -1839,7 +2297,7 @@ async fn authorize_set_table_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let target = authorize_table_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -1893,6 +2351,7 @@ async fn authorize_list_table_tags<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<UserProvidedTable, Unresolved, CatalogTableAction>,
     table_id: TableId,
     project_id: &ProjectId,
+    effective: bool,
 ) -> Result<ListTagsResponse, AuthZError> {
     let target = authorize_table_tag_target::<A, C>(
         authorizer,
@@ -1902,7 +2361,7 @@ async fn authorize_list_table_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_on_target::<C>(catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1915,7 +2374,7 @@ async fn authorize_set_table_column_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let target = authorize_table_column_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -1973,6 +2432,7 @@ async fn authorize_list_table_column_tags<A: Authorizer, C: CatalogStore>(
     table_id: TableId,
     column_name: &str,
     project_id: &ProjectId,
+    effective: bool,
 ) -> Result<ListTagsResponse, AuthZError> {
     let target = authorize_table_column_tag_target::<A, C>(
         authorizer,
@@ -1983,7 +2443,7 @@ async fn authorize_list_table_column_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_on_target::<C>(catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
 }
 
 async fn authorize_set_view_tag<A: Authorizer, C: CatalogStore>(
@@ -1994,7 +2454,7 @@ async fn authorize_set_view_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let target = authorize_view_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2048,6 +2508,7 @@ async fn authorize_list_view_tags<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<UserProvidedView, Unresolved, CatalogViewAction>,
     view_id: ViewId,
     project_id: &ProjectId,
+    effective: bool,
 ) -> Result<ListTagsResponse, AuthZError> {
     let target = authorize_view_tag_target::<A, C>(
         authorizer,
@@ -2057,7 +2518,7 @@ async fn authorize_list_view_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_on_target::<C>(catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
 }
 
 async fn authorize_set_generic_table_tag<A: Authorizer, C: CatalogStore>(
@@ -2068,7 +2529,7 @@ async fn authorize_set_generic_table_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<TagWithDefinition, AuthZError> {
+) -> Result<AppliedTagResult, AuthZError> {
     let target = authorize_generic_table_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2122,6 +2583,7 @@ async fn authorize_list_generic_table_tags<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<UserProvidedGenericTable, Unresolved, CatalogGenericTableAction>,
     generic_table_id: GenericTableId,
     project_id: &ProjectId,
+    effective: bool,
 ) -> Result<ListTagsResponse, AuthZError> {
     let target = authorize_generic_table_tag_target::<A, C>(
         authorizer,
@@ -2131,12 +2593,75 @@ async fn authorize_list_generic_table_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_on_target::<C>(catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The discriminated-union DTOs must emit kebab-case BODY fields (not just kebab
+    // variant tags) so they match every sibling field in the same payloads
+    // (`inherited-from`, `tag-definition-id`, …). Guards the enum `rename_all_fields`.
+    #[test]
+    fn tag_attachment_target_serializes_kebab_case_fields() {
+        let v = serde_json::to_value(TagAttachmentTarget::Column {
+            warehouse_id: WarehouseId::new(uuid::Uuid::nil()),
+            table_id: TableId::new(uuid::Uuid::nil()),
+            field_id: 3,
+        })
+        .unwrap();
+        assert_eq!(v["type"], "column");
+        assert!(
+            v.get("warehouse-id").is_some(),
+            "expected kebab warehouse-id"
+        );
+        assert!(v.get("table-id").is_some(), "expected kebab table-id");
+        assert!(v.get("field-id").is_some(), "expected kebab field-id");
+        assert!(v.get("warehouse_id").is_none(), "must not emit snake_case");
+
+        // Multi-word variant: the discriminant itself must be kebab-cased.
+        let g = serde_json::to_value(TagAttachmentTarget::GenericTable {
+            warehouse_id: WarehouseId::new(uuid::Uuid::nil()),
+            generic_table_id: GenericTableId::new(uuid::Uuid::nil()),
+        })
+        .unwrap();
+        assert_eq!(g["type"], "generic-table");
+        assert!(
+            g.get("generic-table-id").is_some(),
+            "expected kebab generic-table-id"
+        );
+    }
+
+    #[test]
+    fn tag_inheritance_source_serializes_kebab_case_fields() {
+        let v = serde_json::to_value(TagInheritanceSource::Namespace {
+            warehouse_id: WarehouseId::new(uuid::Uuid::nil()),
+            namespace_id: NamespaceId::new(uuid::Uuid::nil()),
+        })
+        .unwrap();
+        assert_eq!(v["type"], "namespace");
+        assert!(
+            v.get("warehouse-id").is_some(),
+            "expected kebab warehouse-id"
+        );
+        assert!(
+            v.get("namespace-id").is_some(),
+            "expected kebab namespace-id"
+        );
+        assert!(v.get("namespace_id").is_none(), "must not emit snake_case");
+
+        // Warehouse variant (the top of the inheritance chain).
+        let w = serde_json::to_value(TagInheritanceSource::Warehouse {
+            warehouse_id: WarehouseId::new(uuid::Uuid::nil()),
+        })
+        .unwrap();
+        assert_eq!(w["type"], "warehouse");
+        assert!(
+            w.get("warehouse-id").is_some(),
+            "expected kebab warehouse-id"
+        );
+    }
 
     #[test]
     fn validate_allowed_values_accepts_unique_non_empty() {

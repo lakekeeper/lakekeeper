@@ -28,8 +28,9 @@ use lakekeeper::{
             ApiServer,
             project::{CreateProjectRequest, Service as _},
             tag::{
-                CreateTagDefinitionRequest, ListTagDefinitionsQuery, Service as _, SetTagRequest,
-                TagDefinition, UpdateTagDefinitionRequest,
+                CreateTagDefinitionRequest, ListTagAttachmentsQuery, ListTagDefinitionsQuery,
+                ListTagsQuery, Service as _, SetTagRequest, TagAttachmentTarget, TagDefinition,
+                TagInheritanceSource, UpdateTagDefinitionRequest,
             },
             warehouse::{CreateWarehouseRequest, Service as _, TabularDeleteProfile},
         },
@@ -727,6 +728,7 @@ async fn test_warehouse_tag_apply_list_remove_idempotent(pool: PgPool) {
         warehouse_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -749,6 +751,7 @@ async fn test_warehouse_tag_apply_list_remove_idempotent(pool: PgPool) {
         warehouse_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -973,6 +976,7 @@ async fn test_table_tag_apply_and_list(pool: PgPool) {
         table_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1022,6 +1026,7 @@ async fn test_table_column_tag_by_name(pool: PgPool) {
         "email".to_string(),
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1209,6 +1214,7 @@ async fn test_namespace_tag_apply_list_remove_idempotent(pool: PgPool) {
         namespace_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1232,6 +1238,7 @@ async fn test_namespace_tag_apply_list_remove_idempotent(pool: PgPool) {
         namespace_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1292,6 +1299,7 @@ async fn test_view_tag_apply_list_remove_idempotent(pool: PgPool) {
         view_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1315,6 +1323,7 @@ async fn test_view_tag_apply_list_remove_idempotent(pool: PgPool) {
         view_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1376,6 +1385,7 @@ async fn test_generic_table_tag_apply_list_remove_idempotent(pool: PgPool) {
         generic_table_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1399,6 +1409,7 @@ async fn test_generic_table_tag_apply_list_remove_idempotent(pool: PgPool) {
         generic_table_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1478,6 +1489,7 @@ async fn test_table_and_column_tag_remove(pool: PgPool) {
         table_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1489,6 +1501,7 @@ async fn test_table_and_column_tag_remove(pool: PgPool) {
         "email".to_string(),
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1510,6 +1523,7 @@ async fn test_table_and_column_tag_remove(pool: PgPool) {
         table_id,
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1520,6 +1534,7 @@ async fn test_table_and_column_tag_remove(pool: PgPool) {
         "email".to_string(),
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1542,6 +1557,7 @@ async fn test_table_and_column_tag_remove(pool: PgPool) {
         "email".to_string(),
         ctx.clone(),
         request_metadata_with_project(pid),
+        ListTagsQuery::default(),
     )
     .await
     .unwrap();
@@ -1671,4 +1687,881 @@ async fn test_cross_project_target_rejected(pool: PgPool) {
     .unwrap_err();
     assert_eq!(err.error.r#type, "TagTargetNotFound");
     assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16());
+}
+
+// ==================== Reverse lookup (attachments) ====================
+
+/// Apply one definition to every target type, then reverse-list its attachments.
+/// Exercises target-subtype reconstruction end-to-end: warehouse, namespace, table,
+/// column (by field-id), view, and generic-table each come back as the right variant.
+#[sqlx::test]
+async fn test_list_tag_attachments_across_targets(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+
+    // One target of each type (create_table_with_columns makes "email" = field-id 2).
+    let table_id = create_table_with_columns(&ctx, warehouse_id).await;
+    let namespace_id = create_namespace(&ctx, warehouse_id, "reverse_ns").await;
+    let view_id = create_view_returning_id(&ctx, warehouse_id, "view_ns", "v1").await;
+    let generic_table_id =
+        create_generic_table_returning_id(&ctx, warehouse_id, "gt_ns", "gt1").await;
+
+    let def = create_def(
+        &ctx,
+        pid,
+        "everywhere",
+        vec![
+            TagScope::Warehouse,
+            TagScope::Namespace,
+            TagScope::Table,
+            TagScope::Column,
+            TagScope::View,
+            TagScope::GenericTable,
+        ],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Apply in a fixed order; separate calls give strictly increasing created_at, so
+    // the listing order equals the application order.
+    Server::set_warehouse_tag(
+        warehouse_id,
+        "everywhere".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_namespace_tag(
+        warehouse_id,
+        namespace_id,
+        "everywhere".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_table_tag(
+        warehouse_id,
+        table_id,
+        "everywhere".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_table_column_tag(
+        warehouse_id,
+        table_id,
+        "email".to_string(),
+        "everywhere".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_view_tag(
+        warehouse_id,
+        view_id,
+        "everywhere".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_generic_table_tag(
+        warehouse_id,
+        generic_table_id,
+        "everywhere".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    let listed = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(50),
+            value: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let targets: Vec<&TagAttachmentTarget> = listed.attachments.iter().map(|a| &a.target).collect();
+    let expected = [
+        TagAttachmentTarget::Warehouse { warehouse_id },
+        TagAttachmentTarget::Namespace {
+            warehouse_id,
+            namespace_id,
+        },
+        TagAttachmentTarget::Table {
+            warehouse_id,
+            table_id,
+        },
+        TagAttachmentTarget::Column {
+            warehouse_id,
+            table_id,
+            field_id: 2,
+        },
+        TagAttachmentTarget::View {
+            warehouse_id,
+            view_id,
+        },
+        TagAttachmentTarget::GenericTable {
+            warehouse_id,
+            generic_table_id,
+        },
+    ];
+    assert_eq!(targets, expected.iter().collect::<Vec<_>>());
+    // Markers carry no value, and every attachment was applied manually.
+    assert!(listed.attachments.iter().all(|a| a.value.is_none()));
+    assert!(
+        listed
+            .attachments
+            .iter()
+            .all(|a| a.source == TagSource::Manual)
+    );
+
+    // Keyset convention (matches list-tag-definitions): a trailing token is returned
+    // even when the page wasn't full; following it yields an empty final page.
+    let tail = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: listed.next_page_token,
+            page_size: Some(50),
+            value: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(tail.attachments.is_empty());
+    assert_eq!(tail.next_page_token, None);
+}
+
+/// Reverse lookup with a value filter and keyset pagination.
+#[sqlx::test]
+async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+    let table_id = create_table_with_columns(&ctx, warehouse_id).await;
+
+    let def = create_def(
+        &ctx,
+        pid,
+        "region",
+        vec![TagScope::Warehouse, TagScope::Table, TagScope::Column],
+        TagValueKind::FreeText,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // warehouse="eu", table="us", column(email)="eu".
+    Server::set_warehouse_tag(
+        warehouse_id,
+        "region".to_string(),
+        SetTagRequest {
+            value: Some("eu".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_table_tag(
+        warehouse_id,
+        table_id,
+        "region".to_string(),
+        SetTagRequest {
+            value: Some("us".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_table_column_tag(
+        warehouse_id,
+        table_id,
+        "email".to_string(),
+        "region".to_string(),
+        SetTagRequest {
+            value: Some("eu".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // No filter -> all three.
+    let all = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(50),
+            value: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.attachments.len(), 3);
+
+    // Filter "eu" -> warehouse + column (the two "eu" attachments), in apply order.
+    let eu = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(50),
+            value: Some("eu".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    let eu_targets: Vec<&TagAttachmentTarget> = eu.attachments.iter().map(|a| &a.target).collect();
+    assert_eq!(
+        eu_targets,
+        vec![
+            &TagAttachmentTarget::Warehouse { warehouse_id },
+            &TagAttachmentTarget::Column {
+                warehouse_id,
+                table_id,
+                field_id: 2,
+            },
+        ]
+    );
+    assert!(
+        eu.attachments
+            .iter()
+            .all(|a| a.value.as_deref() == Some("eu"))
+    );
+
+    // A value nothing carries -> empty.
+    let apac = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(50),
+            value: Some("apac".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(apac.attachments.is_empty());
+    assert_eq!(apac.next_page_token, None);
+
+    // Keyset pagination: page of 2, then the remaining 1.
+    let page1 = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(2),
+            value: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page1.attachments.len(), 2);
+    let token = page1.next_page_token.clone();
+    assert!(token.is_some());
+
+    let page2 = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: token,
+            page_size: Some(2),
+            value: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page2.attachments.len(), 1);
+    assert_eq!(
+        page2.attachments[0].target,
+        TagAttachmentTarget::Column {
+            warehouse_id,
+            table_id,
+            field_id: 2,
+        }
+    );
+}
+
+/// An unused definition reverse-lists as empty; an unknown definition is hidden as
+/// not-found (the `ReadAssignments` authz resolves the definition first).
+#[sqlx::test]
+async fn test_list_tag_attachments_empty_and_unknown(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+
+    let def = create_def(
+        &ctx,
+        pid,
+        "unused",
+        vec![TagScope::Warehouse],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Existing but unapplied -> empty, no token.
+    let empty = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        def.id,
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(50),
+            value: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(empty.attachments.is_empty());
+    assert_eq!(empty.next_page_token, None);
+
+    // Unknown definition -> 404 (existence hidden by the authz layer).
+    let err = Server::list_tag_attachments(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        lakekeeper::service::TagDefinitionId::new_random(),
+        ListTagAttachmentsQuery {
+            page_token: None,
+            page_size: Some(50),
+            value: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.r#type, "TagDefinitionIdNotFound");
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND.as_u16());
+}
+
+// ==================== Inheritance (effective tags) ====================
+
+/// Create a (possibly nested) namespace and resolve its `NamespaceId`. Parents must
+/// already exist.
+async fn create_nested_namespace(
+    ctx: &Ctx,
+    warehouse_id: WarehouseId,
+    parts: &[&str],
+) -> NamespaceId {
+    let prefix: Prefix = warehouse_id.to_string().into();
+    let namespace =
+        NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap();
+    CatalogServer::create_namespace(
+        Some(prefix),
+        CreateNamespaceRequest {
+            namespace: namespace.clone(),
+            properties: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    PostgresBackend::get_namespace(warehouse_id, namespace, ctx.v1_state.catalog.clone())
+        .await
+        .unwrap()
+        .unwrap()
+        .namespace_id()
+}
+
+/// Create a table (`id`, `email` columns) in an existing (possibly nested) namespace.
+async fn create_table_in(
+    ctx: &Ctx,
+    warehouse_id: WarehouseId,
+    ns_parts: &[&str],
+    table_name: &str,
+) -> TableId {
+    let prefix: Prefix = warehouse_id.to_string().into();
+    let namespace =
+        NamespaceIdent::from_vec(ns_parts.iter().map(ToString::to_string).collect()).unwrap();
+    let schema = Schema::builder()
+        .with_fields(vec![
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+            NestedField::required(2, "email", Type::Primitive(PrimitiveType::String)).into(),
+        ])
+        .build()
+        .unwrap();
+    let table = CatalogServer::create_table(
+        NamespaceParameters {
+            namespace,
+            prefix: Some(prefix),
+        },
+        CreateTableRequest {
+            name: table_name.to_string(),
+            location: None,
+            schema,
+            partition_spec: Some(UnboundPartitionSpec::builder().build()),
+            write_order: None,
+            stage_create: Some(false),
+            properties: None,
+        },
+        DataAccess::not_specified(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    table.metadata.uuid().into()
+}
+
+/// Effective tags on a namespace: inherits from parent namespaces + warehouse,
+/// most-specific-wins, with provenance. Direct list stays unchanged.
+#[sqlx::test]
+async fn test_effective_tags_namespace_inheritance(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+
+    let ns_a = create_nested_namespace(&ctx, warehouse_id, &["a"]).await;
+    let ns_ab = create_nested_namespace(&ctx, warehouse_id, &["a", "b"]).await;
+
+    create_def(
+        &ctx,
+        pid,
+        "region",
+        vec![TagScope::Namespace],
+        TagValueKind::FreeText,
+        None,
+    )
+    .await
+    .unwrap();
+    create_def(
+        &ctx,
+        pid,
+        "pii",
+        vec![TagScope::Namespace],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    create_def(
+        &ctx,
+        pid,
+        "tier",
+        vec![TagScope::Warehouse, TagScope::Namespace],
+        TagValueKind::FreeText,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // ns a: region=eu + pii; ns a.b: region=emea; warehouse: tier=gold.
+    let apply_ns = |ns, name: &'static str, value: Option<&'static str>| {
+        let ctx = ctx.clone();
+        async move {
+            Server::set_namespace_tag(
+                warehouse_id,
+                ns,
+                name.to_string(),
+                SetTagRequest {
+                    value: value.map(ToString::to_string),
+                },
+                ctx,
+                request_metadata_with_project(pid),
+            )
+            .await
+            .unwrap();
+        }
+    };
+    apply_ns(ns_a, "region", Some("eu")).await;
+    apply_ns(ns_a, "pii", None).await;
+    apply_ns(ns_ab, "region", Some("emea")).await;
+    Server::set_warehouse_tag(
+        warehouse_id,
+        "tier".to_string(),
+        SetTagRequest {
+            value: Some("gold".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Effective on a.b: region resolves to a.b's own "emea" (shadows a's "eu"); pii
+    // inherited from a; tier inherited from the warehouse.
+    let eff = Server::list_namespace_tags(
+        warehouse_id,
+        ns_ab,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery {
+            effective: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(eff.tags.len(), 3);
+    let by_name = |name: &str| eff.tags.iter().find(|t| t.name == name).unwrap();
+    assert_eq!(by_name("region").value.as_deref(), Some("emea"));
+    assert_eq!(by_name("region").inherited_from, None);
+    assert_eq!(
+        by_name("pii").inherited_from,
+        Some(TagInheritanceSource::Namespace {
+            warehouse_id,
+            namespace_id: ns_a
+        })
+    );
+    // Inherited marker carries no value.
+    assert_eq!(by_name("pii").value, None);
+    assert_eq!(by_name("tier").value.as_deref(), Some("gold"));
+    assert_eq!(
+        by_name("tier").inherited_from,
+        Some(TagInheritanceSource::Warehouse { warehouse_id })
+    );
+
+    // Direct list is unchanged: only a.b's own region.
+    let direct = Server::list_namespace_tags(
+        warehouse_id,
+        ns_ab,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(direct.tags.len(), 1);
+    assert_eq!(direct.tags[0].name, "region");
+    assert_eq!(direct.tags[0].value.as_deref(), Some("emea"));
+    assert_eq!(direct.tags[0].inherited_from, None);
+}
+
+/// Effective tags on a table: inherits from its namespace chain; a direct table tag
+/// shadows an inherited one; a tag on the table's *column* is excluded from the
+/// table's effective set (columns do not propagate up).
+#[sqlx::test]
+async fn test_effective_tags_table_inheritance_and_column_exclusion(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+
+    let ns_a = create_nested_namespace(&ctx, warehouse_id, &["a"]).await;
+    let _ns_ab = create_nested_namespace(&ctx, warehouse_id, &["a", "b"]).await;
+    let table_id = create_table_in(&ctx, warehouse_id, &["a", "b"], "t").await;
+
+    create_def(
+        &ctx,
+        pid,
+        "region",
+        vec![TagScope::Namespace, TagScope::Table],
+        TagValueKind::FreeText,
+        None,
+    )
+    .await
+    .unwrap();
+    create_def(
+        &ctx,
+        pid,
+        "pii",
+        vec![TagScope::Namespace, TagScope::Table, TagScope::Column],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // ns a: pii; ns a.b: region=emea; table: region=de (direct); table.email: pii.
+    Server::set_namespace_tag(
+        warehouse_id,
+        ns_a,
+        "pii".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_namespace_tag(
+        warehouse_id,
+        _ns_ab,
+        "region".to_string(),
+        SetTagRequest {
+            value: Some("emea".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_table_tag(
+        warehouse_id,
+        table_id,
+        "region".to_string(),
+        SetTagRequest {
+            value: Some("de".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_table_column_tag(
+        warehouse_id,
+        table_id,
+        "email".to_string(),
+        "pii".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Effective on the table: region=de (direct, shadows a.b's "emea"); pii inherited
+    // from namespace a. The column's pii is NOT included (field-level, excluded).
+    let eff = Server::list_table_tags(
+        warehouse_id,
+        table_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery {
+            effective: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(eff.tags.len(), 2);
+    let by_name = |name: &str| eff.tags.iter().find(|t| t.name == name).unwrap();
+    assert_eq!(by_name("region").value.as_deref(), Some("de"));
+    assert_eq!(by_name("region").inherited_from, None);
+    assert_eq!(
+        by_name("pii").inherited_from,
+        Some(TagInheritanceSource::Namespace {
+            warehouse_id,
+            namespace_id: ns_a
+        })
+    );
+
+    // Direct list on the table: only its own region=de.
+    let direct = Server::list_table_tags(
+        warehouse_id,
+        table_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(direct.tags.len(), 1);
+    assert_eq!(direct.tags[0].name, "region");
+    assert_eq!(direct.tags[0].inherited_from, None);
+}
+
+/// Effective tags on a view (shares the tabular SQL arm) — including a tag whose
+/// scope does NOT list `view`, proving inheritance is scope-independent — plus the
+/// no-op targets: `?effective=true` on a warehouse (no ancestors) and on a column
+/// (columns never inherit) both equal the direct list.
+#[sqlx::test]
+async fn test_effective_tags_view_and_noop_targets(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+
+    let ns_a = create_nested_namespace(&ctx, warehouse_id, &["a"]).await;
+    let loaded = create_view(ctx.clone(), &warehouse_id.to_string(), "a", "v1", None)
+        .await
+        .unwrap();
+    let view_id: ViewId = loaded.metadata.uuid().into();
+    let table_id = create_table_in(&ctx, warehouse_id, &["a"], "t").await;
+
+    create_def(
+        &ctx,
+        pid,
+        "curated",
+        vec![TagScope::Namespace, TagScope::View],
+        TagValueKind::FreeText,
+        None,
+    )
+    .await
+    .unwrap();
+    // pii's scope is namespace/warehouse/column — deliberately NOT `view`.
+    create_def(
+        &ctx,
+        pid,
+        "pii",
+        vec![TagScope::Namespace, TagScope::Warehouse, TagScope::Column],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    Server::set_namespace_tag(
+        warehouse_id,
+        ns_a,
+        "curated".to_string(),
+        SetTagRequest {
+            value: Some("yes".to_string()),
+        },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    Server::set_warehouse_tag(
+        warehouse_id,
+        "pii".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // View effective: curated inherited from namespace a; pii inherited from the
+    // warehouse EVEN THOUGH pii is not `view`-scoped (inheritance ignores scope).
+    let eff = Server::list_view_tags(
+        warehouse_id,
+        view_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery {
+            effective: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(eff.tags.len(), 2);
+    let by_name = |name: &str| eff.tags.iter().find(|t| t.name == name).unwrap();
+    assert_eq!(by_name("curated").value.as_deref(), Some("yes"));
+    assert_eq!(
+        by_name("curated").inherited_from,
+        Some(TagInheritanceSource::Namespace {
+            warehouse_id,
+            namespace_id: ns_a
+        })
+    );
+    assert_eq!(
+        by_name("pii").inherited_from,
+        Some(TagInheritanceSource::Warehouse { warehouse_id })
+    );
+
+    // Warehouse no-op: effective == direct (its own pii, no ancestors).
+    let wh_eff = Server::list_warehouse_tags(
+        warehouse_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery {
+            effective: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(wh_eff.tags.len(), 1);
+    assert_eq!(wh_eff.tags[0].name, "pii");
+    assert_eq!(wh_eff.tags[0].inherited_from, None);
+
+    // Column no-op: apply pii to a column; effective == direct — the column does NOT
+    // inherit the namespace's `curated` or the warehouse's `pii`.
+    Server::set_table_column_tag(
+        warehouse_id,
+        table_id,
+        "email".to_string(),
+        "pii".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+    let col_eff = Server::list_table_column_tags(
+        warehouse_id,
+        table_id,
+        "email".to_string(),
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        ListTagsQuery {
+            effective: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(col_eff.tags.len(), 1);
+    assert_eq!(col_eff.tags[0].name, "pii");
+    assert_eq!(col_eff.tags[0].inherited_from, None);
+}
+
+/// Re-applying a tag with an identical value is a no-op: `applied_at` does not move.
+/// Applying a different value does move it.
+#[sqlx::test]
+async fn test_reapply_same_value_is_noop(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+    create_def(
+        &ctx,
+        pid,
+        "tier",
+        vec![TagScope::Warehouse],
+        TagValueKind::FreeText,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let set = |value: &'static str| {
+        let ctx = ctx.clone();
+        async move {
+            Server::set_warehouse_tag(
+                warehouse_id,
+                "tier".to_string(),
+                SetTagRequest {
+                    value: Some(value.to_string()),
+                },
+                ctx,
+                request_metadata_with_project(pid),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    let first = set("gold").await;
+    let reapplied = set("gold").await; // identical -> no-op
+    assert_eq!(
+        reapplied.applied_at, first.applied_at,
+        "re-applying the same value must not move applied_at"
+    );
+
+    let changed = set("silver").await; // different value -> real update
+    assert_ne!(
+        changed.applied_at, first.applied_at,
+        "changing the value must move applied_at"
+    );
+    assert_eq!(
+        changed.value.as_deref(),
+        Some("silver"),
+        "the response must carry the newly-applied value, not the previous one"
+    );
 }

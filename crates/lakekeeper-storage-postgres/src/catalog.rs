@@ -33,27 +33,28 @@ use lakekeeper::{
         CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
         CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteTagDefinitionError, DropGenericTableError, DropTabularError,
+        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
         EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
         GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
         ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListTagDefinitionsError,
-        ListTagDefinitionsResponse, ListUserRoleAssignmentsResult, LoadGenericTableError,
-        LoadTableError, LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError,
-        NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId, RemoveRoleMembersError,
-        RemoveRoleMembersResult, RemoveTagError, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, Tag, TagDefinition, TagDefinitionId,
-        TagId, TagSource, TagTarget, TaskDetails, TaskList, Transaction, UniqueMembers,
-        UniqueRoles, UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        ListRolesPage, ListRolesResponse, ListTabularsError, ListTagAttachmentsError,
+        ListTagAttachmentsResponse, ListTagDefinitionsError, ListTagDefinitionsResponse,
+        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
+        LoadViewError, ManagedBy, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
+        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
+        RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
+        RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Tag, TagDefinition, TagDefinitionId, TagId,
+        TagSource, TagTarget, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
+        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
         UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
         ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
         WarehouseId, WarehouseStatus,
@@ -77,8 +78,9 @@ use super::{
     tabular::table::load_tables,
     tag::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
-        get_tag_definition, get_tag_definition_by_name, list_tag_definitions, list_tags_for_target,
-        remove_tag, update_tag_definition,
+        get_tag_definition, get_tag_definition_by_name, list_effective_tag_candidates,
+        list_tag_attachments, list_tag_definitions, list_tags_for_target, remove_tag,
+        update_tag_definition,
     },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -461,7 +463,7 @@ impl CatalogStore for super::PostgresBackend {
         value: Option<&str>,
         source: TagSource,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<Tag, ApplyTagError> {
+    ) -> Result<(Tag, bool), ApplyTagError> {
         apply_tag(
             tag_id,
             tag_definition_id,
@@ -485,6 +487,28 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Vec<Tag>, CatalogBackendError> {
         list_tags_for_target(target, &catalog_state.read_pool()).await
+    }
+
+    async fn list_tag_attachments_impl(
+        tag_definition_id: TagDefinitionId,
+        value_filter: Option<&str>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError> {
+        list_tag_attachments(
+            tag_definition_id,
+            value_filter,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_effective_tag_candidates_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError> {
+        list_effective_tag_candidates(target, &catalog_state.read_pool()).await
     }
 
     // ---------------- Role Assignment Management ----------------

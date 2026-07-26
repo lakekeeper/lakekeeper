@@ -63,8 +63,9 @@ pub mod v1 {
     use table::TableManagementService as _;
     use tabular::TabularManagementService as _;
     use tag::{
-        AppliedTag, CreateTagDefinitionRequest, ListTagDefinitionsQuery,
-        ListTagDefinitionsResponse, ListTagsResponse, Service as _, SetTagRequest, TagDefinition,
+        AppliedTag, CreateTagDefinitionRequest, ListTagAttachmentsQuery,
+        ListTagAttachmentsResponse, ListTagDefinitionsQuery, ListTagDefinitionsResponse,
+        ListTagsQuery, ListTagsResponse, Service as _, SetTagRequest, TagDefinition,
         UpdateTagDefinitionRequest,
     };
     use typed_builder::TypedBuilder;
@@ -709,6 +710,31 @@ pub mod v1 {
             .map(|tag_definition| (StatusCode::OK, Json(tag_definition)))
     }
 
+    /// List Tag Attachments
+    ///
+    /// Lists the targets a tag definition is attached to (reverse lookup).
+    /// Direct attachments only — no hierarchy expansion. Restricted to tag owners
+    /// and project security admins.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListTagAttachments.path(),
+        params(ListTagAttachmentsQuery, ("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Targets carrying this tag", body = ListTagAttachmentsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_tag_attachments<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Query(query): Query<ListTagAttachmentsQuery>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListTagAttachmentsResponse> {
+        ApiServer::<C, A, S>::list_tag_attachments(api_context, metadata, tag_definition_id, query)
+            .await
+    }
+
     /// Update Tag Definition
     ///
     /// Replaces name, description and scope, and adds allowed values. Scope can
@@ -825,9 +851,9 @@ pub mod v1 {
         get,
         tag = "tag",
         path = ManagementV1Endpoint::ListWarehouseTags.path(),
-        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
-            (status = 200, description = "Tags on the warehouse", body = ListTagsResponse),
+            (status = 200, description = "Tags on the warehouse (direct; or effective with ?effective=true, which is a no-op here as a warehouse has no ancestors)", body = ListTagsResponse),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -835,8 +861,9 @@ pub mod v1 {
         Path(warehouse_id): Path<WarehouseId>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
     ) -> Result<ListTagsResponse> {
-        ApiServer::<C, A, S>::list_warehouse_tags(warehouse_id, api_context, metadata).await
+        ApiServer::<C, A, S>::list_warehouse_tags(warehouse_id, api_context, metadata, query).await
     }
 
     /// Set Namespace Tag
@@ -908,7 +935,7 @@ pub mod v1 {
         get,
         tag = "tag",
         path = ManagementV1Endpoint::ListNamespaceTags.path(),
-        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Tags on the namespace", body = ListTagsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -918,9 +945,16 @@ pub mod v1 {
         Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
     ) -> Result<ListTagsResponse> {
-        ApiServer::<C, A, S>::list_namespace_tags(warehouse_id, namespace_id, api_context, metadata)
-            .await
+        ApiServer::<C, A, S>::list_namespace_tags(
+            warehouse_id,
+            namespace_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
     }
 
     /// Set Table Tag
@@ -992,7 +1026,7 @@ pub mod v1 {
         get,
         tag = "tag",
         path = ManagementV1Endpoint::ListTableTags.path(),
-        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Tags on the table", body = ListTagsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1002,8 +1036,10 @@ pub mod v1 {
         Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
     ) -> Result<ListTagsResponse> {
-        ApiServer::<C, A, S>::list_table_tags(warehouse_id, table_id, api_context, metadata).await
+        ApiServer::<C, A, S>::list_table_tags(warehouse_id, table_id, api_context, metadata, query)
+            .await
     }
 
     /// Set Table Column Tag
@@ -1089,7 +1125,7 @@ pub mod v1 {
         get,
         tag = "tag",
         path = ManagementV1Endpoint::ListTableColumnTags.path(),
-        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("column_name" = String, Path, description = "Column name in the table's current schema"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("column_name" = String, Path, description = "Column name in the table's current schema"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Tags on the column", body = ListTagsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1099,6 +1135,7 @@ pub mod v1 {
         Path((warehouse_id, table_id, column_name)): Path<(WarehouseId, TableId, String)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
     ) -> Result<ListTagsResponse> {
         ApiServer::<C, A, S>::list_table_column_tags(
             warehouse_id,
@@ -1106,6 +1143,7 @@ pub mod v1 {
             column_name,
             api_context,
             metadata,
+            query,
         )
         .await
     }
@@ -1179,7 +1217,7 @@ pub mod v1 {
         get,
         tag = "tag",
         path = ManagementV1Endpoint::ListViewTags.path(),
-        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Tags on the view", body = ListTagsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1189,8 +1227,10 @@ pub mod v1 {
         Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
     ) -> Result<ListTagsResponse> {
-        ApiServer::<C, A, S>::list_view_tags(warehouse_id, view_id, api_context, metadata).await
+        ApiServer::<C, A, S>::list_view_tags(warehouse_id, view_id, api_context, metadata, query)
+            .await
     }
 
     /// Set Generic Table Tag
@@ -1271,7 +1311,7 @@ pub mod v1 {
         get,
         tag = "tag",
         path = ManagementV1Endpoint::ListGenericTableTags.path(),
-        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        params(ListTagsQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
             (status = 200, description = "Tags on the generic table", body = ListTagsResponse),
             (status = "4XX", body = IcebergErrorResponse),
@@ -1281,12 +1321,14 @@ pub mod v1 {
         Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
         AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
         Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListTagsQuery>,
     ) -> Result<ListTagsResponse> {
         ApiServer::<C, A, S>::list_generic_table_tags(
             warehouse_id,
             generic_table_id,
             api_context,
             metadata,
+            query,
         )
         .await
     }
@@ -3184,6 +3226,10 @@ pub mod v1 {
                     get(get_tag_definition)
                         .post(update_tag_definition)
                         .delete(delete_tag_definition),
+                )
+                .route(
+                    "/tag-definition/{tag_definition_id}/attachments",
+                    get(list_tag_attachments),
                 )
                 .route(
                     ManagementV1Endpoint::SetWarehouseTag.path_in_management_v1(),

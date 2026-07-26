@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO tag\n            (tag_id, tag_definition_id, warehouse_id, namespace_id, tabular_id, field_id,\n             value, source)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n        ON CONFLICT ON CONSTRAINT tag_unique_target_definition_source\n        DO UPDATE SET value = EXCLUDED.value\n        RETURNING tag_id, value, created_at, updated_at\n        ",
+  "query": "\n        SELECT tag_id, value, created_at, updated_at\n        FROM tag\n        WHERE warehouse_id = $1\n          AND namespace_id IS NOT DISTINCT FROM $2\n          AND tabular_id IS NOT DISTINCT FROM $3\n          AND field_id IS NOT DISTINCT FROM $4\n          AND tag_definition_id = $5\n          AND source = $6\n        ",
   "describe": {
     "columns": [
       {
@@ -53,10 +53,8 @@
         "Uuid",
         "Uuid",
         "Uuid",
-        "Uuid",
-        "Uuid",
         "Int4",
-        "Text",
+        "Uuid",
         {
           "Custom": {
             "name": "tag_source",
@@ -76,5 +74,5 @@
       true
     ]
   },
-  "hash": "17a25c6992de9abcba049a325ade04e8b9887e5537c3dbf8d4b8f957f999781b"
+  "hash": "b707f734599294b596cf3990bd66307f6c0d21463da8c79b98f8f6845120a336"
 }

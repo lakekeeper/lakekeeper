@@ -85,8 +85,10 @@ select trigger_updated_at('tag');
 -- and namespace access paths are served by the unique index (it leads with
 -- warehouse_id, namespace_id)
 create index tag_tabular_idx on tag (warehouse_id, tabular_id) where tabular_id is not null;
--- serves the tag_definition_id_fkey ON DELETE RESTRICT check and reverse lookup by definition + value
+-- serves the tag_definition_id_fkey ON DELETE RESTRICT check and value-filtered reverse lookup
 create index tag_definition_idx on tag (tag_definition_id, value);
+-- serves the unfiltered reverse-lookup listing: filter by definition, keyset-ordered on (created_at, tag_id)
+create index tag_reverse_lookup_idx on tag (tag_definition_id, created_at, tag_id);
 
 -- Register the tag management endpoints in the api_endpoints enum (endpoint
 -- statistics). Added here, not used in this migration, so the in-txn ADD VALUE
@@ -96,6 +98,7 @@ alter type api_endpoints add value if not exists 'management-v1-list-tag-definit
 alter type api_endpoints add value if not exists 'management-v1-get-tag-definition';
 alter type api_endpoints add value if not exists 'management-v1-update-tag-definition';
 alter type api_endpoints add value if not exists 'management-v1-delete-tag-definition';
+alter type api_endpoints add value if not exists 'management-v1-list-tag-attachments';
 alter type api_endpoints add value if not exists 'management-v1-set-warehouse-tag';
 alter type api_endpoints add value if not exists 'management-v1-delete-warehouse-tag';
 alter type api_endpoints add value if not exists 'management-v1-list-warehouse-tags';

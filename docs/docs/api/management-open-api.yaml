@@ -2843,6 +2843,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition/{tag_definition_id}/attachments:
+    get:
+      tags:
+        - tag
+      summary: List Tag Attachments
+      description: |-
+        Lists the targets a tag definition is attached to (reverse lookup).
+        Direct attachments only — no hierarchy expansion. Restricted to tag owners
+        and project security admins.
+      operationId: list_tag_attachments
+      parameters:
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: value
+          in: query
+          description: |-
+            Return only attachments carrying exactly this value (case-sensitive). Omit to
+            return all. Marker tags carry no value, so a value filter excludes them.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Targets carrying this tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagAttachmentsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/user:
     get:
       tags:
@@ -3649,6 +3717,18 @@ paths:
       description: Returns the tags applied to the generic table.
       operationId: list_generic_table_tags
       parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -3951,6 +4031,18 @@ paths:
       description: Returns the tags applied to the namespace.
       operationId: list_namespace_tags
       parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -4374,6 +4466,18 @@ paths:
       description: Returns the tags applied to a column of the table's current schema.
       operationId: list_table_column_tags
       parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -4610,6 +4714,18 @@ paths:
       description: Returns the tags applied to the table.
       operationId: list_table_tags
       parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -4754,6 +4870,18 @@ paths:
       description: Returns the tags applied to the warehouse.
       operationId: list_warehouse_tags
       parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -4771,7 +4899,7 @@ paths:
               - 'null'
       responses:
         '200':
-          description: Tags on the warehouse
+          description: Tags on the warehouse (direct; or effective with ?effective=true, which is a no-op here as a warehouse has no ancestors)
           content:
             application/json:
               schema:
@@ -5223,6 +5351,18 @@ paths:
       description: Returns the tags applied to the view.
       operationId: list_view_tags
       parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
         - name: warehouse_id
           in: path
           description: Warehouse ID
@@ -8999,6 +9139,20 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+    ListTagAttachmentsResponse:
+      type: object
+      required:
+        - attachments
+      properties:
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAttachment'
+          description: The targets carrying this tag (direct attachments only — no hierarchy expansion)
+        next-page-token:
+          type:
+            - string
+            - 'null'
     ListTagDefinitionsResponse:
       type: object
       required:
@@ -10940,6 +11094,137 @@ components:
         - table
         - view
         - generic-table
+    TagAttachment:
+      type: object
+      description: One target a tag definition is attached to (reverse lookup).
+      required:
+        - target
+        - source
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the tag was applied to this target
+        source:
+          $ref: '#/components/schemas/TagSource'
+          description: How the tag came to exist on this target
+        target:
+          $ref: '#/components/schemas/TagAttachmentTarget'
+          description: The object the tag is attached to
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Timestamp when the tag's value was last updated on this target
+        value:
+          type:
+            - string
+            - 'null'
+          description: Value the tag carries on this target
+    TagAttachmentTarget:
+      oneOf:
+        - type: object
+          required:
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - namespace-id
+            - type
+          properties:
+            namespace-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - namespace
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - generic-table-id
+            - type
+          properties:
+            generic-table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - generic-table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - table-id
+            - field-id
+            - type
+          properties:
+            field-id:
+              type: integer
+              format: int32
+              description: Iceberg field-id of the column within the table's schema.
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - column
+            warehouse-id:
+              type: string
+              format: uuid
+      description: |-
+        The object a tag is attached to in a reverse-lookup listing. `type`
+        discriminates the target kind; columns are addressed by Iceberg field-id.
     TagDefinition:
       type: object
       required:
@@ -10988,6 +11273,39 @@ components:
         value-kind:
           $ref: '#/components/schemas/TagValueKind'
           description: How values of this definition are constrained
+    TagInheritanceSource:
+      oneOf:
+        - type: object
+          required:
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - namespace-id
+            - type
+          properties:
+            namespace-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - namespace
+            warehouse-id:
+              type: string
+              format: uuid
+      description: |-
+        The ancestor an inherited effective tag is attached to. Restricted to the levels
+        that can actually be ancestors (warehouse / namespace).
     TagScope:
       type: string
       description: Target types a tag definition may be applied to.
@@ -11014,7 +11332,11 @@ components:
         - enumerated
     TargetTag:
       type: object
-      description: A tag attached to a target.
+      description: |-
+        A tag on a target. With `effective=true` an entry may be inherited from an
+        ancestor — see `inherited-from`. The `value`/`source`/`created-at`/`updated-at`
+        fields describe the attachment that supplies the tag: the queried object itself
+        when `inherited-from` is absent, otherwise the ancestor named there.
       required:
         - tag-definition-id
         - name
@@ -11024,28 +11346,38 @@ components:
         created-at:
           type: string
           format: date-time
-          description: Timestamp when the tag was applied to this target
+          description: Timestamp when the supplying attachment was created
+        inherited-from:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TagInheritanceSource'
+              description: |-
+                For an effective tag inherited from an ancestor, the object it is attached
+                to. Absent when the tag is attached directly to the queried object. Only
+                ever populated with `effective=true`.
         name:
           type: string
-          description: Name of the applied tag definition
+          description: Name of the tag definition
         source:
           $ref: '#/components/schemas/TagSource'
-          description: How the tag came to exist on this target
+          description: |-
+            How the supplying attachment was produced (producer axis, e.g. `manual`;
+            independent of direct-vs-inherited, which is `inherited-from`)
         tag-definition-id:
           type: string
           format: uuid
-          description: ID of the applied tag definition
+          description: ID of the tag definition
         updated-at:
           type:
             - string
             - 'null'
           format: date-time
-          description: Timestamp when the tag's value was last updated on this target
+          description: Timestamp when the supplying attachment's value was last updated
         value:
           type:
             - string
             - 'null'
-          description: Value the tag carries on this target
+          description: Value the tag carries on the supplying attachment
     TaskAttempt:
       type: object
       required:
