@@ -320,9 +320,6 @@ impl UserProvidedEntity for UserProvidedTabularsIDs {
                         .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
                         .field(FIELD_NAME_GENERIC_TABLE_ID, generic_table_id)
                 }
-                TabularId::PaimonTable(table_id) => EntityDescriptor::new(ENTITY_TYPE_TABLE)
-                    .field(FIELD_NAME_WAREHOUSE_ID, &self.warehouse_id)
-                    .field(FIELD_NAME_TABLE_ID, table_id),
             }
         }))
     }

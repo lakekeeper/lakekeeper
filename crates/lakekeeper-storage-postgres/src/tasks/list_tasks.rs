@@ -164,9 +164,6 @@ pub(crate) async fn list_tasks(
             WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
                 (Some(*generic_table_id), TaskEntityTypeDB::GenericTable)
             }
-            WarehouseTaskEntityFilter::PaimonTable { table_id } => {
-                (Some(*table_id), TaskEntityTypeDB::PaimonTable)
-            }
             WarehouseTaskEntityFilter::Warehouse => (None, TaskEntityTypeDB::Warehouse),
         })
         .unzip::<_, _, Vec<_>, Vec<_>>();

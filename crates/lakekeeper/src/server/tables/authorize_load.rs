@@ -145,9 +145,6 @@ pub(crate) fn check_required_tabulars<A: Authorizer>(
             TabularIdentOwned::GenericTable(_) => {
                 // Generic tables are handled via dedicated endpoints.
             }
-            TabularIdentOwned::PaimonTable(_) => {
-                // Paimon tables are handled via dedicated endpoints.
-            }
         }
     }
 
@@ -297,9 +294,7 @@ pub(crate) fn resolve_users_for_authorize_load_tabular(
         // Exhaustive match: a future variant of ViewOrTableInfo must make an
         // explicit decision here.
         match tabular {
-            ViewOrTableInfo::Table(_)
-            | ViewOrTableInfo::GenericTable(_)
-            | ViewOrTableInfo::PaimonTable(_) => {
+            ViewOrTableInfo::Table(_) | ViewOrTableInfo::GenericTable(_) => {
                 debug_assert!(
                     tabulars
                         .last()
@@ -429,24 +424,6 @@ pub(crate) fn build_actions_from_sorted_tabulars_for_authorize_load_tabular<'a>(
                     (
                         &namespace.namespace,
                         ActionOnTableOrView::GenericTable(ActionOnGenericTable {
-                            info,
-                            action,
-                            user,
-                            is_delegated_execution,
-                        }),
-                    )
-                })
-                .collect::<Vec<_>>(),
-                ViewOrTableInfo::PaimonTable(info) => vec![
-                    CatalogTableAction::GetMetadata,
-                    CatalogTableAction::ReadData,
-                    CatalogTableAction::WriteData,
-                ]
-                .into_iter()
-                .map(|action| {
-                    (
-                        &namespace.namespace,
-                        ActionOnTableOrView::Table(ActionOnTable {
                             info,
                             action,
                             user,

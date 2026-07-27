@@ -621,6 +621,7 @@ impl StorageProfile {
                 "tbl".to_string(),
             ),
             tabular_id: TableId::new_random(),
+            table_format: Some(crate::service::TableFormat::Iceberg),
             location: test_location.clone(),
             metadata_location: None,
             protected: false,

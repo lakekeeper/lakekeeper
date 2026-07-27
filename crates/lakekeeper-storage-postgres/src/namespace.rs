@@ -825,7 +825,7 @@ pub(crate) async fn drop_namespace(
                         TabularType::Table => TabularId::Table(tabular_id.into()),
                         TabularType::View => TabularId::View(tabular_id.into()),
                         TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
-                        TabularType::PaimonTable => TabularId::PaimonTable(tabular_id.into()),
+                        TabularType::PaimonTable => TabularId::Table(tabular_id.into()),
                     },
                     join_location(protocol.as_str(), fs_location.as_str())
                         .map_err(InternalParseLocationError::from)?,

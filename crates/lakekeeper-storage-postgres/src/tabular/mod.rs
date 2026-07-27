@@ -15,8 +15,7 @@ use lakekeeper::{
         ConcurrentUpdateError, CreateTabularError, DropTabularError, ExpirationTaskInfo,
         GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
-        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
-        PaimonTableDeletionInfo,
+        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId, TableFormat,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
         TabularId, TabularIdentBorrowed, TabularNotFound, UnexpectedTabularInResponse,
@@ -51,7 +50,6 @@ impl From<lakekeeper::service::TabularType> for TabularType {
             lakekeeper::service::TabularType::Table => TabularType::Table,
             lakekeeper::service::TabularType::View => TabularType::View,
             lakekeeper::service::TabularType::GenericTable => TabularType::GenericTable,
-            lakekeeper::service::TabularType::PaimonTable => TabularType::PaimonTable,
         }
     }
 }
@@ -135,6 +133,7 @@ impl TabularRowCore {
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: Some(TableFormat::Iceberg),
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -148,6 +147,7 @@ impl TabularRowCore {
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: None,
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -161,6 +161,7 @@ impl TabularRowCore {
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: None,
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -169,11 +170,12 @@ impl TabularRowCore {
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
-            TabularType::PaimonTable => ViewOrTableInfo::PaimonTable(TableInfo {
+            TabularType::PaimonTable => ViewOrTableInfo::Table(TableInfo {
                 namespace_id: self.namespace_id.into(),
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: Some(TableFormat::Paimon),
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -282,10 +284,6 @@ where
                 TabularId::GenericTable(id) => {
                     t_ids.push(**id);
                     t_typs.push(TabularType::GenericTable);
-                }
-                TabularId::PaimonTable(id) => {
-                    t_ids.push(**id);
-                    t_typs.push(TabularType::PaimonTable);
                 }
             }
             (t_ids, t_typs)
@@ -791,13 +789,6 @@ impl TabularRowWithDeletion {
                 created_at: self.created_at,
             }
             .into(),
-            ViewOrTableInfo::PaimonTable(paimon_table_info) => PaimonTableDeletionInfo {
-                tabular: paimon_table_info,
-                expiration_task,
-                deleted_at: self.deleted_at,
-                created_at: self.created_at,
-            }
-            .into(),
         };
 
         Ok(tabular_deletion_info)
@@ -1022,6 +1013,7 @@ impl PostgresSearchTabularInfo {
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: Some(TableFormat::Iceberg),
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -1038,6 +1030,7 @@ impl PostgresSearchTabularInfo {
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: None,
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -1054,6 +1047,7 @@ impl PostgresSearchTabularInfo {
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: None,
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -1065,11 +1059,12 @@ impl PostgresSearchTabularInfo {
                     self.generic_table_properties_values,
                 ),
             }),
-            TabularType::PaimonTable => ViewOrTableInfo::PaimonTable(TableInfo {
+            TabularType::PaimonTable => ViewOrTableInfo::Table(TableInfo {
                 namespace_id: self.namespace_id.into(),
                 tabular_ident,
                 warehouse_id,
                 tabular_id: self.tabular_id.into(),
+                table_format: Some(TableFormat::Paimon),
                 protected: self.protected,
                 metadata_location,
                 updated_at: self.updated_at,
@@ -1579,10 +1574,11 @@ impl From<DeletionKind> for lakekeeper::api::management::v1::DeleteKind {
 impl From<TabularType> for lakekeeper::api::management::v1::TabularType {
     fn from(typ: TabularType) -> Self {
         match typ {
-            TabularType::Table => lakekeeper::api::management::v1::TabularType::Table,
+            TabularType::Table | TabularType::PaimonTable => {
+                lakekeeper::api::management::v1::TabularType::Table
+            }
             TabularType::View => lakekeeper::api::management::v1::TabularType::View,
             TabularType::GenericTable => lakekeeper::api::management::v1::TabularType::GenericTable,
-            TabularType::PaimonTable => lakekeeper::api::management::v1::TabularType::PaimonTable,
         }
     }
 }
@@ -1952,7 +1948,6 @@ impl<'a, 'b> From<&'b TabularIdentBorrowed<'a>> for TabularType {
             TabularIdentBorrowed::Table(_) => TabularType::Table,
             TabularIdentBorrowed::View(_) => TabularType::View,
             TabularIdentBorrowed::GenericTable(_) => TabularType::GenericTable,
-            TabularIdentBorrowed::PaimonTable(_) => TabularType::PaimonTable,
         }
     }
 }
@@ -1963,7 +1958,6 @@ impl<'a> From<&'a TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
             TabularId::GenericTable(_) => TabularType::GenericTable,
-            TabularId::PaimonTable(_) => TabularType::PaimonTable,
         }
     }
 }
@@ -1974,7 +1968,6 @@ impl From<TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
             TabularId::GenericTable(_) => TabularType::GenericTable,
-            TabularId::PaimonTable(_) => TabularType::PaimonTable,
         }
     }
 }
@@ -2083,7 +2076,7 @@ mod tests {
         transaction.commit().await.unwrap();
 
         match created {
-            ViewOrTableInfo::PaimonTable(info) => (
+            ViewOrTableInfo::Table(info) => (
                 info.tabular_id,
                 info.location.clone(),
                 info.metadata_location.unwrap(),
@@ -2445,7 +2438,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0].tabular {
-            ViewOrTableInfo::PaimonTable(info) => {
+            ViewOrTableInfo::Table(info) => {
                 assert_eq!(info.tabular_id, table_id);
                 assert_eq!(
                     info.tabular_ident.namespace.clone().inner(),
@@ -2472,7 +2465,7 @@ mod tests {
 
         let tabular_info = get_tabular_infos_by_ids(
             warehouse_id,
-            &[TabularId::PaimonTable(table_id)],
+            &[TabularId::Table(table_id)],
             TabularListFlags::active(),
             &state.read_pool(),
         )
@@ -2498,7 +2491,7 @@ mod tests {
         .unwrap();
 
         match tabular {
-            ViewOrTableInfo::PaimonTable(info) => {
+            ViewOrTableInfo::Table(info) => {
                 assert_eq!(info.tabular_id, table_id);
                 assert_eq!(info.location, table_location);
                 assert_eq!(info.metadata_location, Some(metadata_location));

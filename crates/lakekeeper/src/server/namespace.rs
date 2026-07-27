@@ -824,11 +824,6 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                         })
                         .ok();
                 }
-                TabularId::PaimonTable(paimon_table_id) => {
-                    tracing::debug!(
-                        "Skipping authorizer cleanup for Paimon table '{tabular_ident}' with id '{paimon_table_id}' after recursive namespace drop; Paimon authz resources are not wired yet."
-                    );
-                }
             }
         }
 

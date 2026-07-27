@@ -80,9 +80,6 @@ pub(crate) async fn require_undrop_permissions<A: Authorizer, C: CatalogStore>(
                     .into(),
                 );
             }
-            TabularId::PaimonTable(id) => {
-                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, id).into());
-            }
         }
     }
 

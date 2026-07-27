@@ -149,9 +149,6 @@ pub(crate) async fn commit_table_transaction(
                 ViewOrTableInfo::GenericTable(_) => {
                     debug_assert!(false, "Commit should not return generic tables");
                 }
-                ViewOrTableInfo::PaimonTable(_) => {
-                    debug_assert!(false, "Commit should not return paimon tables");
-                }
             }
 
             let tabular_id = table_or_view_info.tabular_id();

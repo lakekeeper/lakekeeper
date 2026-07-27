@@ -510,12 +510,6 @@ pub enum WarehouseTaskEntityFilter {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         generic_table_id: GenericTableId,
     },
-    /// Get tasks for a specific Paimon table
-    #[serde(rename_all = "kebab-case")]
-    PaimonTable {
-        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
-        table_id: TableId,
-    },
     /// Get Warehouse-level tasks which are not associated with a specific entity
     /// inside the warehouse
     Warehouse,
@@ -922,9 +916,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ViewOrTableInfo::GenericTable(g) => WarehouseTaskEntityId::GenericTable {
                 generic_table_id: g.tabular_id,
             },
-            ViewOrTableInfo::PaimonTable(t) => WarehouseTaskEntityId::PaimonTable {
-                table_id: t.tabular_id,
-            },
         };
         let entity_properties = crate::service::AuthZTabularInfo::properties(&tabular_info).clone();
         let project_id = event_ctx.resolved().project_id.clone();
@@ -1153,9 +1144,6 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
             WarehouseTaskEntityFilter::GenericTable { generic_table_id } => {
                 Ok(TabularId::GenericTable(*generic_table_id))
             }
-            WarehouseTaskEntityFilter::PaimonTable { table_id } => {
-                Ok(TabularId::PaimonTable(*table_id))
-            }
             WarehouseTaskEntityFilter::Warehouse => Err(RequireWarehouseActionError::from(
                 AuthZCannotListAllTasks::new(warehouse_id),
             )),
@@ -1197,9 +1185,6 @@ async fn authorize_list_tasks<A: Authorizer, C: CatalogStore>(
                     )
                     .into(),
                 );
-            }
-            TabularId::PaimonTable(id) => {
-                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, *id).into());
             }
         }
     }
@@ -1416,45 +1401,6 @@ async fn authorize_get_task_details<A: Authorizer, C: CatalogStore>(
                     )
                     .await?;
             }
-            WarehouseTaskEntityId::PaimonTable { table_id } => {
-                let infos = C::get_tabular_infos_by_id(
-                    warehouse_id,
-                    &[TabularId::PaimonTable(*table_id)],
-                    TabularListFlags::all(),
-                    catalog_state.clone(),
-                )
-                .await
-                .map_err(RequireTableActionError::from)?;
-                let table_info = infos
-                    .into_iter()
-                    .find_map(|info| match info {
-                        ViewOrTableInfo::PaimonTable(t) => Some(t),
-                        _ => None,
-                    })
-                    .ok_or_else(|| AuthZCannotSeeTable::new_not_found(warehouse_id, *table_id))?;
-
-                let namespace_id = table_info.namespace_id;
-                let namespace = C::get_namespace_cache_aware(
-                    warehouse_id,
-                    namespace_id,
-                    CachePolicy::RequireMinimumVersion(*table_info.namespace_version),
-                    catalog_state,
-                )
-                .await;
-                let namespace =
-                    authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
-
-                authorizer
-                    .require_table_action(
-                        request_metadata,
-                        warehouse,
-                        &namespace,
-                        *table_id,
-                        Ok::<_, RequireTableActionError>(Some(table_info)),
-                        GET_TASK_PERMISSION_TABLE,
-                    )
-                    .await?;
-            }
         }
     } else {
         // Warehouse permission already checked before calling this function
@@ -1489,10 +1435,6 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::GenericTable(tabular.generic_table_id),
                 &tabular.generic_table_ident.namespace,
             )),
-            ResolvedTaskEntity::PaimonTable(tabular) => Ok((
-                TabularId::PaimonTable(tabular.table_id),
-                &tabular.table_ident.namespace,
-            )),
             ResolvedTaskEntity::Warehouse(warehouse_id) => Err(AuthZWarehouseActionForbidden::new(
                 *warehouse_id,
                 &CONTROL_TASK_WAREHOUSE_PERMISSION,
@@ -1523,29 +1465,26 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
         .map(ViewOrTableInfo::tabular_id)
         .collect::<HashSet<_>>();
 
-    for required_tabular_id in required_tabular_ids {
+    for required_tabular_id in &required_tabular_ids {
         if !found_table_ids.contains(&required_tabular_id) {
             match required_tabular_id {
                 TabularId::Table(t) => {
                     return Err(
-                        AuthZCannotSeeTable::new_not_found(warehouse.warehouse_id, t).into(),
+                        AuthZCannotSeeTable::new_not_found(warehouse.warehouse_id, *t).into(),
                     );
                 }
                 TabularId::View(v) => {
-                    return Err(AuthZCannotSeeView::new_not_found(warehouse.warehouse_id, v).into());
+                    return Err(
+                        AuthZCannotSeeView::new_not_found(warehouse.warehouse_id, *v).into(),
+                    );
                 }
                 TabularId::GenericTable(id) => {
                     return Err(
                         crate::service::authz::AuthZCannotSeeGenericTable::new_not_found(
                             warehouse.warehouse_id,
-                            id,
+                            *id,
                         )
                         .into(),
-                    );
-                }
-                TabularId::PaimonTable(id) => {
-                    return Err(
-                        AuthZCannotSeeTable::new_not_found(warehouse.warehouse_id, id).into(),
                     );
                 }
             }
@@ -1628,9 +1567,6 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
                     ResolvedTaskEntity::View(v) => Some(TabularId::View(v.view_id)),
                     ResolvedTaskEntity::GenericTable(g) => {
                         Some(TabularId::GenericTable(g.generic_table_id))
-                    }
-                    ResolvedTaskEntity::PaimonTable(t) => {
-                        Some(TabularId::PaimonTable(t.table_id))
                     }
                     ResolvedTaskEntity::Warehouse(_) | ResolvedTaskEntity::Project => None, // Project not returned due to scope
                 }
@@ -1732,7 +1668,6 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
         WarehouseTaskEntityId::GenericTable { generic_table_id } => {
             TabularId::GenericTable(generic_table_id)
         }
-        WarehouseTaskEntityId::PaimonTable { table_id } => TabularId::PaimonTable(table_id),
     };
     // Restrict to active entities only. Soft-deleted or staged tabulars
     // can't be a meaningful schedule target — the worker would either skip
@@ -1758,9 +1693,6 @@ async fn check_schedule_task_authorization<A: Authorizer, C: CatalogStore>(
             }
             TabularId::GenericTable(g) => {
                 AuthZError::from(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, g))
-            }
-            TabularId::PaimonTable(t) => {
-                AuthZError::from(AuthZCannotSeeTable::new_not_found(warehouse_id, t))
             }
         })?;
 

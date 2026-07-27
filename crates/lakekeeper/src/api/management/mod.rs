@@ -2444,6 +2444,8 @@ pub mod v1 {
         pub namespace: Vec<String>,
         /// Type of the tabular
         pub typ: TabularType,
+        /// Table format for table-like resources
+        pub table_format: Option<TableFormat>,
         /// Warehouse ID where the tabular is stored
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         pub warehouse_id: WarehouseId,
@@ -2461,7 +2463,6 @@ pub mod v1 {
                 TabularId::Table(_) => TabularType::Table,
                 TabularId::View(_) => TabularType::View,
                 TabularId::GenericTable(_) => TabularType::GenericTable,
-                TabularId::PaimonTable(_) => TabularType::PaimonTable,
             }
         }
     }
@@ -2474,7 +2475,23 @@ pub mod v1 {
         Table,
         View,
         GenericTable,
-        PaimonTable,
+    }
+
+    #[derive(Debug, Deserialize, Serialize, Clone, Copy, strum::Display, PartialEq, Eq)]
+    #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+    #[serde(rename_all = "kebab-case")]
+    pub enum TableFormat {
+        Iceberg,
+        Paimon,
+    }
+
+    impl From<crate::service::TableFormat> for TableFormat {
+        fn from(value: crate::service::TableFormat) -> Self {
+            match value {
+                crate::service::TableFormat::Iceberg => Self::Iceberg,
+                crate::service::TableFormat::Paimon => Self::Paimon,
+            }
+        }
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]

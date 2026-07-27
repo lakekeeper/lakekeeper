@@ -65,7 +65,7 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
         TabularType::View => TabularId::View(row.tabular_id.into()),
         TabularType::Table => TabularId::Table(row.tabular_id.into()),
         TabularType::GenericTable => TabularId::GenericTable(row.tabular_id.into()),
-        TabularType::PaimonTable => TabularId::PaimonTable(row.tabular_id.into()),
+        TabularType::PaimonTable => TabularId::Table(row.tabular_id.into()),
     };
 
     let mut tabulars =

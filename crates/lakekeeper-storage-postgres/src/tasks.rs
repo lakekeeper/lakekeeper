@@ -56,7 +56,6 @@ impl From<WarehouseTaskEntityId> for TaskEntityTypeDB {
             WarehouseTaskEntityId::Table { .. } => Self::Table,
             WarehouseTaskEntityId::View { .. } => Self::View,
             WarehouseTaskEntityId::GenericTable { .. } => Self::GenericTable,
-            WarehouseTaskEntityId::PaimonTable { .. } => Self::PaimonTable,
         }
     }
 }
@@ -108,7 +107,7 @@ fn task_entity_from_db(
                 TaskEntityTypeDB::GenericTable => WarehouseTaskEntityId::GenericTable {
                     generic_table_id: lakekeeper::service::GenericTableId::from(entity_id),
                 },
-                TaskEntityTypeDB::PaimonTable => WarehouseTaskEntityId::PaimonTable {
+                TaskEntityTypeDB::PaimonTable => WarehouseTaskEntityId::Table {
                     table_id: TableId::from(entity_id),
                 },
                 _ => unreachable!(),
@@ -303,7 +302,7 @@ pub(crate) async fn queue_task_batch(
                     TaskEntityTypeDB::GenericTable => Some(WarehouseTaskEntityId::GenericTable {
                         generic_table_id: record.entity_id.unwrap().into(),
                     }),
-                    TaskEntityTypeDB::PaimonTable => Some(WarehouseTaskEntityId::PaimonTable {
+                    TaskEntityTypeDB::PaimonTable => Some(WarehouseTaskEntityId::Table {
                         table_id: record.entity_id.unwrap().into(),
                     }),
                     TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => None,

@@ -141,6 +141,7 @@ where
                             warehouse_id,
                             table_ident: ident,
                             table_id,
+                            table_format: TableFormat::Iceberg,
                         }
                         .into(),
                         WarehouseTaskEntityId::View { view_id } => ViewNamed {
@@ -156,13 +157,6 @@ where
                                 generic_table_id,
                             }
                             .into()
-                        }
-                        WarehouseTaskEntityId::PaimonTable { table_id } => {
-                            ResolvedTaskEntity::PaimonTable(TableNamed {
-                                warehouse_id,
-                                table_ident: ident,
-                                table_id,
-                            })
                         }
                     }
                 }
@@ -371,7 +365,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -385,7 +378,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -455,12 +447,12 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_resolve_tasks_paimon_table_branch(pool: PgPool) {
+    async fn test_resolve_tasks_table_branch(pool: PgPool) {
         let mut conn = pool.acquire().await.unwrap();
         let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
 
         let table_uuid = Uuid::now_v7();
-        let entity = WarehouseTaskEntityId::PaimonTable {
+        let entity = WarehouseTaskEntityId::Table {
             table_id: table_uuid.into(),
         };
         let expected_table_name = format!("table{table_uuid}");
@@ -501,13 +493,13 @@ mod tests {
         assert_eq!(resolved.task_id, task_id);
         assert_eq!(resolved.queue_name, tq_name);
         match &resolved.entity {
-            ResolvedTaskEntity::PaimonTable(table) => {
+            ResolvedTaskEntity::Table(table) => {
                 assert_eq!(*table.table_id, table_uuid);
                 assert_eq!(table.warehouse_id, warehouse_id);
                 assert_eq!(table.table_ident.namespace.as_ref(), &["ns".to_string()]);
                 assert_eq!(table.table_ident.name, expected_table_name);
             }
-            other => panic!("Expected ResolvedTaskEntity::PaimonTable, got {other:?}"),
+            other => panic!("Expected ResolvedTaskEntity::Table, got {other:?}"),
         }
     }
 
@@ -601,7 +593,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -614,7 +605,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -796,7 +786,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -875,7 +864,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -886,7 +874,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -950,7 +937,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -1024,7 +1010,6 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
-            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -1185,3 +1170,4 @@ mod tests {
         }
     }
 }
+use lakekeeper::service::TableFormat;

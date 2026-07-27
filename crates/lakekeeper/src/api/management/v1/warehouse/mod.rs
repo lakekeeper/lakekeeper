@@ -1625,6 +1625,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     name: tabular_ident.name,
                     namespace: tabular_ident.namespace.inner(),
                     typ: k.into(),
+                    table_format: info.table_format().map(Into::into),
                     warehouse_id,
                     created_at: info.created_at(),
                     deleted_at,
