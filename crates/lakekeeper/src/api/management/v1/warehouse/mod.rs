@@ -11,7 +11,7 @@ use typed_builder::TypedBuilder;
 
 use super::{DeleteWarehouseQuery, ProtectionResponse};
 pub use crate::service::{
-    CatalogCreateWarehouseRequest, ManagedBy, WarehouseStatus,
+    CatalogCreateWarehouseRequest, CatalogKind, ManagedBy, WarehouseStatus,
     storage::{
         AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile, OneLakeProfile,
         S3Credential, S3Profile, StorageCredential, StorageCredentialType, StorageProfile,
@@ -132,6 +132,10 @@ pub struct CreateWarehouseRequest {
     #[serde(default)]
     #[builder(default)]
     pub managed_by: ManagedBy,
+    /// Which catalog protocol this warehouse exposes. Defaults to `iceberg`.
+    #[serde(default)]
+    #[builder(default)]
+    pub catalog_kind: CatalogKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
@@ -305,6 +309,9 @@ pub struct GetWarehouseResponse {
     pub status: WarehouseStatus,
     /// Whether the warehouse is protected from being deleted.
     pub protected: bool,
+    /// Which catalog protocol this warehouse exposes.
+    #[serde(default)]
+    pub catalog_kind: CatalogKind,
     /// Which control plane, if any, exclusively manages this warehouse's spec.
     /// When not `self-managed`, spec mutations are restricted to that control plane.
     #[serde(default)]
@@ -414,6 +421,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             allowed_format_versions,
             default_format_version,
             managed_by,
+            catalog_kind,
         } = request;
         let project_id = request_metadata.require_project_id(project_id)?;
         let format_version_policy =
@@ -499,6 +507,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .storage_profile(storage_profile)
                 .storage_secret_id(secret_id)
                 .delete_profile(delete_profile)
+                .catalog_kind(catalog_kind)
                 .format_version_policy(format_version_policy)
                 .managed_by(managed_by)
                 .build(),
@@ -1740,6 +1749,7 @@ impl GetWarehouseResponse {
             status: warehouse.status,
             delete_profile: warehouse.tabular_delete_profile,
             protected: warehouse.protected,
+            catalog_kind: warehouse.catalog_kind,
             managed_by: warehouse.managed_by,
             allowed_format_versions: warehouse.allowed_format_versions.to_vec(),
             default_format_version: warehouse.default_format_version,
@@ -1898,6 +1908,7 @@ mod test {
             storage_profile: crate::service::storage::MemoryProfile::default().into(),
             storage_secret_id,
             status: WarehouseStatus::Active,
+            catalog_kind: crate::service::CatalogKind::Iceberg,
             tabular_delete_profile: super::TabularDeleteProfile::Hard {},
             protected: false,
             managed_by: crate::service::ManagedBy::SelfManaged,
@@ -1924,12 +1935,14 @@ mod test {
         let cred_type = Some(StorageCredentialType::S3(S3CredentialType::AccessKey));
         let response = GetWarehouseResponse::from_resolved(warehouse, cred_type);
 
+        assert_eq!(response.catalog_kind, crate::service::CatalogKind::Iceberg);
         assert_eq!(
             response.storage_credential_type,
             Some(StorageCredentialType::S3(S3CredentialType::AccessKey))
         );
 
         let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["catalog-kind"], serde_json::json!("iceberg"));
         assert_eq!(
             json["storage-credential-type"],
             serde_json::json!({"type": "s3", "credential-type": "access-key"})
@@ -1941,13 +1954,42 @@ mod test {
         let warehouse = test_warehouse(None);
         let response = GetWarehouseResponse::from_resolved(warehouse, None);
 
+        assert_eq!(response.catalog_kind, crate::service::CatalogKind::Iceberg);
         assert_eq!(response.storage_credential_type, None);
 
         let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["catalog-kind"], serde_json::json!("iceberg"));
         assert!(
             json.get("storage-credential-type").is_none(),
             "storage-credential-type should be absent when None (skip_serializing_if)"
         );
+    }
+
+    #[test]
+    fn create_warehouse_request_defaults_catalog_kind_to_iceberg() {
+        let request: super::CreateWarehouseRequest = serde_json::from_value(serde_json::json!({
+            "warehouse-name": "test-warehouse",
+            "storage-profile": {
+                "type": "memory"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(request.catalog_kind, crate::service::CatalogKind::Iceberg);
+    }
+
+    #[test]
+    fn create_warehouse_request_accepts_explicit_catalog_kind() {
+        let request: super::CreateWarehouseRequest = serde_json::from_value(serde_json::json!({
+            "warehouse-name": "test-warehouse",
+            "catalog-kind": "paimon",
+            "storage-profile": {
+                "type": "memory"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(request.catalog_kind, crate::service::CatalogKind::Paimon);
     }
 
     // --- Mock secret store for resolve_credential_type tests ---

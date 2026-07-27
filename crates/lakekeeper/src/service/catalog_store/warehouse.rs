@@ -56,6 +56,34 @@ pub enum WarehouseStatus {
     Inactive,
 }
 
+/// Which catalog protocol a warehouse exposes.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    strum_macros::Display,
+    strum_macros::EnumIter,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+#[cfg_attr(feature = "sqlx-postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "sqlx-postgres",
+    sqlx(type_name = "catalog_kind", rename_all = "kebab-case")
+)]
+pub enum CatalogKind {
+    #[default]
+    Iceberg,
+    Paimon,
+}
+
 /// Which control plane, if any, exclusively manages a warehouse's spec.
 ///
 /// `self-managed` (the default) leaves the spec mutable by the warehouse's own
@@ -241,6 +269,8 @@ pub struct ResolvedWarehouse {
     pub storage_secret_id: Option<SecretId>,
     /// Whether the warehouse is active.
     pub status: WarehouseStatus,
+    /// Which catalog protocol this warehouse exposes.
+    pub catalog_kind: CatalogKind,
     /// Tabular delete profile used for the warehouse.
     pub tabular_delete_profile: TabularDeleteProfile,
     /// Whether the warehouse is protected from being deleted.
@@ -278,6 +308,7 @@ impl ResolvedWarehouse {
             storage_profile: MemoryProfile::default().into(),
             storage_secret_id: None,
             status: WarehouseStatus::Active,
+            catalog_kind: CatalogKind::Iceberg,
             tabular_delete_profile: TabularDeleteProfile::default(),
             protected: false,
             managed_by: crate::service::ManagedBy::SelfManaged,
@@ -301,6 +332,7 @@ impl ResolvedWarehouse {
             storage_profile: MemoryProfile::default().into(),
             storage_secret_id: None,
             status: WarehouseStatus::Active,
+            catalog_kind: CatalogKind::Iceberg,
             tabular_delete_profile: TabularDeleteProfile::default(),
             protected: false,
             managed_by: crate::service::ManagedBy::SelfManaged,
@@ -671,6 +703,128 @@ define_transparent_error! {
         WarehouseIdNotFound,
         DatabaseIntegrityError,
     ]
+}
+
+#[derive(thiserror::Error, Debug, PartialEq)]
+#[error(
+    "Warehouse catalog kind '{actual}' does not support the requested '{expected}' catalog API."
+)]
+pub struct WarehouseCatalogKindMismatch {
+    pub expected: CatalogKind,
+    pub actual: CatalogKind,
+    pub stack: Vec<String>,
+}
+
+impl WarehouseCatalogKindMismatch {
+    #[must_use]
+    pub fn new(expected: CatalogKind, actual: CatalogKind) -> Self {
+        Self {
+            expected,
+            actual,
+            stack: Vec::new(),
+        }
+    }
+}
+
+impl_error_stack_methods!(WarehouseCatalogKindMismatch);
+
+impl From<WarehouseCatalogKindMismatch> for ErrorModel {
+    fn from(err: WarehouseCatalogKindMismatch) -> Self {
+        ErrorModel::builder()
+            .r#type("WarehouseCatalogKindMismatch")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+pub fn ensure_warehouse_catalog_kind(
+    warehouse: &ResolvedWarehouse,
+    expected: CatalogKind,
+) -> std::result::Result<(), WarehouseCatalogKindMismatch> {
+    if warehouse.catalog_kind == expected {
+        return Ok(());
+    }
+
+    Err(WarehouseCatalogKindMismatch::new(
+        expected,
+        warehouse.catalog_kind,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{
+        AllowedFormatVersions, CatalogKind, ManagedBy, ResolvedWarehouse,
+        WarehouseCatalogKindMismatch, WarehouseStatus, WarehouseVersion,
+        ensure_warehouse_catalog_kind,
+    };
+    use crate::{
+        ProjectId, WarehouseId, api::management::v1::warehouse::TabularDeleteProfile,
+        service::storage::MemoryProfile,
+    };
+    use iceberg_ext::catalog::rest::ErrorModel;
+
+    fn test_warehouse(catalog_kind: CatalogKind) -> ResolvedWarehouse {
+        ResolvedWarehouse {
+            warehouse_id: WarehouseId::new_random(),
+            name: "test-warehouse".to_string(),
+            project_id: Arc::new(ProjectId::new_random()),
+            storage_profile: MemoryProfile::default().into(),
+            storage_secret_id: None,
+            status: WarehouseStatus::Active,
+            catalog_kind,
+            tabular_delete_profile: TabularDeleteProfile::Hard {},
+            protected: false,
+            managed_by: ManagedBy::SelfManaged,
+            allowed_format_versions: AllowedFormatVersions::default(),
+            default_format_version: None,
+            updated_at: None,
+            version: WarehouseVersion::from(0),
+        }
+    }
+
+    #[test]
+    fn ensure_warehouse_catalog_kind_accepts_matching_kind() {
+        let warehouse = test_warehouse(CatalogKind::Iceberg);
+
+        assert_eq!(
+            ensure_warehouse_catalog_kind(&warehouse, CatalogKind::Iceberg),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn ensure_warehouse_catalog_kind_rejects_mismatched_kind() {
+        let warehouse = test_warehouse(CatalogKind::Paimon);
+
+        assert_eq!(
+            ensure_warehouse_catalog_kind(&warehouse, CatalogKind::Iceberg),
+            Err(WarehouseCatalogKindMismatch::new(
+                CatalogKind::Iceberg,
+                CatalogKind::Paimon,
+            ))
+        );
+    }
+
+    #[test]
+    fn warehouse_catalog_kind_mismatch_maps_to_stable_error_model() {
+        let error = ErrorModel::from(WarehouseCatalogKindMismatch::new(
+            CatalogKind::Iceberg,
+            CatalogKind::Paimon,
+        ));
+
+        assert_eq!(error.r#type, "WarehouseCatalogKindMismatch");
+        assert_eq!(error.code, 400);
+        assert!(
+            error
+                .message
+                .contains("does not support the requested 'iceberg' catalog API")
+        );
+    }
 }
 
 // --------------------------- Warehouse Spec Locked (managed-by) ---------------------------

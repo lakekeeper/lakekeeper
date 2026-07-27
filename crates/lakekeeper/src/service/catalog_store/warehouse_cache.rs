@@ -479,6 +479,7 @@ mod tests {
             storage_profile: MemoryProfile::default().into(),
             storage_secret_id: None,
             status: WarehouseStatus::Active,
+            catalog_kind: crate::service::CatalogKind::Iceberg,
             tabular_delete_profile: TabularDeleteProfile::Hard {},
             protected: false,
             managed_by: crate::service::ManagedBy::SelfManaged,

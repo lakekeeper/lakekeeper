@@ -12,7 +12,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
-        require_warehouse_id,
+        require_iceberg_warehouse, require_warehouse_id,
         tables::{
             add_namespace_to_tabulars_for_authorize_load_tabular,
             build_actions_from_sorted_tabulars_for_authorize_load_tabular,
@@ -80,6 +80,7 @@ pub async fn load_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     .await;
     let (event_ctx, (warehouse, view_info, storage_permissions)) =
         event_ctx.emit_authz(authz_result)?;
+    let warehouse = require_iceberg_warehouse(warehouse)?;
 
     let event_ctx = event_ctx.resolve(ResolvedView {
         warehouse,

@@ -12,7 +12,7 @@ use crate::{
     },
     request_metadata::RequestMetadata,
     server::{
-        maybe_get_secret, require_warehouse_id,
+        maybe_get_secret, require_iceberg_warehouse, require_warehouse_id,
         tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
     },
     service::{
@@ -85,6 +85,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         )
         .await,
     )?;
+    let warehouse = require_iceberg_warehouse(warehouse)?;
 
     let mut event_ctx = event_ctx.resolve(ResolvedTable {
         warehouse,
@@ -149,7 +150,9 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         let fresh_warehouse = authorizer
             .require_warehouse_presence(warehouse_id, warehouse)
             .map_err(authz_to_error_no_audit)?;
-        event_ctx.resolved_mut().warehouse = fresh_warehouse;
+        event_ctx.resolved_mut().warehouse =
+            require_iceberg_warehouse(fresh_warehouse)
+                .map_err(iceberg_ext::catalog::rest::IcebergErrorResponse::from)?;
     }
     let warehouse = &event_ctx.resolved().warehouse;
 
