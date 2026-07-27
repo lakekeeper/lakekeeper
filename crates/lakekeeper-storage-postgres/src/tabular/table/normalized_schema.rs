@@ -11,23 +11,12 @@ use iceberg::spec::{
     ListType, MapType, NestedField, NestedFieldRef, PrimitiveType, Schema, SchemaId, StructType,
     Type, VariantType,
 };
+use lakekeeper::service::{LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType};
 use serde_json::Value;
 
 // ─── errors ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, thiserror::Error)]
-pub enum SchemaNormError {
-    #[error(
-        "non-null default is invalid for {kind} field '{name}' (field_id={field_id}); must default to null"
-    )]
-    NonNullDefaultUnsupported {
-        field_id: i32,
-        name: String,
-        kind: &'static str,
-    },
-    #[error("schema assembly failed: {detail}")]
-    Assembly { detail: String },
-}
+pub use lakekeeper::service::LogicalSchemaError as SchemaNormError;
 
 // ─── IcebergTypeKind ─────────────────────────────────────────────────────────
 
@@ -139,14 +128,78 @@ pub struct SchemaFieldRow {
 /// Walk `schema` and emit one `FlatField` per node (struct fields, list
 /// elements, map keys, map values — all included).
 pub fn flatten_schema(schema: &Schema) -> Result<Vec<FlatField>, SchemaNormError> {
-    // identifier_field_ids is schema-level; pass it down so each field sets its own flag in one
-    // pass. Referential integrity is free: an identifier can only be an existing field row.
-    let identifiers: std::collections::HashSet<i32> = schema.identifier_field_ids().collect();
+    flatten_logical_schema(&logical_schema_from_iceberg(schema)?)
+}
+
+pub fn flatten_logical_schema(schema: &LogicalSchema) -> Result<Vec<FlatField>, SchemaNormError> {
     let mut out = Vec::new();
-    flatten_struct(schema.as_struct(), None, &identifiers, &mut out)?;
+    flatten_logical_fields(&schema.root_fields, None, &mut out)?;
     Ok(out)
 }
 
+fn flatten_logical_fields(
+    fields: &[LogicalField],
+    parent_field_id: Option<i32>,
+    out: &mut Vec<FlatField>,
+) -> Result<(), SchemaNormError> {
+    for (ordinal, field) in fields.iter().enumerate() {
+        flatten_logical_field(field, parent_field_id, ordinal as i32, out)?;
+    }
+    Ok(())
+}
+
+fn flatten_logical_field(
+    field: &LogicalField,
+    parent_field_id: Option<i32>,
+    ordinal: i32,
+    out: &mut Vec<FlatField>,
+) -> Result<(), SchemaNormError> {
+    let (type_kind, type_params) = type_kind_and_params_from_logical(&field.field_type);
+    if !type_kind.permits_non_null_default() {
+        if field.initial_default.is_some() || field.write_default.is_some() {
+            return Err(SchemaNormError::NonNullDefaultUnsupported {
+                field_id: field.field_id,
+                name: field.name.clone(),
+                kind: type_kind.as_str(),
+            });
+        }
+    }
+
+    out.push(FlatField {
+        field_id: field.field_id,
+        parent_field_id,
+        ordinal,
+        name: field.name.clone(),
+        required: field.required,
+        doc: field.doc.clone(),
+        type_kind,
+        type_params,
+        initial_default: field.initial_default.clone(),
+        write_default: field.write_default.clone(),
+        is_identifier: field.is_identity_hint,
+    });
+
+    match &field.field_type {
+        LogicalType::Primitive(_) => {}
+        LogicalType::Struct { fields } => {
+            flatten_logical_fields(fields, Some(field.field_id), out)?;
+        }
+        LogicalType::List { element_field } => {
+            flatten_logical_field(element_field, Some(field.field_id), 0, out)?;
+        }
+        LogicalType::Map {
+            key_field,
+            value_field,
+        } => {
+            flatten_logical_field(key_field, Some(field.field_id), 0, out)?;
+            flatten_logical_field(value_field, Some(field.field_id), 1, out)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn flatten_struct(
     s: &StructType,
     parent_field_id: Option<i32>,
@@ -159,6 +212,7 @@ fn flatten_struct(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn flatten_field(
     field: &NestedFieldRef,
     parent_field_id: Option<i32>,
@@ -244,6 +298,7 @@ fn flatten_field(
 }
 
 /// Exhaustive match — a future new `Type` or `PrimitiveType` arm **must** fail the build.
+#[allow(dead_code)]
 fn type_kind_and_params(ty: &Type) -> (IcebergTypeKind, Option<Value>) {
     match ty {
         Type::Primitive(p) => match p {
@@ -277,6 +332,267 @@ fn type_kind_and_params(ty: &Type) -> (IcebergTypeKind, Option<Value>) {
     }
 }
 
+fn type_kind_and_params_from_logical(ty: &LogicalType) -> (IcebergTypeKind, Option<Value>) {
+    match ty {
+        LogicalType::Primitive(p) => match p {
+            LogicalPrimitiveType::Boolean => (IcebergTypeKind::Boolean, None),
+            LogicalPrimitiveType::Int => (IcebergTypeKind::Int, None),
+            LogicalPrimitiveType::Long => (IcebergTypeKind::Long, None),
+            LogicalPrimitiveType::Float => (IcebergTypeKind::Float, None),
+            LogicalPrimitiveType::Double => (IcebergTypeKind::Double, None),
+            LogicalPrimitiveType::Decimal { precision, scale } => (
+                IcebergTypeKind::Decimal,
+                Some(serde_json::json!({ "precision": precision, "scale": scale })),
+            ),
+            LogicalPrimitiveType::Date => (IcebergTypeKind::Date, None),
+            LogicalPrimitiveType::Time => (IcebergTypeKind::Time, None),
+            LogicalPrimitiveType::Timestamp => (IcebergTypeKind::Timestamp, None),
+            LogicalPrimitiveType::Timestamptz => (IcebergTypeKind::Timestamptz, None),
+            LogicalPrimitiveType::TimestampNs => (IcebergTypeKind::TimestampNs, None),
+            LogicalPrimitiveType::TimestamptzNs => (IcebergTypeKind::TimestamptzNs, None),
+            LogicalPrimitiveType::String => (IcebergTypeKind::String, None),
+            LogicalPrimitiveType::Uuid => (IcebergTypeKind::Uuid, None),
+            LogicalPrimitiveType::Fixed { length } => (
+                IcebergTypeKind::Fixed,
+                Some(serde_json::json!({ "length": length })),
+            ),
+            LogicalPrimitiveType::Binary => (IcebergTypeKind::Binary, None),
+            LogicalPrimitiveType::Variant => (IcebergTypeKind::Variant, None),
+        },
+        LogicalType::Struct { .. } => (IcebergTypeKind::Struct, None),
+        LogicalType::List { .. } => (IcebergTypeKind::List, None),
+        LogicalType::Map { .. } => (IcebergTypeKind::Map, None),
+    }
+}
+
+fn logical_schema_from_iceberg(schema: &Schema) -> Result<LogicalSchema, SchemaNormError> {
+    let identifiers = schema
+        .identifier_field_ids()
+        .collect::<std::collections::HashSet<_>>();
+    let root_fields = schema
+        .as_struct()
+        .fields()
+        .iter()
+        .map(|field| logical_field_from_iceberg(field, &identifiers))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(LogicalSchema {
+        schema_id: schema.schema_id(),
+        root_fields,
+    })
+}
+
+fn logical_field_from_iceberg(
+    field: &NestedFieldRef,
+    identifiers: &std::collections::HashSet<i32>,
+) -> Result<LogicalField, SchemaNormError> {
+    let field_type = logical_type_from_iceberg(&field.field_type, identifiers)?;
+    let initial_default = field
+        .initial_default
+        .as_ref()
+        .map(|lit| {
+            lit.clone()
+                .try_into_json(&field.field_type)
+                .map_err(|e| SchemaNormError::Assembly {
+                    detail: format!(
+                        "initial_default serialize failed for field '{}' (field_id={}): {e}",
+                        field.name, field.id
+                    ),
+                })
+        })
+        .transpose()?;
+    let write_default = field
+        .write_default
+        .as_ref()
+        .map(|lit| {
+            lit.clone()
+                .try_into_json(&field.field_type)
+                .map_err(|e| SchemaNormError::Assembly {
+                    detail: format!(
+                        "write_default serialize failed for field '{}' (field_id={}): {e}",
+                        field.name, field.id
+                    ),
+                })
+        })
+        .transpose()?;
+
+    Ok(LogicalField {
+        field_id: field.id,
+        name: field.name.clone(),
+        required: field.required,
+        doc: field.doc.clone(),
+        field_type,
+        initial_default,
+        write_default,
+        is_identity_hint: identifiers.contains(&field.id),
+    })
+}
+
+fn logical_type_from_iceberg(
+    ty: &Type,
+    identifiers: &std::collections::HashSet<i32>,
+) -> Result<LogicalType, SchemaNormError> {
+    Ok(match ty {
+        Type::Primitive(p) => LogicalType::Primitive(match p {
+            PrimitiveType::Boolean => LogicalPrimitiveType::Boolean,
+            PrimitiveType::Int => LogicalPrimitiveType::Int,
+            PrimitiveType::Long => LogicalPrimitiveType::Long,
+            PrimitiveType::Float => LogicalPrimitiveType::Float,
+            PrimitiveType::Double => LogicalPrimitiveType::Double,
+            PrimitiveType::Decimal { precision, scale } => LogicalPrimitiveType::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
+            PrimitiveType::Date => LogicalPrimitiveType::Date,
+            PrimitiveType::Time => LogicalPrimitiveType::Time,
+            PrimitiveType::Timestamp => LogicalPrimitiveType::Timestamp,
+            PrimitiveType::Timestamptz => LogicalPrimitiveType::Timestamptz,
+            PrimitiveType::TimestampNs => LogicalPrimitiveType::TimestampNs,
+            PrimitiveType::TimestamptzNs => LogicalPrimitiveType::TimestamptzNs,
+            PrimitiveType::String => LogicalPrimitiveType::String,
+            PrimitiveType::Uuid => LogicalPrimitiveType::Uuid,
+            PrimitiveType::Fixed(length) => LogicalPrimitiveType::Fixed { length: *length },
+            PrimitiveType::Binary => LogicalPrimitiveType::Binary,
+        }),
+        Type::Struct(s) => LogicalType::Struct {
+            fields: s
+                .fields()
+                .iter()
+                .map(|field| logical_field_from_iceberg(field, identifiers))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        Type::List(list) => LogicalType::List {
+            element_field: Box::new(logical_field_from_iceberg(
+                &list.element_field,
+                identifiers,
+            )?),
+        },
+        Type::Map(map) => LogicalType::Map {
+            key_field: Box::new(logical_field_from_iceberg(&map.key_field, identifiers)?),
+            value_field: Box::new(logical_field_from_iceberg(&map.value_field, identifiers)?),
+        },
+        Type::Variant(_) => LogicalType::Primitive(LogicalPrimitiveType::Variant),
+    })
+}
+
+fn logical_schema_to_iceberg(schema: &LogicalSchema) -> Result<Schema, SchemaNormError> {
+    let mut identifier_ids = Vec::new();
+    let fields = schema
+        .root_fields
+        .iter()
+        .map(|field| nested_field_from_logical(field, &mut identifier_ids))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Schema::builder()
+        .with_schema_id(schema.schema_id)
+        .with_identifier_field_ids(identifier_ids)
+        .with_fields(fields)
+        .build()
+        .map_err(|e| SchemaNormError::Assembly {
+            detail: format!("Schema::builder().build() failed for schema_id={}: {e}", schema.schema_id),
+        })
+}
+
+fn nested_field_from_logical(
+    field: &LogicalField,
+    identifier_ids: &mut Vec<i32>,
+) -> Result<NestedFieldRef, SchemaNormError> {
+    if field.is_identity_hint {
+        identifier_ids.push(field.field_id);
+    }
+
+    let field_type = logical_type_to_iceberg(&field.field_type, identifier_ids)?;
+    let mut nested = if field.required {
+        NestedField::required(field.field_id, field.name.clone(), field_type)
+    } else {
+        NestedField::optional(field.field_id, field.name.clone(), field_type)
+    };
+
+    if let Some(doc) = &field.doc {
+        nested = nested.with_doc(doc.clone());
+    }
+    if let Some(json_val) = &field.initial_default {
+        let lit = iceberg::spec::Literal::try_from_json(json_val.clone(), &nested.field_type)
+            .map_err(|e| SchemaNormError::Assembly {
+                detail: format!(
+                    "initial_default parse failed for field '{}' (field_id={}): {e}",
+                    field.name, field.field_id
+                ),
+            })?
+            .ok_or_else(|| SchemaNormError::Assembly {
+                detail: format!(
+                    "initial_default was null JSON for field '{}' (field_id={})",
+                    field.name, field.field_id
+                ),
+            })?;
+        nested = nested.with_initial_default(lit);
+    }
+    if let Some(json_val) = &field.write_default {
+        let lit = iceberg::spec::Literal::try_from_json(json_val.clone(), &nested.field_type)
+            .map_err(|e| SchemaNormError::Assembly {
+                detail: format!(
+                    "write_default parse failed for field '{}' (field_id={}): {e}",
+                    field.name, field.field_id
+                ),
+            })?
+            .ok_or_else(|| SchemaNormError::Assembly {
+                detail: format!(
+                    "write_default was null JSON for field '{}' (field_id={})",
+                    field.name, field.field_id
+                ),
+            })?;
+        nested = nested.with_write_default(lit);
+    }
+
+    Ok(Arc::new(nested))
+}
+
+fn logical_type_to_iceberg(
+    ty: &LogicalType,
+    identifier_ids: &mut Vec<i32>,
+) -> Result<Type, SchemaNormError> {
+    Ok(match ty {
+        LogicalType::Primitive(p) => Type::Primitive(match p {
+            LogicalPrimitiveType::Boolean => PrimitiveType::Boolean,
+            LogicalPrimitiveType::Int => PrimitiveType::Int,
+            LogicalPrimitiveType::Long => PrimitiveType::Long,
+            LogicalPrimitiveType::Float => PrimitiveType::Float,
+            LogicalPrimitiveType::Double => PrimitiveType::Double,
+            LogicalPrimitiveType::Decimal { precision, scale } => PrimitiveType::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
+            LogicalPrimitiveType::Date => PrimitiveType::Date,
+            LogicalPrimitiveType::Time => PrimitiveType::Time,
+            LogicalPrimitiveType::Timestamp => PrimitiveType::Timestamp,
+            LogicalPrimitiveType::Timestamptz => PrimitiveType::Timestamptz,
+            LogicalPrimitiveType::TimestampNs => PrimitiveType::TimestampNs,
+            LogicalPrimitiveType::TimestamptzNs => PrimitiveType::TimestamptzNs,
+            LogicalPrimitiveType::String => PrimitiveType::String,
+            LogicalPrimitiveType::Uuid => PrimitiveType::Uuid,
+            LogicalPrimitiveType::Fixed { length } => PrimitiveType::Fixed(*length),
+            LogicalPrimitiveType::Binary => PrimitiveType::Binary,
+            LogicalPrimitiveType::Variant => return Ok(Type::Variant(VariantType)),
+        }),
+        LogicalType::Struct { fields } => Type::Struct(StructType::new(
+            fields
+                .iter()
+                .map(|field| nested_field_from_logical(field, identifier_ids))
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        LogicalType::List { element_field } => Type::List(ListType::new(
+            nested_field_from_logical(element_field, identifier_ids)?,
+        )),
+        LogicalType::Map {
+            key_field,
+            value_field,
+        } => Type::Map(MapType::new(
+            nested_field_from_logical(key_field, identifier_ids)?,
+            nested_field_from_logical(value_field, identifier_ids)?,
+        )),
+    })
+}
+
 // ─── assemble_schemas ────────────────────────────────────────────────────────
 
 /// Reassemble the schemas for a tabular from its flat `schema_field` rows.
@@ -291,20 +607,22 @@ pub fn assemble_schemas(
     rows: Vec<SchemaFieldRow>,
     expected_schema_ids: &[SchemaId],
 ) -> Result<HashMap<SchemaId, Arc<Schema>>, SchemaNormError> {
+    let logical = assemble_logical_schemas(rows, expected_schema_ids)?;
+    logical
+        .into_iter()
+        .map(|(schema_id, schema)| Ok((schema_id, Arc::new(logical_schema_to_iceberg(&schema)?))))
+        .collect()
+}
+
+pub fn assemble_logical_schemas(
+    rows: Vec<SchemaFieldRow>,
+    expected_schema_ids: &[SchemaId],
+) -> Result<HashMap<SchemaId, LogicalSchema>, SchemaNormError> {
     // Group rows by schema_id
     let mut by_schema: HashMap<i32, Vec<SchemaFieldRow>> = HashMap::new();
-    let mut identifier_ids_by_schema: HashMap<i32, Vec<i32>> = HashMap::new();
 
     for row in rows {
-        let schema_id = row.schema_id;
-        // identifier_field_ids = the field_ids flagged is_identifier in this schema.
-        if row.is_identifier {
-            identifier_ids_by_schema
-                .entry(schema_id)
-                .or_default()
-                .push(row.field_id);
-        }
-        by_schema.entry(schema_id).or_default().push(row);
+        by_schema.entry(row.schema_id).or_default().push(row);
     }
 
     let mut result = HashMap::with_capacity(by_schema.len());
@@ -318,9 +636,9 @@ pub fn assemble_schemas(
         // field_id exactly once (a second visit means a duplicate row or a cycle → rejected in
         // build_field). After the walk, every input row must have been consumed.
         let mut consumed: HashSet<i32> = HashSet::with_capacity(rows.len());
-        let mut fields = Vec::with_capacity(top_level.len());
+        let mut root_fields = Vec::with_capacity(top_level.len());
         for &row in top_level {
-            fields.push(build_field(row, &children, &mut consumed)?);
+            root_fields.push(build_logical_field(row, &children, &mut consumed)?);
         }
         // A row left unconsumed is unreachable from the schema root — its parent_field_id points at a
         // primitive (which consumes no children), a nonexistent field, or a disconnected cycle. Such a
@@ -340,21 +658,13 @@ pub fn assemble_schemas(
             });
         }
 
-        // remove (not get + clone): each schema_id is assembled once, so move the Vec out.
-        let ident_ids = identifier_ids_by_schema
-            .remove(&schema_id)
-            .unwrap_or_default();
-
-        let schema = Schema::builder()
-            .with_schema_id(schema_id)
-            .with_identifier_field_ids(ident_ids)
-            .with_fields(fields)
-            .build()
-            .map_err(|e| SchemaNormError::Assembly {
-                detail: format!("Schema::builder().build() failed for schema_id={schema_id}: {e}"),
-            })?;
-
-        result.insert(schema_id, Arc::new(schema));
+        result.insert(
+            schema_id,
+            LogicalSchema {
+                schema_id,
+                root_fields,
+            },
+        );
     }
 
     // Seed any expected anchor that produced no rows as an empty-fields schema (see doc above).
@@ -362,13 +672,13 @@ pub fn assemble_schemas(
         if result.contains_key(&schema_id) {
             continue;
         }
-        let schema = Schema::builder()
-            .with_schema_id(schema_id)
-            .build()
-            .map_err(|e| SchemaNormError::Assembly {
-                detail: format!("empty Schema::build() failed for schema_id={schema_id}: {e}"),
-            })?;
-        result.insert(schema_id, Arc::new(schema));
+        result.insert(
+            schema_id,
+            LogicalSchema {
+                schema_id,
+                root_fields: Vec::new(),
+            },
+        );
     }
 
     Ok(result)
@@ -399,6 +709,196 @@ fn children_of<'idx, 'row>(
         .unwrap_or_default()
 }
 
+fn build_logical_field<'row>(
+    row: &'row SchemaFieldRow,
+    children: &ChildrenIndex<'row>,
+    consumed: &mut HashSet<i32>,
+) -> Result<LogicalField, SchemaNormError> {
+    if !consumed.insert(row.field_id) {
+        return Err(SchemaNormError::Assembly {
+            detail: format!(
+                "field '{}' (field_id={}) reached more than once during assembly (duplicate row or cycle)",
+                row.name, row.field_id
+            ),
+        });
+    }
+
+    Ok(LogicalField {
+        field_id: row.field_id,
+        name: row.name.clone(),
+        required: row.required,
+        doc: row.doc.clone(),
+        field_type: build_logical_type(row, children, consumed)?,
+        initial_default: row.initial_default.clone(),
+        write_default: row.write_default.clone(),
+        is_identity_hint: row.is_identifier,
+    })
+}
+
+fn build_logical_type<'row>(
+    row: &'row SchemaFieldRow,
+    children: &ChildrenIndex<'row>,
+    consumed: &mut HashSet<i32>,
+) -> Result<LogicalType, SchemaNormError> {
+    match row.type_kind.as_str() {
+        "struct" => {
+            let kids = children_of(children, row.field_id);
+            let mut fields = Vec::with_capacity(kids.len());
+            for &child_row in kids {
+                fields.push(build_logical_field(child_row, children, consumed)?);
+            }
+            Ok(LogicalType::Struct { fields })
+        }
+        "list" => {
+            let kids = children_of(children, row.field_id);
+            if kids.len() != 1 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "list field '{}' (field_id={}) must have exactly 1 child, found {}",
+                        row.name,
+                        row.field_id,
+                        kids.len()
+                    ),
+                });
+            }
+            if kids[0].ordinal != 0 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "list field '{}' (field_id={}) element must have ordinal 0, found {}",
+                        row.name, row.field_id, kids[0].ordinal
+                    ),
+                });
+            }
+            Ok(LogicalType::List {
+                element_field: Box::new(build_logical_field(kids[0], children, consumed)?),
+            })
+        }
+        "map" => {
+            let kids = children_of(children, row.field_id);
+            if kids.len() != 2 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "map field '{}' (field_id={}) must have exactly 2 children (key, value), found {}",
+                        row.name,
+                        row.field_id,
+                        kids.len()
+                    ),
+                });
+            }
+            if kids[0].ordinal != 0 || kids[1].ordinal != 1 {
+                return Err(SchemaNormError::Assembly {
+                    detail: format!(
+                        "map field '{}' (field_id={}) children must have ordinals 0 (key) and 1 (value), found {} and {}",
+                        row.name, row.field_id, kids[0].ordinal, kids[1].ordinal
+                    ),
+                });
+            }
+            Ok(LogicalType::Map {
+                key_field: Box::new(build_logical_field(kids[0], children, consumed)?),
+                value_field: Box::new(build_logical_field(kids[1], children, consumed)?),
+            })
+        }
+        kind => Ok(LogicalType::Primitive(logical_primitive_from_row(row, kind)?)),
+    }
+}
+
+fn logical_primitive_from_row(
+    row: &SchemaFieldRow,
+    kind: &str,
+) -> Result<LogicalPrimitiveType, SchemaNormError> {
+    match kind {
+        "boolean" => Ok(LogicalPrimitiveType::Boolean),
+        "int" => Ok(LogicalPrimitiveType::Int),
+        "long" => Ok(LogicalPrimitiveType::Long),
+        "float" => Ok(LogicalPrimitiveType::Float),
+        "double" => Ok(LogicalPrimitiveType::Double),
+        "decimal" => {
+            let params = row
+                .type_params
+                .as_ref()
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!(
+                        "decimal field '{}' (field_id={}) missing type_params",
+                        row.name, row.field_id
+                    ),
+                })?;
+            let precision = u32::try_from(
+                params
+                    .get("precision")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| SchemaNormError::Assembly {
+                        detail: format!(
+                            "decimal field '{}' (field_id={}) missing precision in type_params",
+                            row.name, row.field_id
+                        ),
+                    })?,
+            )
+            .map_err(|_| SchemaNormError::Assembly {
+                detail: format!(
+                    "decimal field '{}' (field_id={}) precision out of u32 range",
+                    row.name, row.field_id
+                ),
+            })?;
+            let scale = u32::try_from(
+                params
+                    .get("scale")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| SchemaNormError::Assembly {
+                        detail: format!(
+                            "decimal field '{}' (field_id={}) missing scale in type_params",
+                            row.name, row.field_id
+                        ),
+                    })?,
+            )
+            .map_err(|_| SchemaNormError::Assembly {
+                detail: format!(
+                    "decimal field '{}' (field_id={}) scale out of u32 range",
+                    row.name, row.field_id
+                ),
+            })?;
+            Ok(LogicalPrimitiveType::Decimal { precision, scale })
+        }
+        "date" => Ok(LogicalPrimitiveType::Date),
+        "time" => Ok(LogicalPrimitiveType::Time),
+        "timestamp" => Ok(LogicalPrimitiveType::Timestamp),
+        "timestamptz" => Ok(LogicalPrimitiveType::Timestamptz),
+        "timestamp_ns" => Ok(LogicalPrimitiveType::TimestampNs),
+        "timestamptz_ns" => Ok(LogicalPrimitiveType::TimestamptzNs),
+        "string" => Ok(LogicalPrimitiveType::String),
+        "uuid" => Ok(LogicalPrimitiveType::Uuid),
+        "fixed" => {
+            let params = row
+                .type_params
+                .as_ref()
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!(
+                        "fixed field '{}' (field_id={}) missing type_params",
+                        row.name, row.field_id
+                    ),
+                })?;
+            let length = params
+                .get("length")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| SchemaNormError::Assembly {
+                    detail: format!(
+                        "fixed field '{}' (field_id={}) missing length in type_params",
+                        row.name, row.field_id
+                    ),
+                })?;
+            Ok(LogicalPrimitiveType::Fixed { length })
+        }
+        "binary" => Ok(LogicalPrimitiveType::Binary),
+        "variant" => Ok(LogicalPrimitiveType::Variant),
+        other => Err(SchemaNormError::Assembly {
+            detail: format!(
+                "unknown type_kind '{other}' for field '{}' (field_id={})",
+                row.name, row.field_id
+            ),
+        }),
+    }
+}
+
+#[allow(dead_code)]
 fn build_field<'row>(
     row: &'row SchemaFieldRow,
     children: &ChildrenIndex<'row>,
@@ -462,6 +962,7 @@ fn build_field<'row>(
     Ok(Arc::new(field))
 }
 
+#[allow(dead_code)]
 fn build_type<'row>(
     row: &'row SchemaFieldRow,
     children: &ChildrenIndex<'row>,
@@ -536,6 +1037,7 @@ fn build_type<'row>(
     }
 }
 
+#[allow(dead_code)]
 fn primitive_from_row(row: &SchemaFieldRow, kind: &str) -> Result<Type, SchemaNormError> {
     let p = match kind {
         "boolean" => PrimitiveType::Boolean,
@@ -658,6 +1160,7 @@ mod tests {
     use iceberg::spec::{
         ListType, MapType, NestedField, PrimitiveType, Schema, StructType, Type, VariantType,
     };
+    use lakekeeper::service::{LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType};
 
     use super::*;
 
@@ -898,9 +1401,119 @@ mod tests {
         );
     }
 
+    fn logical_round_trip(schema: &LogicalSchema) {
+        let flat = flatten_logical_schema(schema).expect("logical flatten failed");
+        let rows: Vec<SchemaFieldRow> = flat
+            .iter()
+            .map(|f| flat_to_row(f, schema.schema_id))
+            .collect();
+        let assembled = assemble_logical_schemas(rows, &[schema.schema_id])
+            .expect("logical assemble failed");
+        assert_eq!(
+            assembled.get(&schema.schema_id).expect("logical schema missing"),
+            schema,
+            "logical round-trip failed for schema_id={}",
+            schema.schema_id
+        );
+    }
+
+    fn nested_logical_schema() -> LogicalSchema {
+        LogicalSchema {
+            schema_id: 77,
+            root_fields: vec![
+                LogicalField {
+                    field_id: 1,
+                    name: "id".to_string(),
+                    required: true,
+                    doc: Some("primary key".to_string()),
+                    field_type: LogicalType::Primitive(LogicalPrimitiveType::Long),
+                    initial_default: None,
+                    write_default: None,
+                    is_identity_hint: true,
+                },
+                LogicalField {
+                    field_id: 2,
+                    name: "payload".to_string(),
+                    required: false,
+                    doc: None,
+                    field_type: LogicalType::Struct {
+                        fields: vec![
+                            LogicalField {
+                                field_id: 3,
+                                name: "tags".to_string(),
+                                required: false,
+                                doc: None,
+                                field_type: LogicalType::List {
+                                    element_field: Box::new(LogicalField {
+                                        field_id: 4,
+                                        name: "element".to_string(),
+                                        required: true,
+                                        doc: None,
+                                        field_type: LogicalType::Primitive(
+                                            LogicalPrimitiveType::String,
+                                        ),
+                                        initial_default: None,
+                                        write_default: None,
+                                        is_identity_hint: false,
+                                    }),
+                                },
+                                initial_default: None,
+                                write_default: None,
+                                is_identity_hint: false,
+                            },
+                            LogicalField {
+                                field_id: 5,
+                                name: "counts".to_string(),
+                                required: false,
+                                doc: None,
+                                field_type: LogicalType::Map {
+                                    key_field: Box::new(LogicalField {
+                                        field_id: 6,
+                                        name: "key".to_string(),
+                                        required: true,
+                                        doc: None,
+                                        field_type: LogicalType::Primitive(
+                                            LogicalPrimitiveType::String,
+                                        ),
+                                        initial_default: None,
+                                        write_default: None,
+                                        is_identity_hint: false,
+                                    }),
+                                    value_field: Box::new(LogicalField {
+                                        field_id: 7,
+                                        name: "value".to_string(),
+                                        required: false,
+                                        doc: None,
+                                        field_type: LogicalType::Primitive(
+                                            LogicalPrimitiveType::Int,
+                                        ),
+                                        initial_default: Some(serde_json::json!(0)),
+                                        write_default: Some(serde_json::json!(0)),
+                                        is_identity_hint: false,
+                                    }),
+                                },
+                                initial_default: None,
+                                write_default: None,
+                                is_identity_hint: false,
+                            },
+                        ],
+                    },
+                    initial_default: None,
+                    write_default: None,
+                    is_identity_hint: false,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn test_flat_round_trip() {
         round_trip(&flat_schema());
+    }
+
+    #[test]
+    fn test_logical_schema_round_trip() {
+        logical_round_trip(&nested_logical_schema());
     }
 
     /// Every `IcebergTypeKind` must survive flatten → assemble. `build_type`/`primitive_from_row`

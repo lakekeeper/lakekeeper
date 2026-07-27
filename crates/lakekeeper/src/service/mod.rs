@@ -14,10 +14,12 @@ pub mod secrets;
 pub mod storage;
 pub mod task_configs;
 pub mod tasks;
+pub mod logical_schema;
 pub use admission::{AdmissionGate, AdmissionGates, AdmissionRejection};
 pub use authn::{Actor, UserId};
 pub use catalog_store::*;
 pub use endpoint_statistics::EndpointStatisticsTrackerTx;
+pub use logical_schema::*;
 mod post_migration_hooks;
 #[allow(unused_imports)]
 pub use identifier::tabular::{TabularId, TabularIdentBorrowed, TabularIdentOwned};
