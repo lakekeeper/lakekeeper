@@ -10,7 +10,7 @@ use lakekeeper_io::Location;
 mod create;
 mod list;
 
-use super::{CatalogServer, UnfilteredPage, require_warehouse_id};
+use super::{CatalogServer, UnfilteredPage, require_iceberg_warehouse, require_warehouse_id};
 use crate::{
     CONFIG,
     api::{
@@ -103,6 +103,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let (event_ctx, (can_list_everything, warehouse, _parent_namespace)) =
             event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let mut t = C::Transaction::begin_read(state.v1_state.catalog).await?;
@@ -288,6 +289,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         .await;
 
         let (event_ctx, (warehouse, parent_namespace)) = event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let event_ctx = match (&parent_namespace, event_ctx) {
             (Some(parent_namespace), NamespaceOrWarehouseAPIContext::Namespace(ctx)) => NamespaceOrWarehouseAPIContext::Namespace(ctx
@@ -402,6 +404,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await;
 
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse,
@@ -528,6 +531,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await;
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse: warehouse.clone(),
@@ -658,6 +662,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await;
 
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse,
             namespace: namespace.namespace,

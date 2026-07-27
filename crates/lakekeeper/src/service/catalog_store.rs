@@ -268,6 +268,8 @@ pub struct CatalogCreateWarehouseRequest {
     pub storage_secret_id: Option<SecretId>,
     pub delete_profile: TabularDeleteProfile,
     #[builder(default)]
+    pub catalog_kind: CatalogKind,
+    #[builder(default)]
     pub format_version_policy: WarehouseFormatVersionPolicy,
     #[builder(default)]
     pub managed_by: ManagedBy,

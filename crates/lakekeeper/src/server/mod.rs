@@ -25,7 +25,10 @@ use crate::{
         ErrorModel, Result,
         iceberg::v1::{PageToken, Prefix},
     },
-    service::{CatalogStore, authz::Authorizer, secrets::SecretStore, storage::StorageCredential},
+    service::{
+        CatalogKind, CatalogStore, ResolvedWarehouse, authz::Authorizer,
+        ensure_warehouse_catalog_kind, secrets::SecretStore, storage::StorageCredential,
+    },
 };
 
 pub trait MetadataProperties {
@@ -106,6 +109,13 @@ fn require_warehouse_id(prefix: Option<&Prefix>) -> std::result::Result<Warehous
     )
 }
 
+pub(crate) fn require_iceberg_warehouse(
+    warehouse: Arc<ResolvedWarehouse>,
+) -> std::result::Result<Arc<ResolvedWarehouse>, ErrorModel> {
+    ensure_warehouse_catalog_kind(warehouse.as_ref(), CatalogKind::Iceberg)?;
+    Ok(warehouse)
+}
+
 pub(crate) async fn maybe_get_secret<S: SecretStore>(
     secret: Option<crate::SecretId>,
     state: &S,
@@ -116,6 +126,59 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
         ))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::require_iceberg_warehouse;
+    use crate::{
+        ProjectId, WarehouseId,
+        api::management::v1::warehouse::TabularDeleteProfile,
+        service::{
+            AllowedFormatVersions, CatalogKind, ManagedBy, ResolvedWarehouse, WarehouseStatus,
+            WarehouseVersion, storage::MemoryProfile,
+        },
+    };
+
+    fn test_warehouse(catalog_kind: CatalogKind) -> Arc<ResolvedWarehouse> {
+        Arc::new(ResolvedWarehouse {
+            warehouse_id: WarehouseId::new_random(),
+            name: "test-warehouse".to_string(),
+            project_id: Arc::new(ProjectId::new_random()),
+            storage_profile: MemoryProfile::default().into(),
+            storage_secret_id: None,
+            status: WarehouseStatus::Active,
+            catalog_kind,
+            tabular_delete_profile: TabularDeleteProfile::Hard {},
+            protected: false,
+            managed_by: ManagedBy::SelfManaged,
+            allowed_format_versions: AllowedFormatVersions::default(),
+            default_format_version: None,
+            updated_at: None,
+            version: WarehouseVersion::from(0),
+        })
+    }
+
+    #[test]
+    fn require_iceberg_warehouse_accepts_iceberg() {
+        let warehouse = test_warehouse(CatalogKind::Iceberg);
+
+        let resolved = require_iceberg_warehouse(warehouse.clone()).unwrap();
+
+        assert_eq!(resolved.warehouse_id, warehouse.warehouse_id);
+    }
+
+    #[test]
+    fn require_iceberg_warehouse_rejects_paimon() {
+        let warehouse = test_warehouse(CatalogKind::Paimon);
+
+        let error = require_iceberg_warehouse(warehouse).unwrap_err();
+
+        assert_eq!(error.r#type, "WarehouseCatalogKindMismatch");
+        assert_eq!(error.code, 400);
     }
 }
 

@@ -8,7 +8,9 @@ use crate::{
     WarehouseId,
     api::{ApiContext, endpoints::EndpointFlat, iceberg::types::Prefix},
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tables::validate_table_or_view_ident},
+    server::{
+        require_iceberg_warehouse, require_warehouse_id, tables::validate_table_or_view_ident,
+    },
     service::{
         AuthZViewInfo as _, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, Result,
@@ -77,6 +79,7 @@ pub async fn rename_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             destination_namespace,
         },
     ) = event_ctx.emit_authz(authz_result)?;
+    let warehouse = require_iceberg_warehouse(warehouse)?;
 
     let source_id = source_view_info.view_id();
     let event_ctx = event_ctx.resolve(ResolvedView {

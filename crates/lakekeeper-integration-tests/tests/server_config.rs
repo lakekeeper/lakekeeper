@@ -9,9 +9,9 @@ use lakekeeper::{
         management::v1::warehouse::TabularDeleteProfile,
     },
     server::CatalogServer,
-    service::{WarehouseNameNotFound, authz::tests::HidingAuthorizer},
+    service::{CatalogKind, WarehouseNameNotFound, authz::tests::HidingAuthorizer},
 };
-use lakekeeper_integration_tests::{memory_io_profile, setup};
+use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, setup};
 use sqlx::PgPool;
 
 fn config_query(project: &ProjectId, warehouse_name: &str) -> GetConfigQueryParams {
@@ -111,4 +111,28 @@ async fn test_get_config_hidden_warehouse_indistinguishable_from_missing(pool: P
     .error;
     assert_eq!(missing_err.code, 404);
     assert_eq!(missing_err.r#type, hidden_err.r#type);
+}
+
+#[sqlx::test]
+async fn test_get_config_rejects_paimon_warehouse(pool: PgPool) {
+    let (ctx, warehouse) = SetupTestCatalog::builder()
+        .pool(pool)
+        .storage_profile(memory_io_profile())
+        .authorizer(HidingAuthorizer::new())
+        .catalog_kind(CatalogKind::Paimon)
+        .build()
+        .setup()
+        .await;
+
+    let err = CatalogServer::get_config(
+        config_query(&warehouse.project_id, &warehouse.warehouse_name),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect_err("paimon warehouse must not serve iceberg config")
+    .error;
+
+    assert_eq!(err.code, 400);
+    assert_eq!(err.r#type, "WarehouseCatalogKindMismatch");
 }

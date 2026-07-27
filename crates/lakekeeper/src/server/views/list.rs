@@ -10,7 +10,7 @@ use crate::{
         iceberg::v1::{ListTablesQuery, NamespaceParameters},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tabular::list_entities},
+    server::{require_iceberg_warehouse, require_warehouse_id, tabular::list_entities},
     service::{
         CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         NamespaceHierarchy, ResolvedWarehouse, SecretStore, State, Transaction,
@@ -59,6 +59,7 @@ pub(crate) async fn list_views<C: CatalogStore, A: Authorizer + Clone, S: Secret
     .await;
 
     let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+    let warehouse = require_iceberg_warehouse(warehouse)?;
 
     let event_ctx = Arc::new(event_ctx.resolve(ResolvedNamespace {
         warehouse: warehouse.clone(),

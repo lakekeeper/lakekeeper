@@ -25,8 +25,8 @@ use lakekeeper::{
     },
     server::CatalogServer,
     service::{
-        ArcProjectId, CatalogNamespaceOps, CreateNamespaceResponse, NamespaceWithParent, State,
-        UserId,
+        ArcProjectId, CatalogKind, CatalogNamespaceOps, CreateNamespaceResponse,
+        NamespaceWithParent, State, UserId,
         authz::{AllowAllAuthorizer, Authorizer},
         contract_verification::ContractVerifiers,
         events::EventDispatcher,
@@ -91,6 +91,8 @@ pub struct SetupTestCatalog<T: Authorizer> {
     number_of_warehouses: usize,
     #[builder(default)]
     project_id: Option<ArcProjectId>,
+    #[builder(default)]
+    catalog_kind: CatalogKind,
 }
 
 impl<T: Authorizer> SetupTestCatalog<T> {
@@ -100,7 +102,7 @@ impl<T: Authorizer> SetupTestCatalog<T> {
         ApiContext<State<T, PostgresBackend, SecretsState>>,
         TestWarehouseResponse,
     ) {
-        setup(
+        let (ctx, warehouse, _registry) = setup_with_registry_and_catalog_kind(
             self.pool,
             self.storage_profile,
             None,
@@ -109,8 +111,10 @@ impl<T: Authorizer> SetupTestCatalog<T> {
             self.user_id,
             self.number_of_warehouses,
             self.project_id.map(Arc::unwrap_or_clone),
+            self.catalog_kind,
         )
-        .await
+        .await;
+        (ctx, warehouse)
     }
 }
 
@@ -128,7 +132,7 @@ pub async fn setup<T: Authorizer>(
     ApiContext<State<T, PostgresBackend, SecretsState>>,
     TestWarehouseResponse,
 ) {
-    let (ctx, warehouse, _registry) = setup_with_registry(
+    let (ctx, warehouse, _registry) = setup_with_registry_and_catalog_kind(
         pool,
         storage_profile,
         storage_credential,
@@ -137,6 +141,7 @@ pub async fn setup<T: Authorizer>(
         user_id,
         number_of_warehouses,
         project_id,
+        CatalogKind::Iceberg,
     )
     .await;
     (ctx, warehouse)
@@ -158,6 +163,36 @@ pub async fn setup_with_registry<T: Authorizer>(
     user_id: Option<UserId>,
     number_of_warehouses: usize,
     project_id: Option<ProjectId>,
+) -> (
+    ApiContext<State<T, PostgresBackend, SecretsState>>,
+    TestWarehouseResponse,
+    TaskQueueRegistry,
+) {
+    setup_with_registry_and_catalog_kind(
+        pool,
+        storage_profile,
+        storage_credential,
+        authorizer,
+        delete_profile,
+        user_id,
+        number_of_warehouses,
+        project_id,
+        CatalogKind::Iceberg,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn setup_with_registry_and_catalog_kind<T: Authorizer>(
+    pool: PgPool,
+    storage_profile: StorageProfile,
+    storage_credential: Option<StorageCredential>,
+    authorizer: T,
+    delete_profile: TabularDeleteProfile,
+    user_id: Option<UserId>,
+    number_of_warehouses: usize,
+    project_id: Option<ProjectId>,
+    catalog_kind: CatalogKind,
 ) -> (
     ApiContext<State<T, PostgresBackend, SecretsState>>,
     TestWarehouseResponse,
@@ -199,6 +234,7 @@ pub async fn setup_with_registry<T: Authorizer>(
             allowed_format_versions: None,
             default_format_version: None,
             managed_by: Default::default(),
+            catalog_kind,
         },
         api_context.clone(),
         metadata.clone(),
@@ -218,6 +254,7 @@ pub async fn setup_with_registry<T: Authorizer>(
                 allowed_format_versions: None,
                 default_format_version: None,
                 managed_by: Default::default(),
+                catalog_kind,
             },
             api_context.clone(),
             metadata.clone(),

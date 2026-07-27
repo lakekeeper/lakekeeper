@@ -12,6 +12,7 @@ use crate::{
     },
     config::MaintenanceMode,
     request_metadata::RequestMetadata,
+    server::require_iceberg_warehouse,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
         UserUpsertMode, WarehouseNameNotFound, WarehouseStatus,
@@ -106,6 +107,7 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
                 .into());
             }
         };
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let mut config = warehouse.storage_profile.generate_catalog_config(
             warehouse.warehouse_id,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT \n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n            FROM warehouse\n            WHERE project_id = $1\n            AND status = ANY($2)\n            ",
+  "query": "\n            UPDATE warehouse\n            SET storage_profile = $1, storage_secret_id = $2\n            WHERE warehouse_id = $3\n            AND status = 'active'\n            RETURNING\n                project_id,\n                warehouse_id,\n                warehouse_name,\n                storage_profile as \"storage_profile: Json<StorageProfile>\",\n                storage_secret_id,\n                status AS \"status: WarehouseStatus\",\n                catalog_kind as \"catalog_kind: CatalogKind\",\n                tabular_delete_mode as \"tabular_delete_mode: DbTabularDeleteProfile\",\n                tabular_expiration_seconds,\n                protected,\n                allowed_format_versions,\n                default_format_version,\n                managed_by as \"managed_by: ManagedBy\",\n                updated_at,\n                version\n        ",
   "describe": {
     "columns": [
       {
@@ -81,6 +81,27 @@
       },
       {
         "ordinal": 6,
+        "name": "catalog_kind: CatalogKind",
+        "type_info": {
+          "Custom": {
+            "name": "catalog_kind",
+            "kind": {
+              "Enum": [
+                "iceberg",
+                "paimon"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "warehouse",
+            "name": "catalog_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "tabular_delete_mode: DbTabularDeleteProfile",
         "type_info": {
           "Custom": {
@@ -101,7 +122,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "tabular_expiration_seconds",
         "type_info": "Int8",
         "origin": {
@@ -112,7 +133,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "protected",
         "type_info": "Bool",
         "origin": {
@@ -123,7 +144,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "allowed_format_versions",
         "type_info": "Int2Array",
         "origin": {
@@ -134,7 +155,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "default_format_version",
         "type_info": "Int2",
         "origin": {
@@ -145,7 +166,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "managed_by: ManagedBy",
         "type_info": {
           "Custom": {
@@ -166,7 +187,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -177,7 +198,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "version",
         "type_info": "Int8",
         "origin": {
@@ -190,25 +211,9 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        {
-          "Custom": {
-            "name": "warehouse_status[]",
-            "kind": {
-              "Array": {
-                "Custom": {
-                  "name": "warehouse_status",
-                  "kind": {
-                    "Enum": [
-                      "active",
-                      "inactive"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        }
+        "Jsonb",
+        "Uuid",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -217,6 +222,7 @@
       false,
       false,
       true,
+      false,
       false,
       false,
       true,
@@ -228,5 +234,5 @@
       false
     ]
   },
-  "hash": "01eda539ce8aaa7cd32ef87c0d70f583255da7c1ef42445ee16af71e667cdfdb"
+  "hash": "49cb7cec18abbcd187a53be76c368fd077a277c20ce7ee540329fa03f24b8d98"
 }

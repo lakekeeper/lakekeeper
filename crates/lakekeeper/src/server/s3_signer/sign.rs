@@ -15,7 +15,7 @@ use crate::{
         iceberg::types::Prefix,
     },
     request_metadata::RequestMetadata,
-    server::require_warehouse_id,
+    server::{require_iceberg_warehouse, require_warehouse_id},
     service::{
         AuthZTableInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
         GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
@@ -85,6 +85,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await
             // Too noisy otherwise
             .map_err(authz_to_error_no_audit)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         // Check if remote signing is enabled for this storage profile
         if let StorageProfile::S3(s3_profile) = &warehouse.storage_profile {

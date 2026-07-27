@@ -13,8 +13,8 @@ use lakekeeper::{
         },
     },
     service::{
-        CachePolicy, CatalogCreateWarehouseRequest, CatalogStore, CatalogWarehouseOps, ManagedBy,
-        Transaction, UserId, WarehouseStatus, authz::AllowAllAuthorizer,
+        CachePolicy, CatalogCreateWarehouseRequest, CatalogKind, CatalogStore, CatalogWarehouseOps,
+        ManagedBy, Transaction, UserId, WarehouseStatus, authz::AllowAllAuthorizer,
         warehouse_cache::WAREHOUSE_CACHE,
     },
 };
@@ -66,6 +66,42 @@ async fn test_create_warehouse(pool: PgPool) {
     ));
     assert_eq!(warehouse.storage_secret_id, None);
     assert!(!warehouse.protected);
+}
+
+#[sqlx::test]
+async fn test_create_warehouse_with_paimon_catalog_kind(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let project_id = ProjectId::from(Uuid::nil());
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+
+    let warehouse = PostgresBackend::create_warehouse(
+        &project_id,
+        CatalogCreateWarehouseRequest::builder()
+            .warehouse_name(format!("test-paimon-warehouse-{}", Uuid::now_v7()))
+            .storage_profile(storage_profile)
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .catalog_kind(CatalogKind::Paimon)
+            .build(),
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
+
+    assert_eq!(warehouse.catalog_kind, CatalogKind::Paimon);
 }
 
 /// Test creating warehouse with storage secret
@@ -1548,6 +1584,44 @@ async fn test_create_managed_warehouse_requires_instance_admin(pool: PgPool) {
     .unwrap()
     .unwrap();
     assert_eq!(warehouse.managed_by, ManagedBy::InstanceAdmin);
+}
+
+#[sqlx::test]
+async fn test_management_create_warehouse_round_trips_catalog_kind(pool: PgPool) {
+    let storage_profile = memory_io_profile();
+    let (ctx, _) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile.clone())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    let created = ApiServer::create_warehouse(
+        CreateWarehouseRequest::builder()
+            .warehouse_name(format!("paimon-{}", Uuid::now_v7()))
+            .project_id(ProjectId::from(Uuid::nil()))
+            .storage_profile(storage_profile)
+            .delete_profile(TabularDeleteProfile::Hard {})
+            .catalog_kind(CatalogKind::Paimon)
+            .build(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let warehouse = PostgresBackend::get_warehouse_by_id(
+        created.warehouse_id(),
+        WarehouseStatus::active(),
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(warehouse.catalog_kind, CatalogKind::Paimon);
 }
 
 /// Every spec-mutating management endpoint enforces the managed-by lock. Drives

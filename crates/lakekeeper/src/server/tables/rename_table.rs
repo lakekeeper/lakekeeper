@@ -9,7 +9,9 @@ use crate::{
         iceberg::v1::{ApiContext, ErrorModel, Prefix, RenameTableRequest, Result, TableIdent},
     },
     request_metadata::RequestMetadata,
-    server::{require_warehouse_id, tables::validate_table_or_view_ident},
+    server::{
+        require_iceberg_warehouse, require_warehouse_id, tables::validate_table_or_view_ident,
+    },
     service::{
         AuthZTableInfo as _, CatalogIdempotencyOps, CatalogNamespaceOps, CatalogStore,
         CatalogTabularOps, CatalogWarehouseOps, NamespaceHierarchy, ResolvedWarehouse, State,
@@ -75,6 +77,7 @@ pub(super) async fn rename_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
 
     let (event_ctx, (warehouse, destination_namespace, source_table_info)) =
         event_ctx.emit_authz(authz_result)?;
+    let warehouse = require_iceberg_warehouse(warehouse)?;
 
     let source_table_id = source_table_info.table_id();
     let event_ctx = event_ctx.resolve(ResolvedTable {

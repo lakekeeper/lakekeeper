@@ -34,7 +34,7 @@ use super::{
     io::{delete_file, read_metadata_file, write_file},
     maybe_get_secret,
     namespace::validate_namespace_ident,
-    require_warehouse_id,
+    require_iceberg_warehouse, require_warehouse_id,
 };
 use crate::{
     WarehouseId, XXHashSet,
@@ -212,6 +212,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .await;
 
         let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let event_ctx = Arc::new(event_ctx.resolve(ResolvedNamespace {
             warehouse: warehouse.clone(),
@@ -332,6 +333,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await
             .map_err(|e| event_ctx.emit_early_authz_failure(e))?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         // ------------------- BUSINESS LOGIC -------------------
         let storage_profile = &warehouse.storage_profile;
@@ -604,6 +606,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         let (event_ctx, (warehouse, tabular_info, storage_permissions)) =
             event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let event_ctx = event_ctx.resolve(ResolvedTable {
             warehouse,
@@ -767,6 +770,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await;
         let (event_ctx, (warehouse, _ns, table_info)) = event_ctx.emit_authz(authz_result)?;
+        let warehouse = require_iceberg_warehouse(warehouse)?;
 
         let table_id = table_info.table_id();
         let event_ctx = event_ctx.resolve(ResolvedTable {
@@ -928,7 +932,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 state.v1_state.catalog.clone(),
             )
             .await;
-        let _ = event_ctx.emit_authz(authz_result)?;
+        let (_event_ctx, (warehouse, _namespace, _table_info)) =
+            event_ctx.emit_authz(authz_result)?;
+        let _warehouse = require_iceberg_warehouse(warehouse)?;
 
         Ok(())
     }
@@ -1383,7 +1389,7 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
         return Ok(CommitTablesResult::Replay);
     }
 
-    let warehouse = authz_result.warehouse;
+    let warehouse = require_iceberg_warehouse(authz_result.warehouse)?;
     let table_infos = authz_result
         .table_infos_with_actions
         .into_iter()
