@@ -3,6 +3,9 @@ pub use iceberg::{NamespaceIdent, TableIdent, TableRequirement, TableUpdate};
 mod view_requirement;
 pub use view_requirement::{AssertViewUuid, ViewRequirement};
 
+mod table_update_kind;
+pub use table_update_kind::TableUpdateKind;
+
 pub mod rest {
     mod catalog_config;
     pub use catalog_config::CatalogConfig;

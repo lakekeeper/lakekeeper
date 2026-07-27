@@ -1,10 +1,16 @@
-use std::{collections::HashMap, str::FromStr as _};
+use std::{
+    collections::{BTreeSet, HashMap},
+    str::FromStr as _,
+};
 
 use iceberg::{
     TableRequirement, TableUpdate,
     spec::{SchemaRef, TableMetadata},
 };
-use iceberg_ext::spec::{TableMetadataBuildResult, TableMetadataBuilder};
+use iceberg_ext::{
+    catalog::TableUpdateKind,
+    spec::{TableMetadataBuildResult, TableMetadataBuilder},
+};
 use lakekeeper_io::Location;
 
 use crate::{
@@ -115,7 +121,7 @@ pub(super) fn apply_commit(
 
     // Update!
     for update in updates {
-        tracing::debug!("Applying update: '{}'", table_update_as_str(&update));
+        tracing::debug!("Applying update: '{}'", TableUpdateKind::from(&update));
         match &update {
             TableUpdate::AssignUuid { uuid } => {
                 if uuid != &previous_uuid {
@@ -179,32 +185,33 @@ pub(super) fn apply_commit(
     Ok(build_result)
 }
 
-fn table_update_as_str(update: &TableUpdate) -> &str {
-    match update {
-        TableUpdate::UpgradeFormatVersion { .. } => "upgrade_format_version",
-        TableUpdate::AssignUuid { .. } => "assign_uuid",
-        TableUpdate::AddSchema { .. } => "add_schema",
-        TableUpdate::SetCurrentSchema { .. } => "set_current_schema",
-        TableUpdate::AddSpec { .. } => "add_spec",
-        TableUpdate::SetDefaultSpec { .. } => "set_default_spec",
-        TableUpdate::AddSortOrder { .. } => "add_sort_order",
-        TableUpdate::SetDefaultSortOrder { .. } => "set_default_sort_order",
-        TableUpdate::AddSnapshot { .. } => "add_snapshot",
-        TableUpdate::SetSnapshotRef { .. } => "set_snapshot_ref",
-        TableUpdate::RemoveSnapshots { .. } => "remove_snapshots",
-        TableUpdate::RemoveSnapshotRef { .. } => "remove_snapshot_ref",
-        TableUpdate::SetLocation { .. } => "set_location",
-        TableUpdate::SetProperties { .. } => "set_properties",
-        TableUpdate::RemoveProperties { .. } => "remove_properties",
-        TableUpdate::RemovePartitionSpecs { .. } => "remove_partition_specs",
-        TableUpdate::SetStatistics { .. } => "set_statistics",
-        TableUpdate::RemoveStatistics { .. } => "remove_statistics",
-        TableUpdate::SetPartitionStatistics { .. } => "set_partition_statistics",
-        TableUpdate::RemovePartitionStatistics { .. } => "remove_partition_statistics",
-        TableUpdate::RemoveSchemas { .. } => "remove_schemas",
-        TableUpdate::AddEncryptionKey { .. } => "add_encryption_key",
-        TableUpdate::RemoveEncryptionKey { .. } => "remove_encryption_key",
-    }
+/// Collect the branch/tag ref names a commit explicitly writes, from its
+/// `SetSnapshotRef` / `RemoveSnapshotRef` updates.
+///
+/// A `RemoveSnapshots` update can drop a ref by cascade without naming it here.
+/// That case is deliberately NOT resolved to a ref name (doing so precisely
+/// needs the pre-commit metadata, unavailable at authorization time). Instead it
+/// is covered by [`update_kinds`]: a commit whose kinds are not purely ref/data
+/// moves is escalated by policy to require table-wide authority, so an unnamed
+/// cascade cannot slip past a protected-ref rule.
+pub(super) fn refs_from_updates(updates: &[TableUpdate]) -> BTreeSet<String> {
+    updates
+        .iter()
+        .filter_map(|update| match update {
+            TableUpdate::SetSnapshotRef { ref_name, .. }
+            | TableUpdate::RemoveSnapshotRef { ref_name } => Some(ref_name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Collect the distinct kinds of updates present in a commit.
+///
+/// Passed to the authorizer so a policy can require table-wide authority when a
+/// commit contains table-global changes (schema/spec/sort-order/properties)
+/// rather than only moving a branch ref.
+pub(super) fn update_kinds(updates: &[TableUpdate]) -> BTreeSet<TableUpdateKind> {
+    updates.iter().map(TableUpdateKind::from).collect()
 }
 
 /// Return an error if any immutable property that already exists on the table
@@ -249,19 +256,20 @@ fn check_immutable_properties_not_removed(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
 
     use iceberg::{
         TableUpdate,
         spec::{
-            FormatVersion, NestedField, PrimitiveType, Schema, SortOrder, UnboundPartitionSpec,
+            FormatVersion, NestedField, PrimitiveType, Schema, SnapshotReference,
+            SnapshotRetention, SortOrder, UnboundPartitionSpec,
         },
     };
-    use iceberg_ext::spec::TableMetadataBuilder;
+    use iceberg_ext::{catalog::TableUpdateKind, spec::TableMetadataBuilder};
 
     use super::{
         AllowedFormatVersions, apply_commit, ensure_format_version_upgrades_allowed,
-        ensure_schema_content_stable,
+        ensure_schema_content_stable, refs_from_updates, update_kinds,
     };
 
     fn test_metadata_with_properties(
@@ -287,6 +295,71 @@ mod tests {
         .build()
         .unwrap()
         .metadata
+    }
+
+    fn branch_ref(snapshot_id: i64) -> SnapshotReference {
+        SnapshotReference {
+            snapshot_id,
+            retention: SnapshotRetention::Branch {
+                min_snapshots_to_keep: None,
+                max_snapshot_age_ms: None,
+                max_ref_age_ms: None,
+            },
+        }
+    }
+
+    #[test]
+    fn refs_from_updates_collects_set_and_remove_snapshot_ref() {
+        let updates = vec![
+            TableUpdate::SetSnapshotRef {
+                ref_name: "dev".to_string(),
+                reference: branch_ref(1),
+            },
+            TableUpdate::RemoveSnapshotRef {
+                ref_name: "old".to_string(),
+            },
+            TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V2,
+            },
+        ];
+        assert_eq!(
+            refs_from_updates(&updates),
+            BTreeSet::from(["dev".to_string(), "old".to_string()])
+        );
+    }
+
+    #[test]
+    fn refs_from_updates_ignores_removesnapshots_cascade() {
+        // `RemoveSnapshots` names no ref; the cascade is handled via
+        // `update_kinds` escalation, so no ref name is extracted here.
+        let updates = vec![TableUpdate::RemoveSnapshots {
+            snapshot_ids: vec![1],
+        }];
+        assert!(refs_from_updates(&updates).is_empty());
+    }
+
+    #[test]
+    fn update_kinds_collects_distinct_update_types() {
+        let updates = vec![
+            TableUpdate::SetSnapshotRef {
+                ref_name: "dev".to_string(),
+                reference: branch_ref(1),
+            },
+            TableUpdate::UpgradeFormatVersion {
+                format_version: FormatVersion::V2,
+            },
+            TableUpdate::SetProperties {
+                updates: HashMap::from([("k".to_string(), "v".to_string())]),
+            },
+        ];
+        assert_eq!(
+            update_kinds(&updates),
+            BTreeSet::from([
+                TableUpdateKind::SetSnapshotRef,
+                TableUpdateKind::UpgradeFormatVersion,
+                TableUpdateKind::SetProperties,
+            ])
+        );
     }
 
     #[test]
