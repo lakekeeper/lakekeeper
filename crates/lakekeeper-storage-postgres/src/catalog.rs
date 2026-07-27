@@ -80,7 +80,7 @@ use super::{
         apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
         get_tag_definition, get_tag_definition_by_name, list_effective_tag_candidates,
         list_tag_attachments, list_tag_definitions, list_tags_for_target, remove_tag,
-        update_tag_definition,
+        remove_tag_for_target, update_tag_definition,
     },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
@@ -480,6 +480,15 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
     ) -> Result<(), RemoveTagError> {
         remove_tag(tag_id, transaction).await
+    }
+
+    async fn remove_tag_for_target_impl<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError> {
+        remove_tag_for_target(target, tag_definition_id, source, transaction).await
     }
 
     async fn list_tags_for_target_impl(

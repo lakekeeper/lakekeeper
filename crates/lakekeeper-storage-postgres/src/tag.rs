@@ -609,6 +609,52 @@ pub(crate) async fn remove_tag(
     Ok(())
 }
 
+/// Atomically delete the `(target, definition, source)` attachment and return it,
+/// or `None` if it was not attached. A single `DELETE ... RETURNING` in the caller's
+/// write transaction: it reads its own primary (no replica lag between "find" and
+/// "delete") and is safe under concurrent deletes — the row is locked, so a losing
+/// racer simply sees no row and gets `None` (idempotent) rather than an error. The
+/// full unique key is matched, so at most one row is affected.
+pub(crate) async fn remove_tag_for_target(
+    target: TagTarget,
+    tag_definition_id: TagDefinitionId,
+    source: TagSource,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<Option<Tag>, RemoveTagError> {
+    let cols = TagTargetColumns::from_target(target);
+    let removed = sqlx::query!(
+        r#"
+        DELETE FROM tag
+        WHERE warehouse_id = $1
+          AND namespace_id IS NOT DISTINCT FROM $2
+          AND tabular_id IS NOT DISTINCT FROM $3
+          AND field_id IS NOT DISTINCT FROM $4
+          AND tag_definition_id = $5
+          AND source = $6
+        RETURNING tag_id, value, created_at, updated_at
+        "#,
+        cols.warehouse_id,
+        cols.namespace_id,
+        cols.tabular_id,
+        cols.field_id,
+        *tag_definition_id,
+        source as _,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| RemoveTagError::from(e.into_catalog_backend_error()))?;
+
+    Ok(removed.map(|r| Tag {
+        tag_id: TagId::new(r.tag_id),
+        tag_definition_id,
+        target,
+        value: r.value,
+        source,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+    }))
+}
+
 struct TagWithNameRow {
     tag_id: Uuid,
     tag_definition_id: Uuid,
@@ -1877,10 +1923,27 @@ mod tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].tag.tag_definition_id, def_tier);
 
-        // Removing an unknown tag -> TagNotFound.
+        // Removing an unknown tag by id -> TagNotFound.
         let mut txn = pool.begin().await.unwrap();
         let err = remove_tag(TagId::new_random(), &mut txn).await.unwrap_err();
         assert!(matches!(err, RemoveTagError::TagNotFound(_)));
+
+        // remove_tag_for_target atomically deletes and returns the attachment (tier is
+        // still attached); a second call is an idempotent no-op returning `None`.
+        let mut txn = pool.begin().await.unwrap();
+        let removed = remove_tag_for_target(wh, def_tier, TagSource::Manual, &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        assert_eq!(removed.map(|t| t.tag_definition_id), Some(def_tier));
+
+        let mut txn = pool.begin().await.unwrap();
+        let removed_again = remove_tag_for_target(wh, def_tier, TagSource::Manual, &mut txn)
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        assert!(removed_again.is_none());
+        assert!(list_tags_for_target(wh, &pool).await.unwrap().is_empty());
     }
 
     #[sqlx::test]

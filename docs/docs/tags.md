@@ -63,7 +63,7 @@ See [Authorization](authorization.md) for the capability model.
 
 Attach a tag with `PUT .../tags/{tag_name}`, carrying the value in the body (omit it for a `marker`):
 
-```
+```http
 PUT /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags/sensitivity
 { "value": "restricted" }
 ```
@@ -94,7 +94,7 @@ Attaching a tag to an object requires **both**:
 
 Tags applied high in the hierarchy apply to everything beneath. Pass `?effective=true` to any tag-list endpoint to get an object's **effective** tags — its own tags plus those inherited from its ancestors:
 
-```
+```http
 GET /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags?effective=true
 ```
 
@@ -109,7 +109,7 @@ Effective tags are gated only on your access to the **queried object**: an inher
 
 To list every object a definition is attached to, use the reverse lookup:
 
-```
+```http
 GET /management/v1/tag-definition/{tag_definition_id}/attachments?value=restricted
 ```
 

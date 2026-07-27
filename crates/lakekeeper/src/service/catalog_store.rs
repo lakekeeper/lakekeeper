@@ -836,6 +836,16 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), RemoveTagError>;
 
+    /// Atomically delete the `(target, definition, source)` attachment and return it
+    /// (or `None` if absent). Single-statement `DELETE ... RETURNING` in the write
+    /// transaction — no replica read, idempotent, and safe under concurrent deletes.
+    async fn remove_tag_for_target_impl<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError>;
+
     /// The tags directly on `target`, each paired with its definition's name.
     async fn list_tags_for_target_impl(
         target: TagTarget,

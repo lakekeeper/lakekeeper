@@ -2017,24 +2017,25 @@ async fn delete_tag_from_target<A: Authorizer, C: CatalogStore>(
         catalog_state.clone(),
     )
     .await?;
-    let tags = C::list_tags_for_target(target, catalog_state.clone())
-        .await
-        .map_err(RequireTagActionError::from)?;
-    let Some(tag) = tags.into_iter().map(|t| t.tag).find(|t| {
-        t.tag_definition_id == definition.tag_definition_id && t.source == TagSource::Manual
-    }) else {
-        return Ok(None);
-    };
 
+    // Atomic delete-and-return in one write transaction: no replica read between
+    // "find" and "delete" (so a just-applied tag is seen), and concurrent deletes
+    // resolve to an idempotent `None` rather than an error.
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| CatalogBackendError::new_unexpected(e.error))
         .map_err(RemoveTagError::from)?;
-    C::remove_tag(tag.tag_id, t.transaction()).await?;
+    let removed = C::remove_tag_for_target(
+        target,
+        definition.tag_definition_id,
+        TagSource::Manual,
+        t.transaction(),
+    )
+    .await?;
     t.commit()
         .await
         .map_err::<RemoveTagError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
-    Ok(Some((Arc::new(tag), Arc::new(definition))))
+    Ok(removed.map(|tag| (Arc::new(tag), Arc::new(definition))))
 }
 
 async fn list_tags_on_target<C: CatalogStore>(

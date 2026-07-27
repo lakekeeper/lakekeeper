@@ -975,6 +975,17 @@ where
         Self::remove_tag_impl(tag_id, transaction).await
     }
 
+    /// Atomically delete the `(target, definition, source)` attachment, returning it
+    /// (or `None` if not attached). Idempotent and concurrent-delete-safe.
+    async fn remove_tag_for_target<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError> {
+        Self::remove_tag_for_target_impl(target, tag_definition_id, source, transaction).await
+    }
+
     async fn list_tags_for_target(
         target: TagTarget,
         catalog_state: Self::State,
