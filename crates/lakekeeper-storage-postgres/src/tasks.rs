@@ -303,6 +303,9 @@ pub(crate) async fn queue_task_batch(
                     TaskEntityTypeDB::GenericTable => Some(WarehouseTaskEntityId::GenericTable {
                         generic_table_id: record.entity_id.unwrap().into(),
                     }),
+                    TaskEntityTypeDB::PaimonTable => Some(WarehouseTaskEntityId::PaimonTable {
+                        table_id: record.entity_id.unwrap().into(),
+                    }),
                     TaskEntityTypeDB::Project | TaskEntityTypeDB::Warehouse => None,
                 },
             })

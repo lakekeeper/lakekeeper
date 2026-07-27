@@ -171,11 +171,12 @@ pub enum WarehouseTaskEntityId {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedTaskEntity {
     Table(TableNamed),
     View(ViewNamed),
     GenericTable(GenericTableNamed),
+    PaimonTable(TableNamed),
     Warehouse(WarehouseId),
     Project,
 }
@@ -187,9 +188,34 @@ impl ResolvedTaskEntity {
             ResolvedTaskEntity::Table(t) => Some(t.warehouse_id),
             ResolvedTaskEntity::View(v) => Some(v.warehouse_id),
             ResolvedTaskEntity::GenericTable(g) => Some(g.warehouse_id),
+            ResolvedTaskEntity::PaimonTable(t) => Some(t.warehouse_id),
             ResolvedTaskEntity::Warehouse(w) => Some(*w),
             ResolvedTaskEntity::Project => None,
         }
+    }
+}
+
+impl From<TableNamed> for ResolvedTaskEntity {
+    fn from(value: TableNamed) -> Self {
+        Self::Table(value)
+    }
+}
+
+impl From<ViewNamed> for ResolvedTaskEntity {
+    fn from(value: ViewNamed) -> Self {
+        Self::View(value)
+    }
+}
+
+impl From<GenericTableNamed> for ResolvedTaskEntity {
+    fn from(value: GenericTableNamed) -> Self {
+        Self::GenericTable(value)
+    }
+}
+
+impl From<WarehouseId> for ResolvedTaskEntity {
+    fn from(value: WarehouseId) -> Self {
+        Self::Warehouse(value)
     }
 }
 

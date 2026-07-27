@@ -157,12 +157,13 @@ where
                             }
                             .into()
                         }
-                        WarehouseTaskEntityId::PaimonTable { table_id } => TableNamed {
-                            warehouse_id,
-                            table_ident: ident,
-                            table_id,
+                        WarehouseTaskEntityId::PaimonTable { table_id } => {
+                            ResolvedTaskEntity::PaimonTable(TableNamed {
+                                warehouse_id,
+                                table_ident: ident,
+                                table_id,
+                            })
                         }
-                        .into(),
                     }
                 }
             };
@@ -370,6 +371,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -383,6 +385,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -448,6 +451,63 @@ mod tests {
                 assert_eq!(gt.generic_table_ident.name, expected_table_name);
             }
             other => panic!("Expected ResolvedTaskEntity::GenericTable, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_resolve_tasks_paimon_table_branch(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let (warehouse_id, project_id) = setup_warehouse(pool.clone()).await;
+
+        let table_uuid = Uuid::now_v7();
+        let entity = WarehouseTaskEntityId::PaimonTable {
+            table_id: table_uuid.into(),
+        };
+        let expected_table_name = format!("table{table_uuid}");
+        let tq_name = generate_test_queue_name();
+
+        let task_id = queue_task_helper(
+            &mut conn,
+            &tq_name,
+            None,
+            entity,
+            project_id.clone(),
+            warehouse_id,
+            None,
+            Some(serde_json::json!({"type": "paimon"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let _picked = pick_task(&pool, &tq_name, &[], DEFAULT_MAX_TIME_SINCE_LAST_HEARTBEAT)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let result = resolve_tasks(
+            TaskResolveScope::Warehouse {
+                project_id,
+                warehouse_id: Some(warehouse_id),
+            },
+            &[task_id],
+            &pool,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let resolved = &result[0];
+        assert_eq!(resolved.task_id, task_id);
+        assert_eq!(resolved.queue_name, tq_name);
+        match &resolved.entity {
+            ResolvedTaskEntity::PaimonTable(table) => {
+                assert_eq!(*table.table_id, table_uuid);
+                assert_eq!(table.warehouse_id, warehouse_id);
+                assert_eq!(table.table_ident.namespace.as_ref(), &["ns".to_string()]);
+                assert_eq!(table.table_ident.name, expected_table_name);
+            }
+            other => panic!("Expected ResolvedTaskEntity::PaimonTable, got {other:?}"),
         }
     }
 
@@ -541,6 +601,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -553,6 +614,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -734,6 +796,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -812,6 +875,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -822,6 +886,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -885,6 +950,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }
@@ -958,6 +1024,7 @@ mod tests {
             }
             ResolvedTaskEntity::View(_)
             | ResolvedTaskEntity::GenericTable(_)
+            | ResolvedTaskEntity::PaimonTable(_)
             | ResolvedTaskEntity::Project
             | ResolvedTaskEntity::Warehouse(_) => panic!("Expected TaskEntity::Table"),
         }

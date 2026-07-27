@@ -7,19 +7,19 @@ use lakekeeper::{
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        CatalogBackendError, CatalogCreateNamespaceError, CatalogGetNamespaceError,
-        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogNamespaceDropError,
+        CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
+        CatalogListNamespacesResponse, CatalogNamespaceDropError,
         CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
         ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
         NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
         NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
         NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
-        SerializationError, TabularId, UnexpectedTabularInResponse, WarehouseIdNotFound,
-        storage::join_location, tasks::TaskId,
+        SerializationError, TabularId, WarehouseIdNotFound, storage::join_location,
+        tasks::TaskId,
     },
 };
-use sqlx::types::Json;
+use sqlx::{FromRow, types::Json};
 use uuid::Uuid;
 
 use super::dbutils::DBErrorHandler;
@@ -38,6 +38,24 @@ struct NamespaceRow {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
     version: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct NamespaceDropRow {
+    is_protected: bool,
+    namespace_name: Vec<String>,
+    has_protected_namespaces: bool,
+    has_protected_tabulars: bool,
+    has_running_expiration: bool,
+    child_tabulars: Vec<Uuid>,
+    child_tabulars_namespace_names: Vec<serde_json::Value>,
+    child_tabulars_table_names: Vec<String>,
+    child_tabular_fs_protocol: Vec<String>,
+    child_tabular_fs_location: Vec<String>,
+    child_tabular_typ: Vec<TabularType>,
+    child_tabulars_deleted: Vec<Uuid>,
+    child_namespaces: Vec<Uuid>,
+    child_tabular_task_id: Vec<Uuid>,
 }
 
 impl NamespaceRow {
@@ -659,7 +677,7 @@ pub(crate) async fn drop_namespace(
     }: NamespaceDropFlags,
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> std::result::Result<NamespaceDropInfo, CatalogNamespaceDropError> {
-    let info = sqlx::query!(r#"
+    let info = sqlx::query_as::<_, NamespaceDropRow>(r#"
         WITH namespace_info AS (
             SELECT namespace_name, namespace_id, protected
             FROM namespace
@@ -680,28 +698,30 @@ pub(crate) async fn drop_namespace(
         ),
         tasks AS (
             SELECT t.task_id, t.queue_name, t.status as task_status from task t
-            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view', 'generic-table')
+            WHERE t.entity_id = ANY (SELECT tabular_id FROM tabulars) AND t.warehouse_id = $1 AND t.entity_type in ('table', 'view', 'generic-table', 'paimon-table')
         )
         SELECT
-            ni.protected AS "is_protected!",
-            ni.namespace_name AS "namespace_name: Vec<String>",
-            EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS "has_protected_namespaces!",
-            EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS "has_protected_tabulars!",
-            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS "has_running_expiration!",
-            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS "child_tabulars!",
-            ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS "child_tabulars_namespace_names!: Vec<serde_json::Value>",
-            ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS "child_tabulars_table_names!",
-            ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_protocol!",
-            ARRAY(SELECT fs_location FROM tabulars where deleted_at is NULL) AS "child_tabular_fs_location!",
-            ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
-            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
-            ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
-            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
+            ni.protected AS is_protected,
+            ni.namespace_name AS namespace_name,
+            EXISTS (SELECT 1 FROM child_namespaces WHERE protected = true) AS has_protected_namespaces,
+            EXISTS (SELECT 1 FROM tabulars WHERE protected = true) AS has_protected_tabulars,
+            EXISTS (SELECT 1 FROM tasks WHERE task_status = 'running' AND queue_name IN ('soft_deletion', 'tabular_expiration')) AS has_running_expiration,
+            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is NULL) AS child_tabulars,
+            ARRAY(SELECT to_jsonb(namespace_name) FROM tabulars where deleted_at is NULL) AS child_tabulars_namespace_names,
+            ARRAY(SELECT table_name FROM tabulars where deleted_at is NULL) AS child_tabulars_table_names,
+            ARRAY(SELECT fs_protocol FROM tabulars where deleted_at is NULL) AS child_tabular_fs_protocol,
+            ARRAY(SELECT fs_location FROM tabulars where deleted_at is NULL) AS child_tabular_fs_location,
+            ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS child_tabular_typ,
+            ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS child_tabulars_deleted,
+            ARRAY(SELECT namespace_id FROM child_namespaces) AS child_namespaces,
+            ARRAY(SELECT task_id FROM tasks) AS child_tabular_task_id
         FROM namespace_info ni
-"#,
-        *warehouse_id,
-        *namespace_id,
-    ).fetch_one(&mut **transaction).await.map_err(|e|
+"#)
+    .bind(*warehouse_id)
+    .bind(*namespace_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|e|
         if let sqlx::Error::RowNotFound = e {
             CatalogNamespaceDropError::from(NamespaceNotFound::new(warehouse_id, namespace_id))
          } else {
@@ -720,7 +740,7 @@ pub(crate) async fn drop_namespace(
             || !info.child_namespaces.is_empty())
     {
         return Err(
-            NamespaceNotEmpty::new(warehouse_id, namespace_ident.clone()).append_detail(format!("Contains {} tables/views/generic tables, {} soft-deleted tables/views/generic tables and {} child namespaces.",
+            NamespaceNotEmpty::new(warehouse_id, namespace_ident.clone()).append_detail(format!("Contains {} tables/views/generic tables/paimon tables, {} soft-deleted tables/views/generic tables/paimon tables and {} child namespaces.",
                 info.child_tabulars.len(),
                 info.child_tabulars_deleted.len(),
                 info.child_namespaces.len()
@@ -805,14 +825,7 @@ pub(crate) async fn drop_namespace(
                         TabularType::Table => TabularId::Table(tabular_id.into()),
                         TabularType::View => TabularId::View(tabular_id.into()),
                         TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
-                        TabularType::PaimonTable => {
-                            return Err(CatalogBackendError::new_unexpected(
-                                UnexpectedTabularInResponse::new().append_detail(
-                                    "Paimon tabular rows are not yet materialized through namespace drop child enumeration.",
-                                ),
-                            )
-                            .into());
-                        }
+                        TabularType::PaimonTable => TabularId::PaimonTable(tabular_id.into()),
                     },
                     join_location(protocol.as_str(), fs_location.as_str())
                         .map_err(InternalParseLocationError::from)?,
@@ -1486,7 +1499,7 @@ pub mod tests {
     }
 
     // Non-recursive drop must fail when the namespace contains a generic table.
-    // Exercises the `entity_type IN ('table', 'view', 'generic-table')` branch in
+    // Exercises the shared tabular task-entity branch in
     // the drop_namespace SQL.
     #[sqlx::test]
     async fn test_cannot_drop_namespace_with_generic_tables(pool: sqlx::PgPool) {
@@ -1541,6 +1554,68 @@ pub mod tests {
         assert!(
             matches!(result, CatalogNamespaceDropError::NamespaceNotEmpty(_)),
             "expected NamespaceNotEmpty for namespace with generic-table child, got {result:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_cannot_drop_namespace_with_paimon_tables(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let ns_ident =
+            NamespaceIdent::from_vec(vec![format!("ns_{}", uuid::Uuid::now_v7())]).unwrap();
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ns_ident, None).await;
+        let namespace_id = ns.namespace_id();
+        let table_id = uuid::Uuid::now_v7();
+
+        sqlx::query(
+            r#"
+            INSERT INTO tabular (
+                tabular_id,
+                name,
+                namespace_id,
+                tabular_namespace_name,
+                warehouse_id,
+                typ,
+                metadata_location,
+                fs_protocol,
+                fs_location
+            )
+            SELECT
+                $1,
+                'pt',
+                n.namespace_id,
+                n.namespace_name,
+                $2,
+                'paimon-table'::tabular_type,
+                'memory://test/warehouse/pt/metadata.json',
+                'memory',
+                'test/warehouse/pt'
+            FROM namespace n
+            WHERE n.namespace_id = $3 AND n.warehouse_id = $2
+            "#,
+        )
+        .bind(table_id)
+        .bind(*warehouse_id)
+        .bind(*namespace_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut trx = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = drop_namespace(
+            warehouse_id,
+            namespace_id,
+            NamespaceDropFlags::default(),
+            trx.transaction(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(result, CatalogNamespaceDropError::NamespaceNotEmpty(_)),
+            "expected NamespaceNotEmpty for namespace with paimon-table child, got {result:?}"
         );
     }
 

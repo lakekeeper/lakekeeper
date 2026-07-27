@@ -583,7 +583,7 @@ impl S3Profile {
                 creds.insert(&creds::ExpirationTimeMs(expiration));
                 credentials_expiration_ms = Some(expiration);
             }
-            if tabular_info.tabular_id().is_table() {
+            if tabular_info.tabular_id().is_table_like() {
                 creds.insert(&client::RefreshClientCredentialsEndpoint(
                     request_metadata.refresh_client_credentials_endpoint_for_table(
                         tabular_info.warehouse_id(),

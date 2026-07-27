@@ -54,6 +54,11 @@ impl TabularId {
     pub fn is_paimon_table(&self) -> bool {
         matches!(self, TabularId::PaimonTable(_))
     }
+
+    #[must_use]
+    pub fn is_table_like(&self) -> bool {
+        matches!(self, TabularId::Table(_) | TabularId::PaimonTable(_))
+    }
 }
 
 impl AsRef<Uuid> for TabularId {

@@ -1489,6 +1489,10 @@ async fn authorize_control_tasks<A: Authorizer, C: CatalogStore>(
                 TabularId::GenericTable(tabular.generic_table_id),
                 &tabular.generic_table_ident.namespace,
             )),
+            ResolvedTaskEntity::PaimonTable(tabular) => Ok((
+                TabularId::PaimonTable(tabular.table_id),
+                &tabular.table_ident.namespace,
+            )),
             ResolvedTaskEntity::Warehouse(warehouse_id) => Err(AuthZWarehouseActionForbidden::new(
                 *warehouse_id,
                 &CONTROL_TASK_WAREHOUSE_PERMISSION,
@@ -1624,6 +1628,9 @@ async fn check_control_tasks_authorization<A: Authorizer, C: CatalogStore>(
                     ResolvedTaskEntity::View(v) => Some(TabularId::View(v.view_id)),
                     ResolvedTaskEntity::GenericTable(g) => {
                         Some(TabularId::GenericTable(g.generic_table_id))
+                    }
+                    ResolvedTaskEntity::PaimonTable(t) => {
+                        Some(TabularId::PaimonTable(t.table_id))
                     }
                     ResolvedTaskEntity::Warehouse(_) | ResolvedTaskEntity::Project => None, // Project not returned due to scope
                 }

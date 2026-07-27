@@ -169,11 +169,19 @@ impl TabularRowCore {
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
-            TabularType::PaimonTable => {
-                return Err(UnexpectedTabularInResponse::new()
-                    .append_detail("Paimon tabular rows are not yet materialized through shared tabular reads.")
-                    .into());
-            }
+            TabularType::PaimonTable => ViewOrTableInfo::PaimonTable(TableInfo {
+                namespace_id: self.namespace_id.into(),
+                tabular_ident,
+                warehouse_id,
+                tabular_id: self.tabular_id.into(),
+                protected: self.protected,
+                metadata_location,
+                updated_at: self.updated_at,
+                location,
+                properties,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+            }),
         };
 
         Ok(view_or_table_info)
@@ -223,11 +231,7 @@ impl TabularRowWithProperties {
                 self.generic_table_properties_keys,
                 self.generic_table_properties_values,
             ),
-            TabularType::PaimonTable => {
-                return Err(UnexpectedTabularInResponse::new()
-                    .append_detail("Paimon tabular rows are not yet materialized through shared tabular reads.")
-                    .into());
-            }
+            TabularType::PaimonTable => HashMap::new(),
         };
         let core = TabularRowCore {
             tabular_id: self.tabular_id,
@@ -544,15 +548,23 @@ pub(crate) struct CreateTabular<'a> {
 pub(crate) fn get_partial_fs_locations(
     location: &Location,
 ) -> Result<Vec<String>, InternalParseLocationError> {
-    location
-        .partial_locations()
-        .into_iter()
-        // Keep only the last part of the location
-        .map(|l| {
-            let location = Location::from_str(l)?;
-            Ok(location.authority_and_path().to_string())
-        })
-        .collect()
+    let mut normalized = Vec::new();
+    for partial in location.partial_locations() {
+        let location = Location::from_str(partial)?;
+        let authority_and_path = location.authority_and_path().to_string();
+        if !normalized.contains(&authority_and_path) {
+            normalized.push(authority_and_path.clone());
+        }
+        let trimmed = authority_and_path.trim_end_matches('/').to_string();
+        if !trimmed.is_empty() && !normalized.contains(&trimmed) {
+            normalized.push(trimmed.clone());
+        }
+        let with_slash = format!("{trimmed}/");
+        if !trimmed.is_empty() && !normalized.contains(&with_slash) {
+            normalized.push(with_slash);
+        }
+    }
+    Ok(normalized)
 }
 
 impl From<FromTabularRowError> for CreateTabularError {
@@ -833,8 +845,7 @@ where
         )
         .unzip();
 
-    let tables = sqlx::query_as!(
-        TabularRowWithDeletion,
+    let tables = sqlx::query_as::<_, TabularRowWithDeletion>(
         r#"
         WITH selected_tabulars AS (
             SELECT
@@ -857,7 +868,7 @@ where
             FROM tabular t
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
-            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
+            LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table', 'paimon-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
             WHERE t.warehouse_id = $1 AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
@@ -923,21 +934,21 @@ where
                 WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
                 GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
         ORDER BY st.created_at, st.tabular_id ASC
-        "#,
-        // The CTE has ORDER BY but PostgreSQL does not preserve row order through
-        // JOINs. Without the outer ORDER BY, the last row (used to derive the
-        // next-page cursor) may not be the maximum (created_at, tabular_id),
-        // causing the next page to re-fetch already-returned rows.
-        *warehouse_id,
-        namespace_id.map(|n| *n),
-        typ as _,
-        list_flags.include_active,
-        list_flags.include_deleted,
-        list_flags.include_staged,
-        token_ts,
-        token_id,
-        page_size
+        "#
     )
+    // The CTE has ORDER BY but PostgreSQL does not preserve row order through
+    // JOINs. Without the outer ORDER BY, the last row (used to derive the
+    // next-page cursor) may not be the maximum (created_at, tabular_id),
+    // causing the next page to re-fetch already-returned rows.
+    .bind(*warehouse_id)
+    .bind(namespace_id.map(|n| *n))
+    .bind(typ.map(TabularType::from))
+    .bind(list_flags.include_active)
+    .bind(list_flags.include_deleted)
+    .bind(list_flags.include_staged)
+    .bind(token_ts)
+    .bind(token_id)
+    .bind(page_size)
     .fetch_all(catalog_state)
     .await
     .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
@@ -1054,14 +1065,19 @@ impl PostgresSearchTabularInfo {
                     self.generic_table_properties_values,
                 ),
             }),
-            TabularType::PaimonTable => {
-                return Err(lakekeeper::service::CatalogBackendError::new_unexpected(
-                    UnexpectedTabularInResponse::new().append_detail(
-                        "Paimon tabular rows are not yet materialized through shared tabular reads.",
-                    ),
-                )
-                .into());
-            }
+            TabularType::PaimonTable => ViewOrTableInfo::PaimonTable(TableInfo {
+                namespace_id: self.namespace_id.into(),
+                tabular_ident,
+                warehouse_id,
+                tabular_id: self.tabular_id.into(),
+                protected: self.protected,
+                metadata_location,
+                updated_at: self.updated_at,
+                location,
+                namespace_version: self.namespace_version.into(),
+                warehouse_version: self.warehouse_version.into(),
+                properties: HashMap::new(),
+            }),
         };
 
         Ok(CatalogSearchTabularInfo {
@@ -1590,8 +1606,7 @@ pub(crate) async fn clear_tabular_deleted_at(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<Vec<ViewOrTableDeletionInfo>, ClearTabularDeletedAtError> {
     let tabular_ids_uuid: Vec<Uuid> = tabular_ids.iter().map(|id| **id).collect();
-    let undrop_tabular_informations = sqlx::query_as!(
-        TabularRowWithDeletion,
+    let undrop_tabular_informations = sqlx::query_as::<_, TabularRowWithDeletion>(
         r#"WITH locked_tabulars AS (
             SELECT t.tabular_id, t.name, t.namespace_id, n.namespace_name, t.typ
             FROM tabular t 
@@ -1605,7 +1620,7 @@ pub(crate) async fn clear_tabular_deleted_at(
             SELECT task_id, entity_id, scheduled_for
             FROM task ta
             JOIN locked_tabulars lt ON ta.entity_id = lt.tabular_id
-            WHERE ta.entity_type in ('table', 'view', 'generic-table')
+            WHERE ta.entity_type in ('table', 'view', 'generic-table', 'paimon-table')
                 AND ta.warehouse_id = $2
                 AND ta.queue_name IN ('soft_deletion', 'tabular_expiration')
             FOR UPDATE OF ta
@@ -1684,10 +1699,10 @@ pub(crate) async fn clear_tabular_deleted_at(
                 FROM generic_table_properties
                 WHERE warehouse_id = $2 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
                 GROUP BY generic_table_id) gtp ON u.tabular_id = gtp.generic_table_id
-        "#,
-        &tabular_ids_uuid,
-        *warehouse_id,
+        "#
     )
+    .bind(&tabular_ids_uuid)
+    .bind(*warehouse_id)
     .fetch_all(&mut **transaction)
     .await
     .map_err(|e| {
@@ -1979,7 +1994,7 @@ fn prepare_properties(
 mod tests {
     use std::str::FromStr as _;
 
-    use lakekeeper::service::AuthZTableInfo;
+    use lakekeeper::service::{AuthZTableInfo, TableId, TabularListFlags};
     use lakekeeper_io::Location;
     use uuid::Uuid;
 
@@ -2035,6 +2050,46 @@ mod tests {
         transaction.commit().await.unwrap();
 
         tabular_info.into_table_info().unwrap()
+    }
+
+    async fn insert_paimon_tabular(
+        pool: &sqlx::PgPool,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+    ) -> (TableId, Location, Location) {
+        let table_id = TableId::from(Uuid::now_v7());
+        let location =
+            Location::from_str(&format!("s3://test-bucket/{namespace_id}/{table_name}/")).unwrap();
+        let metadata_location = Location::from_str(&format!(
+            "s3://test-bucket/{namespace_id}/{table_name}/metadata/v1.json"
+        ))
+        .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        let created = create_tabular(
+            CreateTabular {
+                id: *table_id,
+                name: table_name,
+                namespace_id: *namespace_id,
+                warehouse_id: *warehouse_id,
+                typ: TabularType::PaimonTable,
+                metadata_location: Some(&metadata_location),
+                location: &location,
+            },
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        match created {
+            ViewOrTableInfo::PaimonTable(info) => (
+                info.tabular_id,
+                info.location.clone(),
+                info.metadata_location.unwrap(),
+            ),
+            other => panic!("expected paimon table creation result, got {other:?}"),
+        }
     }
 
     #[sqlx::test]
@@ -2364,5 +2419,91 @@ mod tests {
             vec!["hr_ns".to_string()]
         );
         assert_eq!(res.tabular.tabular_ident().name, "test_region_42");
+    }
+
+    #[sqlx::test]
+    async fn test_search_tabular_by_uuid_paimon(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["paimon_ns".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let (table_id, _, _) =
+            insert_paimon_tabular(&pool, warehouse_id, namespace_id, "orders").await;
+
+        let results = search_tabular(
+            warehouse_id,
+            &(*table_id).to_string(),
+            &state.read_write.read_pool,
+        )
+        .await
+        .unwrap()
+        .search_results;
+
+        assert_eq!(results.len(), 1);
+        match &results[0].tabular {
+            ViewOrTableInfo::PaimonTable(info) => {
+                assert_eq!(info.tabular_id, table_id);
+                assert_eq!(
+                    info.tabular_ident.namespace.clone().inner(),
+                    vec!["paimon_ns".to_string()]
+                );
+                assert_eq!(info.tabular_ident.name, "orders");
+            }
+            other => panic!("expected paimon table result, got {other:?}"),
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_get_tabular_info_by_location_paimon(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["paimon_ns".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let (table_id, _, metadata_location) =
+            insert_paimon_tabular(&pool, warehouse_id, namespace_id, "events").await;
+
+        let tabular_info = get_tabular_infos_by_ids(
+            warehouse_id,
+            &[TabularId::PaimonTable(table_id)],
+            TabularListFlags::active(),
+            &state.read_pool(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+        let table_location = tabular_info.location().clone();
+        let lookup_location = tabular_info
+            .metadata_location()
+            .cloned()
+            .expect("paimon test tabular should have metadata location");
+
+        let tabular = get_tabular_infos_by_s3_location(
+            warehouse_id,
+            &lookup_location,
+            lakekeeper::service::TabularListFlags::active(),
+            state.clone(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        match tabular {
+            ViewOrTableInfo::PaimonTable(info) => {
+                assert_eq!(info.tabular_id, table_id);
+                assert_eq!(info.location, table_location);
+                assert_eq!(info.metadata_location, Some(metadata_location));
+            }
+            other => panic!("expected paimon table result, got {other:?}"),
+        }
     }
 }

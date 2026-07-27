@@ -35,6 +35,11 @@ use crate::{
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
+// TODO(paimon-followup): Split this into orthogonal dimensions:
+// `TabularKind` (`Table`/`View`/`GenericTable`) and table format
+// (`Iceberg`/`Paimon`). `PaimonTable` exists here as a low-disturbance PR2
+// bridge so shared tabular paths can distinguish Iceberg and Paimon before the
+// format-aware model lands.
 pub enum TabularType {
     Table,
     View,
@@ -1173,15 +1178,34 @@ impl TabularIdentOrId {
     }
 
     #[must_use]
+    pub fn is_paimon_table(&self) -> bool {
+        matches!(
+            self,
+            TabularIdentOrId::Ident(TabularIdentOwned::PaimonTable(_))
+                | TabularIdentOrId::Id(TabularId::PaimonTable(_))
+        )
+    }
+
+    #[must_use]
+    pub fn is_table_like(&self) -> bool {
+        self.is_table() || self.is_paimon_table()
+    }
+
+    #[must_use]
     pub fn type_str(&self) -> &'static str {
-        // Explicit dispatch — generic_table first defends against a future
-        // variant silently being labelled "generic-table" via the fallback.
-        if self.is_generic_table() {
-            "generic-table"
-        } else if self.is_view() {
-            "view"
-        } else {
-            "table"
+        match self {
+            TabularIdentOrId::Ident(ident) => match ident {
+                TabularIdentOwned::Table(_) => "table",
+                TabularIdentOwned::View(_) => "view",
+                TabularIdentOwned::GenericTable(_) => "generic-table",
+                TabularIdentOwned::PaimonTable(_) => "paimon-table",
+            },
+            TabularIdentOrId::Id(id) => match id {
+                TabularId::Table(_) => "table",
+                TabularId::View(_) => "view",
+                TabularId::GenericTable(_) => "generic-table",
+                TabularId::PaimonTable(_) => "paimon-table",
+            },
         }
     }
 }
@@ -1216,6 +1240,19 @@ impl From<ViewId> for TabularIdentOrId {
 impl From<GenericTableId> for TabularIdentOrId {
     fn from(value: GenericTableId) -> Self {
         Self::Id(TabularId::GenericTable(value))
+    }
+}
+
+#[cfg(test)]
+mod tabular_ident_or_id_tests {
+    use super::*;
+
+    #[test]
+    fn paimon_tabular_id_type_string_is_explicit() {
+        let tabular = TabularIdentOrId::Id(TabularId::PaimonTable(TableId::new_random()));
+        assert!(tabular.is_paimon_table());
+        assert!(tabular.is_table_like());
+        assert_eq!(tabular.type_str(), "paimon-table");
     }
 }
 
