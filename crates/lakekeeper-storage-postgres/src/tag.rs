@@ -11,8 +11,8 @@ use lakekeeper::{
         ListTagDefinitionsError, ListTagDefinitionsResponse, NamespaceId, ProjectIdNotFoundError,
         RemoveTagError, Result, TableId, TabularId, Tag, TagDefinition, TagDefinitionId,
         TagDefinitionIdNotFound, TagDefinitionInUse, TagId, TagNameAlreadyExists, TagNotFound,
-        TagScope, TagSource, TagTarget, TagTargetNotFound, TagValueKind, UpdateTagDefinitionError,
-        UpdateTagDefinitionRequest, ViewId, WarehouseId,
+        TagScope, TagSource, TagTarget, TagTargetNotFound, TagValueKind, TagWithName,
+        UpdateTagDefinitionError, UpdateTagDefinitionRequest, ViewId, WarehouseId,
     },
 };
 use sqlx::{Postgres, Transaction};
@@ -326,7 +326,7 @@ pub(crate) async fn update_tag_definition(
     tag_definition_id: TagDefinitionId,
     request: UpdateTagDefinitionRequest<'_>,
     transaction: &mut Transaction<'_, Postgres>,
-) -> Result<TagDefinition, UpdateTagDefinitionError> {
+) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError> {
     let UpdateTagDefinitionRequest {
         name,
         description,
@@ -388,7 +388,18 @@ pub(crate) async fn update_tag_definition(
         .map_err(|e| UpdateTagDefinitionError::from(e.into_catalog_backend_error()))?;
     }
 
-    Ok(TagDefinition::try_from(row)?)
+    // Read the merged allowed values back in the same transaction so the caller can
+    // echo them without a post-commit read (which would hit a possibly-lagging
+    // replica). Empty for non-enumerated definitions.
+    let allowed_values = sqlx::query_scalar!(
+        r#"SELECT value FROM tag_allowed_value WHERE tag_definition_id = $1 ORDER BY value"#,
+        *tag_definition_id,
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|e| UpdateTagDefinitionError::from(e.into_catalog_backend_error()))?;
+
+    Ok((TagDefinition::try_from(row)?, allowed_values))
 }
 
 /// Delete a tag definition (and, via cascade, its allowed values). Fails with
@@ -598,50 +609,110 @@ pub(crate) async fn remove_tag(
     Ok(())
 }
 
-/// List the tags attached to exactly `target`, ordered by `(created_at, tag_id)`.
+struct TagWithNameRow {
+    tag_id: Uuid,
+    tag_definition_id: Uuid,
+    value: Option<String>,
+    source: TagSource,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    name: String,
+}
+
+/// List the tags attached to exactly `target` (with each definition's name),
+/// ordered by `(created_at, tag_id)`. Branches per target shape so the WHERE uses
+/// sargable `= $n` / `IS NULL` predicates — `IS NOT DISTINCT FROM $n` is not
+/// index-usable and would scan every tag in the warehouse — and joins
+/// `tag_definition` so the caller needs no per-row name lookup.
 pub(crate) async fn list_tags_for_target<'e, 'c: 'e, E>(
     target: TagTarget,
     connection: E,
-) -> Result<Vec<Tag>, CatalogBackendError>
+) -> Result<Vec<TagWithName>, CatalogBackendError>
 where
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
-    let cols = TagTargetColumns::from_target(target);
-    let rows = sqlx::query!(
-        r#"
-        SELECT
-            tag_id,
-            tag_definition_id,
-            value,
-            source AS "source: TagSource",
-            created_at,
-            updated_at
-        FROM tag
-        WHERE warehouse_id = $1
-          AND namespace_id IS NOT DISTINCT FROM $2
-          AND tabular_id IS NOT DISTINCT FROM $3
-          AND field_id IS NOT DISTINCT FROM $4
-        ORDER BY created_at, tag_id
-        "#,
-        cols.warehouse_id,
-        cols.namespace_id,
-        cols.tabular_id,
-        cols.field_id,
-    )
-    .fetch_all(connection)
-    .await
+    let wh = *target.warehouse_id();
+    let rows = match target {
+        TagTarget::Warehouse(_) => {
+            sqlx::query_as!(
+                TagWithNameRow,
+                r#"SELECT t.tag_id, t.tag_definition_id, t.value,
+                        t.source AS "source: TagSource", t.created_at, t.updated_at, td.name
+                   FROM tag t JOIN tag_definition td USING (tag_definition_id)
+                   WHERE t.warehouse_id = $1 AND t.namespace_id IS NULL
+                     AND t.tabular_id IS NULL AND t.field_id IS NULL
+                   ORDER BY t.created_at, t.tag_id"#,
+                wh,
+            )
+            .fetch_all(connection)
+            .await
+        }
+        TagTarget::Namespace { namespace_id, .. } => {
+            sqlx::query_as!(
+                TagWithNameRow,
+                r#"SELECT t.tag_id, t.tag_definition_id, t.value,
+                        t.source AS "source: TagSource", t.created_at, t.updated_at, td.name
+                   FROM tag t JOIN tag_definition td USING (tag_definition_id)
+                   WHERE t.warehouse_id = $1 AND t.namespace_id = $2
+                     AND t.tabular_id IS NULL AND t.field_id IS NULL
+                   ORDER BY t.created_at, t.tag_id"#,
+                wh,
+                *namespace_id,
+            )
+            .fetch_all(connection)
+            .await
+        }
+        TagTarget::Tabular { tabular_id, .. } => {
+            sqlx::query_as!(
+                TagWithNameRow,
+                r#"SELECT t.tag_id, t.tag_definition_id, t.value,
+                        t.source AS "source: TagSource", t.created_at, t.updated_at, td.name
+                   FROM tag t JOIN tag_definition td USING (tag_definition_id)
+                   WHERE t.warehouse_id = $1 AND t.namespace_id IS NULL
+                     AND t.tabular_id = $2 AND t.field_id IS NULL
+                   ORDER BY t.created_at, t.tag_id"#,
+                wh,
+                *tabular_id.as_ref(),
+            )
+            .fetch_all(connection)
+            .await
+        }
+        TagTarget::Column {
+            tabular_id,
+            field_id,
+            ..
+        } => {
+            sqlx::query_as!(
+                TagWithNameRow,
+                r#"SELECT t.tag_id, t.tag_definition_id, t.value,
+                        t.source AS "source: TagSource", t.created_at, t.updated_at, td.name
+                   FROM tag t JOIN tag_definition td USING (tag_definition_id)
+                   WHERE t.warehouse_id = $1 AND t.namespace_id IS NULL
+                     AND t.tabular_id = $2 AND t.field_id = $3
+                   ORDER BY t.created_at, t.tag_id"#,
+                wh,
+                *tabular_id.as_ref(),
+                field_id,
+            )
+            .fetch_all(connection)
+            .await
+        }
+    }
     .map_err(DBErrorHandler::into_catalog_backend_error)?;
 
     Ok(rows
         .into_iter()
-        .map(|r| Tag {
-            tag_id: TagId::new(r.tag_id),
-            tag_definition_id: TagDefinitionId::new(r.tag_definition_id),
-            target,
-            value: r.value,
-            source: r.source,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
+        .map(|r| TagWithName {
+            tag: Tag {
+                tag_id: TagId::new(r.tag_id),
+                tag_definition_id: TagDefinitionId::new(r.tag_definition_id),
+                target,
+                value: r.value,
+                source: r.source,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+            definition_name: r.name,
         })
         .collect())
 }
@@ -1495,7 +1566,7 @@ mod tests {
         txn.commit().await.unwrap();
 
         let mut txn = pool.begin().await.unwrap();
-        let updated = update_tag_definition(
+        let (updated, updated_allowed_values) = update_tag_definition(
             &project_id,
             id,
             UpdateTagDefinitionRequest::builder()
@@ -1516,15 +1587,16 @@ mod tests {
         assert_eq!(updated.value_kind, TagValueKind::Enumerated);
         assert!(updated.updated_at.is_some());
 
+        let expected_values = vec![
+            "internal".to_string(),
+            "public".to_string(),
+            "restricted".to_string(),
+        ];
+        // The in-transaction read returns the merged values (no separate get needed)...
+        assert_eq!(updated_allowed_values, expected_values);
+        // ...and they match a subsequent independent read.
         let values = get_tag_allowed_values(id, &pool).await.unwrap();
-        assert_eq!(
-            values,
-            vec![
-                "internal".to_string(),
-                "public".to_string(),
-                "restricted".to_string()
-            ]
-        );
+        assert_eq!(values, expected_values);
 
         // Renaming onto another definition's name (case-insensitive) -> conflict.
         let other = TagDefinitionId::new_random();
@@ -1722,10 +1794,12 @@ mod tests {
 
         let listed = list_tags_for_target(wh, &pool).await.unwrap();
         assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].tag_definition_id, def_pii);
-        assert_eq!(listed[0].value, None);
-        assert_eq!(listed[1].tag_definition_id, def_tier);
-        assert_eq!(listed[1].value, Some("gold".to_string()));
+        assert_eq!(listed[0].tag.tag_definition_id, def_pii);
+        assert_eq!(listed[0].definition_name, "pii"); // joined, not looked up per-row
+        assert_eq!(listed[0].tag.value, None);
+        assert_eq!(listed[1].tag.tag_definition_id, def_tier);
+        assert_eq!(listed[1].definition_name, "tier");
+        assert_eq!(listed[1].tag.value, Some("gold".to_string()));
 
         // Re-applying pii with the SAME value is a no-op: the original row (tag_id) is
         // preserved, `changed` is false, and `updated_at` is not bumped.
@@ -1733,6 +1807,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
+            .map(|t| t.tag)
             .find(|t| t.tag_id == pii_tag_id)
             .unwrap();
         let mut txn = pool.begin().await.unwrap();
@@ -1759,6 +1834,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
+            .map(|t| t.tag)
             .find(|t| t.tag_definition_id == def_tier)
             .unwrap();
         let mut txn = pool.begin().await.unwrap();
@@ -1783,6 +1859,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
+            .map(|t| t.tag)
             .find(|t| t.tag_definition_id == def_tier)
             .unwrap();
         assert_eq!(
@@ -1798,7 +1875,7 @@ mod tests {
         txn.commit().await.unwrap();
         let remaining = list_tags_for_target(wh, &pool).await.unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].tag_definition_id, def_tier);
+        assert_eq!(remaining[0].tag.tag_definition_id, def_tier);
 
         // Removing an unknown tag -> TagNotFound.
         let mut txn = pool.begin().await.unwrap();

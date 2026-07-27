@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            tag_id,\n            tag_definition_id,\n            value,\n            source AS \"source: TagSource\",\n            created_at,\n            updated_at\n        FROM tag\n        WHERE warehouse_id = $1\n          AND namespace_id IS NOT DISTINCT FROM $2\n          AND tabular_id IS NOT DISTINCT FROM $3\n          AND field_id IS NOT DISTINCT FROM $4\n        ORDER BY created_at, tag_id\n        ",
+  "query": "SELECT t.tag_id, t.tag_definition_id, t.value,\n                        t.source AS \"source: TagSource\", t.created_at, t.updated_at, td.name\n                   FROM tag t JOIN tag_definition td USING (tag_definition_id)\n                   WHERE t.warehouse_id = $1 AND t.namespace_id IS NULL\n                     AND t.tabular_id = $2 AND t.field_id IS NULL\n                   ORDER BY t.created_at, t.tag_id",
   "describe": {
     "columns": [
       {
@@ -77,14 +77,23 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tag_definition",
+            "name": "name"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Uuid",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -93,8 +102,9 @@
       true,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "6f50b05aef541dbe8c4a36af356bc1a951ca696f280e6dad8f020e32d258a25c"
+  "hash": "32ad9a49741841d43554963f09dc5c2799128c34511664718704b5fa545071e1"
 }

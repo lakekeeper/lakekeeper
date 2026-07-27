@@ -804,13 +804,15 @@ where
     ) -> Result<Vec<String>, CatalogBackendError>;
 
     /// Replace `name`/`description`/`scope` and add (never remove) allowed values.
-    /// The widen-only / kind-immutable policy is enforced by the caller.
+    /// The widen-only / kind-immutable policy is enforced by the caller. Returns the
+    /// definition and its merged allowed values (read in the same transaction, empty
+    /// for non-enumerated) so the caller need not re-read after commit.
     async fn update_tag_definition_impl<'a>(
         project_id: &ProjectId,
         tag_definition_id: TagDefinitionId,
         request: UpdateTagDefinitionRequest<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<TagDefinition, UpdateTagDefinitionError>;
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError>;
 
     async fn delete_tag_definition_impl<'a>(
         project_id: &ProjectId,
@@ -834,10 +836,11 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<(), RemoveTagError>;
 
+    /// The tags directly on `target`, each paired with its definition's name.
     async fn list_tags_for_target_impl(
         target: TagTarget,
         catalog_state: Self::State,
-    ) -> Result<Vec<Tag>, CatalogBackendError>;
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
     /// Reverse lookup: the targets a definition is directly attached to, optionally
     /// filtered to a single `value`, keyset-paginated. No hierarchy expansion.

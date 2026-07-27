@@ -65,11 +65,33 @@ pub fn validate_tag_name(name: &str) -> Result<(), ErrorModel> {
     Ok(())
 }
 
+/// Max length (in characters) of a free-text tag value and of each enumerated
+/// allowed value. Values are stored in a btree index, so this must stay well under
+/// Postgres's ~2704-byte per-tuple limit; 256 also matches common governance
+/// conventions and mirrors the tag-name cap.
+pub const MAX_TAG_VALUE_LEN: usize = 256;
+
+/// Shared length + control-character checks for a tag value and each enumerated
+/// allowed value (they share the `text` domain and both land in a btree index). On
+/// failure returns the reason clause; callers prefix it with their subject and wrap
+/// it in their own error type. Emptiness is checked by the caller — the two contexts
+/// word it differently and one accepts `None`.
+pub fn validate_tag_value_chars(value: &str) -> Result<(), String> {
+    if value.chars().count() > MAX_TAG_VALUE_LEN {
+        return Err(format!("must be at most {MAX_TAG_VALUE_LEN} characters"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err("must not contain control characters".to_string());
+    }
+    Ok(())
+}
+
 /// Validate a value against a definition's value contract.
 ///
 /// # Errors
-/// `400` if a marker carries a value, a value is missing/empty for a value-taking
-/// kind, or an enumerated value is not in `allowed_values` (case-sensitive exact).
+/// `400` if a marker carries a value, a value is missing/empty/too long/has control
+/// characters for a value-taking kind, or an enumerated value is not in
+/// `allowed_values` (case-sensitive exact).
 pub fn validate_tag_value(
     value_kind: TagValueKind,
     allowed_values: &[String],
@@ -82,9 +104,11 @@ pub fn validate_tag_value(
             }
         }
         TagValueKind::FreeText => {
-            if value.is_none_or(str::is_empty) {
+            let Some(value) = value.filter(|v| !v.is_empty()) else {
                 return Err(InvalidTagValue::new("A value is required for this tag"));
-            }
+            };
+            validate_tag_value_chars(value)
+                .map_err(|why| InvalidTagValue::new(format!("A tag value {why}")))?;
         }
         TagValueKind::Enumerated => {
             let Some(value) = value else {
@@ -238,6 +262,9 @@ pub enum TagScope {
 }
 
 impl TagScope {
+    // `scope` is stored as a Postgres `text[]` (no enum type), so `TagScope` converts
+    // by hand here — unlike `TagSource`/`TagValueKind`, which are PG enum types whose
+    // conversion is handled entirely by their `sqlx::Type` derive.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -277,23 +304,6 @@ pub enum TagSource {
     Manual,
 }
 
-impl TagSource {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TagSource::Manual => "manual",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "manual" => TagSource::Manual,
-            _ => return None,
-        })
-    }
-}
-
 /// How a tag definition's value is constrained: presence-only, arbitrary text,
 /// or one of a fixed set of allowed values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -311,27 +321,6 @@ pub enum TagValueKind {
     FreeText,
     /// Value must be one of the definition's allowed values.
     Enumerated,
-}
-
-impl TagValueKind {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TagValueKind::Marker => "marker",
-            TagValueKind::FreeText => "free_text",
-            TagValueKind::Enumerated => "enumerated",
-        }
-    }
-
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "marker" => TagValueKind::Marker,
-            "free_text" => TagValueKind::FreeText,
-            "enumerated" => TagValueKind::Enumerated,
-            _ => return None,
-        })
-    }
 }
 
 /// The object a tag is attached to. `warehouse_id` is the target itself
@@ -415,6 +404,15 @@ pub struct Tag {
     pub source: TagSource,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// A tag together with its definition's name, joined by the store on a
+/// list-by-target read so callers need no per-row definition lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagWithName {
+    pub tag: Tag,
+    /// Name of the tag definition (`tag_definition.name`).
+    pub definition_name: String,
 }
 
 // --------------------------- EFFECTIVE TAGS (inheritance) ---------------------------
@@ -937,7 +935,7 @@ where
         tag_definition_id: TagDefinitionId,
         request: UpdateTagDefinitionRequest<'_>,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
-    ) -> Result<TagDefinition, UpdateTagDefinitionError> {
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError> {
         Self::update_tag_definition_impl(project_id, tag_definition_id, request, transaction).await
     }
 
@@ -980,7 +978,7 @@ where
     async fn list_tags_for_target(
         target: TagTarget,
         catalog_state: Self::State,
-    ) -> Result<Vec<Tag>, CatalogBackendError> {
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
         Self::list_tags_for_target_impl(target, catalog_state).await
     }
 
@@ -1085,6 +1083,27 @@ mod tests {
         assert_eq!(
             validate_tag_value(TagValueKind::FreeText, &[], Some("")),
             Err(InvalidTagValue::new("A value is required for this tag"))
+        );
+        // At the cap is fine; one over is rejected (would otherwise overflow the
+        // btree index and surface as a 500).
+        let at_cap = "x".repeat(MAX_TAG_VALUE_LEN);
+        assert_eq!(
+            validate_tag_value(TagValueKind::FreeText, &[], Some(&at_cap)),
+            Ok(())
+        );
+        let over_cap = "x".repeat(MAX_TAG_VALUE_LEN + 1);
+        assert_eq!(
+            validate_tag_value(TagValueKind::FreeText, &[], Some(&over_cap)),
+            Err(InvalidTagValue::new(format!(
+                "A tag value must be at most {MAX_TAG_VALUE_LEN} characters"
+            )))
+        );
+        // Control characters (e.g. NUL, which Postgres text rejects) are a 400.
+        assert_eq!(
+            validate_tag_value(TagValueKind::FreeText, &[], Some("a\0b")),
+            Err(InvalidTagValue::new(
+                "A tag value must not contain control characters"
+            ))
         );
     }
 
@@ -1196,31 +1215,6 @@ mod tests {
         }
         assert_eq!(TagScope::GenericTable.as_str(), "generic-table");
         assert_eq!(TagScope::parse("function"), None);
-    }
-
-    #[test]
-    fn tag_source_round_trips() {
-        assert_eq!(
-            TagSource::parse(TagSource::Manual.as_str()),
-            Some(TagSource::Manual)
-        );
-        assert_eq!(TagSource::parse("manual"), Some(TagSource::Manual));
-        // values not yet added to the enum do not parse
-        assert_eq!(TagSource::parse("external_catalog"), None);
-        assert_eq!(TagSource::parse("unknown"), None);
-    }
-
-    #[test]
-    fn tag_value_kind_round_trips() {
-        for kind in [
-            TagValueKind::Marker,
-            TagValueKind::FreeText,
-            TagValueKind::Enumerated,
-        ] {
-            assert_eq!(TagValueKind::parse(kind.as_str()), Some(kind));
-        }
-        assert_eq!(TagValueKind::Enumerated.as_str(), "enumerated");
-        assert_eq!(TagValueKind::parse("unknown"), None);
     }
 
     fn eff_cand(

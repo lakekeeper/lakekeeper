@@ -53,8 +53,8 @@ use lakekeeper::{
         SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
         TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
         TabularIdentBorrowed, TabularListFlags, Tag, TagDefinition, TagDefinitionId, TagId,
-        TagSource, TagTarget, TaskDetails, TaskList, Transaction, UniqueMembers, UniqueRoles,
-        UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        TagSource, TagTarget, TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers,
+        UniqueRoles, UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
         UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
         ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
         WarehouseId, WarehouseStatus,
@@ -444,7 +444,7 @@ impl CatalogStore for super::PostgresBackend {
         tag_definition_id: TagDefinitionId,
         request: UpdateTagDefinitionRequest<'_>,
         transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
-    ) -> Result<TagDefinition, UpdateTagDefinitionError> {
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError> {
         update_tag_definition(project_id, tag_definition_id, request, transaction).await
     }
 
@@ -485,7 +485,7 @@ impl CatalogStore for super::PostgresBackend {
     async fn list_tags_for_target_impl(
         target: TagTarget,
         catalog_state: Self::State,
-    ) -> Result<Vec<Tag>, CatalogBackendError> {
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
         list_tags_for_target(target, &catalog_state.read_pool()).await
     }
 

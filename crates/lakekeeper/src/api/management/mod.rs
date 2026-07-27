@@ -3218,17 +3218,17 @@ pub mod v1 {
                 )
                 // Tag management
                 .route(
-                    "/tag-definition",
+                    ManagementV1Endpoint::CreateTagDefinition.path_in_management_v1(),
                     get(list_tag_definitions).post(create_tag_definition),
                 )
                 .route(
-                    "/tag-definition/{tag_definition_id}",
+                    ManagementV1Endpoint::GetTagDefinition.path_in_management_v1(),
                     get(get_tag_definition)
                         .post(update_tag_definition)
                         .delete(delete_tag_definition),
                 )
                 .route(
-                    "/tag-definition/{tag_definition_id}/attachments",
+                    ManagementV1Endpoint::ListTagAttachments.path_in_management_v1(),
                     get(list_tag_attachments),
                 )
                 .route(

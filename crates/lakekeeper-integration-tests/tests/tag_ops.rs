@@ -2267,7 +2267,7 @@ async fn test_effective_tags_table_inheritance_and_column_exclusion(pool: PgPool
     let warehouse_id = wh.warehouse_id;
 
     let ns_a = create_nested_namespace(&ctx, warehouse_id, &["a"]).await;
-    let _ns_ab = create_nested_namespace(&ctx, warehouse_id, &["a", "b"]).await;
+    let ns_ab = create_nested_namespace(&ctx, warehouse_id, &["a", "b"]).await;
     let table_id = create_table_in(&ctx, warehouse_id, &["a", "b"], "t").await;
 
     create_def(
@@ -2304,7 +2304,7 @@ async fn test_effective_tags_table_inheritance_and_column_exclusion(pool: PgPool
     .unwrap();
     Server::set_namespace_tag(
         warehouse_id,
-        _ns_ab,
+        ns_ab,
         "region".to_string(),
         SetTagRequest {
             value: Some("emea".to_string()),

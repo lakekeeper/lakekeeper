@@ -2042,6 +2042,7 @@ pub mod tests {
             A::GetAllTasks,
             A::ControlAllTasks,
             A::GetEndpointStatistics,
+            A::ManageTags,
         ] {
             assert!(!a.is_spec_mutation(), "{a:?} should not be a spec mutation");
         }

@@ -39,17 +39,21 @@ use crate::{
             },
         },
         is_reserved_tag_name, validate_scope_widening, validate_tag_name, validate_tag_scope,
-        validate_tag_value,
+        validate_tag_value, validate_tag_value_chars,
     },
 };
 
 /// Rejects allowed values that would violate the storage contract: every value
 /// must be a non-empty, unique string.
 fn validate_allowed_values(values: &[String]) -> Result<(), InvalidTagDefinition> {
-    if values.iter().any(String::is_empty) {
-        return Err(InvalidTagDefinition::new(
-            "Allowed values must be non-empty strings",
-        ));
+    for value in values {
+        if value.is_empty() {
+            return Err(InvalidTagDefinition::new(
+                "Allowed values must be non-empty strings",
+            ));
+        }
+        validate_tag_value_chars(value)
+            .map_err(|why| InvalidTagDefinition::new(format!("Allowed values {why}")))?;
     }
     let mut deduplicated: Vec<&String> = values.iter().collect();
     deduplicated.sort_unstable();
@@ -1627,13 +1631,14 @@ async fn authorize_update_tag_definition<A: Authorizer, C: CatalogStore>(
         .add_allowed_values(&add_allowed_values)
         .build();
 
-    let read_state = catalog_state.clone();
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<UpdateTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
-    let tag_definition = C::update_tag_definition(
+    // The store reads the merged allowed values back inside this transaction, so the
+    // response reflects the write without a post-commit (replica) read.
+    let (tag_definition, allowed_values) = C::update_tag_definition(
         &project_id,
         tag_definition_id,
         catalog_request,
@@ -1645,17 +1650,9 @@ async fn authorize_update_tag_definition<A: Authorizer, C: CatalogStore>(
         .map_err::<UpdateTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
-    // For enumerated definitions, return the merged allowed values (sorted by the
-    // store) so update echoes the same shape as get; None for other kinds.
-    let allowed_values = if tag_definition.value_kind == TagValueKind::Enumerated {
-        Some(
-            C::get_tag_allowed_values(tag_definition_id, read_state)
-                .await
-                .map_err(RequireTagActionError::from)?,
-        )
-    } else {
-        None
-    };
+    // Echo allowed values only for enumerated definitions (empty/irrelevant otherwise).
+    let allowed_values =
+        (tag_definition.value_kind == TagValueKind::Enumerated).then_some(allowed_values);
     Ok((Arc::new(tag_definition), allowed_values))
 }
 
@@ -2023,7 +2020,7 @@ async fn delete_tag_from_target<A: Authorizer, C: CatalogStore>(
     let tags = C::list_tags_for_target(target, catalog_state.clone())
         .await
         .map_err(RequireTagActionError::from)?;
-    let Some(tag) = tags.into_iter().find(|t| {
+    let Some(tag) = tags.into_iter().map(|t| t.tag).find(|t| {
         t.tag_definition_id == definition.tag_definition_id && t.source == TagSource::Manual
     }) else {
         return Ok(None);
@@ -2042,38 +2039,25 @@ async fn delete_tag_from_target<A: Authorizer, C: CatalogStore>(
 
 async fn list_tags_on_target<C: CatalogStore>(
     catalog_state: C::State,
-    project_id: &ProjectId,
     target: TagTarget,
 ) -> Result<ListTagsResponse, AuthZError> {
-    let tags = C::list_tags_for_target(target, catalog_state.clone())
+    // The store joins the definition name (the FK is RESTRICT, so every tag has one),
+    // so there is no per-row definition lookup here.
+    let tags = C::list_tags_for_target(target, catalog_state)
         .await
         .map_err(RequireTagActionError::from)?;
-    let mut result = Vec::with_capacity(tags.len());
-    for tag in tags {
-        let definition =
-            C::get_tag_definition(project_id, tag.tag_definition_id, catalog_state.clone())
-                .await
-                .map_err(RequireTagActionError::from)?;
-        let Some(definition) = definition else {
-            // The FK from tags to definitions is RESTRICT, so this cannot
-            // happen; skip defensively rather than failing the whole list.
-            tracing::warn!(
-                "Tag definition `{}` referenced by tag `{}` not found; omitting entry",
-                tag.tag_definition_id,
-                tag.tag_id
-            );
-            continue;
-        };
-        result.push(TargetTag {
-            tag_definition_id: tag.tag_definition_id,
-            name: definition.name,
-            value: tag.value,
-            source: tag.source,
-            created_at: tag.created_at,
-            updated_at: tag.updated_at,
+    let result = tags
+        .into_iter()
+        .map(|t| TargetTag {
+            tag_definition_id: t.tag.tag_definition_id,
+            name: t.definition_name,
+            value: t.tag.value,
+            source: t.tag.source,
+            created_at: t.tag.created_at,
+            updated_at: t.tag.updated_at,
             inherited_from: None,
-        });
-    }
+        })
+        .collect();
     Ok(ListTagsResponse { tags: result })
 }
 
@@ -2113,13 +2097,12 @@ async fn list_effective_tags_on_target<C: CatalogStore>(
 async fn list_tags_dispatch<C: CatalogStore>(
     effective: bool,
     catalog_state: C::State,
-    project_id: &ProjectId,
     target: TagTarget,
 ) -> Result<ListTagsResponse, AuthZError> {
     if effective {
         list_effective_tags_on_target::<C>(catalog_state, target).await
     } else {
-        list_tags_on_target::<C>(catalog_state, project_id, target).await
+        list_tags_on_target::<C>(catalog_state, target).await
     }
 }
 
@@ -2211,7 +2194,7 @@ async fn authorize_list_warehouse_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 async fn authorize_set_namespace_tag<A: Authorizer, C: CatalogStore>(
@@ -2286,7 +2269,7 @@ async fn authorize_list_namespace_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 async fn authorize_set_table_tag<A: Authorizer, C: CatalogStore>(
@@ -2361,7 +2344,7 @@ async fn authorize_list_table_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2443,7 +2426,7 @@ async fn authorize_list_table_column_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 async fn authorize_set_view_tag<A: Authorizer, C: CatalogStore>(
@@ -2518,7 +2501,7 @@ async fn authorize_list_view_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 async fn authorize_set_generic_table_tag<A: Authorizer, C: CatalogStore>(
@@ -2593,12 +2576,13 @@ async fn authorize_list_generic_table_tags<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    list_tags_dispatch::<C>(effective, catalog_state, project_id, target).await
+    list_tags_dispatch::<C>(effective, catalog_state, target).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::MAX_TAG_VALUE_LEN;
 
     // The discriminated-union DTOs must emit kebab-case BODY fields (not just kebab
     // variant tags) so they match every sibling field in the same payloads
@@ -2688,6 +2672,26 @@ mod tests {
         assert_eq!(
             validate_allowed_values(&["public".to_string(), "Public".to_string()]),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_allowed_values_caps_length_and_rejects_control_chars() {
+        assert_eq!(
+            validate_allowed_values(&["x".repeat(MAX_TAG_VALUE_LEN)]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_allowed_values(&["x".repeat(MAX_TAG_VALUE_LEN + 1)]),
+            Err(InvalidTagDefinition::new(format!(
+                "Allowed values must be at most {MAX_TAG_VALUE_LEN} characters"
+            )))
+        );
+        assert_eq!(
+            validate_allowed_values(&["a\0b".to_string()]),
+            Err(InvalidTagDefinition::new(
+                "Allowed values must not contain control characters"
+            ))
         );
     }
 }

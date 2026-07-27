@@ -23,7 +23,7 @@ New type `lakekeeper_catalog_tag` (one instance per tag definition):
 - Add `tag_creator` relation (`[user, role#assignee] or security_admin`) — delegates tag-definition creation without granting full `security_admin`, mirroring `role_creator`.
 - Add `can_create_tag` (from `tag_creator`), `can_list_tags` (from `can_get_metadata`), and `can_grant_tag_creator` (from `security_admin or admin from server`).
 
-`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`:
+`warehouse`, `namespace`, `lakekeeper_table`, `lakekeeper_view`, `lakekeeper_generic_table`:
 
 - Add `manage_tags` relation, `can_manage_tags` action, `can_grant_manage_tags` grant. `manage_tags` is independent of `modify` (separation of duties: classify without holding data/DDL rights) and inherits down the resource hierarchy. Attaching a tag to a resource requires `can_manage_tags` on the resource **and** `can_apply` on the tag definition.
 
