@@ -11,12 +11,10 @@ use iceberg::spec::{
     ListType, MapType, NestedField, NestedFieldRef, PrimitiveType, Schema, SchemaId, StructType,
     Type, VariantType,
 };
+// ─── errors ──────────────────────────────────────────────────────────────────
+pub use lakekeeper::service::LogicalSchemaError as SchemaNormError;
 use lakekeeper::service::{LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType};
 use serde_json::Value;
-
-// ─── errors ──────────────────────────────────────────────────────────────────
-
-pub use lakekeeper::service::LogicalSchemaError as SchemaNormError;
 
 // ─── IcebergTypeKind ─────────────────────────────────────────────────────────
 
@@ -107,7 +105,7 @@ pub struct FlatField {
 /// DB row shape returned from `schema_field`. One row per field; `is_identifier`
 /// marks membership in the schema's identifier set, collected back into
 /// identifier_field_ids on assembly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SchemaFieldRow {
     pub schema_id: i32,
     pub field_id: i32,
@@ -489,7 +487,10 @@ fn logical_schema_to_iceberg(schema: &LogicalSchema) -> Result<Schema, SchemaNor
         .with_fields(fields)
         .build()
         .map_err(|e| SchemaNormError::Assembly {
-            detail: format!("Schema::builder().build() failed for schema_id={}: {e}", schema.schema_id),
+            detail: format!(
+                "Schema::builder().build() failed for schema_id={}: {e}",
+                schema.schema_id
+            ),
         })
 }
 
@@ -798,7 +799,9 @@ fn build_logical_type<'row>(
                 value_field: Box::new(build_logical_field(kids[1], children, consumed)?),
             })
         }
-        kind => Ok(LogicalType::Primitive(logical_primitive_from_row(row, kind)?)),
+        kind => Ok(LogicalType::Primitive(logical_primitive_from_row(
+            row, kind,
+        )?)),
     }
 }
 
@@ -839,17 +842,14 @@ fn logical_primitive_from_row(
                     row.name, row.field_id
                 ),
             })?;
-            let scale = u32::try_from(
-                params
-                    .get("scale")
-                    .and_then(|v| v.as_u64())
-                    .ok_or_else(|| SchemaNormError::Assembly {
-                        detail: format!(
-                            "decimal field '{}' (field_id={}) missing scale in type_params",
-                            row.name, row.field_id
-                        ),
-                    })?,
-            )
+            let scale = u32::try_from(params.get("scale").and_then(|v| v.as_u64()).ok_or_else(
+                || SchemaNormError::Assembly {
+                    detail: format!(
+                        "decimal field '{}' (field_id={}) missing scale in type_params",
+                        row.name, row.field_id
+                    ),
+                },
+            )?)
             .map_err(|_| SchemaNormError::Assembly {
                 detail: format!(
                     "decimal field '{}' (field_id={}) scale out of u32 range",
@@ -1407,10 +1407,12 @@ mod tests {
             .iter()
             .map(|f| flat_to_row(f, schema.schema_id))
             .collect();
-        let assembled = assemble_logical_schemas(rows, &[schema.schema_id])
-            .expect("logical assemble failed");
+        let assembled =
+            assemble_logical_schemas(rows, &[schema.schema_id]).expect("logical assemble failed");
         assert_eq!(
-            assembled.get(&schema.schema_id).expect("logical schema missing"),
+            assembled
+                .get(&schema.schema_id)
+                .expect("logical schema missing"),
             schema,
             "logical round-trip failed for schema_id={}",
             schema.schema_id

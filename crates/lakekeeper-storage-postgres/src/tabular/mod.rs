@@ -1,5 +1,6 @@
 pub mod generic_table;
 mod load_by_location;
+pub mod paimon_table;
 mod protection;
 pub mod table;
 pub mod view;
@@ -15,12 +16,12 @@ use lakekeeper::{
         ConcurrentUpdateError, CreateTabularError, DropTabularError, ExpirationTaskInfo,
         GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
-        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId, TableFormat,
+        LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
-        SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
-        TabularId, TabularIdentBorrowed, TabularNotFound, UnexpectedTabularInResponse,
-        ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
-        storage::join_location,
+        SerializationError, TableDeletionInfo, TableFormat, TableIdent, TableInfo,
+        TabularAlreadyExists, TabularId, TabularIdentBorrowed, TabularNotFound,
+        UnexpectedTabularInResponse, ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo,
+        ViewOrTableInfo, storage::join_location,
     },
 };
 use lakekeeper_io::Location;
@@ -290,8 +291,7 @@ where
         },
     );
 
-    let rows = sqlx::query_as!(
-        TabularRowWithProperties,
+    let rows = sqlx::query_as::<_, TabularRowWithProperties>(
         r#"
         WITH q AS (
             SELECT id, typ FROM UNNEST($2::uuid[], $3::tabular_type[]) u(id, typ)
@@ -309,8 +309,14 @@ where
                 t.fs_protocol,
                 w.version as warehouse_version,
                 n.version as namespace_version
-            FROM tabular t 
-            INNER JOIN q ON t.warehouse_id = $1 AND t.tabular_id = q.id AND t.typ = q.typ
+            FROM tabular t
+            INNER JOIN q
+                ON t.warehouse_id = $1
+               AND t.tabular_id = q.id
+               AND (
+                    t.typ = q.typ
+                    OR (q.typ = 'table' AND t.typ = 'paimon-table')
+               )
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
             WHERE w.status = 'active'
@@ -321,7 +327,7 @@ where
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
         ),
         selected_tables AS (
-            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+            SELECT tabular_id FROM selected_tabulars WHERE typ IN ('table', 'paimon-table')
         ),
         selected_generic_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'
@@ -364,12 +370,12 @@ where
                 WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
                 GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
         "#,
-        *warehouse_id,
-        t_ids.as_slice() as _,
-        t_typs.as_slice() as _,
-        list_flags.include_deleted,
-        list_flags.include_staged
     )
+    .bind(*warehouse_id)
+    .bind(t_ids.as_slice())
+    .bind(t_typs.as_slice() as &[TabularType])
+    .bind(list_flags.include_deleted)
+    .bind(list_flags.include_staged)
     .fetch_all(catalog_state)
     .await
     .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
@@ -429,8 +435,7 @@ where
         serde_json::to_value(&ns_names).map_err(|e| SerializationError::new("namespace", e))?;
 
     // For columns with collation, the query must return the value as in input `tables`.
-    let rows = sqlx::query_as!(
-        TabularRowWithProperties,
+    let rows = sqlx::query_as::<_, TabularRowWithProperties>(
         r#"
         WITH selected_tabulars AS (
             SELECT t.tabular_id,
@@ -455,8 +460,13 @@ where
             INNER JOIN LATERAL UNNEST($3::text[], $4::tabular_type[])
                 WITH ORDINALITY AS in_t(name, typ, idx)
                 ON in_ns.idx = in_t.idx
-            INNER JOIN tabular t ON t.warehouse_id = $1 AND
-                t.name = in_t.name AND t.typ = in_t.typ
+            INNER JOIN tabular t
+                ON t.warehouse_id = $1
+               AND t.name = in_t.name
+               AND (
+                    t.typ = in_t.typ
+                    OR (in_t.typ = 'table' AND t.typ = 'paimon-table')
+               )
             INNER JOIN namespace n ON n.warehouse_id = $1
                 AND t.namespace_id = n.namespace_id AND n.namespace_name = in_ns.name
             INNER JOIN warehouse w ON w.warehouse_id = $1
@@ -469,7 +479,7 @@ where
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
         ),
         selected_tables AS (
-            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+            SELECT tabular_id FROM selected_tabulars WHERE typ IN ('table', 'paimon-table')
         ),
         selected_generic_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'
@@ -512,13 +522,13 @@ where
                 WHERE warehouse_id = $1 AND generic_table_id in (SELECT tabular_id FROM selected_generic_tables)
                 GROUP BY generic_table_id) gtp ON st.tabular_id = gtp.generic_table_id
         "#,
-        *warehouse_id,
-        ns_names_json as _,
-        t_names.as_slice() as _,
-        t_typs.as_slice() as _,
-        list_flags.include_deleted,
-        list_flags.include_staged
     )
+    .bind(*warehouse_id)
+    .bind(ns_names_json)
+    .bind(t_names.as_slice())
+    .bind(t_typs.as_slice() as &[TabularType])
+    .bind(list_flags.include_deleted)
+    .bind(list_flags.include_staged)
     .fetch_all(catalog_state)
     .await
     .map_err(super::dbutils::DBErrorHandler::into_catalog_backend_error)?;
@@ -863,7 +873,7 @@ where
             WHERE t.warehouse_id = $1 AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
-                AND (t.typ = $3 OR $3 IS NULL)
+                AND (t.typ = $3 OR $3 IS NULL OR ($3 = 'table' AND t.typ = 'paimon-table'))
                 -- active tabulars: not deleted AND (has metadata_location OR is generic-table)
                 AND (
                     (t.deleted_at IS NULL AND (t.metadata_location IS NOT NULL OR t.typ = 'generic-table') AND $4) OR   -- include_active
@@ -878,7 +888,7 @@ where
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'view'
         ),
         selected_tables AS (
-            SELECT tabular_id FROM selected_tabulars WHERE typ = 'table'
+            SELECT tabular_id FROM selected_tabulars WHERE typ IN ('table', 'paimon-table')
         ),
         selected_generic_tables AS (
             SELECT tabular_id FROM selected_tabulars WHERE typ = 'generic-table'

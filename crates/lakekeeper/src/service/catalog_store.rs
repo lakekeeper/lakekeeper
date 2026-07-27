@@ -78,6 +78,8 @@ pub(crate) mod role_assignments_cache;
 pub use idempotency::*;
 pub mod generic_table;
 pub use generic_table::*;
+pub mod paimon;
+pub use paimon::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -709,6 +711,48 @@ where
         table_name: &str,
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<GenericTableId, DropGenericTableError>;
+
+    // ---------------- Paimon Table Management ----------------
+    async fn create_paimon_table_impl<'a>(
+        creation: PaimonTableCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, CreatePaimonTableError>;
+
+    async fn load_paimon_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, LoadPaimonTableError>;
+
+    async fn load_paimon_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        tabular_id: TableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, LoadPaimonTableError>;
+
+    async fn list_paimon_tables_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<PaimonTableListEntry>, Option<String>), ListPaimonTablesError>;
+
+    async fn update_paimon_commit_state_impl<'a>(
+        warehouse_id: WarehouseId,
+        tabular_id: TableId,
+        update: PaimonCommitStateUpdate,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, UpdatePaimonCommitStateError>;
+
+    async fn drop_paimon_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<TableId, DropPaimonTableError>;
 
     // ---------------- Role Management API ----------------
     async fn create_roles_impl<'a>(

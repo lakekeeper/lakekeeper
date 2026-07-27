@@ -32,27 +32,31 @@ use lakekeeper::{
         CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
         ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
-        DropTabularError, EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId,
-        GenericTableInfo, GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        CreatePaimonTableError, CreateRoleError, CreateTableError, CreateViewError,
+        DropGenericTableError, DropPaimonTableError, DropTabularError,
+        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
+        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
-        ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
-        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
-        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TabularType, TaskDetails, TaskList,
-        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        UserMembershipEntry, UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
+        ListGenericTablesError, ListNamespacesQuery, ListPaimonTablesError, ListRoleMembersResult,
+        ListRolesError, ListRolesPage, ListRolesResponse, ListTabularsError,
+        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadPaimonTableError, LoadTableError,
+        LoadTableResponse, LoadViewError, ManagedBy, MarkTabularAsDeletedError, NamespaceDropInfo,
+        NamespaceId, NamespaceWithParent, PaimonCommitStateUpdate, PaimonTableCreation,
+        PaimonTableInfo, PaimonTableListEntry, ProjectId, RemoveRoleMembersError,
+        RemoveRoleMembersResult, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
+        RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, TabularType, TaskDetails, TaskList, Transaction,
+        UniqueMembers, UniqueRoles, UpdatePaimonCommitStateError, UpdateRoleError,
+        UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
+        ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
+        WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -1170,6 +1174,88 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> std::result::Result<GenericTableId, DropGenericTableError> {
         super::tabular::generic_table::drop_generic_table(
+            warehouse_id,
+            namespace_id,
+            table_name,
+            transaction,
+        )
+        .await
+    }
+
+    // ---------------- Paimon Table Management ----------------
+    async fn create_paimon_table_impl<'a>(
+        creation: PaimonTableCreation,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, CreatePaimonTableError> {
+        super::tabular::paimon_table::create_paimon_table(creation, transaction).await
+    }
+
+    async fn load_paimon_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, LoadPaimonTableError> {
+        super::tabular::paimon_table::load_paimon_table(
+            warehouse_id,
+            namespace_id,
+            table_name,
+            transaction,
+        )
+        .await
+    }
+
+    async fn load_paimon_table_by_id_impl<'a>(
+        warehouse_id: WarehouseId,
+        tabular_id: TableId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, LoadPaimonTableError> {
+        super::tabular::paimon_table::load_paimon_table_by_id(warehouse_id, tabular_id, transaction)
+            .await
+    }
+
+    async fn list_paimon_tables_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        namespace_ident: &iceberg::NamespaceIdent,
+        page_size: Option<i64>,
+        page_token: Option<&str>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<(Vec<PaimonTableListEntry>, Option<String>), ListPaimonTablesError>
+    {
+        super::tabular::paimon_table::list_paimon_tables(
+            warehouse_id,
+            namespace_id,
+            namespace_ident,
+            page_size,
+            page_token,
+            transaction,
+        )
+        .await
+    }
+
+    async fn update_paimon_commit_state_impl<'a>(
+        warehouse_id: WarehouseId,
+        tabular_id: TableId,
+        update: PaimonCommitStateUpdate,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<PaimonTableInfo, UpdatePaimonCommitStateError> {
+        super::tabular::paimon_table::update_paimon_commit_state(
+            warehouse_id,
+            tabular_id,
+            update,
+            transaction,
+        )
+        .await
+    }
+
+    async fn drop_paimon_table_impl<'a>(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        table_name: &str,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> std::result::Result<TableId, DropPaimonTableError> {
+        super::tabular::paimon_table::drop_paimon_table(
             warehouse_id,
             namespace_id,
             table_name,

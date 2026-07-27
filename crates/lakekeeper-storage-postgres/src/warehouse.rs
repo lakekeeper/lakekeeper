@@ -1083,6 +1083,25 @@ pub mod test {
         secret_id: Option<SecretId>,
         create_project: bool,
     ) -> (lakekeeper::service::ArcProjectId, lakekeeper::WarehouseId) {
+        initialize_warehouse_with_catalog_kind(
+            state,
+            storage_profile,
+            project_id,
+            secret_id,
+            create_project,
+            None,
+        )
+        .await
+    }
+
+    pub async fn initialize_warehouse_with_catalog_kind(
+        state: CatalogState,
+        storage_profile: Option<StorageProfile>,
+        project_id: Option<&ProjectId>,
+        secret_id: Option<SecretId>,
+        create_project: bool,
+        catalog_kind: Option<CatalogKind>,
+    ) -> (lakekeeper::service::ArcProjectId, lakekeeper::WarehouseId) {
         let project_id = project_id.map_or(Arc::new(ProjectId::from(uuid::Uuid::nil())), |id| {
             Arc::new(id.clone())
         });
@@ -1118,6 +1137,7 @@ pub mod test {
                 .delete_profile(TabularDeleteProfile::Soft {
                     expiration_seconds: chrono::Duration::seconds(5),
                 })
+                .catalog_kind(catalog_kind.unwrap_or_default())
                 .build(),
             t.transaction(),
         )
