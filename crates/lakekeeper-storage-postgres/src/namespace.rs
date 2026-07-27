@@ -7,15 +7,16 @@ use lakekeeper::{
     api::iceberg::v1::{PaginatedMapping, namespace::NamespaceDropFlags},
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
-        CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogNamespaceDropError,
+        CatalogBackendError, CatalogCreateNamespaceError, CatalogGetNamespaceError,
+        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogNamespaceDropError,
         CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
         ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
         NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
         NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
         NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
-        SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
+        SerializationError, TabularId, UnexpectedTabularInResponse, WarehouseIdNotFound,
+        storage::join_location, tasks::TaskId,
     },
 };
 use sqlx::types::Json;
@@ -804,6 +805,14 @@ pub(crate) async fn drop_namespace(
                         TabularType::Table => TabularId::Table(tabular_id.into()),
                         TabularType::View => TabularId::View(tabular_id.into()),
                         TabularType::GenericTable => TabularId::GenericTable(tabular_id.into()),
+                        TabularType::PaimonTable => {
+                            return Err(CatalogBackendError::new_unexpected(
+                                UnexpectedTabularInResponse::new().append_detail(
+                                    "Paimon tabular rows are not yet materialized through namespace drop child enumeration.",
+                                ),
+                            )
+                            .into());
+                        }
                     },
                     join_location(protocol.as_str(), fs_location.as_str())
                         .map_err(InternalParseLocationError::from)?,

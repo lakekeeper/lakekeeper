@@ -291,6 +291,31 @@ where
                 .ok();
             location
         }
+        WarehouseTaskEntityId::PaimonTable { table_id } => {
+            let location = match C::drop_tabular(warehouse_id, table_id, true, trx.transaction())
+                .await
+            {
+                Err(DropTabularError::TabularNotFound(..)) => {
+                    tracing::warn!(
+                        "Paimon table with id `{table_id}` not found in catalog for `{QN_STR}` task. Skipping deletion."
+                    );
+                    None
+                }
+                Err(e) => {
+                    return Err(e
+                        .append_detail(format!(
+                            "Failed to drop Paimon table with id `{table_id}` from catalog for `{QN_STR}` task."
+                        ))
+                        .into())
+                }
+                Ok(loc) => Some(loc),
+            };
+
+            tracing::debug!(
+                "Skipping authorizer cleanup for Paimon table `{table_id}` in `{QN_STR}` task; Paimon authz resources are not wired yet."
+            );
+            location
+        }
     };
 
     if let Some(tabular_location) = tabular_location

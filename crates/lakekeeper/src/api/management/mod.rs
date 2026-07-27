@@ -2461,6 +2461,7 @@ pub mod v1 {
                 TabularId::Table(_) => TabularType::Table,
                 TabularId::View(_) => TabularType::View,
                 TabularId::GenericTable(_) => TabularType::GenericTable,
+                TabularId::PaimonTable(_) => TabularType::PaimonTable,
             }
         }
     }
@@ -2473,6 +2474,7 @@ pub mod v1 {
         Table,
         View,
         GenericTable,
+        PaimonTable,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, strum_macros::Display)]

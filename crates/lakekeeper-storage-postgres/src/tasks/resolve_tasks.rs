@@ -157,6 +157,12 @@ where
                             }
                             .into()
                         }
+                        WarehouseTaskEntityId::PaimonTable { table_id } => TableNamed {
+                            warehouse_id,
+                            table_ident: ident,
+                            table_id,
+                        }
+                        .into(),
                     }
                 }
             };

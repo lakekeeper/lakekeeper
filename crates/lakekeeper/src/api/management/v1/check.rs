@@ -808,6 +808,9 @@ async fn fetch_tabulars<C: CatalogStore>(
                 ViewOrTableInfo::GenericTable(info) => {
                     TabularIdentOwned::GenericTable(info.tabular_ident().clone())
                 }
+                ViewOrTableInfo::PaimonTable(info) => {
+                    TabularIdentOwned::PaimonTable(info.tabular_ident().clone())
+                }
             };
             ((ti.warehouse_id(), tabular_ident), ti)
         })
@@ -947,6 +950,14 @@ fn convert_tabular_action<'a, 'u>(
         ViewOrTableInfo::GenericTable(gt_info) => generic_table_action.map(|action| {
             ActionOnTableOrView::GenericTable(ActionOnGenericTable {
                 info: gt_info,
+                action,
+                user,
+                is_delegated_execution: false,
+            })
+        }),
+        ViewOrTableInfo::PaimonTable(table_info) => table_action.map(|action| {
+            ActionOnTableOrView::Table(ActionOnTable {
+                info: table_info,
                 action,
                 user,
                 is_delegated_execution: false,
@@ -1550,6 +1561,9 @@ fn spawn_tabular_checks_by_id<A: Authorizer>(
                             TabularId::GenericTable(gt_id) => {
                                 return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, *gt_id).into());
                             }
+                            TabularId::PaimonTable(table_id) => {
+                                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, *table_id).into());
+                            }
                         }
                     }
                     tracing::debug!(
@@ -1665,6 +1679,9 @@ fn spawn_tabular_checks_by_ident<A: Authorizer>(
                             }
                             TabularIdentOwned::GenericTable(gt_ident) => {
                                 return Err(AuthZCannotSeeGenericTable::new_not_found(warehouse_id, gt_ident.clone()).into());
+                            }
+                            TabularIdentOwned::PaimonTable(table_ident) => {
+                                return Err(AuthZCannotSeeTable::new_not_found(warehouse_id, table_ident.clone()).into());
                             }
                         }
                     }

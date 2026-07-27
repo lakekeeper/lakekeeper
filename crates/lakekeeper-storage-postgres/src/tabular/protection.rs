@@ -14,6 +14,9 @@ impl From<FromTabularRowError> for SetTabularProtectionError {
         match err {
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }

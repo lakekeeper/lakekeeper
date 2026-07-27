@@ -203,6 +203,9 @@ pub(crate) async fn commit_existing_view(
         .map_err(|e| match e {
             super::FromTabularRowError::InvalidNamespaceIdentifier(e) => CommitViewError::from(e),
             super::FromTabularRowError::InternalParseLocationError(e) => CommitViewError::from(e),
+            super::FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                CommitViewError::from(e)
+            }
         })?;
     let Some(view_info) = info.into_view_info() else {
         return Err(UnexpectedTabularInResponse::new()

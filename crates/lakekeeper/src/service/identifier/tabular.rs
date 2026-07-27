@@ -9,9 +9,7 @@ use uuid::Uuid;
 
 use super::generic::{GenericTableId, TableId, ViewId};
 
-#[derive(
-    Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize, derive_more::From,
-)]
+#[derive(Hash, PartialOrd, PartialEq, Debug, Clone, Copy, Eq, Deserialize, Serialize)]
 #[serde(tag = "type", content = "id", rename_all = "kebab-case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "open-api", schema(as=TabularIdentUuid))]
@@ -22,6 +20,8 @@ pub enum TabularId {
     View(ViewId),
     #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
     GenericTable(GenericTableId),
+    #[cfg_attr(feature = "open-api", schema(value_type = Uuid))]
+    PaimonTable(TableId),
 }
 
 impl TabularId {
@@ -31,6 +31,7 @@ impl TabularId {
             TabularId::Table(_) => "Table",
             TabularId::View(_) => "View",
             TabularId::GenericTable(_) => "GenericTable",
+            TabularId::PaimonTable(_) => "PaimonTable",
         }
     }
 
@@ -48,6 +49,11 @@ impl TabularId {
     pub fn is_generic_table(&self) -> bool {
         matches!(self, TabularId::GenericTable(_))
     }
+
+    #[must_use]
+    pub fn is_paimon_table(&self) -> bool {
+        matches!(self, TabularId::PaimonTable(_))
+    }
 }
 
 impl AsRef<Uuid> for TabularId {
@@ -56,6 +62,7 @@ impl AsRef<Uuid> for TabularId {
             TabularId::Table(id) => id.as_ref(),
             TabularId::View(id) => id.as_ref(),
             TabularId::GenericTable(id) => id.as_ref(),
+            TabularId::PaimonTable(id) => id.as_ref(),
         }
     }
 }
@@ -63,6 +70,24 @@ impl AsRef<Uuid> for TabularId {
 impl Display for TabularId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &**self)
+    }
+}
+
+impl From<TableId> for TabularId {
+    fn from(value: TableId) -> Self {
+        Self::Table(value)
+    }
+}
+
+impl From<ViewId> for TabularId {
+    fn from(value: ViewId) -> Self {
+        Self::View(value)
+    }
+}
+
+impl From<GenericTableId> for TabularId {
+    fn from(value: GenericTableId) -> Self {
+        Self::GenericTable(value)
     }
 }
 
@@ -76,6 +101,8 @@ pub enum TabularIdentBorrowed<'a> {
     View(&'a TableIdent),
     #[allow(dead_code)]
     GenericTable(&'a TableIdent),
+    #[allow(dead_code)]
+    PaimonTable(&'a TableIdent),
 }
 
 impl TabularIdentBorrowed<'_> {
@@ -85,6 +112,7 @@ impl TabularIdentBorrowed<'_> {
             TabularIdentBorrowed::Table(_) => "Table",
             TabularIdentBorrowed::View(_) => "View",
             TabularIdentBorrowed::GenericTable(_) => "GenericTable",
+            TabularIdentBorrowed::PaimonTable(_) => "PaimonTable",
         }
     }
 }
@@ -94,6 +122,7 @@ pub enum TabularIdentOwned {
     Table(TableIdent),
     View(TableIdent),
     GenericTable(TableIdent),
+    PaimonTable(TableIdent),
 }
 
 impl TabularIdentOwned {
@@ -102,7 +131,8 @@ impl TabularIdentOwned {
         match self {
             TabularIdentOwned::Table(ident)
             | TabularIdentOwned::View(ident)
-            | TabularIdentOwned::GenericTable(ident) => ident,
+            | TabularIdentOwned::GenericTable(ident)
+            | TabularIdentOwned::PaimonTable(ident) => ident,
         }
     }
 
@@ -112,6 +142,7 @@ impl TabularIdentOwned {
             TabularIdentOwned::Table(ident) => TabularIdentBorrowed::Table(ident),
             TabularIdentOwned::View(ident) => TabularIdentBorrowed::View(ident),
             TabularIdentOwned::GenericTable(ident) => TabularIdentBorrowed::GenericTable(ident),
+            TabularIdentOwned::PaimonTable(ident) => TabularIdentBorrowed::PaimonTable(ident),
         }
     }
 
@@ -120,7 +151,8 @@ impl TabularIdentOwned {
         match self {
             TabularIdentOwned::Table(ident)
             | TabularIdentOwned::View(ident)
-            | TabularIdentOwned::GenericTable(ident) => ident,
+            | TabularIdentOwned::GenericTable(ident)
+            | TabularIdentOwned::PaimonTable(ident) => ident,
         }
     }
 }
@@ -133,6 +165,9 @@ impl<'a> From<TabularIdentBorrowed<'a>> for TabularIdentOwned {
             TabularIdentBorrowed::GenericTable(ident) => {
                 TabularIdentOwned::GenericTable(ident.clone())
             }
+            TabularIdentBorrowed::PaimonTable(ident) => {
+                TabularIdentOwned::PaimonTable(ident.clone())
+            }
         }
     }
 }
@@ -143,7 +178,8 @@ impl TabularIdentBorrowed<'_> {
         match self {
             TabularIdentBorrowed::Table(ident)
             | TabularIdentBorrowed::View(ident)
-            | TabularIdentBorrowed::GenericTable(ident) => ident,
+            | TabularIdentBorrowed::GenericTable(ident)
+            | TabularIdentBorrowed::PaimonTable(ident) => ident,
         }
     }
 }
@@ -156,6 +192,7 @@ impl Deref for TabularId {
             TabularId::Table(id) => id.as_ref(),
             TabularId::View(id) => id.as_ref(),
             TabularId::GenericTable(id) => id.as_ref(),
+            TabularId::PaimonTable(id) => id.as_ref(),
         }
     }
 }

@@ -7,10 +7,7 @@ use lakekeeper_io::{Location, LocationParseError};
 
 use crate::{
     WarehouseId,
-    api::{
-        iceberg::v1::{PaginatedMapping, PaginationQuery},
-        management::v1::TabularType,
-    },
+    api::iceberg::v1::{PaginatedMapping, PaginationQuery},
     service::{
         CatalogBackendError, CatalogStore, GenericTableId, InvalidNamespaceIdentifier,
         InvalidPaginationToken, NamespaceId, NamespaceVersion, Result, TableId, TabularId,
@@ -24,6 +21,37 @@ use crate::{
         tasks::TaskId,
     },
 };
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum_macros::Display,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum TabularType {
+    Table,
+    View,
+    GenericTable,
+    PaimonTable,
+}
+
+impl From<TabularId> for TabularType {
+    fn from(value: TabularId) -> Self {
+        match value {
+            TabularId::Table(_) => Self::Table,
+            TabularId::View(_) => Self::View,
+            TabularId::GenericTable(_) => Self::GenericTable,
+            TabularId::PaimonTable(_) => Self::PaimonTable,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabularListFlags {
@@ -170,15 +198,35 @@ impl BasicTabularInfo for GenericTabularInfo {
         self.namespace_id
     }
 }
-#[derive(Debug, Clone, PartialEq, derive_more::From)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ViewOrTableInfo {
     Table(TableInfo),
     View(ViewInfo),
     GenericTable(GenericTabularInfo),
+    PaimonTable(PaimonTabularInfo),
 }
 pub type TableInfo = TabularInfo<TableId>;
 pub type ViewInfo = TabularInfo<ViewId>;
 pub type GenericTabularInfo = TabularInfo<GenericTableId>;
+pub type PaimonTabularInfo = TabularInfo<TableId>;
+
+impl From<TableInfo> for ViewOrTableInfo {
+    fn from(value: TableInfo) -> Self {
+        Self::Table(value)
+    }
+}
+
+impl From<ViewInfo> for ViewOrTableInfo {
+    fn from(value: ViewInfo) -> Self {
+        Self::View(value)
+    }
+}
+
+impl From<GenericTabularInfo> for ViewOrTableInfo {
+    fn from(value: GenericTabularInfo) -> Self {
+        Self::GenericTable(value)
+    }
+}
 
 #[derive(thiserror::Error, Debug, PartialEq)]
 #[error("{source}")]
@@ -254,6 +302,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => TabularId::Table(info.tabular_id),
             Self::View(info) => TabularId::View(info.tabular_id),
             Self::GenericTable(info) => TabularId::GenericTable(info.tabular_id),
+            Self::PaimonTable(info) => TabularId::PaimonTable(info.tabular_id),
         }
     }
 
@@ -263,6 +312,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => &info.tabular_ident,
             Self::View(info) => &info.tabular_ident,
             Self::GenericTable(info) => &info.tabular_ident,
+            Self::PaimonTable(info) => &info.tabular_ident,
         }
     }
 
@@ -272,6 +322,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
             Self::GenericTable(info) => info.namespace_id,
+            Self::PaimonTable(info) => info.namespace_id,
         }
     }
 
@@ -281,6 +332,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => info.protected,
             Self::View(info) => info.protected,
             Self::GenericTable(info) => info.protected,
+            Self::PaimonTable(info) => info.protected,
         }
     }
 
@@ -290,6 +342,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => info.updated_at,
             Self::View(info) => info.updated_at,
             Self::GenericTable(info) => info.updated_at,
+            Self::PaimonTable(info) => info.updated_at,
         }
     }
 
@@ -319,6 +372,12 @@ impl ViewOrTableInfo {
                 user,
                 is_delegated_execution: false,
             }),
+            Self::PaimonTable(table) => ActionOnTableOrView::Table(ActionOnTable {
+                info: table,
+                action: table_action,
+                user,
+                is_delegated_execution: false,
+            }),
         }
     }
 
@@ -328,6 +387,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => info.metadata_location.as_ref(),
             Self::View(info) => info.metadata_location.as_ref(),
             Self::GenericTable(info) => info.metadata_location.as_ref(),
+            Self::PaimonTable(info) => info.metadata_location.as_ref(),
         }
     }
 
@@ -337,6 +397,7 @@ impl ViewOrTableInfo {
             Self::Table(info) => &info.location,
             Self::View(info) => &info.location,
             Self::GenericTable(info) => &info.location,
+            Self::PaimonTable(info) => &info.location,
         }
     }
 }
@@ -658,6 +719,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
             Self::Table(info) => TabularId::Table(info.tabular_id),
             Self::View(info) => TabularId::View(info.tabular_id),
             Self::GenericTable(info) => TabularId::GenericTable(info.tabular_id),
+            Self::PaimonTable(info) => TabularId::PaimonTable(info.tabular_id),
         }
     }
 
@@ -666,6 +728,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
             Self::GenericTable(info) => info.namespace_id,
+            Self::PaimonTable(info) => info.namespace_id,
         }
     }
 
@@ -674,6 +737,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
             Self::Table(info) => info.protected,
             Self::View(info) => info.protected,
             Self::GenericTable(info) => info.protected,
+            Self::PaimonTable(info) => info.protected,
         }
     }
 
@@ -682,6 +746,7 @@ impl AuthZTabularInfo for ViewOrTableInfo {
             Self::Table(info) => &info.properties,
             Self::View(info) => &info.properties,
             Self::GenericTable(info) => &info.properties,
+            Self::PaimonTable(info) => &info.properties,
         }
     }
 }
@@ -703,6 +768,7 @@ impl BasicTabularInfo for ViewOrTableInfo {
             Self::Table(info) => info.namespace_version,
             Self::View(info) => info.namespace_version,
             Self::GenericTable(info) => info.namespace_version,
+            Self::PaimonTable(info) => info.namespace_version,
         }
     }
     fn namespace_id(&self) -> NamespaceId {
@@ -710,6 +776,7 @@ impl BasicTabularInfo for ViewOrTableInfo {
             Self::Table(info) => info.namespace_id,
             Self::View(info) => info.namespace_id,
             Self::GenericTable(info) => info.namespace_id,
+            Self::PaimonTable(info) => info.namespace_id,
         }
     }
     fn warehouse_version(&self) -> WarehouseVersion {
@@ -717,6 +784,7 @@ impl BasicTabularInfo for ViewOrTableInfo {
             Self::Table(info) => info.warehouse_version,
             Self::View(info) => info.warehouse_version,
             Self::GenericTable(info) => info.warehouse_version,
+            Self::PaimonTable(info) => info.warehouse_version,
         }
     }
     fn warehouse_id(&self) -> WarehouseId {
@@ -724,6 +792,7 @@ impl BasicTabularInfo for ViewOrTableInfo {
             Self::Table(info) => info.warehouse_id,
             Self::View(info) => info.warehouse_id,
             Self::GenericTable(info) => info.warehouse_id,
+            Self::PaimonTable(info) => info.warehouse_id,
         }
     }
     fn tabular_ident(&self) -> &TableIdent {
@@ -731,6 +800,7 @@ impl BasicTabularInfo for ViewOrTableInfo {
             Self::Table(info) => &info.tabular_ident,
             Self::View(info) => &info.tabular_ident,
             Self::GenericTable(info) => &info.tabular_ident,
+            Self::PaimonTable(info) => &info.tabular_ident,
         }
     }
     fn tabular_id(&self) -> TabularId {
@@ -738,6 +808,7 @@ impl BasicTabularInfo for ViewOrTableInfo {
             Self::Table(info) => TabularId::Table(info.tabular_id),
             Self::View(info) => TabularId::View(info.tabular_id),
             Self::GenericTable(info) => TabularId::GenericTable(info.tabular_id),
+            Self::PaimonTable(info) => TabularId::PaimonTable(info.tabular_id),
         }
     }
 }
@@ -747,6 +818,7 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
             Self::Table(info) => info.tabular.namespace_version,
             Self::View(info) => info.tabular.namespace_version,
             Self::GenericTable(info) => info.tabular.namespace_version,
+            Self::PaimonTable(info) => info.tabular.namespace_version,
         }
     }
     fn warehouse_version(&self) -> WarehouseVersion {
@@ -754,6 +826,7 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
             Self::Table(info) => info.tabular.warehouse_version,
             Self::View(info) => info.tabular.warehouse_version,
             Self::GenericTable(info) => info.tabular.warehouse_version,
+            Self::PaimonTable(info) => info.tabular.warehouse_version,
         }
     }
     fn warehouse_id(&self) -> WarehouseId {
@@ -761,6 +834,7 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
             Self::Table(info) => info.tabular.warehouse_id,
             Self::View(info) => info.tabular.warehouse_id,
             Self::GenericTable(info) => info.tabular.warehouse_id,
+            Self::PaimonTable(info) => info.tabular.warehouse_id,
         }
     }
     fn tabular_ident(&self) -> &TableIdent {
@@ -768,6 +842,7 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
             Self::Table(info) => &info.tabular.tabular_ident,
             Self::View(info) => &info.tabular.tabular_ident,
             Self::GenericTable(info) => &info.tabular.tabular_ident,
+            Self::PaimonTable(info) => &info.tabular.tabular_ident,
         }
     }
     fn tabular_id(&self) -> TabularId {
@@ -775,6 +850,7 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
             Self::Table(info) => TabularId::Table(info.tabular.tabular_id),
             Self::View(info) => TabularId::View(info.tabular.tabular_id),
             Self::GenericTable(info) => TabularId::GenericTable(info.tabular.tabular_id),
+            Self::PaimonTable(info) => TabularId::PaimonTable(info.tabular.tabular_id),
         }
     }
     fn namespace_id(&self) -> NamespaceId {
@@ -782,6 +858,7 @@ impl BasicTabularInfo for ViewOrTableDeletionInfo {
             Self::Table(info) => info.tabular.namespace_id,
             Self::View(info) => info.tabular.namespace_id,
             Self::GenericTable(info) => info.tabular.namespace_id,
+            Self::PaimonTable(info) => info.tabular.namespace_id,
         }
     }
 }
@@ -791,7 +868,7 @@ impl ViewOrTableInfo {
     pub fn into_table_info(self) -> Option<TableInfo> {
         match self {
             Self::Table(info) => Some(info),
-            Self::View(_) | Self::GenericTable(_) => None,
+            Self::View(_) | Self::GenericTable(_) | Self::PaimonTable(_) => None,
         }
     }
 
@@ -799,7 +876,7 @@ impl ViewOrTableInfo {
     pub fn into_view_info(self) -> Option<ViewInfo> {
         match self {
             Self::View(info) => Some(info),
-            Self::Table(_) | Self::GenericTable(_) => None,
+            Self::Table(_) | Self::GenericTable(_) | Self::PaimonTable(_) => None,
         }
     }
 
@@ -807,7 +884,15 @@ impl ViewOrTableInfo {
     pub fn into_generic_table_info(self) -> Option<GenericTabularInfo> {
         match self {
             Self::GenericTable(info) => Some(info),
-            Self::Table(_) | Self::View(_) => None,
+            Self::Table(_) | Self::View(_) | Self::PaimonTable(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_paimon_table_info(self) -> Option<PaimonTabularInfo> {
+        match self {
+            Self::PaimonTable(info) => Some(info),
+            Self::Table(_) | Self::View(_) | Self::GenericTable(_) => None,
         }
     }
 }
@@ -819,15 +904,35 @@ pub struct TabularDeletionInfo<T: std::fmt::Debug + PartialEq + Copy> {
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     pub expiration_task: Option<ExpirationTaskInfo>,
 }
-#[derive(Debug, PartialEq, derive_more::From)]
+#[derive(Debug, PartialEq)]
 pub enum ViewOrTableDeletionInfo {
     Table(TableDeletionInfo),
     View(ViewDeletionInfo),
     GenericTable(GenericTableDeletionInfo),
+    PaimonTable(PaimonTableDeletionInfo),
 }
 pub type TableDeletionInfo = TabularDeletionInfo<TableId>;
 pub type ViewDeletionInfo = TabularDeletionInfo<ViewId>;
 pub type GenericTableDeletionInfo = TabularDeletionInfo<GenericTableId>;
+pub type PaimonTableDeletionInfo = TabularDeletionInfo<TableId>;
+
+impl From<TableDeletionInfo> for ViewOrTableDeletionInfo {
+    fn from(value: TableDeletionInfo) -> Self {
+        Self::Table(value)
+    }
+}
+
+impl From<ViewDeletionInfo> for ViewOrTableDeletionInfo {
+    fn from(value: ViewDeletionInfo) -> Self {
+        Self::View(value)
+    }
+}
+
+impl From<GenericTableDeletionInfo> for ViewOrTableDeletionInfo {
+    fn from(value: GenericTableDeletionInfo) -> Self {
+        Self::GenericTable(value)
+    }
+}
 
 impl ViewOrTableDeletionInfo {
     #[must_use]
@@ -836,6 +941,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => ViewOrTableInfo::Table(info.tabular),
             Self::View(info) => ViewOrTableInfo::View(info.tabular),
             Self::GenericTable(info) => ViewOrTableInfo::GenericTable(info.tabular),
+            Self::PaimonTable(info) => ViewOrTableInfo::PaimonTable(info.tabular),
         }
     }
 
@@ -845,6 +951,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => info.tabular.namespace_id,
             Self::View(info) => info.tabular.namespace_id,
             Self::GenericTable(info) => info.tabular.namespace_id,
+            Self::PaimonTable(info) => info.tabular.namespace_id,
         }
     }
 
@@ -854,6 +961,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => TabularId::Table(info.tabular.tabular_id),
             Self::View(info) => TabularId::View(info.tabular.tabular_id),
             Self::GenericTable(info) => TabularId::GenericTable(info.tabular.tabular_id),
+            Self::PaimonTable(info) => TabularId::PaimonTable(info.tabular.tabular_id),
         }
     }
 
@@ -863,6 +971,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => info.deleted_at,
             Self::View(info) => info.deleted_at,
             Self::GenericTable(info) => info.deleted_at,
+            Self::PaimonTable(info) => info.deleted_at,
         }
     }
 
@@ -872,6 +981,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => info.created_at,
             Self::View(info) => info.created_at,
             Self::GenericTable(info) => info.created_at,
+            Self::PaimonTable(info) => info.created_at,
         }
     }
 
@@ -881,6 +991,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => info.expiration_task.as_ref(),
             Self::View(info) => info.expiration_task.as_ref(),
             Self::GenericTable(info) => info.expiration_task.as_ref(),
+            Self::PaimonTable(info) => info.expiration_task.as_ref(),
         }
     }
 
@@ -890,6 +1001,7 @@ impl ViewOrTableDeletionInfo {
             Self::Table(info) => &info.tabular.tabular_ident,
             Self::View(info) => &info.tabular.tabular_ident,
             Self::GenericTable(info) => &info.tabular.tabular_ident,
+            Self::PaimonTable(info) => &info.tabular.tabular_ident,
         }
     }
 
@@ -897,7 +1009,7 @@ impl ViewOrTableDeletionInfo {
     pub fn into_table_info(self) -> Option<TableDeletionInfo> {
         match self {
             Self::Table(info) => Some(info),
-            Self::View(_) | Self::GenericTable(_) => None,
+            Self::View(_) | Self::GenericTable(_) | Self::PaimonTable(_) => None,
         }
     }
 
@@ -905,7 +1017,7 @@ impl ViewOrTableDeletionInfo {
     pub fn into_view_info(self) -> Option<ViewDeletionInfo> {
         match self {
             Self::View(info) => Some(info),
-            Self::Table(_) | Self::GenericTable(_) => None,
+            Self::Table(_) | Self::GenericTable(_) | Self::PaimonTable(_) => None,
         }
     }
 
@@ -941,6 +1053,12 @@ impl ViewOrTableDeletionInfo {
             Self::GenericTable(gt) => ActionOnTableOrView::GenericTable(ActionOnGenericTable {
                 info: gt,
                 action: generic_table_action,
+                user,
+                is_delegated_execution: false,
+            }),
+            Self::PaimonTable(table) => ActionOnTableOrView::Table(ActionOnTable {
+                info: table,
+                action: table_action,
                 user,
                 is_delegated_execution: false,
             }),
@@ -1074,11 +1192,13 @@ impl std::fmt::Display for TabularIdentOrId {
                 TabularIdentOwned::Table(t) => write!(f, "Table '{t}'"),
                 TabularIdentOwned::View(v) => write!(f, "View '{v}'"),
                 TabularIdentOwned::GenericTable(g) => write!(f, "GenericTable '{g}'"),
+                TabularIdentOwned::PaimonTable(t) => write!(f, "PaimonTable '{t}'"),
             },
             TabularIdentOrId::Id(id) => match id {
                 TabularId::Table(t) => write!(f, "Table ID '{t}'"),
                 TabularId::View(v) => write!(f, "View ID '{v}'"),
                 TabularId::GenericTable(g) => write!(f, "GenericTable ID '{g}'"),
+                TabularId::PaimonTable(t) => write!(f, "PaimonTable ID '{t}'"),
             },
         }
     }
@@ -1860,6 +1980,9 @@ where
                 TabularId::GenericTable(_) => {
                     Err(GenericTableInViewList::new(warehouse_id, k).into())
                 }
+                TabularId::PaimonTable(_) => {
+                    Err(GenericTableInViewList::new(warehouse_id, k).into())
+                }
                 TabularId::View(t) => Ok(t),
             },
             |v| {
@@ -1870,6 +1993,9 @@ where
                         Err(TableInViewList::new(warehouse_id, tabular_id).into())
                     }
                     ViewOrTableDeletionInfo::GenericTable(_) => {
+                        Err(GenericTableInViewList::new(warehouse_id, tabular_id).into())
+                    }
+                    ViewOrTableDeletionInfo::PaimonTable(_) => {
                         Err(GenericTableInViewList::new(warehouse_id, tabular_id).into())
                     }
                 }
@@ -1901,6 +2027,9 @@ where
                 TabularId::GenericTable(_) => {
                     Err(GenericTableInTableList::new(warehouse_id, k).into())
                 }
+                TabularId::PaimonTable(_) => {
+                    Err(GenericTableInTableList::new(warehouse_id, k).into())
+                }
             },
             |v| {
                 let tabular_id = v.tabular_id();
@@ -1910,6 +2039,9 @@ where
                         Err(ViewInTableList::new(warehouse_id, tabular_id).into())
                     }
                     ViewOrTableDeletionInfo::GenericTable(_) => {
+                        Err(GenericTableInTableList::new(warehouse_id, tabular_id).into())
+                    }
+                    ViewOrTableDeletionInfo::PaimonTable(_) => {
                         Err(GenericTableInTableList::new(warehouse_id, tabular_id).into())
                     }
                 }

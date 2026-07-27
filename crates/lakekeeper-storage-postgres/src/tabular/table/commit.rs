@@ -30,6 +30,7 @@ impl From<FromTabularRowError> for CommitTableTransactionError {
         match err {
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => e.into(),
         }
     }
 }
@@ -147,6 +148,9 @@ pub(crate) async fn commit_table_transaction(
                 }
                 ViewOrTableInfo::GenericTable(_) => {
                     debug_assert!(false, "Commit should not return generic tables");
+                }
+                ViewOrTableInfo::PaimonTable(_) => {
+                    debug_assert!(false, "Commit should not return paimon tables");
                 }
             }
 

@@ -26,7 +26,7 @@ use crate::{
             tables::LoadTableFilters,
         },
         management::v1::{
-            DeleteWarehouseQuery, TabularType,
+            DeleteWarehouseQuery,
             project::{EndpointStatisticsResponse, TimeWindowSelector, WarehouseFilter},
             role::UpdateRoleSourceSystemRequest,
             task_queue::{GetTaskQueueConfigResponse, SetTaskQueueConfigRequest},

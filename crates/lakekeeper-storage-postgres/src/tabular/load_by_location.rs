@@ -5,7 +5,7 @@ use lakekeeper::{
     WarehouseId,
     service::{
         GenericTabularInfo, GetTabularInfoByLocationError, InternalParseLocationError, TableInfo,
-        ViewInfo, ViewOrTableInfo,
+        UnexpectedTabularInResponse, ViewInfo, ViewOrTableInfo,
         storage::{StorageProfile, join_location},
     },
 };
@@ -184,6 +184,11 @@ pub(crate) async fn get_tabular_infos_by_s3_location(
             namespace_version: row.namespace_version.into(),
         }
         .into(),
+        TabularType::PaimonTable => {
+            return Err(UnexpectedTabularInResponse::new()
+                .append_detail("Paimon tabular rows are not yet materialized through location-based shared tabular loads.")
+                .into());
+        }
     };
 
     Ok(Some(view_or_table_info))

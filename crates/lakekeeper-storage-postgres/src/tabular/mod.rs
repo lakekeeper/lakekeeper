@@ -16,10 +16,12 @@ use lakekeeper::{
         GenericTableDeletionInfo, GenericTabularInfo, GetTabularInfoError,
         InternalParseLocationError, InvalidNamespaceIdentifier, ListTabularsError,
         LocationAlreadyTaken, MarkTabularAsDeletedError, NamespaceId,
+        PaimonTableDeletionInfo,
         ProtectedTabularDeletionWithoutForce, RenameTabularError, SearchTabularError,
         SerializationError, TableDeletionInfo, TableIdent, TableInfo, TabularAlreadyExists,
-        TabularId, TabularIdentBorrowed, TabularNotFound, ViewDeletionInfo, ViewInfo,
-        ViewOrTableDeletionInfo, ViewOrTableInfo, storage::join_location,
+        TabularId, TabularIdentBorrowed, TabularNotFound, UnexpectedTabularInResponse,
+        ViewDeletionInfo, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        storage::join_location,
     },
 };
 use lakekeeper_io::Location;
@@ -40,14 +42,16 @@ pub(crate) enum TabularType {
     Table,
     View,
     GenericTable,
+    PaimonTable,
 }
 
-impl From<lakekeeper::api::management::v1::TabularType> for TabularType {
-    fn from(typ: lakekeeper::api::management::v1::TabularType) -> Self {
+impl From<lakekeeper::service::TabularType> for TabularType {
+    fn from(typ: lakekeeper::service::TabularType) -> Self {
         match typ {
-            lakekeeper::api::management::v1::TabularType::Table => TabularType::Table,
-            lakekeeper::api::management::v1::TabularType::View => TabularType::View,
-            lakekeeper::api::management::v1::TabularType::GenericTable => TabularType::GenericTable,
+            lakekeeper::service::TabularType::Table => TabularType::Table,
+            lakekeeper::service::TabularType::View => TabularType::View,
+            lakekeeper::service::TabularType::GenericTable => TabularType::GenericTable,
+            lakekeeper::service::TabularType::PaimonTable => TabularType::PaimonTable,
         }
     }
 }
@@ -56,6 +60,7 @@ impl From<lakekeeper::api::management::v1::TabularType> for TabularType {
 pub enum FromTabularRowError {
     InvalidNamespaceIdentifier(InvalidNamespaceIdentifier),
     InternalParseLocationError(InternalParseLocationError),
+    UnexpectedTabularInResponse(UnexpectedTabularInResponse),
 }
 
 impl From<FromTabularRowError> for GetTabularInfoError {
@@ -63,6 +68,9 @@ impl From<FromTabularRowError> for GetTabularInfoError {
         match err {
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }
@@ -161,6 +169,11 @@ impl TabularRowCore {
                 namespace_version: self.namespace_version.into(),
                 warehouse_version: self.warehouse_version.into(),
             }),
+            TabularType::PaimonTable => {
+                return Err(UnexpectedTabularInResponse::new()
+                    .append_detail("Paimon tabular rows are not yet materialized through shared tabular reads.")
+                    .into());
+            }
         };
 
         Ok(view_or_table_info)
@@ -210,6 +223,11 @@ impl TabularRowWithProperties {
                 self.generic_table_properties_keys,
                 self.generic_table_properties_values,
             ),
+            TabularType::PaimonTable => {
+                return Err(UnexpectedTabularInResponse::new()
+                    .append_detail("Paimon tabular rows are not yet materialized through shared tabular reads.")
+                    .into());
+            }
         };
         let core = TabularRowCore {
             tabular_id: self.tabular_id,
@@ -260,6 +278,10 @@ where
                 TabularId::GenericTable(id) => {
                     t_ids.push(**id);
                     t_typs.push(TabularType::GenericTable);
+                }
+                TabularId::PaimonTable(id) => {
+                    t_ids.push(**id);
+                    t_typs.push(TabularType::PaimonTable);
                 }
             }
             (t_ids, t_typs)
@@ -538,6 +560,9 @@ impl From<FromTabularRowError> for CreateTabularError {
         match err {
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }
@@ -754,6 +779,13 @@ impl TabularRowWithDeletion {
                 created_at: self.created_at,
             }
             .into(),
+            ViewOrTableInfo::PaimonTable(paimon_table_info) => PaimonTableDeletionInfo {
+                tabular: paimon_table_info,
+                expiration_task,
+                deleted_at: self.deleted_at,
+                created_at: self.created_at,
+            }
+            .into(),
         };
 
         Ok(tabular_deletion_info)
@@ -765,6 +797,9 @@ impl From<FromTabularRowError> for ListTabularsError {
         match err {
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }
@@ -1019,6 +1054,14 @@ impl PostgresSearchTabularInfo {
                     self.generic_table_properties_values,
                 ),
             }),
+            TabularType::PaimonTable => {
+                return Err(lakekeeper::service::CatalogBackendError::new_unexpected(
+                    UnexpectedTabularInResponse::new().append_detail(
+                        "Paimon tabular rows are not yet materialized through shared tabular reads.",
+                    ),
+                )
+                .into());
+            }
         };
 
         Ok(CatalogSearchTabularInfo {
@@ -1229,6 +1272,9 @@ impl From<FromTabularRowError> for RenameTabularError {
         match err {
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }
@@ -1520,6 +1566,7 @@ impl From<TabularType> for lakekeeper::api::management::v1::TabularType {
             TabularType::Table => lakekeeper::api::management::v1::TabularType::Table,
             TabularType::View => lakekeeper::api::management::v1::TabularType::View,
             TabularType::GenericTable => lakekeeper::api::management::v1::TabularType::GenericTable,
+            TabularType::PaimonTable => lakekeeper::api::management::v1::TabularType::PaimonTable,
         }
     }
 }
@@ -1529,6 +1576,9 @@ impl From<FromTabularRowError> for ClearTabularDeletedAtError {
         match err {
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }
@@ -1675,6 +1725,9 @@ impl From<FromTabularRowError> for MarkTabularAsDeletedError {
         match err {
             FromTabularRowError::InvalidNamespaceIdentifier(e) => e.into(),
             FromTabularRowError::InternalParseLocationError(e) => e.into(),
+            FromTabularRowError::UnexpectedTabularInResponse(e) => {
+                lakekeeper::service::CatalogBackendError::new_unexpected(e).into()
+            }
         }
     }
 }
@@ -1884,6 +1937,7 @@ impl<'a, 'b> From<&'b TabularIdentBorrowed<'a>> for TabularType {
             TabularIdentBorrowed::Table(_) => TabularType::Table,
             TabularIdentBorrowed::View(_) => TabularType::View,
             TabularIdentBorrowed::GenericTable(_) => TabularType::GenericTable,
+            TabularIdentBorrowed::PaimonTable(_) => TabularType::PaimonTable,
         }
     }
 }
@@ -1894,6 +1948,7 @@ impl<'a> From<&'a TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
             TabularId::GenericTable(_) => TabularType::GenericTable,
+            TabularId::PaimonTable(_) => TabularType::PaimonTable,
         }
     }
 }
@@ -1904,6 +1959,7 @@ impl From<TabularId> for TabularType {
             TabularId::Table(_) => TabularType::Table,
             TabularId::View(_) => TabularType::View,
             TabularId::GenericTable(_) => TabularType::GenericTable,
+            TabularId::PaimonTable(_) => TabularType::PaimonTable,
         }
     }
 }

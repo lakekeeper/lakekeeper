@@ -484,6 +484,9 @@ async fn lookup_active_task_id<C: CatalogStore>(
         WarehouseTaskEntityId::GenericTable { generic_table_id } => {
             WarehouseTaskEntityFilter::GenericTable { generic_table_id }
         }
+        WarehouseTaskEntityId::PaimonTable { table_id } => {
+            WarehouseTaskEntityFilter::PaimonTable { table_id }
+        }
     };
     let query = ListTasksRequest::builder()
         .status(Some(vec![

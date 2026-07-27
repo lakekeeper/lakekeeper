@@ -45,6 +45,7 @@ enum TaskEntityTypeDB {
     Table,
     View,
     GenericTable,
+    PaimonTable,
     Project,
     Warehouse,
 }
@@ -55,6 +56,7 @@ impl From<WarehouseTaskEntityId> for TaskEntityTypeDB {
             WarehouseTaskEntityId::Table { .. } => Self::Table,
             WarehouseTaskEntityId::View { .. } => Self::View,
             WarehouseTaskEntityId::GenericTable { .. } => Self::GenericTable,
+            WarehouseTaskEntityId::PaimonTable { .. } => Self::PaimonTable,
         }
     }
 }
@@ -82,7 +84,10 @@ fn task_entity_from_db(
     entity_name: Option<Vec<String>>,
 ) -> Result<TaskEntity, DatabaseIntegrityError> {
     match entity_type {
-        TaskEntityTypeDB::View | TaskEntityTypeDB::Table | TaskEntityTypeDB::GenericTable => {
+        TaskEntityTypeDB::View
+        | TaskEntityTypeDB::Table
+        | TaskEntityTypeDB::GenericTable
+        | TaskEntityTypeDB::PaimonTable => {
             let warehouse_id = warehouse_id
                 .ok_or_else(|| {
                     DatabaseIntegrityError::new("WarehouseId is missing for tabular scoped task.")
@@ -102,6 +107,9 @@ fn task_entity_from_db(
                 },
                 TaskEntityTypeDB::GenericTable => WarehouseTaskEntityId::GenericTable {
                     generic_table_id: lakekeeper::service::GenericTableId::from(entity_id),
+                },
+                TaskEntityTypeDB::PaimonTable => WarehouseTaskEntityId::PaimonTable {
+                    table_id: TableId::from(entity_id),
                 },
                 _ => unreachable!(),
             };

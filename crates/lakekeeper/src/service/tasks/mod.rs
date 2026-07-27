@@ -164,6 +164,11 @@ pub enum WarehouseTaskEntityId {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         generic_table_id: GenericTableId,
     },
+    #[serde(rename_all = "kebab-case")]
+    PaimonTable {
+        #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
+        table_id: TableId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
@@ -505,6 +510,7 @@ pub enum WarehouseEntityType {
     Table,
     View,
     GenericTable,
+    PaimonTable,
 }
 
 impl std::fmt::Display for WarehouseTaskEntityId {
@@ -514,6 +520,9 @@ impl std::fmt::Display for WarehouseTaskEntityId {
             WarehouseTaskEntityId::View { view_id } => write!(f, "View({view_id})"),
             WarehouseTaskEntityId::GenericTable { generic_table_id } => {
                 write!(f, "GenericTable({generic_table_id})")
+            }
+            WarehouseTaskEntityId::PaimonTable { table_id } => {
+                write!(f, "PaimonTable({table_id})")
             }
         }
     }
@@ -526,6 +535,7 @@ impl WarehouseTaskEntityId {
             WarehouseTaskEntityId::Table { .. } => WarehouseEntityType::Table,
             WarehouseTaskEntityId::View { .. } => WarehouseEntityType::View,
             WarehouseTaskEntityId::GenericTable { .. } => WarehouseEntityType::GenericTable,
+            WarehouseTaskEntityId::PaimonTable { .. } => WarehouseEntityType::PaimonTable,
         }
     }
 
@@ -535,6 +545,7 @@ impl WarehouseTaskEntityId {
             WarehouseTaskEntityId::Table { table_id } => **table_id,
             WarehouseTaskEntityId::View { view_id } => **view_id,
             WarehouseTaskEntityId::GenericTable { generic_table_id } => **generic_table_id,
+            WarehouseTaskEntityId::PaimonTable { table_id } => **table_id,
         }
     }
 }
@@ -547,6 +558,7 @@ impl From<TabularId> for WarehouseTaskEntityId {
             TabularId::GenericTable(generic_table_id) => {
                 WarehouseTaskEntityId::GenericTable { generic_table_id }
             }
+            TabularId::PaimonTable(table_id) => WarehouseTaskEntityId::PaimonTable { table_id },
         }
     }
 }
@@ -1391,6 +1403,27 @@ mod test {
     }
 
     #[test]
+    fn test_task_entity_serde_paimon_table() {
+        let json = serde_json::json!({
+            "type": "paimon-table",
+            "table-id": "550e8400-e29b-41d4-a716-446655440123"
+        });
+        let deserialized: super::WarehouseTaskEntityId =
+            serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            deserialized,
+            WarehouseTaskEntityId::PaimonTable {
+                table_id: TableId::from(
+                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440123").unwrap()
+                )
+            }
+        );
+
+        let serialized = serde_json::to_value(deserialized).unwrap();
+        assert_eq!(serialized, json);
+    }
+
+    #[test]
     fn test_tabular_id_into_warehouse_task_entity_id_generic_table() {
         let gt_uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440222").unwrap();
         let tabular = TabularId::GenericTable(GenericTableId::from(gt_uuid));
@@ -1398,6 +1431,18 @@ mod test {
             WarehouseTaskEntityId::from(tabular),
             WarehouseTaskEntityId::GenericTable {
                 generic_table_id: GenericTableId::from(gt_uuid)
+            }
+        );
+    }
+
+    #[test]
+    fn test_tabular_id_into_warehouse_task_entity_id_paimon_table() {
+        let table_uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440333").unwrap();
+        let tabular = TabularId::PaimonTable(TableId::from(table_uuid));
+        assert_eq!(
+            WarehouseTaskEntityId::from(tabular),
+            WarehouseTaskEntityId::PaimonTable {
+                table_id: TableId::from(table_uuid)
             }
         );
     }
