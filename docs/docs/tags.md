@@ -2,6 +2,9 @@
 
 Governance tags let you attach a controlled vocabulary of labels — `pii`, `sensitivity=restricted`, `deprecated` — to catalog objects (Warehouses, Namespaces, Tables, Views, Generic Tables, and columns). They are metadata for classification, discovery, and access control.
 
+!!! warning "Preview"
+    This API is in preview and may change in a backward-incompatible way in a future release.
+
 !!! note "Not Iceberg snapshot tags"
     These are **management-plane** governance tags, applied through the `/management/v1/...` API. They are unrelated to Iceberg's native table-snapshot *tags* (named snapshot references created with `ALTER TABLE ... CREATE TAG`), which live in table metadata and are managed through the data-plane catalog API.
 
