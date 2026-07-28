@@ -186,6 +186,8 @@ When a client requests table configuration, Lakekeeper selects between remote si
 
 For maximum client compatibility, we recommend enabling both STS and remote signing when your S3 storage supports it.
 
+Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables — see [Remote signing for generic tables](./generic-tables.md#remote-signing-s3-without-sts).
+
 For some older remote signing clients that cannot handle table-specific remote signing endpoint locations, Lakekeeper needs to identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
 
 ### Configuration Parameters
