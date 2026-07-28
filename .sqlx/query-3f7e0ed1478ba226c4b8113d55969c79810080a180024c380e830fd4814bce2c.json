@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO table_schema(schema_id, table_id, warehouse_id)\n           SELECT *, $3 FROM UNNEST($1::INT[], $2::UUID[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f7e0ed1478ba226c4b8113d55969c79810080a180024c380e830fd4814bce2c"
+}

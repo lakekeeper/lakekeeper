@@ -1,9 +1,10 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, LazyLock},
 };
 
 use axum::Router;
+use iceberg_ext::catalog::TableUpdateKind;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum::{EnumIter, VariantArray};
 use strum_macros::{EnumString, IntoStaticStr};
@@ -1012,6 +1013,17 @@ pub enum CatalogTableAction {
         updated_properties: Arc<BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         removed_properties: Arc<Vec<String>>,
+        /// The branch and tag names this commit creates, moves, or removes.
+        /// Empty when the commit targets no ref by name.
+        // Populated from the commit's `SetSnapshotRef`/`RemoveSnapshotRef` updates;
+        // lets an authorizer decide per branch (e.g. protect `main`).
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        target_refs: Arc<BTreeSet<String>>,
+        /// The kinds of metadata updates this commit contains.
+        // Lets an authorizer require table-wide authority for anything beyond a
+        // branch-ref move (schema, spec, properties, snapshot expiry, …).
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        update_kinds: Arc<BTreeSet<TableUpdateKind>>,
     },
     Rename,
     IncludeInList,
@@ -1032,6 +1044,8 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 11]> = LazyLock::new
         CatalogTableAction::Commit {
             updated_properties: Arc::new(BTreeMap::new()),
             removed_properties: Arc::new(Vec::new()),
+            target_refs: Arc::new(BTreeSet::new()),
+            update_kinds: Arc::new(BTreeSet::new()),
         },
         CatalogTableAction::Rename,
         CatalogTableAction::IncludeInList,
@@ -1054,12 +1068,29 @@ impl CatalogAction for CatalogTableAction {
             Self::Commit {
                 updated_properties,
                 removed_properties,
+                target_refs,
+                update_kinds,
             } => {
                 if !updated_properties.is_empty() {
                     b = b.context_map("updated-properties", updated_properties.as_ref().clone());
                 }
                 if !removed_properties.is_empty() {
                     b = b.context_list("removed-properties", removed_properties.as_ref().clone());
+                }
+                if !target_refs.is_empty() {
+                    b = b.context_list(
+                        "target-refs",
+                        target_refs.iter().cloned().collect::<Vec<_>>(),
+                    );
+                }
+                if !update_kinds.is_empty() {
+                    b = b.context_list(
+                        "update-kinds",
+                        update_kinds
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>(),
+                    );
                 }
             }
             Self::Drop { force, purge } => {
@@ -2326,6 +2357,8 @@ pub mod tests {
                 CatalogTableAction::Commit {
                     updated_properties: Arc::new(BTreeMap::new()),
                     removed_properties: Arc::new(Vec::new()),
+                    target_refs: Arc::new(BTreeSet::new()),
+                    update_kinds: Arc::new(BTreeSet::new()),
                 },
                 serde_json::json!({"action": "commit"}),
             ),
@@ -2350,6 +2383,8 @@ pub mod tests {
                     .collect(),
             ),
             removed_properties: Arc::new(vec!["key2".to_string(), "key3".to_string()]),
+            target_refs: Arc::new(BTreeSet::new()),
+            update_kinds: Arc::new(BTreeSet::new()),
         };
         let serialized = serde_json::to_value(&action).expect("Failed to serialize");
         let expected_serialized = serde_json::json!({
@@ -2361,6 +2396,57 @@ pub mod tests {
         });
         assert_eq!(serialized, expected_serialized);
 
+        let deserialized: CatalogTableAction =
+            serde_json::from_value(serialized).expect("Failed to deserialize");
+        assert_eq!(deserialized, action);
+    }
+
+    /// A commit's target refs and update kinds must reach the authorizer via the
+    /// action descriptor context, so a policy can authorize per branch.
+    #[test]
+    fn test_commit_action_descriptor_surfaces_refs_and_kinds() {
+        let action = CatalogTableAction::Commit {
+            updated_properties: Arc::default(),
+            removed_properties: Arc::default(),
+            target_refs: Arc::new(BTreeSet::from(["main".to_string(), "dev".to_string()])),
+            update_kinds: Arc::new(BTreeSet::from([
+                TableUpdateKind::SetSnapshotRef,
+                TableUpdateKind::AddSchema,
+            ])),
+        };
+        let context: BTreeMap<&str, String> = action
+            .action_descriptor()
+            .context
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect();
+        // Ordering is deterministic: refs sort lexically, kinds sort by variant.
+        assert_eq!(context.get("target-refs"), Some(&"[dev, main]".to_string()));
+        assert_eq!(
+            context.get("update-kinds"),
+            Some(&"[add-schema, set-snapshot-ref]".to_string())
+        );
+    }
+
+    /// Locks the wire shape of the ref/kind fields — kinds serialize as their
+    /// kebab-case Iceberg action names — since the enterprise Cedar layer parses it.
+    #[test]
+    fn test_catalog_table_action_commit_with_refs_and_kinds_serde() {
+        let action = CatalogTableAction::Commit {
+            updated_properties: Arc::default(),
+            removed_properties: Arc::default(),
+            target_refs: Arc::new(BTreeSet::from(["main".to_string()])),
+            update_kinds: Arc::new(BTreeSet::from([TableUpdateKind::SetSnapshotRef])),
+        };
+        let serialized = serde_json::to_value(&action).expect("Failed to serialize");
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "action": "commit",
+                "target_refs": ["main"],
+                "update_kinds": ["set-snapshot-ref"]
+            })
+        );
         let deserialized: CatalogTableAction =
             serde_json::from_value(serialized).expect("Failed to deserialize");
         assert_eq!(deserialized, action);

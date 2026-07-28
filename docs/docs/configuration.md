@@ -192,6 +192,8 @@ Authentication is enabled if:
 * `LAKEKEEPER__OPENID_PROVIDERS` has at least one configured provider OR
 * `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true
 
+Lakekeeper Plus<span class="lkp"></span> refuses to start when no Authenticator is configured, so that a forgotten IdP configuration cannot silently expose the catalog to anonymous access. To run without Authentication — for example in local development — set `LAKEKEEPER__INSECURE_ALLOW_UNAUTHENTICATED=true`. *Since Lakekeeper 0.14: deployments that previously ran Plus without Authentication must now set this variable to keep starting.*
+
 In Lakekeeper multiple Authentication mechanisms can be enabled together, for example OpenID + Kubernetes. Lakekeeper builds an internal Authenticator chain of up to three identity providers. Incoming tokens need to be JWT tokens - Opaque tokens are not yet supported. Incoming tokens are introspected, and each Authentication provider checks if the given token can be handled by this provider. If it can be handled, the token is authenticated against this provider, otherwise the next Authenticator in the chain is checked.
 
 The following Authenticators are available. Enabled Authenticators are checked in order:
@@ -234,6 +236,7 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
+| <nobr>`LAKEKEEPER__INSECURE_ALLOW_UNAUTHENTICATED`</nobr><span class="lkp"></span> | `false`                                      | Lakekeeper Plus only. If `false` (default), the server refuses to start unless an Authenticator is configured, preventing accidental anonymous exposure of the catalog. Set to `true` to permit starting without Authentication (e.g. local development). |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_SUBJECT_SOURCE`                    | `uid`                                        | Which `TokenReview` field becomes the user's subject in the user ID (`kubernetes~<subject>`). `uid` (default) uses the service account's Kubernetes UID, which differs per cluster. `username` uses `system:serviceaccount:<namespace>:<name>`, which is stable across clusters and suitable for pre-provisioning users and roles. Changing this after users exist changes their IDs and orphans existing role assignments — choose it at initial setup. One-of: [`uid`, `username`]. |
 
 #### Multiple OIDC Providers

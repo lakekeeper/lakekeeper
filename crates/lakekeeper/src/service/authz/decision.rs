@@ -7,10 +7,11 @@
 /// One authorization verdict together with the diagnostics that explain it.
 ///
 /// Returned per checked `(resource, action)` tuple by the batch authorizer
-/// methods. `allowed` is the decision; `determined_by` lists the policies or
-/// rules that determined it. `determined_by` is empty when the authorizer
-/// produces no per-decision diagnostics (`AllowAll`, OpenFGA) or for a
-/// default-deny where no policy matched.
+/// methods. `allowed` is the decision; `determined_by` lists the factors that
+/// determined it — matched policies, or a system-authority override.
+/// `determined_by` is empty when the authorizer produces no per-decision
+/// diagnostics (`AllowAll`, OpenFGA) or for a default-deny where no policy
+/// matched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorizationDecision {
     pub allowed: bool,
@@ -89,6 +90,22 @@ pub enum DeterminingFactor {
         /// Opaque origin of the policy (e.g. a policy-source identifier). `None`
         /// when the producer cannot attribute a source.
         source: Option<String>,
+    },
+    /// An allow contributed by a built-in/system authority tier that takes
+    /// precedence over normal authored policy — e.g. a recovery mechanism that
+    /// lets a privileged system role act despite a policy that would otherwise
+    /// forbid it. Recorded so audit consumers can see that the verdict rested on
+    /// built-in authority rather than on a configured policy.
+    ///
+    /// Authorizer-agnostic like the rest of this module: names no specific
+    /// authorizer or mechanism.
+    SystemAuthority {
+        /// Opaque, authorizer-assigned identifier of the built-in authority tier
+        /// that granted the action. `None` when none can be attributed.
+        source: Option<String>,
+        /// Optional human-facing reason the tier applied (e.g. an administrator
+        /// lockout-recovery grant). `None` when the producer gives none.
+        reason: Option<String>,
     },
 }
 
