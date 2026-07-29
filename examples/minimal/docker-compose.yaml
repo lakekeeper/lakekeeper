@@ -110,31 +110,7 @@ services:
       - "/dev/null"
       # - "--fail-with-body"
     volumes:
-      # up.sh overrides WAREHOUSE_FILE with a copy whose S3 endpoint is the host
-      # LAN IP, so the browser and in-container engines share one signed endpoint.
-      # Plain `docker compose up` falls back to the committed seaweedfs:8333 file
-      # (in-container engines only).
-      - ${WAREHOUSE_FILE:-./create-default-warehouse.json}:/home/curl_user/create-default-warehouse.json
-    networks:
-      iceberg_net:
-
-  # One-shot: apply wildcard CORS to the warehouse bucket so the in-browser query
-  # engine (DuckDB-WASM / LoQE) can read & write objects with vended credentials.
-  # CORS is bucket metadata stored in the SeaweedFS volume, so it must be applied
-  # whenever the volume is fresh — this service re-runs on every recreate.
-  bucket-cors:
-    image: amazon/aws-cli:latest
-    depends_on:
-      seaweedfs:
-        condition: service_healthy
-    restart: "no"
-    environment:
-      AWS_ACCESS_KEY_ID: seaweedfs-root-user
-      AWS_SECRET_ACCESS_KEY: seaweedfs-root-password
-      AWS_DEFAULT_REGION: local-01
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - "for i in $$(seq 1 30); do aws --endpoint-url http://seaweedfs:8333 s3api put-bucket-cors --bucket examples --cors-configuration '{\"CORSRules\":[{\"AllowedOrigins\":[\"*\"],\"AllowedMethods\":[\"GET\",\"PUT\",\"POST\",\"DELETE\",\"HEAD\"],\"AllowedHeaders\":[\"*\"],\"ExposeHeaders\":[\"ETag\"]}]}' && echo CORS-applied-to-examples && exit 0; echo waiting for seaweedfs s3...; sleep 2; done; echo CORS-FAILED >&2; exit 1"
+      - ./create-default-warehouse.json:/home/curl_user/create-default-warehouse.json
     networks:
       iceberg_net:
 
@@ -155,12 +131,7 @@ services:
     image: chrislusf/seaweedfs:4.36
     # `mini` is SeaweedFS' single-process dev mode (master + volume + filer + S3).
     # -bucket pre-creates the `examples` bucket, and the IAM config enables STS so
-    # Lakekeeper can vend short-lived credentials to query engines and the browser.
-    # AWS_* must match the s3.json identity or STS AssumeRole can't authenticate the
-    # caller (fails with an opaque "Unknown S3 error during write").
-    environment:
-      AWS_ACCESS_KEY_ID: seaweedfs-root-user
-      AWS_SECRET_ACCESS_KEY: seaweedfs-root-password
+    # Lakekeeper can vend short-lived credentials to query engines.
     command:
       - mini
       - -dir=/data

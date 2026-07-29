@@ -3,8 +3,8 @@
 **Thesis:** Lakekeeper governs a mixed-format medallion — Apache Iceberg *and*
 Lance — under one catalog and one authorization model, and it enforces AI-agent
 data access **at the credential-vending layer**. A denied agent receives no
-storage credentials, so it *physically cannot read the data*. The wall is in the
-catalog, not in application code you have to trust.
+storage credentials for that dataset, so it *physically cannot read those
+objects*. The wall is in the catalog, not in application code you have to trust.
 
 This example builds a small lakehouse from open-access museum images, then points
 two AI agents at the Gold layer to show governance in action. You drive it from
@@ -93,6 +93,12 @@ access they were given.
   (`lakekeeper_generic_table`, action `can_read_data`). The contractor's
   `load(vended=True)` on Gold fails the authz check and returns no credentials —
   while the *same* contractor reads Raw/Bronze/Silver fine. The wall is at Gold.
+- **Scope of the guarantee.** The control is *credentialed access to the stored Gold
+  dataset*. This demo also grants the contractor the raw images and ships the CLIP
+  model in the workbench, so a determined contractor could re-embed the raw images
+  itself — governance controls access to the *precomputed* asset, not the ability to
+  re-derive it from inputs a principal is allowed to see. (Deny `raw` too if that
+  matters for your case.)
 
 ## Requirements
 

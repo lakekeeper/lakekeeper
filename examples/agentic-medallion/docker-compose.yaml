@@ -45,6 +45,10 @@ services:
   # One-shot: wildcard CORS on the `medallion` bucket so a host browser (the LK UI
   # navigating dataset files, or an in-browser query engine) can read objects with
   # vended credentials. CORS is volume metadata, so this re-runs on a fresh volume.
+  # NOTE: the `lakekeeper` identity in seaweedfs-iam.json carries the `Admin` action
+  # because `put-bucket-cors` is a bucket-config op SeaweedFS gates on Admin. That
+  # identity is the storage *administrator* credential Lakekeeper holds to vend STS —
+  # not a user; the per-principal scoping happens on the vended role, not here.
   bucket-cors:
     image: amazon/aws-cli:latest
     depends_on:
@@ -87,7 +91,7 @@ services:
     networks: [medallion]
 
   openfga-migrate:
-    image: openfga/openfga:v1.8
+    image: openfga/openfga:v1.12
     command: migrate
     environment:
       OPENFGA_DATASTORE_ENGINE: postgres
