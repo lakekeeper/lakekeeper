@@ -1,5 +1,5 @@
 # Minimal deps for setup + the governance spike (no ML / torch yet).
-pylakekeeper[lance]==0.1.0
+pylakekeeper[lance]==0.3.0
 pylance>=0.20.0
 pyarrow>=17.0.0
 numpy>=1.26
