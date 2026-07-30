@@ -707,10 +707,12 @@ async fn test_generic_table_load_advertises_remote_signing(pool: PgPool) {
             "config[{key}] must point at this table's signer endpoint: {config:?}"
         );
     }
+    let expected_uri = format!("{}/catalog/", random_request_metadata().base_url());
     for key in ["signer.uri", "s3.signer.uri"] {
-        assert!(
-            config.contains_key(key),
-            "config must advertise {key}: {config:?}"
+        assert_eq!(
+            config.get(key).map(String::as_str),
+            Some(expected_uri.as_str()),
+            "config[{key}] must point at the catalog signer uri: {config:?}"
         );
     }
 }
