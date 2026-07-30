@@ -253,10 +253,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
                 .error
-                .append_detail(format!("Table ID: {table_id}"))
+                .append_detail(format!("Tabular ID: {table_id}"))
                 .append_detail(format!("Request URI: {request_url}"))
                 .append_detail(format!("Request Region: {request_region}"))
-                .append_detail(format!("Table Location: {location}"));
+                .append_detail(format!("Tabular Location: {location}"));
             e
         };
 
@@ -477,27 +477,22 @@ async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: Secre
     .await
     .map_err(RequireTableActionError::from)?;
 
-    // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
-    // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
-    // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
-    // To keep backward compatibility we move to location based lookup if the location does not match.
-    // This will will be removed in a future version of Lakekeeper.
-    let signable = info_by_id
-        .and_then(SignableTabular::from_view_or_table)
-        .filter(|signable| {
-            let matches_uri = validate_uri(parsed_url, signable.location()).is_ok();
-            if !matches_uri {
-                tracing::warn!(
-                    "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
-                    signable.location(),
-                    parsed_url.url
-                );
-            }
-            matches_uri
-        });
+    if let Some(signable) = info_by_id.and_then(SignableTabular::from_view_or_table) {
+        if validate_uri(parsed_url, signable.location()).is_ok() {
+            return Ok(Some(signable));
+        }
 
-    if let Some(signable) = signable {
-        return Ok(Some(signable));
+        // The id resolved, but its location does not cover the request URI.
+        // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
+        // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
+        // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
+        // To keep backward compatibility we fall back to location based lookup when the location does not match.
+        // This fallback will be removed in a future version of Lakekeeper.
+        tracing::warn!(
+            "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
+            signable.location(),
+            parsed_url.url
+        );
     }
 
     resolve_signable_by_location(warehouse_id, first_location, state)

@@ -15,10 +15,12 @@ use lakekeeper::{
     WarehouseId,
     api::{
         ApiContext, IcebergErrorResponse,
-        data::v1::generic_tables::{CreateGenericTableRequest, GenericTableService as _},
+        data::v1::generic_tables::{
+            CreateGenericTableRequest, GenericTableParameters, GenericTableService as _,
+        },
         iceberg::{
             types::Prefix,
-            v1::{namespace::NamespaceParameters, s3_signer::Service as _},
+            v1::{DataAccess, namespace::NamespaceParameters, s3_signer::Service as _},
         },
     },
     server::{CatalogServer, tables::create_table::create_table_request_into_table_metadata},
@@ -461,6 +463,29 @@ async fn test_sign_generic_table_requires_write_data(pool: PgPool) {
     assert_signed(&response);
 }
 
+#[sqlx::test]
+async fn test_sign_generic_table_table_scoped_requires_write_data(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
+    let base_location =
+        create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+    let tabular_id = generic_table_id(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+
+    authz
+        .block_action(format!("generic_table:{:?}", CatalogGenericTableAction::WriteData).as_str());
+
+    let err = sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::PUT)
+        .await
+        .expect_err("table-scoped PUT must be rejected without write_data");
+    assert_forbidden(&err);
+
+    // A read through the same by-id route still works.
+    let response = sign_table_scoped(&ctx, warehouse_id, tabular_id, &base_location, Method::GET)
+        .await
+        .expect("read_data is still granted");
+    assert_signed(&response);
+}
+
 /// Without `read_data` on the generic table, reads are rejected while writes keep
 /// working.
 #[sqlx::test]
@@ -636,4 +661,56 @@ async fn test_get_tabular_info_by_uuid_unknown_id(pool: PgPool) {
     .unwrap();
 
     assert!(resolved.is_none(), "unknown ids must not resolve");
+}
+
+#[sqlx::test]
+async fn test_generic_table_load_advertises_remote_signing(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+    let tabular_id = generic_table_id(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+
+    let response = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(warehouse_id.to_string().into()),
+            namespace: namespace(&namespace_name),
+            table_name: GENERIC_TABLE.to_string(),
+        },
+        ctx.clone(),
+        // STS is disabled on this warehouse, so remote signing is the only option.
+        DataAccess {
+            vended_credentials: false,
+            remote_signing: true,
+        },
+        random_request_metadata(),
+    )
+    .await
+    .expect("loading a generic table must succeed");
+
+    let config = response
+        .config
+        .expect("load response must carry a config when access is delegated");
+
+    assert_eq!(
+        config.get("s3.remote-signing-enabled").map(String::as_str),
+        Some("true"),
+        "config must advertise remote signing: {config:?}"
+    );
+
+    // The endpoint carries this table's own id, and is emitted under both the current
+    // (`signer.*`) and legacy (`s3.signer.*`) keys.
+    let expected_endpoint =
+        format!("v1/signer/{warehouse_id}/tabular-id/{tabular_id}/v1/aws/s3/sign");
+    for key in ["signer.endpoint", "s3.signer.endpoint"] {
+        assert_eq!(
+            config.get(key).map(String::as_str),
+            Some(expected_endpoint.as_str()),
+            "config[{key}] must point at this table's signer endpoint: {config:?}"
+        );
+    }
+    for key in ["signer.uri", "s3.signer.uri"] {
+        assert!(
+            config.contains_key(key),
+            "config must advertise {key}: {config:?}"
+        );
+    }
 }
