@@ -56,7 +56,7 @@ Nothing extra needs to be configured on the table: as long as the warehouse's S3
 | `signer.uri` (and legacy `s3.signer.uri`) | Base URI of the sign endpoint |
 | `signer.endpoint` (and legacy `s3.signer.endpoint`) | Path of the sign endpoint for this generic table, `v1/signer/{warehouse-id}/tabular-id/{generic-table-id}/v1/aws/s3/sign` |
 
-As with Iceberg tables, whether signing or vended credentials is offered depends on the `X-Iceberg-Access-Delegation` header and the storage profile — see [Delegated Access](./storage.md#delegated-access). Request `remote-signing` explicitly if your client supports both and the storage has no STS.
+As with Iceberg tables, whether signing or vended credentials is offered depends on the `X-Iceberg-Access-Delegation` header and the storage profile — see [Disabling Credential Vending & Remote Signing](./storage.md#disabling-credential-vending-remote-signing). Request `remote-signing` explicitly if your client supports both and the storage has no STS.
 
 The client then sends each S3 request it wants to make to that endpoint and receives the `Authorization` headers back. Lakekeeper authorizes every signing request against the generic table's own permissions:
 
