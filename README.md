@@ -68,7 +68,9 @@ If you are missing something, we would love to hear about it in a [GitHub Issue]
 | Storage              | Status  | Comment                                     |
 |----------------------|:-------:|---------------------------------------------|
 | S3 - AWS             | ![done] | vended-credentials & remote-signing with optional role assumption, support for session Tags |
-| S3 - Custom          | ![done] | vended-credentials & remote-signing         |
+| S3 - Custom          | ![done] | vended-credentials & remote-signing; MinIO, Ceph and other S3-compatible stores |
+| S3 - Cloudflare R2    | ![done] | vended-credentials via R2 temporary-access-credentials |
+| S3 - Alibaba Cloud OSS | ![semi-done] | Beta. vended-credentials via Alibaba Cloud STS `AssumeRole` |
 | Azure ADLS Gen2      | ![done] |                                             |
 | Microsoft OneLake    | ![done] | Microsoft Fabric / OneLake with SAS-token vending; supports regional and private-link endpoints |
 | Google Cloud Storage | ![done] | Support for GCS with and without hierarchical namespace |
@@ -120,6 +122,7 @@ Operations outside of the Iceberg REST specification that are supported by Lakek
 | Custom (AuthZ)  | ![done] | If you are willing to implement a single rust Trait, the `AuthZHandler` can be implement to connect to your system |
 | OpenFGA (AuthZ) | ![done] | Internal Authorization management                |
 | Cedar           | ![done] | Available in Lakekeeper+                         |
+| OPA bridge      | ![done] | Exposes Lakekeeper permissions via [Open Policy Agent](https://docs.lakekeeper.io/docs/nightly/opa/) so engines like Trino enforce them |
 
 ### Web Console
 
