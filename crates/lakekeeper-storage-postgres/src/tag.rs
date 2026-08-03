@@ -419,8 +419,12 @@ pub(crate) async fn delete_tag_definition(
     .await
     .map_err(|e| -> DeleteTagDefinitionError {
         match &e {
+            // Deleting a `tag_definition` that still has attachments trips the `tag`
+            // FK's ON DELETE RESTRICT. The constraint name is stable across versions;
+            // the SQLSTATE is not: Postgres 18 raises RESTRICT as `restrict_violation`
+            // (23001), whereas <=17 used `foreign_key_violation` (23503).
             sqlx::Error::Database(db_error)
-                if db_error.is_foreign_key_violation()
+                if matches!(db_error.code().as_deref(), Some("23001" | "23503"))
                     && db_error.constraint() == Some("tag_definition_id_fkey") =>
             {
                 TagDefinitionInUse::new().into()
