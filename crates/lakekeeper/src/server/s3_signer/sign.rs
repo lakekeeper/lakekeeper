@@ -18,11 +18,13 @@ use crate::{
     server::require_warehouse_id,
     service::{
         AuthZTableInfo, CatalogNamespaceOps, CatalogStore, CatalogTabularOps, CatalogWarehouseOps,
-        GetTabularInfoByLocationError, ResolvedWarehouse, State, TableId, TableInfo,
-        TabularListFlags,
+        GenericTabularInfo, GetTabularInfoByLocationError, ResolvedWarehouse, State, TableInfo,
+        TabularListFlags, ViewOrTableInfo,
         authz::{
-            AuthZCannotSeeTableLocation, AuthZError, AuthZTableOps, Authorizer, AuthzNamespaceOps,
-            AuthzWarehouseOps, CatalogTableAction, CatalogWarehouseAction, RequireTableActionError,
+            AuthZCannotSeeTableLocation, AuthZError, AuthZGenericTableOps, AuthZTableOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
+            CatalogTableAction, CatalogWarehouseAction, RequireGenericTableActionError,
+            RequireTableActionError,
         },
         events::{APIEventContext, context::authz_to_error_no_audit},
         secrets::SecretStore,
@@ -48,6 +50,55 @@ enum Operation {
     Read,
     Write,
     Delete,
+}
+
+/// A tabular the signer can sign requests for. Views are not signable.
+enum SignableTabular {
+    Table(TableInfo),
+    GenericTable(GenericTabularInfo),
+}
+
+impl SignableTabular {
+    fn from_view_or_table(info: ViewOrTableInfo) -> Option<Self> {
+        match info {
+            ViewOrTableInfo::Table(info) => Some(Self::Table(info)),
+            ViewOrTableInfo::GenericTable(info) => Some(Self::GenericTable(info)),
+            ViewOrTableInfo::View(info) => {
+                tracing::warn!(
+                    "Signer resolved view {} at location {}, but views are not supported for signing",
+                    info.tabular_id,
+                    info.location
+                );
+                None
+            }
+        }
+    }
+
+    fn location(&self) -> &Location {
+        match self {
+            Self::Table(info) => &info.location,
+            Self::GenericTable(info) => &info.location,
+        }
+    }
+}
+
+/// The resolution outcome, split by the authorization path that has to handle it.
+enum ResolvedSignable {
+    GenericTable(GenericTabularInfo),
+    /// Also carries the not-found and lookup-error cases: both are reported as
+    /// `NoSuchTableLocationException` by the table-location authorization path.
+    Iceberg(Result<Option<TableInfo>, RequireTableActionError>),
+}
+
+impl From<Result<Option<SignableTabular>, RequireTableActionError>> for ResolvedSignable {
+    fn from(resolved: Result<Option<SignableTabular>, RequireTableActionError>) -> Self {
+        match resolved {
+            Ok(Some(SignableTabular::GenericTable(info))) => Self::GenericTable(info),
+            Ok(Some(SignableTabular::Table(info))) => Self::Iceberg(Ok(Some(info))),
+            Ok(None) => Self::Iceberg(Ok(None)),
+            Err(e) => Self::Iceberg(Err(e)),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -127,96 +178,85 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
         })?;
 
-        let table_info = if let Some(table_id) = path_table_id.map(TableId::from) {
-            tracing::debug!("Got S3 sign request for table {table_id} with URL {request_url}");
-            let metadata_by_id = C::get_table_info(
+        let resolved = if let Some(tabular_id) = path_table_id {
+            tracing::debug!("Got S3 sign request for tabular {tabular_id} with URL {request_url}");
+            resolve_signable_by_id(
                 warehouse_id,
-                table_id,
-                // we were able to resolve the table to id so we know the table is not deleted
-                TabularListFlags::active_and_staged(),
-                state.v1_state.catalog.clone(),
+                tabular_id,
+                &parsed_url,
+                first_location,
+                &state,
             )
             .await
-            .map_err(RequireTableActionError::from);
-            // Can't fail here before AuthZ!
-
-            // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
-            // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
-            // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
-            // To keep backward compatibility we move to location based lookup if the location does not match.
-            // This will will be removed in a future version of Lakekeeper.
-            // We only perform the fallback if:
-            // 1. the requested table id is not found (probably deleted)
-            // 2. the location of the table does not match the request URI
-
-            let mut fallback_to_location = false;
-            match &metadata_by_id {
-                Ok(None) => {
-                    fallback_to_location = true;
-                }
-                Ok(Some(metadata_by_id))
-                    if validate_uri(&parsed_url, &metadata_by_id.location).is_err() =>
-                {
-                    tracing::warn!(
-                        "Received a table specific sign request for table {table_id} with a location {} that does not match the request URI {request_url}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
-                        metadata_by_id.location
-                    );
-                    fallback_to_location = true;
-                }
-                _ => {}
-            }
-
-            if fallback_to_location {
-                get_table_info_by_location(warehouse_id, first_location, &state)
-                    .await
-                    .map_err(RequireTableActionError::from)
-            } else {
-                metadata_by_id
-            }
         } else {
             tracing::debug!(
-                "Got S3 sign request for URL {request_url} without table id. Searching for table id by location"
+                "Got S3 sign request for URL {request_url} without tabular id. Searching for tabular by location"
             );
-            get_table_info_by_location(warehouse_id, first_location, &state)
+            resolve_signable_by_location(warehouse_id, first_location, &state)
                 .await
                 .map_err(RequireTableActionError::from)
         };
+        // Can't fail here before AuthZ!
 
-        let action = match operation {
-            Operation::Read => CatalogTableAction::ReadData,
-            Operation::Write | Operation::Delete => CatalogTableAction::WriteData,
+        let (location, table_id) = match ResolvedSignable::from(resolved) {
+            ResolvedSignable::GenericTable(gt_info) => {
+                let action = match operation {
+                    Operation::Read => CatalogGenericTableAction::ReadData,
+                    Operation::Write | Operation::Delete => CatalogGenericTableAction::WriteData,
+                };
+                let event_ctx = APIEventContext::for_generic_table(
+                    request_metadata,
+                    state.v1_state.events,
+                    warehouse_id,
+                    gt_info.tabular_ident.clone(),
+                    action,
+                );
+                let authz_result = authorize_generic_table_action_for_sign::<C, _>(
+                    &warehouse,
+                    gt_info,
+                    event_ctx.request_metadata(),
+                    event_ctx.action().clone(),
+                    &authorizer,
+                    state.v1_state.catalog.clone(),
+                )
+                .await;
+                let (_event_ctx, gt_info) = event_ctx.emit_authz(authz_result)?;
+                (gt_info.location, gt_info.tabular_id.to_string())
+            }
+            ResolvedSignable::Iceberg(table_info) => {
+                let action = match operation {
+                    Operation::Read => CatalogTableAction::ReadData,
+                    Operation::Write | Operation::Delete => CatalogTableAction::WriteData,
+                };
+                let event_ctx = APIEventContext::for_table_location(
+                    request_metadata,
+                    state.v1_state.events,
+                    warehouse_id,
+                    Arc::new(first_location.clone()),
+                    action,
+                );
+                let authz_result = authorize_table_action_for_sign::<C, _>(
+                    &warehouse,
+                    table_info,
+                    event_ctx.user_provided_entity().table_location.clone(),
+                    event_ctx.request_metadata(),
+                    event_ctx.action().clone(),
+                    &authorizer,
+                    state.v1_state.catalog.clone(),
+                )
+                .await;
+                let (_event_ctx, table_info) = event_ctx.emit_authz(authz_result)?;
+                (table_info.location, table_info.tabular_id.to_string())
+            }
         };
-
-        let event_ctx = APIEventContext::for_table_location(
-            request_metadata,
-            state.v1_state.events,
-            warehouse_id,
-            Arc::new(first_location.clone()),
-            action,
-        );
-
-        let authz_result = authorize_table_action_for_sign::<C, _>(
-            &warehouse,
-            table_info,
-            event_ctx.user_provided_entity().table_location.clone(),
-            event_ctx.request_metadata(),
-            event_ctx.action().clone(),
-            &authorizer,
-            state.v1_state.catalog.clone(),
-        )
-        .await;
-        let (_event_ctx, table_info) = event_ctx.emit_authz(authz_result)?;
-
-        let table_id = table_info.table_id();
-        let location = table_info.location;
 
         let extend_err = |mut e: IcebergErrorResponse| {
             e.error = e
                 .error
-                .append_detail(format!("Table ID: {table_id}"))
+                .append_detail(format!("Tabular ID: {table_id}"))
                 .append_detail(format!("Request URI: {request_url}"))
                 .append_detail(format!("Request Region: {request_region}"))
-                .append_detail(format!("Table Location: {location}"));
+                .append_detail(format!("Tabular Location: {location}"));
             e
         };
 
@@ -417,12 +457,54 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
     Ok(())
 }
 
-/// Helper function for fetching table metadata by location
-async fn get_table_info_by_location<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+/// Resolve the tabular addressed by the table-scoped signer route
+/// (`/v1/signer/{warehouse-id}/tabular-id/{uuid}/v1/aws/s3/sign`). That route carries a
+/// bare UUID, so the id is resolved across all tabular types.
+async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    warehouse_id: WarehouseId,
+    tabular_id: uuid::Uuid,
+    parsed_url: &s3_utils::ParsedSignRequest,
+    first_location: &S3Location,
+    state: &ApiContext<State<A, C, S>>,
+) -> std::result::Result<Option<SignableTabular>, RequireTableActionError> {
+    let info_by_id = C::get_tabular_info_by_uuid(
+        warehouse_id,
+        tabular_id,
+        // we were able to resolve the tabular to an id so we know it is not deleted
+        TabularListFlags::active_and_staged(),
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .map_err(RequireTableActionError::from)?;
+
+    if let Some(signable) = info_by_id.and_then(SignableTabular::from_view_or_table) {
+        if validate_uri(parsed_url, signable.location()).is_ok() {
+            return Ok(Some(signable));
+        }
+
+        // The id resolved, but its location does not cover the request URI.
+        // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
+        // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
+        // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
+        // To keep backward compatibility we fall back to location based lookup when the location does not match.
+        // This fallback will be removed in a future version of Lakekeeper.
+        tracing::warn!(
+            "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
+            signable.location(),
+            parsed_url.url
+        );
+    }
+
+    resolve_signable_by_location(warehouse_id, first_location, state)
+        .await
+        .map_err(RequireTableActionError::from)
+}
+
+async fn resolve_signable_by_location<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     warehouse_id: WarehouseId,
     first_location: &S3Location,
     state: &ApiContext<State<A, C, S>>,
-) -> std::result::Result<Option<TableInfo>, GetTabularInfoByLocationError> {
+) -> std::result::Result<Option<SignableTabular>, GetTabularInfoByLocationError> {
     C::get_tabular_infos_by_s3_location(
         warehouse_id,
         first_location.location(),
@@ -433,15 +515,7 @@ async fn get_table_info_by_location<C: CatalogStore, A: Authorizer + Clone, S: S
         state.v1_state.catalog.clone(),
     )
     .await
-    .map(|opt| {
-        opt.and_then(|t| {
-            let info = t.into_table_info();
-            if info.is_none(){
-                tracing::warn!("Signer found view at location {first_location}, but views are not supported for signing");
-            }
-            info
-        })
-    })
+    .map(|opt| opt.and_then(SignableTabular::from_view_or_table))
 }
 
 async fn authorize_table_action_for_sign<C: CatalogStore, A: Authorizer + Clone>(
@@ -487,6 +561,38 @@ async fn authorize_table_action_for_sign<C: CatalogStore, A: Authorizer + Clone>
         .await?;
 
     Ok(table_info)
+}
+
+async fn authorize_generic_table_action_for_sign<C: CatalogStore, A: Authorizer + Clone>(
+    warehouse: &ResolvedWarehouse,
+    gt_info: GenericTabularInfo,
+    request_metadata: &RequestMetadata,
+    action: CatalogGenericTableAction,
+    authorizer: &A,
+    catalog_state: C::State,
+) -> Result<GenericTabularInfo, AuthZError> {
+    let warehouse_id = warehouse.warehouse_id;
+    let namespace = gt_info.tabular_ident.namespace.clone();
+    let ident = gt_info.tabular_ident.clone();
+
+    // Fail fast if the namespace is not visible.
+    let namespace_hierarchy =
+        C::get_namespace(warehouse_id, namespace.clone(), catalog_state).await;
+    let namespace_hierarchy =
+        authorizer.require_namespace_presence(warehouse_id, namespace, namespace_hierarchy)?;
+
+    let gt_info = authorizer
+        .require_generic_table_action(
+            request_metadata,
+            warehouse,
+            &namespace_hierarchy,
+            ident,
+            Ok::<_, RequireGenericTableActionError>(Some(gt_info)),
+            action,
+        )
+        .await?;
+
+    Ok(gt_info)
 }
 
 fn validate_uri(
