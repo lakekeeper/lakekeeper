@@ -1,9 +1,11 @@
 //! Integration tests for the governance-tag Management API (`tag.rs`).
 //!
 //! Exercises the `Service` handlers end-to-end against Postgres: definition
-//! lifecycle (create/get/list/update/delete + the validation error paths) and
-//! attachment on warehouse, table, and column targets. Mirrors the harness used
-//! by `role_ops.rs`.
+//! lifecycle (create/get/list/update/delete + the validation error paths),
+//! attachment on warehouse, namespace, table, view, generic-table, and column
+//! targets, reverse lookup (`/attachments`, with value filter and pagination), and
+//! effective/inherited tags (`?effective=true`). Mirrors the harness used by
+//! `role_ops.rs`.
 
 use http::StatusCode;
 use iceberg::{
@@ -94,73 +96,13 @@ async fn create_def(
 /// return its `TableId`. The named fields give the column-tag resolution path a
 /// real schema to resolve against.
 async fn create_table_with_columns(ctx: &Ctx, warehouse_id: WarehouseId) -> TableId {
-    let prefix: Prefix = warehouse_id.to_string().into();
-    let namespace = NamespaceIdent::new("tag_ns".to_string());
-
-    CatalogServer::create_namespace(
-        Some(prefix.clone()),
-        CreateNamespaceRequest {
-            namespace: namespace.clone(),
-            properties: None,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .unwrap();
-
-    let schema = Schema::builder()
-        .with_fields(vec![
-            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
-            NestedField::required(2, "email", Type::Primitive(PrimitiveType::String)).into(),
-        ])
-        .build()
-        .unwrap();
-
-    let table = CatalogServer::create_table(
-        NamespaceParameters {
-            namespace,
-            prefix: Some(prefix),
-        },
-        CreateTableRequest {
-            name: "tagged_table".to_string(),
-            location: None,
-            schema,
-            partition_spec: Some(UnboundPartitionSpec::builder().build()),
-            write_order: None,
-            stage_create: Some(false),
-            properties: None,
-        },
-        DataAccess::not_specified(),
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .unwrap();
-
-    table.metadata.uuid().into()
+    create_nested_namespace(ctx, warehouse_id, &["tag_ns"]).await;
+    create_table_in(ctx, warehouse_id, &["tag_ns"], "tagged_table").await
 }
 
 /// Create a namespace through the Management API and resolve its `NamespaceId`.
 async fn create_namespace(ctx: &Ctx, warehouse_id: WarehouseId, ns_name: &str) -> NamespaceId {
-    let prefix: Prefix = warehouse_id.to_string().into();
-    let namespace = NamespaceIdent::new(ns_name.to_string());
-    CatalogServer::create_namespace(
-        Some(prefix),
-        CreateNamespaceRequest {
-            namespace: namespace.clone(),
-            properties: None,
-        },
-        ctx.clone(),
-        random_request_metadata(),
-    )
-    .await
-    .unwrap();
-    PostgresBackend::get_namespace(warehouse_id, namespace, ctx.v1_state.catalog.clone())
-        .await
-        .unwrap()
-        .unwrap()
-        .namespace_id()
+    create_nested_namespace(ctx, warehouse_id, &[ns_name]).await
 }
 
 /// Create a namespace and a view in it; return the view's `ViewId`.

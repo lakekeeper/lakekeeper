@@ -6,7 +6,7 @@
 
 ## `v4.8`
 
-```
+```text
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
