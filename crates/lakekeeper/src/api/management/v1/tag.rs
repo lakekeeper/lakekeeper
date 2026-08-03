@@ -1684,17 +1684,26 @@ async fn authorize_delete_tag_definition<A: Authorizer, C: CatalogStore>(
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
     C::delete_tag_definition(&project_id, tag_definition_id, t.transaction()).await?;
-    authorizer
-        .delete_tag(request_metadata, tag_definition_id)
-        .await
-        .map_err::<DeleteTagDefinitionError, _>(|e| {
-            CatalogBackendError::new_unexpected(e.error).into()
-        })?;
     t.commit()
         .await
         .map_err::<DeleteTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
+
+    // Post-commit: best-effort authz cleanup, matching the tabular drop path.
+    // Orphaned edges left by a failed cleanup are harmless — `create_tag`'s
+    // `require_no_relations` guard rejects reuse of an id that still has relations.
+    authorizer
+        .delete_tag(request_metadata, tag_definition_id)
+        .await
+        .inspect_err(|e| {
+            tracing::error!(
+                ?e,
+                "Failed to delete tag definition from authorizer: {}",
+                e.error
+            );
+        })
+        .ok();
     Ok(Arc::new(current))
 }
 

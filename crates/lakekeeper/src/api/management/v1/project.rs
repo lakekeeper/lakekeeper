@@ -277,10 +277,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let mut transaction = C::Transaction::begin_write(context.v1_state.catalog).await?;
 
         C::delete_project(&project_id, transaction.transaction()).await?;
+        transaction.commit().await?;
+
+        // Post-commit: best-effort authz cleanup. A leftover edge points at the
+        // now-deleted project (unreachable), and `create_project`'s
+        // `require_no_relations` guard blocks reuse of the id.
         authorizer
             .delete_project(&request_metadata, &project_id)
-            .await?;
-        transaction.commit().await?;
+            .await
+            .inspect_err(|e| {
+                tracing::error!(?e, "Failed to delete project from authorizer: {}", e.error);
+            })
+            .ok();
 
         Ok(())
     }
