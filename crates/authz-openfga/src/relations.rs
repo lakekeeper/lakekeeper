@@ -305,6 +305,76 @@ impl ReducedRelation for CatalogTagAction {
     }
 }
 
+/// The directly-assignable relations of a tag definition: the per-tag delegation
+/// points a grantor can hand out or revoke.
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "open-api", schema(as=TagRelation))]
+pub(super) enum APITagRelation {
+    Ownership,
+    Apply,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum TagAssignment {
+    #[cfg_attr(feature = "open-api", schema(title = "TagAssignmentOwnership"))]
+    Ownership(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "TagAssignmentApply"))]
+    Apply(UserOrRole),
+}
+
+impl GrantableRelation for APITagRelation {
+    fn grant_relation(&self) -> Self::OpenFgaRelation {
+        match self {
+            APITagRelation::Ownership => TagRelation::CanChangeOwnership,
+            APITagRelation::Apply => TagRelation::CanGrantApply,
+        }
+    }
+}
+
+impl Assignment for TagAssignment {
+    type Relation = APITagRelation;
+
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
+        match relation {
+            APITagRelation::Ownership => {
+                UserOrRole::parse_from_openfga(user).map(TagAssignment::Ownership)
+            }
+            APITagRelation::Apply => UserOrRole::parse_from_openfga(user).map(TagAssignment::Apply),
+        }
+    }
+
+    fn openfga_user(&self) -> String {
+        match self {
+            TagAssignment::Ownership(user) | TagAssignment::Apply(user) => user.to_openfga(),
+        }
+    }
+
+    fn relation(&self) -> Self::Relation {
+        match self {
+            TagAssignment::Ownership(_) => APITagRelation::Ownership,
+            TagAssignment::Apply(_) => APITagRelation::Apply,
+        }
+    }
+}
+
+impl ReducedRelation for APITagRelation {
+    type OpenFgaRelation = TagRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            APITagRelation::Ownership => TagRelation::Ownership,
+            APITagRelation::Apply => TagRelation::Apply,
+        }
+    }
+}
+
 /// Server Relations in the `OpenFGA` schema
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]

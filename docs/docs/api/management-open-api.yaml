@@ -804,6 +804,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAServerActionsResponse'
+  /management/v1/permissions/tag/{tag_definition_id}/assignments:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get user and role assignments of a tag definition (who may apply it / owns it)
+      operationId: get_tag_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/TagRelation'
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTagAssignmentsResponse'
+    post:
+      tags:
+        - permissions-openfga
+      summary: Update user and role assignments of a tag definition (grant/revoke apply, transfer ownership)
+      operationId: update_tag_assignments_by_id
+      parameters:
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
@@ -2883,6 +2934,41 @@ paths:
             type:
               - string
               - 'null'
+        - name: targetType
+          in: query
+          description: Restrict to a single target object type.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/TagScope'
+        - name: createdAfter
+          in: query
+          description: Only attachments created at or after this instant (RFC 3339, inclusive).
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: createdBefore
+          in: query
+          description: Only attachments created at or before this instant (RFC 3339, inclusive).
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: warehouseId
+          in: query
+          description: Restrict to attachments within a single warehouse.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
         - name: tag_definition_id
           in: path
           description: Tag Definition ID
@@ -7086,6 +7172,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTagAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAssignment'
     GetTaskDetailsResponse:
       allOf:
         - $ref: '#/components/schemas/WarehouseTaskInfo'
@@ -11160,6 +11255,30 @@ components:
         - table
         - view
         - generic-table
+    TagAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: TagAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - apply
+          title: TagAssignmentApply
     TagAttachment:
       type: object
       description: One target a tag definition is attached to (reverse lookup).
@@ -11372,6 +11491,14 @@ components:
       description: |-
         The ancestor an inherited effective tag is attached to. Restricted to the levels
         that can actually be ancestors (warehouse / namespace).
+    TagRelation:
+      type: string
+      description: |-
+        The directly-assignable relations of a tag definition: the per-tag delegation
+        points a grantor can hand out or revoke.
+      enum:
+        - ownership
+        - apply
     TagScope:
       type: string
       description: Target types a tag definition may be applied to.
@@ -11682,6 +11809,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    UpdateTagAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAssignment'
     UpdateTagDefinitionRequest:
       type: object
       required:
