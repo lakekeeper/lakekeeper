@@ -1734,11 +1734,9 @@ async fn test_list_tag_attachments_across_targets(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(50),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(50))
+            .build(),
     )
     .await
     .unwrap();
@@ -1784,11 +1782,10 @@ async fn test_list_tag_attachments_across_targets(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: listed.next_page_token,
-            page_size: Some(50),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_token(listed.next_page_token)
+            .page_size(Some(50))
+            .build(),
     )
     .await
     .unwrap();
@@ -1858,11 +1855,9 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(50),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(50))
+            .build(),
     )
     .await
     .unwrap();
@@ -1873,11 +1868,10 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(50),
-            value: Some("eu".to_string()),
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(50))
+            .value(Some("eu".to_string()))
+            .build(),
     )
     .await
     .unwrap();
@@ -1904,11 +1898,10 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(50),
-            value: Some("apac".to_string()),
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(50))
+            .value(Some("apac".to_string()))
+            .build(),
     )
     .await
     .unwrap();
@@ -1920,11 +1913,9 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(2),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(2))
+            .build(),
     )
     .await
     .unwrap();
@@ -1936,11 +1927,10 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: token,
-            page_size: Some(2),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_token(token)
+            .page_size(Some(2))
+            .build(),
     )
     .await
     .unwrap();
@@ -1956,7 +1946,7 @@ async fn test_list_tag_attachments_value_filter_and_pagination(pool: PgPool) {
 }
 
 /// An unused definition reverse-lists as empty; an unknown definition is hidden as
-/// not-found (the `ReadAssignments` authz resolves the definition first).
+/// not-found (the `ReadAttachments` authz resolves the definition first).
 #[sqlx::test]
 async fn test_list_tag_attachments_empty_and_unknown(pool: PgPool) {
     let (ctx, wh) = setup_catalog(pool).await;
@@ -1978,11 +1968,9 @@ async fn test_list_tag_attachments_empty_and_unknown(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         def.id,
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(50),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(50))
+            .build(),
     )
     .await
     .unwrap();
@@ -1994,11 +1982,9 @@ async fn test_list_tag_attachments_empty_and_unknown(pool: PgPool) {
         ctx.clone(),
         request_metadata_with_project(pid),
         lakekeeper::service::TagDefinitionId::new_random(),
-        ListTagAttachmentsQuery {
-            page_token: None,
-            page_size: Some(50),
-            value: None,
-        },
+        ListTagAttachmentsQuery::builder()
+            .page_size(Some(50))
+            .build(),
     )
     .await
     .unwrap_err();

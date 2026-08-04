@@ -20,10 +20,11 @@ use crate::{
         CatalogCreateTagDefinitionRequest, CatalogStore, CatalogTableOps, CatalogTagOps,
         CatalogWarehouseOps, ColumnNotFound, CreateTagDefinitionError, DeleteTagDefinitionError,
         GenericTableId, InvalidTagDefinition, LoadTableError, NamespaceId, RemoveTagError, Result,
-        SecretStore, State, TableId, TabularId, TabularListFlags, TagDefinitionId,
-        TagDefinitionReserved, TagId, TagNameNotFound, TagScope, TagSource, TagTarget,
-        TagTargetNotFound, TagValueKind, TagValueSpec, Transaction, UpdateTagDefinitionError,
-        UpdateTagDefinitionRequest as CatalogUpdateTagDefinitionRequest, ViewId, WarehouseStatus,
+        SecretStore, State, TableId, TabularId, TabularListFlags, TagAttachmentFilter,
+        TagDefinitionId, TagDefinitionReserved, TagId, TagNameNotFound, TagScope, TagSource,
+        TagTarget, TagTargetNotFound, TagValueKind, TagValueSpec, Transaction,
+        UpdateTagDefinitionError, UpdateTagDefinitionRequest as CatalogUpdateTagDefinitionRequest,
+        ViewId, WarehouseStatus,
         authz::{
             AuthZError, AuthZGenericTableOps, AuthZProjectOps, AuthZTableOps, AuthZTagOps,
             AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
@@ -472,21 +473,41 @@ impl IntoResponse for ListTagAttachmentsResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListTagAttachmentsQuery {
     /// Next page token
     #[serde(default)]
+    #[builder(default)]
     pub page_token: Option<String>,
     /// Signals an upper bound of the number of results that a client will receive.
     /// Default: 100
     #[serde(default)]
+    #[builder(default)]
     pub page_size: Option<i64>,
     /// Return only attachments carrying exactly this value (case-sensitive). Omit to
     /// return all. Marker tags carry no value, so a value filter excludes them.
     #[serde(default)]
+    #[builder(default)]
     pub value: Option<String>,
+    /// Restrict to a single target object type.
+    #[serde(default)]
+    #[builder(default)]
+    pub target_type: Option<TagScope>,
+    /// Only attachments created at or after this instant (RFC 3339, inclusive).
+    #[serde(default)]
+    #[builder(default)]
+    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Only attachments created at or before this instant (RFC 3339, inclusive).
+    #[serde(default)]
+    #[builder(default)]
+    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Restrict to attachments within a single warehouse.
+    #[serde(default)]
+    #[builder(default)]
+    #[cfg_attr(feature = "open-api", param(value_type = Option<uuid::Uuid>))]
+    pub warehouse_id: Option<WarehouseId>,
 }
 
 impl ListTagAttachmentsQuery {
@@ -634,7 +655,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request_metadata.into(),
             context.v1_state.events.clone(),
             tag_definition_id,
-            CatalogTagAction::ReadAssignments,
+            CatalogTagAction::ReadAttachments,
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
@@ -1558,7 +1579,7 @@ async fn authorize_list_tag_attachments<A: Authorizer, C: CatalogStore>(
     let request_metadata = event_ctx.request_metadata();
     let action = event_ctx.action();
 
-    // Resolve + authorize the definition in the request's project. `ReadAssignments`
+    // Resolve + authorize the definition in the request's project. `ReadAttachments`
     // is restricted to tag owners / project security admins (broader disclosure than
     // `Read`); non-existence is hidden as not-found.
     let tag_definition =
@@ -1575,13 +1596,16 @@ async fn authorize_list_tag_attachments<A: Authorizer, C: CatalogStore>(
     // -------------------- Business Logic --------------------
     // All attachments of a project-scoped definition are in-project by construction
     // (apply reconciles the target's project), so no per-row project check is needed.
-    let attachments = C::list_tag_attachments(
-        tag_definition_id,
-        query.value.as_deref(),
-        query.pagination_query(),
-        catalog_state,
-    )
-    .await?;
+    let pagination = query.pagination_query();
+    let filter = TagAttachmentFilter::builder()
+        .value(query.value)
+        .target_type(query.target_type)
+        .created_after(query.created_after)
+        .created_before(query.created_before)
+        .warehouse_id(query.warehouse_id)
+        .build();
+    let attachments =
+        C::list_tag_attachments(tag_definition_id, &filter, pagination, catalog_state).await?;
     Ok(attachments)
 }
 

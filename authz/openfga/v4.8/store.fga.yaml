@@ -210,7 +210,8 @@ tests:
           can_delete: true
           can_apply: true
           can_grant_apply: true
-          can_read_assignments: true
+          can_read_assignments: true   # grant inspection (who may apply/owns)
+          can_read_attachments: true   # reverse lookup (which objects carry it)
       - user: user:sec_admin
         object: lakekeeper_table:warehouse_1/table_1
         assertions:
@@ -227,7 +228,7 @@ tests:
         assertions:
           can_apply: false
           can_update: false
-          can_read_assignments: false   # table modify rights do not grant enumerating attachments
+          can_read_attachments: false   # table modify rights do not grant enumerating attachments
   - name: Tags - owner manages the definition, attaching still needs target manage_tags
     check:
       - user: user:tag_owner
@@ -238,7 +239,7 @@ tests:
           can_delete: true
           can_apply: true
           can_grant_apply: true
-          can_read_assignments: true
+          can_read_attachments: true
       - user: user:tag_owner
         object: lakekeeper_table:warehouse_1/table_1
         assertions:
@@ -253,7 +254,8 @@ tests:
           can_update: false
           can_delete: false
           can_grant_apply: false
-          can_read_assignments: false   # applying a tag does not grant enumerating its attachments
+          can_read_attachments: false   # applying a tag does not grant enumerating its attachments
+          can_read_assignments: false   # nor reading who else may apply it (grant inspection)
       - user: user:tag_applier
         object: lakekeeper_table:warehouse_1/table_1
         assertions:
@@ -269,7 +271,7 @@ tests:
         object: lakekeeper_catalog_tag:tag_pii
         assertions:
           can_apply: false
-          can_read_assignments: false   # resource manage_tags does not grant enumerating attachments
+          can_read_attachments: false   # resource manage_tags does not grant enumerating attachments
   - name: Tags - tag_creator delegates definition creation without security_admin
     check:
       - user: user:tag_steward

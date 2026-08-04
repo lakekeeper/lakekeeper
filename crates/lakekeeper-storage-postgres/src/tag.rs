@@ -9,9 +9,9 @@ use lakekeeper::{
         CreateTagDefinitionError, DeleteTagDefinitionError, EffectiveTagCandidate,
         EffectiveTagSource, GenericTableId, ListTagAttachmentsError, ListTagAttachmentsResponse,
         ListTagDefinitionsError, ListTagDefinitionsResponse, NamespaceId, ProjectIdNotFoundError,
-        RemoveTagError, Result, TableId, TabularId, Tag, TagDefinition, TagDefinitionId,
-        TagDefinitionIdNotFound, TagDefinitionInUse, TagId, TagNameAlreadyExists, TagNotFound,
-        TagScope, TagSource, TagTarget, TagTargetNotFound, TagValueKind, TagWithName,
+        RemoveTagError, Result, TableId, TabularId, Tag, TagAttachmentFilter, TagDefinition,
+        TagDefinitionId, TagDefinitionIdNotFound, TagDefinitionInUse, TagId, TagNameAlreadyExists,
+        TagNotFound, TagScope, TagSource, TagTarget, TagTargetNotFound, TagValueKind, TagWithName,
         UpdateTagDefinitionError, UpdateTagDefinitionRequest, ViewId, WarehouseId,
     },
 };
@@ -819,7 +819,7 @@ fn reconstruct_target(
 /// hierarchy expansion.
 pub(crate) async fn list_tag_attachments<'e, 'c: 'e, E>(
     tag_definition_id: TagDefinitionId,
-    value_filter: Option<&str>,
+    filter: &TagAttachmentFilter,
     PaginationQuery {
         page_size,
         page_token,
@@ -866,6 +866,17 @@ where
             -- rows have no tabular (tab.tabular_id IS NULL) and are always kept.
             AND (tab.tabular_id IS NULL OR tab.deleted_at IS NULL)
             AND ($5::text IS NULL OR t.value = $5)
+            AND ($6::uuid IS NULL OR t.warehouse_id = $6)
+            AND ($7::timestamptz IS NULL OR t.created_at >= $7)
+            AND ($8::timestamptz IS NULL OR t.created_at <= $8)
+            -- Target-type filter: derive each row's object type from its column shape
+            -- (columns/namespaces/warehouses) and the joined tabular subtype. `tab.typ`
+            -- and `TagScope::as_str` are both kebab-case, so the strings line up.
+            AND ($9::text IS NULL OR $9 = CASE
+                WHEN t.field_id IS NOT NULL THEN 'column'
+                WHEN t.tabular_id IS NOT NULL THEN tab.typ::text
+                WHEN t.namespace_id IS NOT NULL THEN 'namespace'
+                ELSE 'warehouse' END)
             AND ((t.created_at > $2 OR $2 IS NULL) OR (t.created_at = $2 AND t.tag_id > $3))
         ORDER BY t.created_at, t.tag_id ASC
         LIMIT $4
@@ -874,7 +885,11 @@ where
         token_ts,
         token_id,
         page_size,
-        value_filter,
+        filter.value.as_deref(),
+        filter.warehouse_id.map(|w| *w),
+        filter.created_after,
+        filter.created_before,
+        filter.target_type.map(TagScope::as_str),
     )
     .fetch_all(connection)
     .await
@@ -1986,10 +2001,18 @@ mod tests {
             field_id: 1,
         };
 
+        let no_filter = TagAttachmentFilter::builder().build();
+        let eu_filter = TagAttachmentFilter::builder()
+            .value(Some("eu".to_string()))
+            .build();
+        let apac_filter = TagAttachmentFilter::builder()
+            .value(Some("apac".to_string()))
+            .build();
+
         // Empty before anything is applied.
         let empty = list_tag_attachments(
             def_id,
-            None,
+            &no_filter,
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -2025,7 +2048,7 @@ mod tests {
         // All three, with the target subtype reconstructed from the tabular join.
         let all = list_tag_attachments(
             def_id,
-            None,
+            &no_filter,
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -2049,7 +2072,7 @@ mod tests {
         // Value filter: only the two "eu" attachments (warehouse + table).
         let eu = list_tag_attachments(
             def_id,
-            Some("eu"),
+            &eu_filter,
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -2067,7 +2090,7 @@ mod tests {
         // A value nothing carries -> empty.
         let none = list_tag_attachments(
             def_id,
-            Some("apac"),
+            &apac_filter,
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,
@@ -2081,7 +2104,7 @@ mod tests {
         // Keyset pagination: page of 2, then the remaining 1.
         let page1 = list_tag_attachments(
             def_id,
-            None,
+            &no_filter,
             PaginationQuery {
                 page_size: Some(2),
                 page_token: PageToken::Empty,
@@ -2094,7 +2117,7 @@ mod tests {
         assert!(page1.next_page_token.is_some());
         let page2 = list_tag_attachments(
             def_id,
-            None,
+            &no_filter,
             PaginationQuery {
                 page_size: Some(2),
                 page_token: page1.next_page_token.into(),
@@ -2108,7 +2131,7 @@ mod tests {
         // Trailing token even on the non-full last page; following it terminates.
         let page3 = list_tag_attachments(
             def_id,
-            None,
+            &no_filter,
             PaginationQuery {
                 page_size: Some(2),
                 page_token: page2.next_page_token.into(),
@@ -2124,7 +2147,7 @@ mod tests {
         // (warehouse, then table) paged one at a time.
         let eu_page1 = list_tag_attachments(
             def_id,
-            Some("eu"),
+            &eu_filter,
             PaginationQuery {
                 page_size: Some(1),
                 page_token: PageToken::Empty,
@@ -2137,7 +2160,7 @@ mod tests {
         assert_eq!(eu_page1.tags[0].target, TagTarget::Warehouse(warehouse_id));
         let eu_page2 = list_tag_attachments(
             def_id,
-            Some("eu"),
+            &eu_filter,
             PaginationQuery {
                 page_size: Some(1),
                 page_token: eu_page1.next_page_token.into(),
@@ -2152,7 +2175,7 @@ mod tests {
         // attachment is correctly excluded by the value filter, not just paged past).
         let eu_page3 = list_tag_attachments(
             def_id,
-            Some("eu"),
+            &eu_filter,
             PaginationQuery {
                 page_size: Some(1),
                 page_token: eu_page2.next_page_token.into(),
@@ -2164,10 +2187,104 @@ mod tests {
         assert!(eu_page3.tags.is_empty());
         assert_eq!(eu_page3.next_page_token, None);
 
+        // Target-type filter: each object type in isolation.
+        let by_type = |ty: TagScope| TagAttachmentFilter::builder().target_type(Some(ty)).build();
+        let full = || PaginationQuery {
+            page_size: Some(10),
+            page_token: PageToken::Empty,
+        };
+        let wh = list_tag_attachments(def_id, &by_type(TagScope::Warehouse), full(), &pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            wh.tags.iter().map(|t| t.target).collect::<Vec<_>>(),
+            vec![TagTarget::Warehouse(warehouse_id)]
+        );
+        let tbl = list_tag_attachments(def_id, &by_type(TagScope::Table), full(), &pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            tbl.tags.iter().map(|t| t.target).collect::<Vec<_>>(),
+            vec![table_target]
+        );
+        let col = list_tag_attachments(def_id, &by_type(TagScope::Column), full(), &pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            col.tags.iter().map(|t| t.target).collect::<Vec<_>>(),
+            vec![column_target]
+        );
+        // A type nothing is attached under -> empty.
+        let ns = list_tag_attachments(def_id, &by_type(TagScope::Namespace), full(), &pool)
+            .await
+            .unwrap();
+        assert!(ns.tags.is_empty());
+
+        // Warehouse filter: all three live in this warehouse; a different one -> empty.
+        let in_wh = list_tag_attachments(
+            def_id,
+            &TagAttachmentFilter::builder()
+                .warehouse_id(Some(warehouse_id))
+                .build(),
+            full(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(in_wh.tags.len(), 3);
+        let other_wh = list_tag_attachments(
+            def_id,
+            &TagAttachmentFilter::builder()
+                .warehouse_id(Some(WarehouseId::new(Uuid::nil())))
+                .build(),
+            full(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(other_wh.tags.is_empty());
+
+        // created_after / created_before: unbounded window returns all; impossible ones none.
+        let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+        let year_2100 = chrono::DateTime::<chrono::Utc>::from_timestamp(4_102_444_800, 0).unwrap();
+        let since_epoch = list_tag_attachments(
+            def_id,
+            &TagAttachmentFilter::builder()
+                .created_after(Some(epoch))
+                .build(),
+            full(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(since_epoch.tags.len(), 3);
+        let after_2100 = list_tag_attachments(
+            def_id,
+            &TagAttachmentFilter::builder()
+                .created_after(Some(year_2100))
+                .build(),
+            full(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(after_2100.tags.is_empty());
+        let before_epoch = list_tag_attachments(
+            def_id,
+            &TagAttachmentFilter::builder()
+                .created_before(Some(epoch))
+                .build(),
+            full(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(before_epoch.tags.is_empty());
+
         // Unknown definition -> empty, no token.
         let unknown = list_tag_attachments(
             TagDefinitionId::new_random(),
-            None,
+            &no_filter,
             PaginationQuery {
                 page_size: Some(10),
                 page_token: PageToken::Empty,

@@ -856,7 +856,7 @@ where
     /// filtered to a single `value`, keyset-paginated. No hierarchy expansion.
     async fn list_tag_attachments_impl(
         tag_definition_id: TagDefinitionId,
-        value_filter: Option<&str>,
+        filter: &TagAttachmentFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError>;

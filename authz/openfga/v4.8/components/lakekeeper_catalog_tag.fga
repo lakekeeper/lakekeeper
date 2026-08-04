@@ -28,4 +28,8 @@ type lakekeeper_catalog_tag
     # GRANT Permissions
     define can_grant_apply: ownership or security_admin from project
     define can_change_ownership: ownership or security_admin from project
+    # Read who holds apply/ownership on this tag (grant inspection).
     define can_read_assignments: can_grant_apply or can_change_ownership
+    # List the objects this tag is attached to (reverse lookup). Administer-level:
+    # broader disclosure than can_read, gated like the ownership/grant actions.
+    define can_read_attachments: can_grant_apply or can_change_ownership

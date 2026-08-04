@@ -272,6 +272,7 @@ pub enum TagRelation {
     CanGrantApply,
     CanChangeOwnership,
     CanReadAssignments,
+    CanReadAttachments,
 }
 impl TagAction for TagRelation {}
 
@@ -299,7 +300,7 @@ impl ReducedRelation for CatalogTagAction {
             // Attach and detach carry the same tag-side gate: stripping a governance
             // tag must not be possible with target rights alone.
             CatalogTagAction::Apply | CatalogTagAction::Remove => TagRelation::CanApply,
-            CatalogTagAction::ReadAssignments => TagRelation::CanReadAssignments,
+            CatalogTagAction::ReadAttachments => TagRelation::CanReadAttachments,
         }
     }
 }

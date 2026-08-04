@@ -52,12 +52,12 @@ use lakekeeper::{
         SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
         SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
         TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
-        TabularIdentBorrowed, TabularListFlags, Tag, TagDefinition, TagDefinitionId, TagId,
-        TagSource, TagTarget, TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers,
-        UniqueRoles, UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
-        UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
-        ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
-        WarehouseId, WarehouseStatus,
+        TabularIdentBorrowed, TabularListFlags, Tag, TagAttachmentFilter, TagDefinition,
+        TagDefinitionId, TagId, TagSource, TagTarget, TagWithName, TaskDetails, TaskList,
+        Transaction, UniqueMembers, UniqueRoles, UpdateRoleError, UpdateTagDefinitionError,
+        UpdateTagDefinitionRequest, UpdateWarehouseStorageProfileError, UserMembershipEntry,
+        UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo,
+        WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -500,13 +500,13 @@ impl CatalogStore for super::PostgresBackend {
 
     async fn list_tag_attachments_impl(
         tag_definition_id: TagDefinitionId,
-        value_filter: Option<&str>,
+        filter: &TagAttachmentFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError> {
         list_tag_attachments(
             tag_definition_id,
-            value_filter,
+            filter,
             pagination,
             &catalog_state.read_pool(),
         )
