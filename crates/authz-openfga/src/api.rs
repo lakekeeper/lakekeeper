@@ -3320,14 +3320,15 @@ mod tests {
                 .await
                 .unwrap();
 
+            let expected_owner = TagAssignment::Ownership(user_id_owner.clone().into());
+            let expected_user_apply = TagAssignment::Apply(user_id_applier.into());
+            let expected_role_apply = TagAssignment::Apply(role_id.into_api_assignee().into());
+
             // Owner grants `apply` to a user and a role.
             checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
-                vec![
-                    TagAssignment::Apply(user_id_applier.into()),
-                    TagAssignment::Apply(role_id.into_api_assignee().into()),
-                ],
+                vec![expected_user_apply.clone(), expected_role_apply.clone()],
                 vec![],
                 &tag_id.to_openfga(),
             )
@@ -3338,8 +3339,11 @@ mod tests {
                 get_relations(authorizer.clone(), None, &tag_id.to_openfga())
                     .await
                     .unwrap();
-            // ownership (seeded) + two applies
+            // ownership (seeded) + two applies, with exact principals and variants
             assert_eq!(relations.len(), 3);
+            assert!(relations.contains(&expected_owner));
+            assert!(relations.contains(&expected_user_apply));
+            assert!(relations.contains(&expected_role_apply));
         }
 
         #[tokio::test]

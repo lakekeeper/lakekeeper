@@ -240,6 +240,7 @@ tests:
           can_apply: true
           can_grant_apply: true
           can_read_attachments: true
+          can_read_assignments: true   # owner may inspect who holds grants (ownership arm)
       - user: user:tag_owner
         object: lakekeeper_table:warehouse_1/table_1
         assertions:
