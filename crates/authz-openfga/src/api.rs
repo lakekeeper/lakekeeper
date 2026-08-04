@@ -291,7 +291,7 @@ struct GetTagAssignmentsQuery {
     relations: Option<Vec<TagRelation>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, typed_builder::TypedBuilder)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 struct GetTagAssignmentsResponse {
@@ -1601,7 +1601,11 @@ async fn get_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
 
     Ok((
         StatusCode::OK,
-        Json(GetTagAssignmentsResponse { assignments }),
+        Json(
+            GetTagAssignmentsResponse::builder()
+                .assignments(assignments)
+                .build(),
+        ),
     ))
 }
 
@@ -2869,15 +2873,15 @@ mod tests {
 
     #[test]
     fn test_get_tag_assignments_response_serde() {
-        let response = GetTagAssignmentsResponse {
-            assignments: vec![
+        let response = GetTagAssignmentsResponse::builder()
+            .assignments(vec![
                 TagAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
                 TagAssignment::Apply(UserOrRole::Role(
                     RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
                         .into_api_assignee(),
                 )),
-            ],
-        };
+            ])
+            .build();
         let serialized = serde_json::to_value(&response).unwrap();
         let expected = serde_json::json!({
           "assignments": [
