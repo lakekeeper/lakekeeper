@@ -1,0 +1,29 @@
+<div class="lk-subscribe" markdown="0">
+  <p>📬 Get notified about new Lakekeeper releases</p>
+  <form
+    action="https://buttondown.com/api/emails/embed-subscribe/lakekeeper"
+    method="post"
+    target="popupwindow"
+    onsubmit="window.open('https://buttondown.com/lakekeeper', 'popupwindow')"
+    class="embeddable-buttondown-form"
+  >
+    <div class="lk-subscribe-row">
+      <label for="bd-email" class="lk-visually-hidden">Email address</label>
+      <input
+        type="email"
+        name="email"
+        id="bd-email"
+        placeholder="you@example.com"
+        autocomplete="email"
+        required
+      />
+      <input type="hidden" name="tag" value="docs-subscribe" />
+      <input type="hidden" name="embed" value="1" />
+      <input type="submit" value="Subscribe" />
+    </div>
+    <p class="lk-subscribe-fine">
+      No spam — occasional release announcements only.
+      <a href="https://buttondown.com/refer/lakekeeper" target="_blank" rel="noopener">Powered by Buttondown.</a>
+    </p>
+  </form>
+</div>

@@ -13,7 +13,7 @@ use lakekeeper::{
         Actor, ArcProjectId, AuthZGenericTableInfo, AuthZNamespaceInfo, AuthZTableInfo,
         AuthZViewInfo, CatalogStore, ErrorModel, GenericTableId, InternalErrorMessage, NamespaceId,
         NamespaceWithParent, ResolvedWarehouse, Role, RoleId, SecretStore, ServerId, State,
-        TableId, UserId, ViewId,
+        TableId, TagDefinition, TagDefinitionId, UserId, ViewId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
@@ -50,7 +50,7 @@ use crate::{
     models::OpenFgaType,
     relations::{
         self, GenericTableRelation, NamespaceRelation, OpenFgaRelation, ProjectRelation,
-        ReducedRelation, RoleRelation, ServerRelation, TableRelation, ViewRelation,
+        ReducedRelation, RoleRelation, ServerRelation, TableRelation, TagRelation, ViewRelation,
         WarehouseRelation,
     },
 };
@@ -99,6 +99,7 @@ impl Authorizer for OpenFGAAuthorizer {
     type GenericTableAction = GenericTableRelation;
     type UserAction = CatalogUserAction;
     type RoleAction = RoleRelation;
+    type TagAction = TagRelation;
 
     fn implementation_name() -> &'static str {
         "openfga"
@@ -280,6 +281,49 @@ impl Authorizer for OpenFGAAuthorizer {
             .into_iter()
             .map(|(_, allowed)| AuthorizationDecision::from(allowed))
             .collect())
+    }
+
+    async fn are_allowed_tag_actions_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        tags_with_actions: &[(&TagDefinition, Self::TagAction)],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        let user = for_user.map_or_else(
+            || metadata.actor().to_openfga(),
+            |u| u.api_user_or_role().to_openfga(),
+        );
+
+        let items: Vec<_> = tags_with_actions
+            .iter()
+            .map(|(tag, action)| CheckRequestTupleKey {
+                user: user.clone(),
+                relation: action.to_string(),
+                object: tag.tag_definition_id.to_openfga(),
+            })
+            .collect();
+
+        let guard_tuples = if for_user.is_some() {
+            // Collect unique tag objects for permission checks
+            let unique_tags: HashSet<_> = tags_with_actions
+                .iter()
+                .map(|(tag, _)| tag.tag_definition_id.to_openfga())
+                .collect();
+
+            unique_tags
+                .into_iter()
+                .map(|tag_obj| CheckRequestTupleKey {
+                    user: metadata.actor().to_openfga(),
+                    relation: TagRelation::CanReadAssignments.to_string(),
+                    object: tag_obj,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
+            .await
     }
 
     async fn are_allowed_user_actions_impl(
@@ -768,6 +812,35 @@ impl Authorizer for OpenFGAAuthorizer {
         role_id: RoleId,
     ) -> AuthorizerResult<()> {
         self.delete_all_relations(&role_id).await
+    }
+
+    async fn create_tag(
+        &self,
+        metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+        parent_project_id: ArcProjectId,
+    ) -> AuthorizerResult<()> {
+        let actor = metadata.actor();
+
+        self.require_no_relations(&tag_definition_id).await?;
+        let mut tuples =
+            crate::tuples::hierarchy_tuples_for_tag(&parent_project_id, tag_definition_id);
+        tuples.extend(crate::tuples::ownership_tuples_for_tag(
+            actor,
+            tag_definition_id,
+        ));
+        self.write(Some(tuples), None)
+            .await
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn delete_tag(
+        &self,
+        _metadata: &RequestMetadata,
+        tag_definition_id: TagDefinitionId,
+    ) -> AuthorizerResult<()> {
+        self.delete_all_relations(&tag_definition_id).await
     }
 
     async fn create_project(

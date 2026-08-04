@@ -30,7 +30,9 @@ impl OpenFgaType for FgaType {
                 FgaType::GenericTable,
             ],
             FgaType::View | FgaType::Table | FgaType::GenericTable => &[FgaType::Namespace],
-            FgaType::ModelVersion => &[],
+            // A tag definition is only ever an object (project→tag, user/role→tag), never the
+            // `user` side of a relation — so, like model_version, it is a user of nothing.
+            FgaType::Tag | FgaType::ModelVersion => &[],
             FgaType::AuthModelId => &[FgaType::ModelVersion],
         }
     }

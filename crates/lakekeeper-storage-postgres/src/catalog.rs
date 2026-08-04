@@ -22,37 +22,42 @@ use lakekeeper::{
     },
     service::{
         AddRoleMembersError, AddRoleMembersResult, AddUserRoleAssignmentsError,
-        AddUserRoleAssignmentsResult, ArcProjectId, CatalogBackendError,
-        CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateWarehouseError,
-        CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError, CatalogGetNamespaceError,
-        CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogListRolesByIdFilter, CatalogListWarehousesError,
-        CatalogNamespaceDropError, CatalogRenameWarehouseError, CatalogRoleForAssignment,
-        CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError, CatalogStore,
-        CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser, CatalogView,
-        ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
+        AddUserRoleAssignmentsResult, ApplyTagError, ArcProjectId, CatalogBackendError,
+        CatalogCreateNamespaceError, CatalogCreateRoleRequest, CatalogCreateTagDefinitionRequest,
+        CatalogCreateWarehouseError, CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError,
+        CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
+        CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogListRolesByIdFilter,
+        CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
+        CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
+        CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
+        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
         CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateRoleError, CreateTableError, CreateViewError, DropGenericTableError,
-        DropTabularError, EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId,
-        GenericTableInfo, GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
+        CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
+        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
+        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
+        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
         GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
         ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListUserRoleAssignmentsResult,
-        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
-        MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId, NamespaceWithParent, ProjectId,
-        RemoveRoleMembersError, RemoveRoleMembersResult, RemoveUserRoleAssignmentsError,
-        RemoveUserRoleAssignmentsResult, RenameTabularError, ResolveTasksError, ResolvedTask,
-        ResolvedWarehouse, Result, Role, RoleId, RoleIdent, RoleMemberKind,
-        RoleMembershipDirection, RoleMembershipEntry, RoleProviderId, SearchRoleResponse,
-        SearchRolesError, SearchTabularError, ServerId, ServerInfo, SetTabularProtectionError,
-        SetWarehouseDeletionProfileError, SetWarehouseFormatVersionPolicyError,
-        SetWarehouseManagedByError, SetWarehouseProtectedError, SetWarehouseStatusError,
-        StagedTableId, SyncRoleMembersError, SyncRoleMembersResult, SyncUserRoleAssignmentsError,
-        SyncUserRoleAssignmentsResult, TableCommit, TableCreation, TableId, TableIdent, TableInfo,
-        TabularId, TabularIdentBorrowed, TabularListFlags, TaskDetails, TaskList, Transaction,
-        UniqueMembers, UniqueRoles, UpdateRoleError, UpdateWarehouseStorageProfileError,
-        UserMembershipEntry, UserUpsertMode, ViewCommit, ViewId, ViewInfo, ViewOrTableDeletionInfo,
-        ViewOrTableInfo, WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
+        ListRolesPage, ListRolesResponse, ListTabularsError, ListTagAttachmentsError,
+        ListTagAttachmentsResponse, ListTagDefinitionsError, ListTagDefinitionsResponse,
+        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
+        LoadViewError, ManagedBy, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
+        NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
+        RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
+        RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
+        RoleId, RoleIdent, RoleMemberKind, RoleMembershipDirection, RoleMembershipEntry,
+        RoleProviderId, SearchRoleResponse, SearchRolesError, SearchTabularError, ServerId,
+        ServerInfo, SetTabularProtectionError, SetWarehouseDeletionProfileError,
+        SetWarehouseFormatVersionPolicyError, SetWarehouseManagedByError,
+        SetWarehouseProtectedError, SetWarehouseStatusError, StagedTableId, SyncRoleMembersError,
+        SyncRoleMembersResult, SyncUserRoleAssignmentsError, SyncUserRoleAssignmentsResult,
+        TableCommit, TableCreation, TableId, TableIdent, TableInfo, TabularId,
+        TabularIdentBorrowed, TabularListFlags, Tag, TagDefinition, TagDefinitionId, TagId,
+        TagSource, TagTarget, TagWithName, TaskDetails, TaskList, Transaction, UniqueMembers,
+        UniqueRoles, UpdateRoleError, UpdateTagDefinitionError, UpdateTagDefinitionRequest,
+        UpdateWarehouseStorageProfileError, UserMembershipEntry, UserUpsertMode, ViewCommit,
+        ViewId, ViewInfo, ViewOrTableDeletionInfo, ViewOrTableInfo, WarehouseFormatVersionPolicy,
+        WarehouseId, WarehouseStatus,
         authn::UserId,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -71,6 +76,12 @@ use super::{
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
+    tag::{
+        apply_tag, create_tag_definition, delete_tag_definition, get_tag_allowed_values,
+        get_tag_definition, get_tag_definition_by_name, list_effective_tag_candidates,
+        list_tag_attachments, list_tag_definitions, list_tags_for_target, remove_tag,
+        remove_tag_for_target, update_tag_definition,
+    },
     warehouse::{
         create_project, create_warehouse, delete_project, delete_warehouse, get_project,
         get_warehouse_by_id, get_warehouse_by_name, list_projects, list_warehouses, rename_project,
@@ -386,6 +397,127 @@ impl CatalogStore for super::PostgresBackend {
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError> {
         list_roles_by_idents(project_id, idents, &catalog_state.read_pool()).await
+    }
+
+    // ---------------- Tag Management ----------------
+    async fn create_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        request: CatalogCreateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<TagDefinition, CreateTagDefinitionError> {
+        create_tag_definition(project_id, request, transaction).await
+    }
+
+    async fn get_tag_definition_impl(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        get_tag_definition(project_id, tag_definition_id, &catalog_state.read_pool()).await
+    }
+
+    async fn get_tag_definition_by_name_impl(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError> {
+        get_tag_definition_by_name(project_id, name, &catalog_state.read_pool()).await
+    }
+
+    async fn list_tag_definitions_impl(
+        project_id: &ProjectId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagDefinitionsResponse, ListTagDefinitionsError> {
+        list_tag_definitions(project_id, pagination, &catalog_state.read_pool()).await
+    }
+
+    async fn get_tag_allowed_values_impl(
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<String>, CatalogBackendError> {
+        get_tag_allowed_values(tag_definition_id, &catalog_state.read_pool()).await
+    }
+
+    async fn update_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        request: UpdateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError> {
+        update_tag_definition(project_id, tag_definition_id, request, transaction).await
+    }
+
+    async fn delete_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(), DeleteTagDefinitionError> {
+        delete_tag_definition(project_id, tag_definition_id, transaction).await
+    }
+
+    async fn apply_tag_impl<'a>(
+        tag_id: TagId,
+        tag_definition_id: TagDefinitionId,
+        target: TagTarget,
+        value: Option<&str>,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(Tag, bool), ApplyTagError> {
+        apply_tag(
+            tag_id,
+            tag_definition_id,
+            target,
+            value,
+            source,
+            transaction,
+        )
+        .await
+    }
+
+    async fn remove_tag_impl<'a>(
+        tag_id: TagId,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<(), RemoveTagError> {
+        remove_tag(tag_id, transaction).await
+    }
+
+    async fn remove_tag_for_target_impl<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<CatalogState>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError> {
+        remove_tag_for_target(target, tag_definition_id, source, transaction).await
+    }
+
+    async fn list_tags_for_target_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
+        list_tags_for_target(target, &catalog_state.read_pool()).await
+    }
+
+    async fn list_tag_attachments_impl(
+        tag_definition_id: TagDefinitionId,
+        value_filter: Option<&str>,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError> {
+        list_tag_attachments(
+            tag_definition_id,
+            value_filter,
+            pagination,
+            &catalog_state.read_pool(),
+        )
+        .await
+    }
+
+    async fn list_effective_tag_candidates_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError> {
+        list_effective_tag_candidates(target, &catalog_state.read_pool()).await
     }
 
     // ---------------- Role Assignment Management ----------------

@@ -299,6 +299,30 @@ impl EventDispatcher {
         dispatch_event!(self, role_updated, event);
     }
 
+    // ===== Tag Definition Events =====
+
+    pub(crate) async fn tag_definition_created(&self, event: types::CreateTagDefinitionEvent) {
+        dispatch_event!(self, tag_definition_created, event);
+    }
+
+    pub(crate) async fn tag_definition_updated(&self, event: types::UpdateTagDefinitionEvent) {
+        dispatch_event!(self, tag_definition_updated, event);
+    }
+
+    pub(crate) async fn tag_definition_deleted(&self, event: types::DeleteTagDefinitionEvent) {
+        dispatch_event!(self, tag_definition_deleted, event);
+    }
+
+    // ===== Tag Attachment Events =====
+
+    pub(crate) async fn tag_applied(&self, event: types::TagAppliedEvent) {
+        dispatch_event!(self, tag_applied, event);
+    }
+
+    pub(crate) async fn tag_removed(&self, event: types::TagRemovedEvent) {
+        dispatch_event!(self, tag_removed, event);
+    }
+
     // ===== Role Assignment Sync Events =====
 
     pub(crate) async fn role_members_synced(&self, event: types::RoleMembersSyncedEvent) {
@@ -620,6 +644,44 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a role has been successfully updated
     async fn role_updated(&self, _event: types::UpdateRoleEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Tag Definition Events =====
+
+    /// Invoked after a tag definition has been successfully created
+    async fn tag_definition_created(
+        &self,
+        _event: types::CreateTagDefinitionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a tag definition has been successfully updated
+    async fn tag_definition_updated(
+        &self,
+        _event: types::UpdateTagDefinitionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a tag definition has been successfully deleted
+    async fn tag_definition_deleted(
+        &self,
+        _event: types::DeleteTagDefinitionEvent,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Tag Attachment Events =====
+
+    /// Invoked after a tag has been successfully applied to a target
+    async fn tag_applied(&self, _event: types::TagAppliedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Invoked after a tag has been successfully removed from a target
+    async fn tag_removed(&self, _event: types::TagRemovedEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

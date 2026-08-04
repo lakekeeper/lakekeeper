@@ -766,13 +766,19 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
         .await
         .map_err::<DeleteRoleError, _>(Into::into)?;
     C::delete_role(&project_id, role_id, t.transaction()).await?;
-    authorizer
-        .delete_role(request_metadata, role_id)
-        .await
-        .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     t.commit()
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
+
+    // Post-commit: best-effort authz cleanup. `create_role`'s `require_no_relations`
+    // guard blocks reuse of the id, so a leftover edge can't grant access.
+    authorizer
+        .delete_role(request_metadata, role_id)
+        .await
+        .inspect_err(|e| {
+            tracing::error!(?e, "Failed to delete role from authorizer: {}", e.error);
+        })
+        .ok();
 
     // Post-commit (infallible, in-memory): the role and its assignments are gone,
     // so each affected user's effective-roles entry and the deleted role's own

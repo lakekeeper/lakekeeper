@@ -15,7 +15,8 @@
 use lakekeeper::{
     ProjectId, WarehouseId,
     service::{
-        Actor, GenericTableId, NamespaceId, RoleId, TableId, ViewId, authz::NamespaceParent,
+        Actor, GenericTableId, NamespaceId, RoleId, TableId, TagDefinitionId, ViewId,
+        authz::NamespaceParent,
     },
 };
 use openfga_client::client::TupleKey;
@@ -24,7 +25,7 @@ use crate::{
     entities::OpenFgaEntity,
     relations::{
         GenericTableRelation, NamespaceRelation, ProjectRelation, RoleRelation, ServerRelation,
-        TableRelation, ViewRelation, WarehouseRelation,
+        TableRelation, TagRelation, ViewRelation, WarehouseRelation,
     },
 };
 
@@ -245,6 +246,33 @@ pub(crate) fn ownership_tuples_for_role(actor: &Actor, role: RoleId) -> Vec<Tupl
     )]
 }
 
+/// Hierarchy tuples for a tag definition: `project -[project]-> tag`.
+///
+/// Mirrors the role hierarchy: there is no inverse `tag → project` edge in the
+/// v4 schema; the project type does not expose a tag-child relation.
+pub(crate) fn hierarchy_tuples_for_tag(
+    project: &ProjectId,
+    tag_definition_id: TagDefinitionId,
+) -> Vec<TupleKey> {
+    vec![tuple(
+        project.to_openfga(),
+        TagRelation::Project.to_string(),
+        tag_definition_id.to_openfga(),
+    )]
+}
+
+/// Ownership tuple for a tag definition.
+pub(crate) fn ownership_tuples_for_tag(
+    actor: &Actor,
+    tag_definition_id: TagDefinitionId,
+) -> Vec<TupleKey> {
+    vec![tuple(
+        actor.to_openfga(),
+        TagRelation::Ownership.to_string(),
+        tag_definition_id.to_openfga(),
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     //! Golden-value drift detector.
@@ -299,6 +327,10 @@ mod tests {
         RoleId::new(uuid_of('6'))
     }
 
+    fn fixed_tag_definition_id() -> TagDefinitionId {
+        TagDefinitionId::new(uuid_of('8'))
+    }
+
     fn fixed_server_string() -> String {
         use crate::entities::OpenFgaEntity;
         let server = ServerId::new(uuid_of('7'));
@@ -340,6 +372,34 @@ mod tests {
                 "user:oidc~alice".to_string(),
                 "project_admin".to_string(),
                 "project:11111111-1111-1111-1111-111111111111".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(tuple_set(combined), expected);
+    }
+
+    /// Golden tuples for a tag definition: `project → tag` plus actor → `ownership`.
+    #[test]
+    fn create_tag_tuples_are_exactly_specified() {
+        let project = fixed_project_id();
+        let tag = fixed_tag_definition_id();
+        let actor = fixed_actor();
+
+        let mut combined = hierarchy_tuples_for_tag(&project, tag);
+        combined.extend(ownership_tuples_for_tag(&actor, tag));
+
+        let expected: HashSet<(String, String, String)> = [
+            (
+                "project:11111111-1111-1111-1111-111111111111".to_string(),
+                "project".to_string(),
+                "lakekeeper_catalog_tag:88888888-8888-8888-8888-888888888888".to_string(),
+            ),
+            (
+                "user:oidc~alice".to_string(),
+                "ownership".to_string(),
+                "lakekeeper_catalog_tag:88888888-8888-8888-8888-888888888888".to_string(),
             ),
         ]
         .into_iter()

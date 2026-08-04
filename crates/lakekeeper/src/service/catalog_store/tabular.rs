@@ -1672,6 +1672,38 @@ where
         Self::get_tabular_infos_by_id_impl(warehouse_id, tabulars, list_flags, catalog_state).await
     }
 
+    /// Resolve a tabular from a bare UUID, i.e. without knowing its type.
+    ///
+    /// Prefer the typed lookups ([`Self::get_table_info`], [`Self::get_view_info`],
+    /// [`Self::get_generic_table_info`]) — this is for the few routes that are
+    /// deliberately type-agnostic, such as the S3 signer's `tabular-id/{uuid}`.
+    async fn get_tabular_info_by_uuid(
+        warehouse_id: WarehouseId,
+        tabular_id: uuid::Uuid,
+        list_flags: TabularListFlags,
+        catalog_state: Self::State,
+    ) -> Result<Option<ViewOrTableInfo>, GetTabularInfoError> {
+        let candidates = [
+            TabularId::Table(TableId::from(tabular_id)),
+            TabularId::View(ViewId::from(tabular_id)),
+            TabularId::GenericTable(GenericTableId::from(tabular_id)),
+        ];
+        let mut infos =
+            Self::get_tabular_infos_by_id(warehouse_id, &candidates, list_flags, catalog_state)
+                .await?;
+
+        if infos.len() > 1 {
+            return Err(UnexpectedTabularInResponse::new()
+                .append_detail(format!(
+                    "Expected at most one tabular for id {tabular_id}, got {}",
+                    infos.len()
+                ))
+                .into());
+        }
+
+        Ok(infos.pop())
+    }
+
     async fn get_tabular_infos_by_s3_location(
         warehouse_id: WarehouseId,
         location: &Location,

@@ -1,0 +1,156 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT schema_id, field_id, parent_field_id, ordinal, name, required, doc,\n                  type_kind::text as \"type_kind!\", type_params, initial_default, write_default,\n                  is_identifier\n           FROM schema_field\n           WHERE warehouse_id = $1 AND tabular_id = $2\n           ORDER BY schema_id, parent_field_id, ordinal",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schema_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "schema_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "field_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "field_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "parent_field_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "parent_field_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "ordinal",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "ordinal"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "required"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "doc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "doc"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "type_kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "type_params",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "type_params"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "initial_default",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "initial_default"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "write_default",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "write_default"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "is_identifier",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "schema_field",
+            "name": "is_identifier"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      null,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "58dfc101ca954f0725b71f0feebbf54b3d1d76e31787232615f71428f6663b31"
+}

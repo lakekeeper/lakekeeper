@@ -21,7 +21,7 @@ use crate::{
     service::{
         ArcRoleIdent, GenericTableIdentOrId, GenericTableInfo, NamespaceId, NamespaceIdentOrId,
         NamespaceWithParent, ResolvedWarehouse, RoleId, ServerId, TableIdentOrId, TableInfo,
-        TabularId, UserId, ViewIdentOrId, ViewInfo,
+        TabularId, TagDefinitionId, UserId, ViewIdentOrId, ViewInfo,
         authn::UserIdRef,
         authz::{
             ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogTableAction,
@@ -54,6 +54,7 @@ pub const FIELD_NAME_ROLE_PROVIDER_ID: &str = "role-provider-id";
 pub const FIELD_NAME_USER_ID: &str = "user-id";
 pub const FIELD_NAME_GENERIC_TABLE: &str = "generic-table";
 pub const FIELD_NAME_GENERIC_TABLE_ID: &str = "generic-table-id";
+pub const FIELD_NAME_TAG_DEFINITION_ID: &str = "tag-definition-id";
 
 pub const ENTITY_TYPE_SERVER: &str = "server";
 pub const ENTITY_TYPE_PROJECT: &str = "project";
@@ -65,6 +66,7 @@ pub const ENTITY_TYPE_TASK: &str = "task";
 pub const ENTITY_TYPE_ROLE: &str = "role";
 pub const ENTITY_TYPE_USER: &str = "user";
 pub const ENTITY_TYPE_GENERIC_TABLE: &str = "generic-table";
+pub const ENTITY_TYPE_TAG: &str = "tag";
 
 // ── Traits ──────────────────────────────────────────────────────────────────
 
@@ -509,6 +511,11 @@ impl_user_provided_entity!(WarehouseId, ENTITY_TYPE_WAREHOUSE, FIELD_NAME_WAREHO
 impl_user_provided_entity!(NamespaceId, ENTITY_TYPE_NAMESPACE, FIELD_NAME_NAMESPACE_ID);
 impl_user_provided_entity!(UserId, ENTITY_TYPE_USER, FIELD_NAME_USER_ID);
 impl_user_provided_entity!(RoleId, ENTITY_TYPE_ROLE, FIELD_NAME_ROLE_ID);
+impl_user_provided_entity!(
+    TagDefinitionId,
+    ENTITY_TYPE_TAG,
+    FIELD_NAME_TAG_DEFINITION_ID
+);
 
 // ── Action types ────────────────────────────────────────────────────────────
 #[derive(Clone, Debug)]
@@ -810,6 +817,18 @@ impl<A: APIEventActions> APIEventContext<RoleId, Unresolved, A> {
         action: A,
     ) -> Self {
         Self::new(request_metadata, dispatcher, role_id, action)
+    }
+}
+
+impl<A: APIEventActions> APIEventContext<TagDefinitionId, Unresolved, A> {
+    #[must_use]
+    pub fn for_tag(
+        request_metadata: Arc<RequestMetadata>,
+        dispatcher: EventDispatcher,
+        tag_definition_id: TagDefinitionId,
+        action: A,
+    ) -> Self {
+        Self::new(request_metadata, dispatcher, tag_definition_id, action)
     }
 }
 

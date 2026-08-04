@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM tag\n        WHERE warehouse_id = $1\n          AND namespace_id IS NOT DISTINCT FROM $2\n          AND tabular_id IS NOT DISTINCT FROM $3\n          AND field_id IS NOT DISTINCT FROM $4\n          AND tag_definition_id = $5\n          AND source = $6\n        RETURNING tag_id, value, created_at, updated_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "tag_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tag",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tag_source",
+            "kind": {
+              "Enum": [
+                "manual"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "53559be2145630b419992dcd6d760c5fb5a261d6836d485f3af3c7b1fb7abff0"
+}

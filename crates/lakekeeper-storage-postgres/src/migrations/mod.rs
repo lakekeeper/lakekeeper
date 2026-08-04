@@ -26,6 +26,7 @@ use crate::{
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
 
+pub(crate) mod normalize_schema;
 mod patch_migration_hash;
 mod split_table_metadata;
 
@@ -64,14 +65,14 @@ fn migration_lock_id(database_name: &str) -> i64 {
 ///
 /// ```ignore
 /// ExtensionMigrations::builder()
-///     .name("cedar")
+///     .name("audit")
 ///     .migrator(sqlx::migrate!("./migrations"))
 ///     .build()
 /// ```
 #[allow(missing_debug_implementations)]
 #[derive(TypedBuilder)]
 pub struct ExtensionMigrations {
-    /// Short identifier for this extension (e.g. `"cedar"`, `"audit"`). Used
+    /// Short identifier for this extension (e.g. `"audit"`, `"demo"`). Used
     /// verbatim to derive the per-source migration tracker table name
     /// `ext_<name>_sqlx_migrations`.
     ///
@@ -217,6 +218,16 @@ pub async fn migrate(
         .await
         .map_err(|e| e.error)?;
     let transaction = trx.transaction();
+
+    // The normalized-schema backfill can run minutes on large catalogs. Set a 60-min statement/idle
+    // backstop on the migration txn: generous enough never to clip real work, finite enough to bound
+    // a hung migration. SET LOCAL is txn-scoped; both are USERSET GUCs, overriding any managed default.
+    sqlx::query("SET LOCAL statement_timeout = '60min'")
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '60min'")
+        .execute(&mut **transaction)
+        .await?;
 
     // Transaction-scoped advisory lock to prevent concurrent migrations.
     // Postgres auto-releases on COMMIT or ROLLBACK — including when the
@@ -509,10 +520,16 @@ fn get_changed_migration_ids() -> HashSet<i64> {
 }
 
 fn get_data_migrations() -> HashMap<i64, Box<dyn MigrationHook>> {
-    HashMap::from([(
-        SplitTableMetadataHook::version(),
-        Box::new(SplitTableMetadataHook) as Box<_>,
-    )])
+    HashMap::from([
+        (
+            SplitTableMetadataHook::version(),
+            Box::new(SplitTableMetadataHook) as Box<_>,
+        ),
+        (
+            normalize_schema::NormalizeSchemaHook::version(),
+            Box::new(normalize_schema::NormalizeSchemaHook) as Box<_>,
+        ),
+    ])
 }
 
 fn validate_applied_migrations(
@@ -798,7 +815,7 @@ mod tests {
         };
 
         // Accept: simple lowercase, with digits, leading underscore.
-        for ok in ["demo", "cedar", "audit2", "_internal", "a"] {
+        for ok in ["demo", "policy", "audit2", "_internal", "a"] {
             mk(ok)
                 .validate_name()
                 .unwrap_or_else(|e| panic!("`{ok}` must validate: {e}"));
