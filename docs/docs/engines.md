@@ -79,12 +79,13 @@ duckdb.sql("""
         TYPE S3,
         KEY_ID 'my-access-key',
         SECRET 'my-secret-key',
-        ENDPOINT 'my-s3-endpoint:9000',
-        URL_STYLE 'path',
-        USE_SSL false
+        ENDPOINT 's3.my-domain.com',
+        URL_STYLE 'path'
     )
 """)
 ```
+
+For a local or test storage that only serves plaintext HTTP, add `USE_SSL false` to the secret.
 
 ## <img src="/assets/trino.svg" width="30"> Trino
 
