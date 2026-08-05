@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ETag, StorageCredential, TableETag};
+use iceberg_ext::catalog::rest::{ETag, TableETag};
 
 use crate::{
     WarehouseId,
@@ -177,14 +177,9 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         None
     };
 
-    let storage_credentials = storage_config.as_ref().and_then(|c| {
-        (!c.creds.inner().is_empty()).then(|| {
-            vec![StorageCredential {
-                prefix: table_location.to_string(),
-                config: c.creds.clone().into(),
-            }]
-        })
-    });
+    let storage_credentials = storage_config
+        .as_ref()
+        .and_then(|c| c.storage_credentials(&table_location));
     let credentials_revalidate_after_ms = storage_config
         .as_ref()
         .and_then(|c| c.credentials_expiration_ms)

@@ -511,41 +511,48 @@ impl S3Profile {
         };
 
         let mut config = TableProperties::default();
-        let mut creds = TableProperties::default();
+        // Properties that qualify a credential — which endpoint, region and encryption it is for.
+        // Always emitted into `config`; they reach the client as `storage-credentials` only
+        // alongside an actual credential, which is why they are accumulated separately.
+        let mut credential_qualifiers = TableProperties::default();
         let mut credentials_expiration_ms: Option<i64> = None;
 
         if let Some(true) = self.path_style_access {
             config.insert(&s3::PathStyleAccess(true));
-            creds.insert(&s3::PathStyleAccess(true));
+            credential_qualifiers.insert(&s3::PathStyleAccess(true));
         }
 
         config.insert(&s3::Region(self.region.clone()));
-        creds.insert(&s3::Region(self.region.clone()));
+        credential_qualifiers.insert(&s3::Region(self.region.clone()));
         config.insert(&custom::CustomConfig {
             key: "region".to_string(),
             value: self.region.clone(),
         });
         config.insert(&client::Region(self.region.clone()));
-        creds.insert(&client::Region(self.region.clone()));
+        credential_qualifiers.insert(&client::Region(self.region.clone()));
 
         if let Some(endpoint) = &self.endpoint {
             config.insert(&s3::Endpoint(endpoint.clone()));
-            creds.insert(&s3::Endpoint(endpoint.clone()));
+            credential_qualifiers.insert(&s3::Endpoint(endpoint.clone()));
         }
 
         // When the warehouse is configured with a KMS key, advertise SSE-KMS to clients so
         // their own writes (vended credentials or remote signing) encrypt with the same key,
         // independent of any S3 bucket-default-encryption configuration. Lakekeeper's own writes
-        // already set this header via lakekeeper-io. Mirrors region/endpoint by emitting into both
-        // the load config and the credential-refresh properties.
+        // already set this header via lakekeeper-io.
         if let Some(kms_key_arn) = self.aws_kms_key_arn.as_ref() {
             config.insert(&s3::SseType("kms".to_string()));
             config.insert(&s3::SseKey(kms_key_arn.clone()));
-            creds.insert(&s3::SseType("kms".to_string()));
-            creds.insert(&s3::SseKey(kms_key_arn.clone()));
+            credential_qualifiers.insert(&s3::SseType("kms".to_string()));
+            credential_qualifiers.insert(&s3::SseKey(kms_key_arn.clone()));
         }
 
-        if vended_credentials {
+        // Only a vended credential may populate `creds`: callers turn a non-empty `creds` into a
+        // `storage-credentials` entry scoped to the table prefix, and a client honouring an entry
+        // that holds no credential builds a key-less secret for that prefix and then sends
+        // unsigned requests for every file below it, which the storage rejects with 403.
+        let creds = if vended_credentials {
+            let mut creds = credential_qualifiers;
             let cache_key = STCCacheKey::new(
                 stc_request.clone(),
                 self.into(),
@@ -591,7 +598,10 @@ impl S3Profile {
                     ),
                 ));
             }
-        }
+            creds
+        } else {
+            TableProperties::default()
+        };
 
         if remote_signing {
             let warehouse_id = stc_request.warehouse_id;
@@ -3010,6 +3020,10 @@ pub(crate) mod test {
     }
 
     fn client_managed_table_config(profile: &S3Profile) -> TableConfig {
+        table_config_for(profile, DataAccessMode::ClientManaged)
+    }
+
+    fn table_config_for(profile: &S3Profile, data_access: DataAccessMode) -> TableConfig {
         let warehouse_id = WarehouseId::new_random();
         let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
         let table_location: Location = "s3://bucket-name/path/to/table".parse().unwrap();
@@ -3021,7 +3035,7 @@ pub(crate) mod test {
         };
         test_block_on(
             profile.generate_table_config(
-                DataAccessMode::ClientManaged,
+                data_access,
                 None,
                 stc_request,
                 &tabular_info,
@@ -3030,6 +3044,182 @@ pub(crate) mod test {
             false,
         )
         .expect("generate_table_config failed")
+    }
+
+    /// Without STS there is nothing to vend, so `creds` must stay empty — whatever the client
+    /// asked for and whether or not remote signing takes over. A non-empty `creds` becomes a
+    /// `storage-credentials` entry scoped to the table prefix, and one holding no actual
+    /// credential makes clients stop signing requests for every file below that prefix.
+    #[test]
+    fn test_no_vendable_credential_yields_no_creds() {
+        for remote_signing_enabled in [false, true] {
+            let profile = S3Profile::builder()
+                .bucket("bucket-name".to_string())
+                .region("local".to_string())
+                .endpoint("http://s3-compatible:8333".parse().unwrap())
+                .sts_enabled(false)
+                .remote_signing_enabled(remote_signing_enabled)
+                .path_style_access(true)
+                .aws_kms_key_arn("arn:aws:kms:local:0:key/abcd-1234".to_string())
+                .flavor(S3Flavor::S3Compat)
+                .build();
+
+            for data_access in [
+                // What DuckDB sends by default: `ACCESS_DELEGATION_MODE 'vended_credentials'`.
+                DataAccessMode::ServerDelegated(DataAccess {
+                    vended_credentials: true,
+                    remote_signing: false,
+                }),
+                DataAccessMode::ServerDelegated(DataAccess::not_specified()),
+                DataAccessMode::ClientManaged,
+            ] {
+                let table_config = table_config_for(&profile, data_access);
+                let context =
+                    format!("remote_signing_enabled={remote_signing_enabled}, {data_access:?}");
+
+                assert!(
+                    table_config.creds.inner().is_empty(),
+                    "creds must be empty when no credential is vended, got {:?} ({context})",
+                    table_config.creds.inner()
+                );
+                assert!(
+                    table_config
+                        .storage_credentials(&"s3://bucket-name/path/to/table".parse().unwrap())
+                        .is_none(),
+                    "no storage-credentials entry may be emitted ({context})"
+                );
+                // The client still needs the qualifying properties to reach the storage itself and
+                // to encrypt its writes with the warehouse's key — they only lose the `creds` copy.
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::Region>().as_deref(),
+                    Some("local"),
+                    "({context})"
+                );
+                assert!(
+                    table_config.config.get_prop_opt::<s3::Endpoint>().is_some(),
+                    "({context})"
+                );
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::PathStyleAccess>(),
+                    Some(true),
+                    "({context})"
+                );
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::SseType>().as_deref(),
+                    Some("kms"),
+                    "({context})"
+                );
+                assert_eq!(
+                    table_config.config.get_prop_opt::<s3::SseKey>().as_deref(),
+                    Some("arn:aws:kms:local:0:key/abcd-1234"),
+                    "({context})"
+                );
+                // Remote signing is unaffected: it needs no client-side credential.
+                let signs_remotely = matches!(data_access, DataAccessMode::ServerDelegated(_))
+                    && remote_signing_enabled;
+                assert_eq!(
+                    table_config
+                        .config
+                        .get_prop_opt::<s3::RemoteSigningEnabled>(),
+                    signs_remotely.then_some(true),
+                    "({context})"
+                );
+            }
+        }
+    }
+
+    /// The counterpart: a vended credential must travel *with* the properties that qualify it.
+    /// The credential-refresh response carries `creds` alone — no `config` — so a client that
+    /// refreshes loses region, endpoint and the SSE-KMS key unless they are mirrored here.
+    #[test]
+    fn test_vended_credential_carries_qualifying_properties() {
+        assert!(
+            CONFIG.cache.stc.enabled,
+            "test seeds the STC cache to keep STS out of a unit test"
+        );
+        let arn = "arn:aws:kms:us-east-1:123456789012:key/abcd-1234";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .region("us-east-1".to_string())
+            .endpoint("http://s3-compatible:8333".parse().unwrap())
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws:iam::123456789012:role/lakekeeper".to_string())
+            .remote_signing_enabled(false)
+            .path_style_access(true)
+            .aws_kms_key_arn(arn.to_string())
+            .flavor(S3Flavor::S3Compat)
+            .build();
+
+        let warehouse_id = WarehouseId::new_random();
+        let tabular_info = crate::service::TableInfo::new_random(warehouse_id);
+        let table_location: Location = "s3://bucket-name/path/to/table".parse().unwrap();
+        let stc_request = ShortTermCredentialsRequest {
+            table_location: table_location.clone(),
+            storage_permissions: StoragePermissions::ReadWriteDelete,
+            warehouse_id,
+            tabular_id: tabular_info.tabular_id(),
+        };
+        let expires_at_ms = 1_900_000_000_000_i64;
+
+        let table_config = test_block_on(
+            async {
+                // Seed the STC cache under this request's key: the read-through loader only runs
+                // on a miss, so no STS call is made. Random ids keep the key unique in the
+                // process-wide cache.
+                S3_STC_CACHE
+                    .insert(
+                        STCCacheKey::new(stc_request.clone(), (&profile).into(), None),
+                        CachedStc::new(
+                            aws_sdk_sts::types::Credentials::builder()
+                                .access_key_id("AKIAEXAMPLE")
+                                .secret_access_key("secret")
+                                .session_token("token")
+                                .expiration(aws_sdk_sts::primitives::DateTime::from_millis(
+                                    expires_at_ms,
+                                ))
+                                .build()
+                                .unwrap(),
+                            Instant::now().checked_add(Duration::from_hours(1)),
+                        ),
+                    )
+                    .await;
+                profile
+                    .generate_table_config(
+                        DataAccessMode::ServerDelegated(DataAccess {
+                            vended_credentials: true,
+                            remote_signing: false,
+                        }),
+                        None,
+                        stc_request,
+                        &tabular_info,
+                        &RequestMetadata::new_unauthenticated(),
+                    )
+                    .await
+                    .expect("generate_table_config failed")
+            },
+            false,
+        );
+
+        let creds = &table_config.creds;
+        assert_eq!(
+            creds.get_prop_opt::<s3::AccessKeyId>().as_deref(),
+            Some("AKIAEXAMPLE")
+        );
+        assert_eq!(
+            creds.get_prop_opt::<s3::Region>().as_deref(),
+            Some("us-east-1")
+        );
+        assert!(creds.get_prop_opt::<s3::Endpoint>().is_some());
+        assert_eq!(creds.get_prop_opt::<s3::PathStyleAccess>(), Some(true));
+        assert_eq!(creds.get_prop_opt::<s3::SseType>().as_deref(), Some("kms"));
+        assert_eq!(creds.get_prop_opt::<s3::SseKey>().as_deref(), Some(arn));
+        assert_eq!(table_config.credentials_expiration_ms, Some(expires_at_ms));
+        assert_eq!(
+            table_config
+                .storage_credentials(&table_location)
+                .map(|c| c.len()),
+            Some(1)
+        );
     }
 
     #[test]
@@ -3044,7 +3234,6 @@ pub(crate) mod test {
             .aws_kms_key_arn(arn.to_string())
             .build();
         let config = client_managed_table_config(&profile);
-        // Emitted into both the load config and the credential-refresh properties.
         assert_eq!(
             config.config.get_prop_opt::<s3::SseType>(),
             Some("kms".to_string())
@@ -3053,14 +3242,8 @@ pub(crate) mod test {
             config.config.get_prop_opt::<s3::SseKey>(),
             Some(arn.to_string())
         );
-        assert_eq!(
-            config.creds.get_prop_opt::<s3::SseType>(),
-            Some("kms".to_string())
-        );
-        assert_eq!(
-            config.creds.get_prop_opt::<s3::SseKey>(),
-            Some(arn.to_string())
-        );
+        // This profile vends nothing, so the SSE properties get no `creds` copy.
+        assert!(config.creds.inner().is_empty());
     }
 
     #[test]

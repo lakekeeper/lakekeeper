@@ -183,6 +183,7 @@ When a client requests table configuration, Lakekeeper selects between remote si
 - If the header specifies `vended-credentials` or `remote-signing`, that method is used if enabled in the storage profile
 - If both methods are requested or neither is specified, Lakekeeper attempts to provide vended credentials first (if STS is enabled), then falls back to remote signing (if enabled)
 - If both methods are disabled at the storage profile level, no credentials are returned regardless of the header value
+- If the method Lakekeeper offers is not implemented by the client — DuckDB, for example, does not support remote signing — the client needs its own S3 credentials. Region, endpoint and path-style settings are still returned in the table `config`, but no `storage-credentials` are.
 
 For maximum client compatibility, we recommend enabling both STS and remote signing when your S3 storage supports it.
 
