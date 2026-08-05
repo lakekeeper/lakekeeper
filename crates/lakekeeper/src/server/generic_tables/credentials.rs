@@ -1,7 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use iceberg_ext::catalog::rest::StorageCredential;
-
 use crate::{
     WarehouseId,
     api::{
@@ -115,14 +113,9 @@ pub(super) async fn load_generic_table_credentials<
         )
         .await?;
 
-    let storage_credentials = if storage_config.creds.inner().is_empty() {
-        vec![]
-    } else {
-        vec![StorageCredential {
-            prefix: gt_info.location.to_string(),
-            config: storage_config.creds.into(),
-        }]
-    };
+    let storage_credentials = storage_config
+        .storage_credentials(&gt_info.location)
+        .unwrap_or_default();
 
     Ok(LoadGenericTableCredentialsResponse {
         storage_credentials,

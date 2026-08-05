@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use iceberg::TableIdent;
-use iceberg_ext::catalog::rest::StorageCredential;
 
 use crate::{
     api::{
@@ -87,13 +86,7 @@ pub(super) async fn load_generic_table<C: CatalogStore, A: Authorizer + Clone, S
             )
             .await?;
 
-        let base_location = info.location.to_string();
-        let creds = (!table_config.creds.inner().is_empty()).then(|| {
-            vec![StorageCredential {
-                prefix: base_location,
-                config: table_config.creds.clone().into(),
-            }]
-        });
+        let creds = table_config.storage_credentials(&info.location);
 
         (Some(table_config.config.into()), creds)
     } else {

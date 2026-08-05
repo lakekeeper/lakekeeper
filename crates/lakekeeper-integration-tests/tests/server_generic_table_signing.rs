@@ -715,4 +715,58 @@ async fn test_generic_table_load_advertises_remote_signing(pool: PgPool) {
             "config[{key}] must point at the catalog signer uri: {config:?}"
         );
     }
+
+    assert!(
+        response.storage_credentials.is_none(),
+        "nothing was vended, so no storage-credentials entry may be returned: {:?}",
+        response.storage_credentials
+    );
+}
+
+/// A client asking for vended credentials against a warehouse that cannot vend them must get no
+/// `storage-credentials` entry at all. An entry holding only region/endpoint makes clients scope a
+/// key-less secret to the table prefix and stop signing requests for the files below it.
+#[sqlx::test]
+async fn test_generic_table_load_omits_credentials_when_nothing_is_vended(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+
+    let response = CatalogServer::load_generic_table(
+        GenericTableParameters {
+            prefix: Some(warehouse_id.to_string().into()),
+            namespace: namespace(&namespace_name),
+            table_name: GENERIC_TABLE.to_string(),
+        },
+        ctx.clone(),
+        // What DuckDB sends by default: `ACCESS_DELEGATION_MODE 'vended_credentials'`. STS is
+        // disabled on this warehouse, so there is nothing to vend.
+        DataAccess {
+            vended_credentials: true,
+            remote_signing: false,
+        },
+        random_request_metadata(),
+    )
+    .await
+    .expect("loading a generic table must succeed");
+
+    assert!(
+        response.storage_credentials.is_none(),
+        "no credential was vended, so no storage-credentials entry may be returned: {:?}",
+        response.storage_credentials
+    );
+
+    // The client still learns how to reach the storage with its own credentials.
+    let config = response
+        .config
+        .expect("load response must carry a config when access is delegated");
+    assert_eq!(
+        config.get("s3.region").map(String::as_str),
+        Some(REGION),
+        "config must still carry the region: {config:?}"
+    );
+    assert_eq!(
+        config.get("s3.endpoint").map(String::as_str),
+        Some(format!("{ENDPOINT}/").as_str()),
+        "config must still carry the endpoint: {config:?}"
+    );
 }

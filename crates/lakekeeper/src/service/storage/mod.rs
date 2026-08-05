@@ -19,7 +19,12 @@ use error::{CredentialsError, TableConfigError, UpdateError};
 use futures::StreamExt;
 pub use gcs::{GcsCredential, GcsProfile, GcsServiceKey};
 use iceberg::{NamespaceIdent, TableIdent};
-use iceberg_ext::{catalog::rest::ErrorModel, configs::table::TableProperties};
+// `rest::StorageCredential` is the response-side credential entry; `StorageCredential` in this
+// module is the warehouse's stored secret. Aliased to keep the two apart.
+use iceberg_ext::{
+    catalog::rest::{ErrorModel, StorageCredential as VendedStorageCredential},
+    configs::table::TableProperties,
+};
 use lakekeeper_io::{
     InvalidLocationError, LakekeeperStorage, Location, LocationParseError, StorageBackend,
     s3::S3Location,
@@ -115,12 +120,39 @@ pub enum StoragePermissions {
 
 #[derive(Debug)]
 pub struct TableConfig {
+    /// The vended credential plus the properties qualifying it (region, endpoint,
+    /// refresh endpoint, ...), or empty when no credential was vended.
+    ///
+    /// Empty exactly when nothing was vended — backends must not park properties
+    /// here that make sense without a credential. [`Self::storage_credentials`]
+    /// relies on it.
     pub(crate) creds: TableProperties,
     pub(crate) config: TableProperties,
     /// Actual expiry (epoch ms) of the vended credentials in [`Self::creds`], or
     /// `None` if none expire. Set wherever a backend vends an expiring
     /// credential; the source for the `loadTable` `ETag`'s revalidation point.
     pub(crate) credentials_expiration_ms: Option<i64>,
+}
+
+impl TableConfig {
+    /// The `storage-credentials` entry to return for a tabular at `prefix`, or
+    /// `None` if no credential was vended.
+    ///
+    /// A credential-less entry is never emitted: clients honouring it scope a
+    /// key-less secret to `prefix` and then send unsigned requests for every file
+    /// below it, which the storage rejects — while the credentials the client
+    /// already had would have worked.
+    pub(crate) fn storage_credentials(
+        &self,
+        prefix: &Location,
+    ) -> Option<Vec<VendedStorageCredential>> {
+        (!self.creds.inner().is_empty()).then(|| {
+            vec![VendedStorageCredential {
+                prefix: prefix.to_string(),
+                config: self.creds.clone().into(),
+            }]
+        })
+    }
 }
 
 /// Half of a credential's remaining lifetime, capped at 1h — the window during
