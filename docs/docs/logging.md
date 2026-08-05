@@ -70,6 +70,8 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 
 **Note:** Empty arrays and objects are omitted from the output. For example, if `stack` is empty, the field will not appear in the log.
 
+**Ordering:** An authorization event records the *attempt*, and is emitted before the authorized operation commits its side-effects. An `"allowed"` decision therefore means the caller was permitted to perform the action, not that the action succeeded — if the operation fails afterwards the request returns an error while the authorization event remains in the log. This ordering is deliberate: a crash between the decision and the side-effect leaves the attempt audited rather than silently lost. Consumers reconciling audit logs against actual state should treat authorization events as attempts and correlate them with the corresponding operational event (see [Operational Audit Events](#operational-audit-events)) to confirm completion.
+
 **Actor Types:**
 
 ```json
