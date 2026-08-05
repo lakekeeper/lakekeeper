@@ -20,6 +20,7 @@ pub mod role;
 pub(crate) mod role_assignment;
 pub(crate) mod secrets;
 pub mod tabular;
+pub(crate) mod tag;
 pub mod tasks;
 pub(crate) mod user;
 pub mod warehouse;

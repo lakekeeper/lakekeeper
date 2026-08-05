@@ -5,8 +5,9 @@ use lakekeeper::{
         authz::{
             ActionDescriptor, CatalogAction, CatalogGenericTableAction, CatalogNamespaceAction,
             CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogViewAction, CatalogWarehouseAction, GenericTableAction, NamespaceAction,
-            ProjectAction, RoleAction, ServerAction, TableAction, ViewAction, WarehouseAction,
+            CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GenericTableAction,
+            NamespaceAction, ProjectAction, RoleAction, ServerAction, TableAction, TagAction,
+            ViewAction, WarehouseAction,
         },
     },
 };
@@ -254,6 +255,126 @@ impl ReducedRelation for CatalogRoleAction {
     }
 }
 
+/// Tag (governance tag definition) Relations in the `OpenFGA` schema
+#[derive(Debug, Copy, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum TagRelation {
+    // -- Hierarchical relations --
+    Project,
+    // -- Direct relations --
+    Ownership,
+    Apply,
+    // -- Actions --
+    CanRead,
+    CanUpdate,
+    CanDelete,
+    CanApply,
+    CanGrantApply,
+    CanChangeOwnership,
+    CanReadAssignments,
+    CanReadAttachments,
+}
+impl TagAction for TagRelation {}
+
+impl From<CatalogTagAction> for TagRelation {
+    fn from(action: CatalogTagAction) -> Self {
+        action.to_openfga()
+    }
+}
+
+impl OpenFgaRelation for TagRelation {}
+impl CatalogAction for TagRelation {
+    fn action_descriptor(&self) -> ActionDescriptor {
+        ActionDescriptor::builder().action_name(self.into()).build()
+    }
+}
+
+impl ReducedRelation for CatalogTagAction {
+    type OpenFgaRelation = TagRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            CatalogTagAction::Read => TagRelation::CanRead,
+            CatalogTagAction::Update => TagRelation::CanUpdate,
+            CatalogTagAction::Delete => TagRelation::CanDelete,
+            // Attach and detach carry the same tag-side gate: stripping a governance
+            // tag must not be possible with target rights alone.
+            CatalogTagAction::Apply | CatalogTagAction::Remove => TagRelation::CanApply,
+            CatalogTagAction::ReadAttachments => TagRelation::CanReadAttachments,
+        }
+    }
+}
+
+/// The directly-assignable relations of a tag definition: the per-tag delegation
+/// points a grantor can hand out or revoke.
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "open-api", schema(as=TagRelation))]
+pub(super) enum APITagRelation {
+    Ownership,
+    Apply,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum TagAssignment {
+    #[cfg_attr(feature = "open-api", schema(title = "TagAssignmentOwnership"))]
+    Ownership(UserOrRole),
+    #[cfg_attr(feature = "open-api", schema(title = "TagAssignmentApply"))]
+    Apply(UserOrRole),
+}
+
+impl GrantableRelation for APITagRelation {
+    fn grant_relation(&self) -> Self::OpenFgaRelation {
+        match self {
+            APITagRelation::Ownership => TagRelation::CanChangeOwnership,
+            APITagRelation::Apply => TagRelation::CanGrantApply,
+        }
+    }
+}
+
+impl Assignment for TagAssignment {
+    type Relation = APITagRelation;
+
+    fn try_from_user(
+        user: &str,
+        relation: &Self::Relation,
+    ) -> Result<Self, ParseOpenFgaEntityError> {
+        match relation {
+            APITagRelation::Ownership => {
+                UserOrRole::parse_from_openfga(user).map(TagAssignment::Ownership)
+            }
+            APITagRelation::Apply => UserOrRole::parse_from_openfga(user).map(TagAssignment::Apply),
+        }
+    }
+
+    fn openfga_user(&self) -> String {
+        match self {
+            TagAssignment::Ownership(user) | TagAssignment::Apply(user) => user.to_openfga(),
+        }
+    }
+
+    fn relation(&self) -> Self::Relation {
+        match self {
+            TagAssignment::Ownership(_) => APITagRelation::Ownership,
+            TagAssignment::Apply(_) => APITagRelation::Apply,
+        }
+    }
+}
+
+impl ReducedRelation for APITagRelation {
+    type OpenFgaRelation = TagRelation;
+
+    fn to_openfga(&self) -> Self::OpenFgaRelation {
+        match self {
+            APITagRelation::Ownership => TagRelation::Ownership,
+            APITagRelation::Apply => TagRelation::Apply,
+        }
+    }
+}
+
 /// Server Relations in the `OpenFGA` schema
 #[derive(Copy, Debug, Clone, strum_macros::Display, Hash, Eq, PartialEq, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -439,6 +560,7 @@ pub enum ProjectRelation {
     SecurityAdmin,
     DataAdmin,
     RoleCreator,
+    TagCreator,
     Describe,
     Select,
     Create,
@@ -453,8 +575,11 @@ pub enum ProjectRelation {
     CanCreateRole,
     CanListRoles,
     CanSearchRoles,
+    CanCreateTag,
+    CanListTags,
     CanReadAssignments,
     CanGrantRoleCreator,
+    CanGrantTagCreator,
     CanGrantCreate,
     CanGrantDescribe,
     CanGrantModify,
@@ -692,6 +817,8 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::CreateRole { .. } => ProjectRelation::CanCreateRole,
             CatalogProjectAction::ListRoles => ProjectRelation::CanListRoles,
             CatalogProjectAction::SearchRoles => ProjectRelation::CanSearchRoles,
+            CatalogProjectAction::CreateTag { .. } => ProjectRelation::CanCreateTag,
+            CatalogProjectAction::ListTags => ProjectRelation::CanListTags,
             CatalogProjectAction::GetEndpointStatistics => {
                 ProjectRelation::CanGetEndpointStatistics
             }
@@ -739,6 +866,7 @@ pub enum WarehouseRelation {
     Select,
     Create,
     Modify,
+    ManageTags,
     // -- Actions --
     CanCreateNamespace,
     CanDelete,
@@ -755,6 +883,7 @@ pub enum WarehouseRelation {
     CanActivate,
     CanRename,
     CanListDeletedTabulars,
+    CanManageTags,
     CanReadAssignments,
     CanGrantCreate,
     CanGrantDescribe,
@@ -762,6 +891,7 @@ pub enum WarehouseRelation {
     CanGrantSelect,
     CanGrantPassGrants,
     CanGrantManageGrants,
+    CanGrantManageTags,
     CanChangeOwnership,
     CanSetManagedAccess,
     CanGetTaskQueueConfig,
@@ -1008,6 +1138,7 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::UpdateStorageCredential => {
                 WarehouseRelation::CanUpdateStorageCredential
             }
+            CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
             CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::GetConfig => WarehouseRelation::CanGetConfig,
             CatalogWarehouseAction::ListNamespaces => WarehouseRelation::CanListNamespaces,
@@ -1072,6 +1203,7 @@ pub enum NamespaceRelation {
     Select,
     Create,
     Modify,
+    ManageTags,
     // -- Actions --
     CanCreateTable,
     CanCreateView,
@@ -1086,6 +1218,7 @@ pub enum NamespaceRelation {
     CanListGenericTables,
     CanListEverything,
     CanIncludeInList,
+    CanManageTags,
     CanReadAssignments,
     CanGrantCreate,
     CanGrantDescribe,
@@ -1093,6 +1226,7 @@ pub enum NamespaceRelation {
     CanGrantSelect,
     CanGrantPassGrants,
     CanGrantManageGrants,
+    CanGrantManageTags,
     CanChangeOwnership,
     CanSetManagedAccess,
     CanSetProtection,
@@ -1313,6 +1447,7 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::UpdateProperties { .. } => {
                 NamespaceRelation::CanUpdateProperties
             }
+            CatalogNamespaceAction::ManageTags => NamespaceRelation::CanManageTags,
             CatalogNamespaceAction::GetMetadata => NamespaceRelation::CanGetMetadata,
             CatalogNamespaceAction::ListTables => NamespaceRelation::CanListTables,
             CatalogNamespaceAction::ListViews => NamespaceRelation::CanListViews,
@@ -1356,6 +1491,7 @@ pub enum TableRelation {
     Describe,
     Select,
     Modify,
+    ManageTags,
     // -- Actions --
     CanDrop,
     CanWriteData,
@@ -1364,12 +1500,14 @@ pub enum TableRelation {
     CanCommit,
     CanRename,
     CanIncludeInList,
+    CanManageTags,
     CanReadAssignments,
     CanGrantPassGrants,
     CanGrantManageGrants,
     CanGrantDescribe,
     CanGrantSelect,
     CanGrantModify,
+    CanGrantManageTags,
     CanChangeOwnership,
     CanUndrop,
     CanGetTasks,
@@ -1581,6 +1719,7 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::Drop { .. } => TableRelation::CanDrop,
             CatalogTableAction::WriteData => TableRelation::CanWriteData,
             CatalogTableAction::ReadData => TableRelation::CanReadData,
+            CatalogTableAction::ManageTags => TableRelation::CanManageTags,
             CatalogTableAction::GetMetadata => TableRelation::CanGetMetadata,
             CatalogTableAction::Commit { .. } => TableRelation::CanCommit,
             CatalogTableAction::Rename => TableRelation::CanRename,
@@ -1621,6 +1760,7 @@ pub enum ViewRelation {
     Describe,
     Select,
     Modify,
+    ManageTags,
     // -- Actions --
     CanDrop,
     CanCommit,
@@ -1628,12 +1768,14 @@ pub enum ViewRelation {
     CanSelect,
     CanRename,
     CanIncludeInList,
+    CanManageTags,
     CanReadAssignments,
     CanGrantPassGrants,
     CanGrantManageGrants,
     CanGrantDescribe,
     CanGrantSelect,
     CanGrantModify,
+    CanGrantManageTags,
     CanChangeOwnership,
     CanUndrop,
     CanGetTasks,
@@ -1842,6 +1984,7 @@ impl ReducedRelation for CatalogViewAction {
         match self {
             CatalogViewAction::Drop { .. } => ViewRelation::CanDrop,
             CatalogViewAction::Commit { .. } => ViewRelation::CanCommit,
+            CatalogViewAction::ManageTags => ViewRelation::CanManageTags,
             CatalogViewAction::GetMetadata => ViewRelation::CanGetMetadata,
             CatalogViewAction::Select => ViewRelation::CanSelect,
             CatalogViewAction::Rename => ViewRelation::CanRename,
@@ -1886,6 +2029,7 @@ pub enum GenericTableRelation {
     Describe,
     Select,
     Modify,
+    ManageTags,
     // -- Actions --
     CanDrop,
     CanUndrop,
@@ -1897,6 +2041,7 @@ pub enum GenericTableRelation {
     CanGetTasks,
     CanControlTasks,
     CanSetProtection,
+    CanManageTags,
     // -- Read assignments / grant actions --
     CanReadAssignments,
     CanGrantPassGrants,
@@ -1904,6 +2049,7 @@ pub enum GenericTableRelation {
     CanGrantDescribe,
     CanGrantSelect,
     CanGrantModify,
+    CanGrantManageTags,
     CanChangeOwnership,
 }
 
@@ -1940,6 +2086,7 @@ impl ReducedRelation for CatalogGenericTableAction {
             CatalogGenericTableAction::Undrop => GenericTableRelation::CanUndrop,
             CatalogGenericTableAction::WriteData => GenericTableRelation::CanWriteData,
             CatalogGenericTableAction::ReadData => GenericTableRelation::CanReadData,
+            CatalogGenericTableAction::ManageTags => GenericTableRelation::CanManageTags,
             CatalogGenericTableAction::GetMetadata => GenericTableRelation::CanGetMetadata,
             CatalogGenericTableAction::Rename => GenericTableRelation::CanRename,
             CatalogGenericTableAction::IncludeInList => GenericTableRelation::CanIncludeInList,

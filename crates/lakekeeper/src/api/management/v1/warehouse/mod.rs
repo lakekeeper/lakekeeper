@@ -719,10 +719,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
+        transaction.commit().await?;
+
+        // Post-commit: best-effort authz cleanup (see `delete_project`).
         authorizer
             .delete_warehouse(event_ctx.request_metadata(), warehouse_id)
-            .await?;
-        transaction.commit().await?;
+            .await
+            .inspect_err(|e| {
+                tracing::error!(
+                    ?e,
+                    "Failed to delete warehouse from authorizer: {}",
+                    e.error
+                );
+            })
+            .ok();
 
         event_ctx.emit_warehouse_deleted();
 

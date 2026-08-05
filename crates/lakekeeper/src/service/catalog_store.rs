@@ -11,8 +11,8 @@ use moka::{
 };
 
 use super::{
-    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, ViewId, WarehouseId,
-    storage::StorageProfile,
+    GenericTableId, NamespaceId, ProjectId, RoleId, RoleIdent, TableId, TagDefinitionId, TagId,
+    ViewId, WarehouseId, storage::StorageProfile,
 };
 pub use crate::api::iceberg::v1::{
     CreateNamespaceRequest, CreateNamespaceResponse, ListNamespacesQuery, NamespaceIdent, Result,
@@ -78,6 +78,8 @@ pub(crate) mod role_assignments_cache;
 pub use idempotency::*;
 pub mod generic_table;
 pub use generic_table::*;
+mod tag;
+pub use tag::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -765,6 +767,107 @@ where
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
+
+    // ---------------- Tag Management ----------------
+    async fn create_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        request: CatalogCreateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<TagDefinition, CreateTagDefinitionError>;
+
+    /// Return the tag definition scoped to its project, or `None` if absent (including
+    /// when it exists in a different project). Allowed values are fetched separately.
+    async fn get_tag_definition_impl(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError>;
+
+    /// Case-insensitive name lookup within the project (matches the `lower(name)`
+    /// unique index).
+    async fn get_tag_definition_by_name_impl(
+        project_id: &ProjectId,
+        name: &str,
+        catalog_state: Self::State,
+    ) -> Result<Option<TagDefinition>, CatalogBackendError>;
+
+    async fn list_tag_definitions_impl(
+        project_id: &ProjectId,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagDefinitionsResponse, ListTagDefinitionsError>;
+
+    /// The permitted values of an enumerated definition, sorted; empty for other kinds.
+    async fn get_tag_allowed_values_impl(
+        tag_definition_id: TagDefinitionId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<String>, CatalogBackendError>;
+
+    /// Replace `name`/`description`/`scope` and add (never remove) allowed values.
+    /// The widen-only / kind-immutable policy is enforced by the caller. Returns the
+    /// definition and its merged allowed values (read in the same transaction, empty
+    /// for non-enumerated) so the caller need not re-read after commit.
+    async fn update_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        request: UpdateTagDefinitionRequest<'_>,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(TagDefinition, Vec<String>), UpdateTagDefinitionError>;
+
+    async fn delete_tag_definition_impl<'a>(
+        project_id: &ProjectId,
+        tag_definition_id: TagDefinitionId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), DeleteTagDefinitionError>;
+
+    /// Attach a definition to a target. Idempotent per (target, definition, source):
+    /// re-applying updates the value. Value legality is validated by the caller.
+    async fn apply_tag_impl<'a>(
+        tag_id: TagId,
+        tag_definition_id: TagDefinitionId,
+        target: TagTarget,
+        value: Option<&str>,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(Tag, bool), ApplyTagError>;
+
+    async fn remove_tag_impl<'a>(
+        tag_id: TagId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<(), RemoveTagError>;
+
+    /// Atomically delete the `(target, definition, source)` attachment and return it
+    /// (or `None` if absent). Single-statement `DELETE ... RETURNING` in the write
+    /// transaction — no replica read, idempotent, and safe under concurrent deletes.
+    async fn remove_tag_for_target_impl<'a>(
+        target: TagTarget,
+        tag_definition_id: TagDefinitionId,
+        source: TagSource,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Option<Tag>, RemoveTagError>;
+
+    /// The tags directly on `target`, each paired with its definition's name.
+    async fn list_tags_for_target_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
+    /// Reverse lookup: the targets a definition is directly attached to, narrowed by
+    /// `filter` (all criteria combined with AND), keyset-paginated. No hierarchy expansion.
+    async fn list_tag_attachments_impl(
+        tag_definition_id: TagDefinitionId,
+        filter: &TagAttachmentFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError>;
+
+    /// Gather candidate effective tags for `target` (direct + ancestor tags with
+    /// containment distance and source). Unresolved/unfiltered; caller applies
+    /// visibility + most-specific-wins.
+    async fn list_effective_tag_candidates_impl(
+        target: TagTarget,
+        catalog_state: Self::State,
+    ) -> Result<Vec<EffectiveTagCandidate>, CatalogBackendError>;
 
     // ---------------- Role Assignment Management ----------------
     async fn sync_role_members_by_ident_impl<'a>(

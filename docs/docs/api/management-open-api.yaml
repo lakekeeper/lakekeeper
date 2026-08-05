@@ -804,6 +804,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetOpenFGAServerActionsResponse'
+  /management/v1/permissions/tag/{tag_definition_id}/assignments:
+    get:
+      tags:
+        - permissions-openfga
+      summary: Get user and role assignments of a tag definition (who may apply it / owns it)
+      operationId: get_tag_assignments_by_id
+      parameters:
+        - name: relations
+          in: query
+          description: Relations to be loaded. If not specified, all relations are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/TagRelation'
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTagAssignmentsResponse'
+    post:
+      tags:
+        - permissions-openfga
+      summary: Update user and role assignments of a tag definition (grant/revoke apply, transfer ownership)
+      operationId: update_tag_assignments_by_id
+      parameters:
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagAssignmentsRequest'
+        required: true
+      responses:
+        '204':
+          description: Permissions updated successfully
   /management/v1/permissions/warehouse/{warehouse_id}:
     get:
       tags:
@@ -2639,6 +2690,313 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition:
+    get:
+      tags:
+        - tag
+      summary: List Tag Definitions
+      description: Returns the tag definitions of the project.
+      operationId: list_tag_definitions
+      parameters:
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: name
+          in: query
+          description: |-
+            Filter by exact name (case-insensitive). If set, the response contains
+            zero or one entries and no pagination token.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: List of tag definitions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagDefinitionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tag
+      summary: Create Tag Definition
+      description: Registers a tag definition in the project's vocabulary.
+      operationId: create_tag_definition
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTagDefinitionRequest'
+        required: true
+      responses:
+        '201':
+          description: Tag definition successfully created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagDefinition'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition/{tag_definition_id}:
+    get:
+      tags:
+        - tag
+      summary: Get Tag Definition
+      description: |-
+        Retrieves a tag definition, including the allowed values of an
+        enumerated definition.
+      operationId: get_tag_definition
+      parameters:
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tag definition details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagDefinition'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - tag
+      summary: Update Tag Definition
+      description: |-
+        Replaces name, description and scope, and adds allowed values. Scope can
+        only be widened; the value kind is immutable.
+      operationId: update_tag_definition
+      parameters:
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTagDefinitionRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag definition updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagDefinition'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Tag Definition
+      description: Removes a tag definition that is no longer applied to any target.
+      operationId: delete_tag_definition
+      parameters:
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag definition deleted successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition/{tag_definition_id}/attachments:
+    get:
+      tags:
+        - tag
+      summary: List Tag Attachments
+      description: |-
+        Lists the targets a tag definition is attached to (reverse lookup).
+        Direct attachments only — no hierarchy expansion. Restricted to tag owners
+        and project security admins.
+      operationId: list_tag_attachments
+      parameters:
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          description: |-
+            Signals an upper bound of the number of results that a client will receive.
+            Default: 100
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: value
+          in: query
+          description: |-
+            Return only attachments carrying exactly this value (case-sensitive). Omit to
+            return all. Marker tags carry no value, so a value filter excludes them.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: targetType
+          in: query
+          description: Restrict to a single target object type.
+          required: false
+          schema:
+            oneOf:
+              - type: 'null'
+              - $ref: '#/components/schemas/TagScope'
+        - name: createdAfter
+          in: query
+          description: Only attachments created at or after this instant (RFC 3339, inclusive).
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: createdBefore
+          in: query
+          description: Only attachments created at or before this instant (RFC 3339, inclusive).
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: date-time
+        - name: warehouseId
+          in: query
+          description: Restrict to attachments within a single warehouse.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Targets carrying this tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagAttachmentsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/user:
     get:
       tags:
@@ -3437,6 +3795,164 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags:
+    get:
+      tags:
+        - tag
+      summary: List Generic Table Tags
+      description: Returns the tags applied to the generic table.
+      operationId: list_generic_table_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the generic table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set Generic Table Tag
+      description: |-
+        Applies a tag to the generic table, or updates its value if already
+        applied.
+      operationId: set_generic_table_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Generic Table Tag
+      description: |-
+        Removes a tag from the generic table. Succeeds without change if the
+        tag is not applied.
+      operationId: delete_generic_table_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/managed-by:
     post:
       tags:
@@ -3587,6 +4103,162 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/tags:
+    get:
+      tags:
+        - tag
+      summary: List Namespace Tags
+      description: Returns the tags applied to the namespace.
+      operationId: list_namespace_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the namespace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set Namespace Tag
+      description: Applies a tag to the namespace, or updates its value if already applied.
+      operationId: set_namespace_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Namespace Tag
+      description: |-
+        Removes a tag from the namespace. Succeeds without change if the tag
+        is not applied.
+      operationId: delete_namespace_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
         4XX:
           description: ''
           content:
@@ -3872,6 +4544,183 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags:
+    get:
+      tags:
+        - tag
+      summary: List Table Column Tags
+      description: Returns the tags applied to a column of the table's current schema.
+      operationId: list_table_column_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: column_name
+          in: path
+          description: Column name in the table's current schema
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the column
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set Table Column Tag
+      description: |-
+        Applies a tag to a column of the table's current schema, or updates
+        its value if already applied. Nested columns are addressed with `.`
+        as separator (e.g. `address.zip`).
+      operationId: set_table_column_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: column_name
+          in: path
+          description: Column name in the table's current schema
+          required: true
+          schema:
+            type: string
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Table Column Tag
+      description: |-
+        Removes a tag from a column of the table's current schema. Succeeds
+        without change if the tag is not applied.
+      operationId: delete_table_column_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: column_name
+          in: path
+          description: Column name in the table's current schema
+          required: true
+          schema:
+            type: string
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -3937,6 +4786,297 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProtectionResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags:
+    get:
+      tags:
+        - tag
+      summary: List Table Tags
+      description: Returns the tags applied to the table.
+      operationId: list_table_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set Table Tag
+      description: Applies a tag to the table, or updates its value if already applied.
+      operationId: set_table_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Table Tag
+      description: |-
+        Removes a tag from the table. Succeeds without change if the tag is
+        not applied.
+      operationId: delete_table_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/tags:
+    get:
+      tags:
+        - tag
+      summary: List Warehouse Tags
+      description: Returns the tags applied to the warehouse.
+      operationId: list_warehouse_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the warehouse (direct; or effective with ?effective=true, which is a no-op here as a warehouse has no ancestors)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set Warehouse Tag
+      description: Applies a tag to the warehouse, or updates its value if already applied.
+      operationId: set_warehouse_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete Warehouse Tag
+      description: |-
+        Removes a tag from the warehouse. Succeeds without change if the tag
+        is not applied.
+      operationId: delete_warehouse_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
         4XX:
           description: ''
           content:
@@ -4289,6 +5429,162 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/tags:
+    get:
+      tags:
+        - tag
+      summary: List View Tags
+      description: Returns the tags applied to the view.
+      operationId: list_view_tags
+      parameters:
+        - name: effective
+          in: query
+          description: |-
+            When `true`, return the resolved *effective* tags — the target's own tags
+            plus tags inherited from its ancestor namespaces and warehouse
+            (most-specific-wins) — instead of only directly-attached tags. No-op for a
+            warehouse (no ancestors) and for a column (columns do not inherit).
+          required: false
+          schema:
+            type:
+              - boolean
+              - 'null'
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on the view
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}:
+    put:
+      tags:
+        - tag
+      summary: Set View Tag
+      description: Applies a tag to the view, or updates its value if already applied.
+      operationId: set_view_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTagRequest'
+        required: true
+      responses:
+        '200':
+          description: Tag applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppliedTag'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - tag
+      summary: Delete View Tag
+      description: |-
+        Removes a tag from the view. Succeeds without change if the tag is
+        not applied.
+      operationId: delete_view_tag
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tag_name
+          in: path
+          description: Name of the tag definition
+          required: true
+          schema:
+            type: string
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '204':
+          description: Tag removed
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/whoami:
     get:
       tags:
@@ -4399,6 +5695,29 @@ components:
             - type: 'null'
             - $ref: '#/components/schemas/StorageLayout'
               description: Storage layout for namespace and tabular paths.
+    AppliedTag:
+      type: object
+      required:
+        - tag-definition-id
+        - name
+        - applied-at
+      properties:
+        applied-at:
+          type: string
+          format: date-time
+          description: Timestamp when the tag was applied or last updated on this target
+        name:
+          type: string
+          description: Name of the applied tag definition
+        tag-definition-id:
+          type: string
+          format: uuid
+          description: ID of the applied tag definition
+        value:
+          type:
+            - string
+            - 'null'
+          description: Value the tag carries on this target
     AzCredential:
       oneOf:
         - type: object
@@ -4900,6 +6219,41 @@ components:
           description: |-
             Identifier of the role in the provider.
             Must be provided together with `provider-id`.
+    CreateTagDefinitionRequest:
+      type: object
+      required:
+        - name
+        - scope
+        - value-kind
+      properties:
+        allowed-values:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: |-
+            Permitted values. Required (non-empty) for `enumerated` definitions,
+            must be omitted otherwise.
+        description:
+          type:
+            - string
+            - 'null'
+          description: Description of the tag definition
+        name:
+          type: string
+          description: |-
+            Name of the tag definition. `.` is the hierarchy delimiter
+            (e.g. `pii.classification`). Unique within the project,
+            case-insensitively.
+        scope:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagScope'
+          description: Target types this definition may be applied to
+        value-kind:
+          $ref: '#/components/schemas/TagValueKind'
+          description: How values of this definition are constrained
     CreateUserRequest:
       type: object
       properties:
@@ -5818,6 +7172,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    GetTagAssignmentsResponse:
+      type: object
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAssignment'
     GetTaskDetailsResponse:
       allOf:
         - $ref: '#/components/schemas/WarehouseTaskInfo'
@@ -6070,6 +7433,14 @@ components:
               type: string
               enum:
                 - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperNamespaceAction:
       oneOf:
         - type: object
@@ -6278,6 +7649,15 @@ components:
               type: string
               enum:
                 - list_generic_tables
+        - type: object
+          description: Attach/detach governance tags on this namespace.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperNamespaceActionKind:
       oneOf:
         - type: object
@@ -6392,6 +7772,14 @@ components:
               type: string
               enum:
                 - list_generic_tables
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperProjectAction:
       oneOf:
         - type: object
@@ -6516,6 +7904,29 @@ components:
               type: string
               enum:
                 - control_project_tasks
+        - type: object
+          description: Create a new governance tag definition in this project.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_tag
+            name:
+              type:
+                - string
+                - 'null'
+              description: Name of the tag to create.
+        - type: object
+          description: List tag definitions in this project.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_tags
     LakekeeperProjectActionKind:
       oneOf:
         - type: object
@@ -6630,6 +8041,22 @@ components:
               type: string
               enum:
                 - control_project_tasks
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - create_tag
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - list_tags
     LakekeeperRoleActionKind:
       oneOf:
         - type: object
@@ -6910,6 +8337,15 @@ components:
               type: string
               enum:
                 - set_protection
+        - type: object
+          description: Attach/detach governance tags on this table.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperTableActionKind:
       oneOf:
         - type: object
@@ -7000,6 +8436,14 @@ components:
               type: string
               enum:
                 - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperUserAction:
       oneOf:
         - type: object
@@ -7135,6 +8579,15 @@ components:
               type: string
               enum:
                 - set_protection
+        - type: object
+          description: Attach/detach governance tags on this view.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperViewActionKind:
       oneOf:
         - type: object
@@ -7217,6 +8670,14 @@ components:
               type: string
               enum:
                 - set_protection
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperWarehouseAction:
       oneOf:
         - type: object
@@ -7406,6 +8867,15 @@ components:
               type: string
               enum:
                 - get_endpoint_statistics
+        - type: object
+          description: Attach/detach governance tags on this warehouse.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LakekeeperWarehouseActionKind:
       oneOf:
         - type: object
@@ -7584,6 +9054,14 @@ components:
               type: string
               enum:
                 - get_endpoint_statistics
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - manage_tags
     LicenseStatus:
       type: object
       description: Status of license validation
@@ -7770,6 +9248,42 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+    ListTagAttachmentsResponse:
+      type: object
+      required:
+        - attachments
+      properties:
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAttachment'
+          description: The targets carrying this tag (direct attachments only — no hierarchy expansion)
+        next-page-token:
+          type:
+            - string
+            - 'null'
+    ListTagDefinitionsResponse:
+      type: object
+      required:
+        - tag-definitions
+      properties:
+        next-page-token:
+          type:
+            - string
+            - 'null'
+        tag-definitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagDefinition'
+    ListTagsResponse:
+      type: object
+      required:
+        - tags
+      properties:
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetTag'
     ListTasksRequest:
       type: object
       properties:
@@ -9138,6 +10652,16 @@ components:
           format: int64
         queue-config:
           $ref: '#/components/schemas/SoftDeletionQueueConfig'
+    SetTagRequest:
+      type: object
+      properties:
+        value:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Value for the tag. Required for `free-text` and `enumerated`
+            definitions; must be omitted for `marker` definitions.
     SetTaskLogCleanupConfig:
       type: object
       required:
@@ -9731,6 +11255,322 @@ components:
         - table
         - view
         - generic-table
+    TagAssignment:
+      oneOf:
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - ownership
+          title: TagAssignmentOwnership
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - apply
+          title: TagAssignmentApply
+    TagAttachment:
+      type: object
+      description: One target a tag definition is attached to (reverse lookup).
+      required:
+        - target
+        - source
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the tag was applied to this target
+        source:
+          $ref: '#/components/schemas/TagSource'
+          description: How the tag came to exist on this target
+        target:
+          $ref: '#/components/schemas/TagAttachmentTarget'
+          description: The object the tag is attached to
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Timestamp when the tag's value was last updated on this target
+        value:
+          type:
+            - string
+            - 'null'
+          description: Value the tag carries on this target
+    TagAttachmentTarget:
+      oneOf:
+        - type: object
+          required:
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - namespace-id
+            - type
+          properties:
+            namespace-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - namespace
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - generic-table-id
+            - type
+          properties:
+            generic-table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - generic-table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - table-id
+            - field-id
+            - type
+          properties:
+            field-id:
+              type: integer
+              format: int32
+              description: Iceberg field-id of the column within the table's schema.
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - column
+            warehouse-id:
+              type: string
+              format: uuid
+      description: |-
+        The object a tag is attached to in a reverse-lookup listing. `type`
+        discriminates the target kind; columns are addressed by Iceberg field-id.
+    TagDefinition:
+      type: object
+      required:
+        - id
+        - name
+        - scope
+        - value-kind
+        - created-at
+      properties:
+        allowed-values:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: |-
+            Permitted values of an enumerated definition. Present when a single
+            definition is fetched or created; omitted on list entries.
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the tag definition was created
+        description:
+          type:
+            - string
+            - 'null'
+          description: Description of the tag definition
+        id:
+          type: string
+          format: uuid
+          description: Globally unique UUID identifier
+        name:
+          type: string
+          description: Name of the tag definition
+        scope:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagScope'
+          description: Target types this definition may be applied to
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Timestamp when the tag definition was last updated
+        value-kind:
+          $ref: '#/components/schemas/TagValueKind'
+          description: How values of this definition are constrained
+    TagInheritanceSource:
+      oneOf:
+        - type: object
+          required:
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          required:
+            - warehouse-id
+            - namespace-id
+            - type
+          properties:
+            namespace-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - namespace
+            warehouse-id:
+              type: string
+              format: uuid
+      description: |-
+        The ancestor an inherited effective tag is attached to. Restricted to the levels
+        that can actually be ancestors (warehouse / namespace).
+    TagRelation:
+      type: string
+      description: |-
+        The directly-assignable relations of a tag definition: the per-tag delegation
+        points a grantor can hand out or revoke.
+      enum:
+        - ownership
+        - apply
+    TagScope:
+      type: string
+      description: Target types a tag definition may be applied to.
+      enum:
+        - warehouse
+        - namespace
+        - table
+        - view
+        - generic-table
+        - column
+    TagSource:
+      type: string
+      description: How a tag came to exist. Server-assigned; currently always `manual`.
+      enum:
+        - manual
+    TagValueKind:
+      type: string
+      description: |-
+        How a tag definition's value is constrained: presence-only, arbitrary text,
+        or one of a fixed set of allowed values.
+      enum:
+        - marker
+        - free-text
+        - enumerated
+    TargetTag:
+      type: object
+      description: |-
+        A tag on a target. With `effective=true` an entry may be inherited from an
+        ancestor — see `inherited-from`. The `value`/`source`/`created-at`/`updated-at`
+        fields describe the attachment that supplies the tag: the queried object itself
+        when `inherited-from` is absent, otherwise the ancestor named there.
+      required:
+        - tag-definition-id
+        - name
+        - source
+        - created-at
+      properties:
+        created-at:
+          type: string
+          format: date-time
+          description: Timestamp when the supplying attachment was created
+        inherited-from:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/TagInheritanceSource'
+              description: |-
+                For an effective tag inherited from an ancestor, the object it is attached
+                to. Absent when the tag is attached directly to the queried object. Only
+                ever populated with `effective=true`.
+        name:
+          type: string
+          description: Name of the tag definition
+        source:
+          $ref: '#/components/schemas/TagSource'
+          description: |-
+            How the supplying attachment was produced (producer axis, e.g. `manual`;
+            independent of direct-vs-inherited, which is `inherited-from`)
+        tag-definition-id:
+          type: string
+          format: uuid
+          description: ID of the tag definition
+        updated-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: Timestamp when the supplying attachment's value was last updated
+        value:
+          type:
+            - string
+            - 'null'
+          description: Value the tag carries on the supplying attachment
     TaskAttempt:
       type: object
       required:
@@ -9969,6 +11809,47 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TableAssignment'
+    UpdateTagAssignmentsRequest:
+      type: object
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAssignment'
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagAssignment'
+    UpdateTagDefinitionRequest:
+      type: object
+      required:
+        - name
+        - scope
+      properties:
+        add-allowed-values:
+          type:
+            - array
+            - 'null'
+          items:
+            type: string
+          description: |-
+            Values to add to an enumerated definition's allowed set. Existing values
+            are never removed. Only valid for `enumerated` definitions.
+        description:
+          type:
+            - string
+            - 'null'
+          description: Description of the tag definition. If not set, the description will be removed.
+        name:
+          type: string
+          description: New name of the tag definition (may equal the current name)
+        scope:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagScope'
+          description: |-
+            Full replacement scope. Must contain every currently configured scope
+            (scope can only be widened).
     UpdateUserRequest:
       type: object
       required:
@@ -10679,5 +12560,7 @@ tags:
     description: Manage Users
   - name: role
     description: Manage Roles
+  - name: tag
+    description: '**[Preview]** Manage governance tags. This API is in preview and may change in a backward-incompatible way in a future release.'
   - name: permissions-openfga
     description: Authorization and permissions management using OpenFGA

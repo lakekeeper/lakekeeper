@@ -554,6 +554,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         };
+        // Keep authz cleanup pre-commit and propagating (unlike object deletes):
+        // a `UserId` returns on re-login and has no `create_user` `require_no_relations`
+        // guard, so best-effort cleanup could leave grants a re-provisioned user inherits.
         authorizer
             .delete_user(event_ctx.request_metadata(), user_id.clone())
             .await?;

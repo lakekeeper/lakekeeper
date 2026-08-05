@@ -14,7 +14,7 @@ use iceberg::{
     },
 };
 use iceberg_ext::{
-    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse, StorageCredential},
+    catalog::rest::{IcebergErrorResponse, LoadCredentialsResponse},
     configs::ParseFromStr,
 };
 use itertools::Itertools;
@@ -633,14 +633,9 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
             .await?;
 
-        let storage_credentials = if storage_config.creds.inner().is_empty() {
-            vec![]
-        } else {
-            vec![StorageCredential {
-                prefix: tabular_info.location.to_string(),
-                config: storage_config.creds.into(),
-            }]
-        };
+        let storage_credentials = storage_config
+            .storage_credentials(&tabular_info.location)
+            .unwrap_or_default();
 
         Ok(LoadCredentialsResponse {
             storage_credentials,

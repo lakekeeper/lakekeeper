@@ -18,6 +18,9 @@ type namespace
     define select: [user, role#assignee] or ownership or modify or select from parent
     define create: [user, role#assignee] or ownership or create from parent
     define modify: [user, role#assignee] or ownership or modify from parent
+    # Governance tag attachment. Independent of `modify` (separation of duties);
+    # inherits down the resource tree, so warehouse/project grants flow in.
+    define manage_tags: [user, role#assignee] or manage_tags from parent
 
     # ------------------ Actions ------------------
     define can_create_table: create
@@ -33,8 +36,9 @@ type namespace
     define can_list_namespaces: can_get_metadata
     define can_list_everything: describe
     define can_include_in_list: can_get_metadata
-    define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_change_ownership
+    define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_grant_manage_tags or can_change_ownership
     define can_set_protection: modify
+    define can_manage_tags: manage_tags
     # GRANT Permissions
     define can_grant_create: manage_grants or (create and pass_grants)
     define can_grant_describe: manage_grants or (describe and pass_grants)
@@ -42,5 +46,6 @@ type namespace
     define can_grant_select: manage_grants or (select and pass_grants)
     define can_grant_pass_grants: manage_grants
     define can_grant_manage_grants: manage_grants
+    define can_grant_manage_tags: manage_grants
     define can_change_ownership: manage_grants
     define can_set_managed_access: manage_grants
