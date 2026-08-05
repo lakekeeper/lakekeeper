@@ -302,6 +302,23 @@ fn batch_delete_request(keys: &[String]) -> S3SignRequest {
     )
 }
 
+/// The S3 `ListObjectsV2` request prefix listing issues: `GET /{bucket}?list-type=2` with
+/// the directory to walk in the `prefix` query parameter instead of in the path.
+fn list_prefix_request(prefix: &str) -> S3SignRequest {
+    sign_request(
+        Method::GET,
+        format!("{ENDPOINT}/{BUCKET}?list-type=2&prefix={prefix}")
+            .parse()
+            .unwrap(),
+    )
+}
+
+/// The bucket-relative key of `base_location` as a directory prefix, which is what
+/// Iceberg's `FileSystemWalker` lists.
+fn dir_key_of(base_location: &str) -> String {
+    key_under(base_location, "")
+}
+
 /// The bucket-relative S3 key of `suffix` under `base_location`.
 fn key_under(base_location: &str, suffix: &str) -> String {
     let prefix = format!("s3://{BUCKET}/");
@@ -553,6 +570,146 @@ async fn test_sign_generic_table_batch_delete_rejects_foreign_key(pool: PgPool) 
         .expect_err("a bulk delete touching another location must fail");
 
     assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    assert_eq!(err.error.r#type, "RequestUriMismatch", "{err:?}");
+}
+
+/// Prefix listing (`SupportsPrefixOperations`, used by Spark's `remove_orphan_files` with
+/// `prefix_listing => true`) reaches the signer as a bucket-level `ListObjectsV2`. The table
+/// is identified by the `prefix` query parameter, and listing is authorized as a read.
+#[sqlx::test]
+async fn test_sign_generic_table_list_prefix(pool: PgPool) {
+    let authz = HidingAuthorizer::new();
+    let (ctx, namespace_name, warehouse_id) = setup(pool, authz.clone()).await;
+    let base_location =
+        create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+
+    for prefix in [
+        // The table's own directory, and a subdirectory of it.
+        dir_key_of(&base_location),
+        key_under(&base_location, "data/"),
+        // The AWS SDKs url-encode the prefix.
+        dir_key_of(&base_location).replace('/', "%2F"),
+    ] {
+        let request = list_prefix_request(&prefix);
+        let response = sign_warehouse_scoped_request(&ctx, warehouse_id, request.clone())
+            .await
+            .unwrap_or_else(|e| panic!("listing `{prefix}` must be signed: {e:?}"));
+        assert_signed(&response);
+        // Signing must leave the URI byte-identical: the client sends back what it gets, and
+        // any change to the query would list something other than what was authorized.
+        assert_eq!(
+            response.uri, request.uri,
+            "signing must not rewrite the request URI"
+        );
+    }
+
+    authz.block_action(format!("generic_table:{:?}", CatalogGenericTableAction::ReadData).as_str());
+    let err = sign_warehouse_scoped_request(
+        &ctx,
+        warehouse_id,
+        list_prefix_request(&dir_key_of(&base_location)),
+    )
+    .await
+    .expect_err("a list must be rejected without read_data");
+    assert_forbidden(&err);
+}
+
+/// S3 matches list prefixes as raw strings, so the bare table location also returns the keys
+/// of a sibling table whose location starts with the same string. Only a prefix that reaches
+/// past the table's path separator is confined to the table.
+#[sqlx::test]
+async fn test_sign_list_prefix_requires_a_directory_prefix(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    let (_table_id, location) =
+        create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table").await;
+    let location = location.to_string();
+    // A sibling that the bare prefix `…/my_table` would list along with `…/my_table` itself.
+    create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table_secret").await;
+
+    let bare_key = dir_key_of(&location).trim_end_matches('/').to_string();
+    let err = sign_warehouse_scoped_request(&ctx, warehouse_id, list_prefix_request(&bare_key))
+        .await
+        .expect_err("a prefix that stops at the table location must not be signed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    assert_eq!(err.error.r#type, "RequestUriMismatch", "{err:?}");
+
+    // The directory form of the very same location is signable.
+    let response = sign_warehouse_scoped_request(
+        &ctx,
+        warehouse_id,
+        list_prefix_request(&dir_key_of(&location)),
+    )
+    .await
+    .expect("the table's directory must be signable");
+    assert_signed(&response);
+}
+
+/// A list that is not scoped to a prefix would walk the whole bucket, and one scoped above
+/// the table resolves no table at all.
+#[sqlx::test]
+async fn test_sign_list_prefix_rejects_unscoped_and_foreign_prefixes(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_generic_table(&ctx, &namespace_name, warehouse_id, GENERIC_TABLE).await;
+
+    let err = sign_warehouse_scoped_request(
+        &ctx,
+        warehouse_id,
+        sign_request(
+            Method::GET,
+            format!("{ENDPOINT}/{BUCKET}?list-type=2").parse().unwrap(),
+        ),
+    )
+    .await
+    .expect_err("a bucket-wide list must not be signed");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    assert_eq!(err.error.r#type, "ListWithoutPrefix", "{err:?}");
+
+    // The namespace directory above the table belongs to no tabular.
+    let err = sign_warehouse_scoped_request(
+        &ctx,
+        warehouse_id,
+        list_prefix_request(&format!("{namespace_name}/")),
+    )
+    .await
+    .expect_err("a list above the table location must not be signed");
+    assert_eq!(err.error.r#type, "NoSuchTableLocationException", "{err:?}");
+}
+
+/// Iceberg tables share the list-prefix path with generic tables, on both signer routes.
+#[sqlx::test]
+async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    let (table_id, location) =
+        create_catalog_table(&ctx, &namespace_name, warehouse_id, "my_table").await;
+    let prefix = dir_key_of(location.as_ref());
+
+    let response = sign_warehouse_scoped_request(&ctx, warehouse_id, list_prefix_request(&prefix))
+        .await
+        .expect("warehouse-scoped signer must sign list requests for iceberg tables");
+    assert_signed(&response);
+
+    let response = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        Some(*table_id),
+        list_prefix_request(&prefix),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("table-scoped signer must sign list requests for iceberg tables");
+    assert_signed(&response);
+
+    // The table-scoped route validates the URI twice - once to decide whether the id in the
+    // path owns it, then again after authorization. Both must apply the directory rule.
+    let err = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        Some(*table_id),
+        list_prefix_request(prefix.trim_end_matches('/')),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("table-scoped signer must reject a prefix that stops at the table location");
     assert_eq!(err.error.r#type, "RequestUriMismatch", "{err:?}");
 }
 

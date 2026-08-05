@@ -204,6 +204,21 @@ impl Location {
         self.to_string().starts_with(other_folder.as_str())
     }
 
+    /// Check if every location that starts with `self`, read as a key prefix, is a
+    /// sublocation of `other`.
+    ///
+    /// Unlike [`Self::is_sublocation_of`], `other` itself does not qualify: a key prefix is
+    /// matched as a raw string, so the prefix `s3://bucket/table` also matches the keys of a
+    /// sibling `s3://bucket/table_other/...`. Only a prefix that reaches past the separator -
+    /// `s3://bucket/table/` or deeper - is confined to `other`.
+    #[must_use]
+    pub fn is_prefix_within(&self, other: &Location) -> bool {
+        let mut other_folder = other.clone();
+        other_folder.with_trailing_slash();
+
+        self.as_str().starts_with(other_folder.as_str())
+    }
+
     #[must_use]
     pub fn partial_locations<'a>(&'a self) -> impl IntoIterator<Item = &'a str> {
         let scheme_index = self.scheme().len() + 3; // 3 for "://"
@@ -714,6 +729,35 @@ mod tests {
             assert_eq!(
                 result, expected,
                 "Parent: {parent}, Sublocation: {maybe_sublocation}, Expected: {expected}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_prefix_within() {
+        let cases = vec![
+            // A prefix that reaches past the separator is confined to the parent.
+            ("s3://bucket/foo", "s3://bucket/foo/", true),
+            ("s3://bucket/foo", "s3://bucket/foo/bar", true),
+            ("s3://bucket/foo/", "s3://bucket/foo/bar", true),
+            // The parent itself also matches siblings that extend its name.
+            ("s3://bucket/foo", "s3://bucket/foo", false),
+            ("s3://bucket/foo", "s3://bucket/foo-bar/baz", false),
+            // Parents of the parent, and unrelated locations.
+            ("s3://bucket/foo/bar", "s3://bucket/foo/", false),
+            ("s3://bucket/foo", "s3://bucket/baz/bar", false),
+            ("s3://bucket/foo", "s3://other-bucket/foo/bar", false),
+            // A parent stored with a trailing slash accepts its own directory.
+            ("s3://bucket/foo/", "s3://bucket/foo/", true),
+        ];
+
+        for (parent, prefix, expected) in cases {
+            let parent = Location::from_str(parent).unwrap();
+            let prefix = Location::from_str(prefix).unwrap();
+            let result = prefix.is_prefix_within(&parent);
+            assert_eq!(
+                result, expected,
+                "Parent: {parent}, Prefix: {prefix}, Expected: {expected}",
             );
         }
     }

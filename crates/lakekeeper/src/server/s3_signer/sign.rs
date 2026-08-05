@@ -611,16 +611,22 @@ fn validate_uri(
     };
 
     for url_location in &parsed_url.locations {
-        if !(url_location
-            .location()
-            .is_sublocation_of(table_location.location())
-            || normalized_table_location
-                .as_ref()
-                .is_some_and(|normalized| {
-                    url_location
-                        .location()
-                        .is_sublocation_of(normalized.location())
-                }))
+        let is_within = |table_location: &S3Location| {
+            // S3 matches list prefixes as raw strings, so a prefix that stops at the table
+            // location would also return the keys of same-prefixed siblings.
+            if parsed_url.locations_are_list_prefixes {
+                url_location
+                    .location()
+                    .is_prefix_within(table_location.location())
+            } else {
+                url_location
+                    .location()
+                    .is_sublocation_of(table_location.location())
+            }
+        };
+
+        if !(is_within(&table_location)
+            || normalized_table_location.as_ref().is_some_and(is_within))
         {
             return Err(SignError::RequestUriMismatch {
                 request_uri: parsed_url.url.to_string(),
@@ -642,10 +648,19 @@ pub(super) mod s3_utils {
     use super::{ErrorModel, Operation, Result};
     use crate::service::storage::{ValidationError, s3::S3UrlStyleDetectionMode};
 
+    /// Query parameter that identifies a `ListObjectsV2` request, and its only valid value.
+    const LIST_TYPE_QUERY_PARAM: &str = "list-type";
+    const LIST_TYPE_V2: &str = "2";
+    /// Query parameter carrying the key prefix a list request is scoped to.
+    const PREFIX_QUERY_PARAM: &str = "prefix";
+
     #[derive(Debug, Clone)]
     pub(super) struct ParsedSignRequest {
         pub(super) url: url::Url,
         pub(super) locations: Vec<S3Location>,
+        /// `true` if `locations` are S3 list prefixes rather than object keys. S3 matches
+        /// list prefixes by raw string, so they require a stricter containment check.
+        pub(super) locations_are_list_prefixes: bool,
         // Used endpoint without the bucket
         #[allow(dead_code)]
         pub(super) endpoint: String,
@@ -751,16 +766,19 @@ pub(super) mod s3_utils {
             }
         };
 
+        // `DeleteObjects` and `ListObjectsV2` address the bucket instead of a single object.
+        // The keys that identify the table live in the request body resp. the query string.
+        let is_list_operation = *method == http::Method::GET && is_list_objects_v2(uri);
+        let allow_no_key = is_post_delete_operation || is_list_operation;
+
         // Parse the base URL
         let mut parsed_request = match s3_url_style_detection {
-            S3UrlStyleDetectionMode::VirtualHost => {
-                virtual_host_style(uri, is_post_delete_operation, true)?
-            }
-            S3UrlStyleDetectionMode::Path => path_style(uri, is_post_delete_operation)?,
+            S3UrlStyleDetectionMode::VirtualHost => virtual_host_style(uri, allow_no_key, true)?,
+            S3UrlStyleDetectionMode::Path => path_style(uri, allow_no_key)?,
             S3UrlStyleDetectionMode::Auto => {
-                if let Ok(parsed) = virtual_host_style(uri, is_post_delete_operation, false) {
+                if let Ok(parsed) = virtual_host_style(uri, allow_no_key, false) {
                     parsed
-                } else if let Ok(parsed) = path_style(uri, is_post_delete_operation) {
+                } else if let Ok(parsed) = path_style(uri, allow_no_key) {
                     parsed
                 } else {
                     return Err(err("UriNotS3", "URI does not match S3 host or path style").into());
@@ -771,20 +789,8 @@ pub(super) mod s3_utils {
         // For DeleteObjects operation, parse the XML body for object keys
         if is_post_delete_operation {
             if let Some(xml_body) = body {
-                // Get bucket from the original parsed URL
-                let bucket = parsed_request
-                    .locations
-                    .first()
-                    .ok_or_else(|| {
-                        // Should not happen, as both virtual & path style set a location
-                        ErrorModel::internal(
-                            "URI to sign does not have a location",
-                            "UriNoLocation",
-                            None,
-                        )
-                    })?
-                    .bucket_name()
-                    .to_string();
+                let bucket = bucket_of(&parsed_request)?;
+                require_bucket_addressed(&parsed_request, &bucket)?;
 
                 // Parse XML body to get deletion keys
                 let keys = parse_s3_delete_xml(xml_body)
@@ -804,9 +810,141 @@ pub(super) mod s3_utils {
             } else {
                 return Err(err("DeleteWithoutBody", "Delete requests require a body").into());
             }
+        } else if is_list_operation {
+            // The URI path is just the bucket - the table is identified by the `prefix`.
+            let bucket = bucket_of(&parsed_request)?;
+            require_bucket_addressed(&parsed_request, &bucket)?;
+            require_known_list_parameters(uri)?;
+            parsed_request.locations = vec![list_prefix_location(uri, &bucket)?];
+            parsed_request.locations_are_list_prefixes = true;
         }
 
         Ok((parsed_request, operation))
+    }
+
+    /// `GET /{bucket}?list-type=2` - the `ListObjectsV2` API. Other bucket-level `GET`
+    /// sub-resources (`?versions`, `?uploads`, `?location`) stay unsignable: they carry no
+    /// prefix that could be authorized against a table location.
+    fn is_list_objects_v2(uri: &url::Url) -> bool {
+        uri.query_pairs()
+            .any(|(key, value)| key == LIST_TYPE_QUERY_PARAM && value == LIST_TYPE_V2)
+    }
+
+    /// Requests whose locations are taken from the body or the query string must address the
+    /// bucket itself. The URI is signed as received, and S3 dispatches on the path: a key in
+    /// the path would turn the signed request into an object operation that ignores the
+    /// parameters this authorization is based on.
+    fn require_bucket_addressed(parsed_request: &ParsedSignRequest, bucket: &str) -> Result<()> {
+        let addresses_bucket = parsed_request.locations.first().is_some_and(|location| {
+            location.location().as_str().trim_end_matches('/') == format!("s3://{bucket}")
+        });
+
+        if !addresses_bucket {
+            return Err(ErrorModel::bad_request(
+                "Bucket-level requests must not address an object",
+                "UriNotBucket",
+                None,
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    /// Parameters of the `ListObjectsV2` API, plus the `x-id` telemetry parameter that some
+    /// AWS SDKs append. None of them widens the set of keys `prefix` selects.
+    const LIST_QUERY_PARAMS: &[&str] = &[
+        LIST_TYPE_QUERY_PARAM,
+        PREFIX_QUERY_PARAM,
+        "continuation-token",
+        "delimiter",
+        "encoding-type",
+        "fetch-owner",
+        "max-keys",
+        "start-after",
+        "x-id",
+    ];
+
+    /// Rejects list requests that carry any other parameter, or one of them twice.
+    ///
+    /// S3 dispatches on the query string, so a bucket sub-resource (`?policy`, `?versioning`,
+    /// `?uploads`, …) alongside the list parameters would make the signed request return
+    /// something else entirely - something no table location can authorize. Which of two
+    /// values for the same parameter S3 applies is implementation defined, so only one of
+    /// them could be authorized.
+    fn require_known_list_parameters(uri: &url::Url) -> Result<()> {
+        let mut seen: Vec<std::borrow::Cow<'_, str>> = Vec::new();
+
+        for (key, _) in uri.query_pairs() {
+            if !LIST_QUERY_PARAMS.contains(&key.as_ref()) {
+                return Err(ErrorModel::bad_request(
+                    format!("Unsupported query parameter for a list request: `{key}`"),
+                    "UnsupportedListParameter",
+                    None,
+                )
+                .into());
+            }
+
+            if seen.contains(&key) {
+                return Err(ErrorModel::bad_request(
+                    format!("Repeated query parameter in a list request: `{key}`"),
+                    "RepeatedListParameter",
+                    None,
+                )
+                .into());
+            }
+
+            seen.push(key);
+        }
+
+        Ok(())
+    }
+
+    fn bucket_of(parsed_request: &ParsedSignRequest) -> Result<String> {
+        Ok(parsed_request
+            .locations
+            .first()
+            .ok_or_else(|| {
+                // Should not happen, as both virtual & path style set a location
+                ErrorModel::internal(
+                    "URI to sign does not have a location",
+                    "UriNoLocation",
+                    None,
+                )
+            })?
+            .bucket_name()
+            .to_string())
+    }
+
+    /// The location a `ListObjectsV2` request is scoped to: `s3://{bucket}/{prefix}`.
+    ///
+    /// Sigv4 covers the canonical query string, so the client cannot widen the `prefix`
+    /// after signing. Parsing the location from the concatenated string rather than from
+    /// segments is what makes the check trustworthy: the authorized location is the exact
+    /// string S3 matches keys against, and prefixes that a `Location` would not round-trip
+    /// (empty segments, `.`/`..`, unsafe characters) are rejected instead of normalized.
+    fn list_prefix_location(uri: &url::Url, bucket: &str) -> Result<S3Location> {
+        let prefix = uri
+            .query_pairs()
+            .find(|(key, _)| key == PREFIX_QUERY_PARAM)
+            .map(|(_, value)| value)
+            .filter(|prefix| !prefix.is_empty())
+            .ok_or_else(|| {
+                ErrorModel::bad_request(
+                    "List requests must be scoped to a prefix inside a table location",
+                    "ListWithoutPrefix",
+                    None,
+                )
+            })?;
+
+        S3Location::try_from_str(&format!("s3://{bucket}/{prefix}"), false).map_err(|e| {
+            ErrorModel::bad_request(
+                format!("Invalid list prefix: {e}"),
+                "InvalidListPrefix",
+                Some(Box::new(e)),
+            )
+            .into()
+        })
     }
 
     fn virtual_host_style(
@@ -853,6 +991,7 @@ pub(super) mod s3_utils {
                 )
                 .map_err(ValidationError::from)?,
             ],
+            locations_are_list_prefixes: false,
             endpoint: used_endpoint.to_string(),
             port,
         })
@@ -900,6 +1039,7 @@ pub(super) mod s3_utils {
                 )
                 .map_err(ValidationError::from)?,
             ],
+            locations_are_list_prefixes: false,
             endpoint: uri
                 .host_str()
                 .ok_or_else(|| {
@@ -1361,6 +1501,269 @@ mod test {
 
         for tc in cases {
             run_validate_uri_test(&tc);
+        }
+    }
+
+    fn parse_list(uri: &str, mode: S3UrlStyleDetectionMode) -> s3_utils::ParsedSignRequest {
+        let (parsed, operation) = parse_s3_url(
+            &url::Url::parse(uri).unwrap(),
+            mode,
+            &http::Method::GET,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("Failed to parse {uri}: {e:?}"));
+        // Listing reveals the keys under a prefix, which is a read.
+        assert_eq!(operation, Operation::Read);
+        assert!(parsed.locations_are_list_prefixes);
+        parsed
+    }
+
+    fn parse_list_err(uri: &str, mode: S3UrlStyleDetectionMode) -> String {
+        parse_s3_url(
+            &url::Url::parse(uri).unwrap(),
+            mode,
+            &http::Method::GET,
+            None,
+        )
+        .map(|(parsed, _)| parsed)
+        .expect_err(&format!("{uri} must not be signable"))
+        .error
+        .r#type
+    }
+
+    /// `ListObjectsV2` addresses the bucket, so the location that identifies the table
+    /// comes from the `prefix` query parameter, in both URL styles.
+    #[test]
+    fn test_parse_s3_url_list_objects_v2() {
+        let cases = vec![
+            // Path style, no key in the path at all.
+            (
+                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            (
+                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Path,
+            ),
+            // Path style with the trailing slash some SDKs append to the bucket.
+            (
+                "http://s3.example.com:8333/bucket/?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            // Virtual host style.
+            (
+                "https://bucket.s3.my-region.amazonaws.com/?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            (
+                "https://bucket.s3.my-region.amazonaws.com?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::VirtualHost,
+            ),
+            // The prefix is url-encoded by the AWS SDKs.
+            (
+                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ftbl%2F",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            // Trailing separators collapse. S3 then matches a subset of the authorized
+            // directory, so this is signable rather than rejected.
+            (
+                "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl//",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            // Pagination and other list parameters only narrow the result set.
+            (
+                "https://bucket.s3.my-region.amazonaws.com/?list-type=2&prefix=ns/tbl/&continuation-token=abc&max-keys=1000&encoding-type=url",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+        ];
+
+        for (uri, mode) in cases {
+            let parsed = parse_list(uri, mode);
+            assert_eq!(
+                parsed
+                    .locations
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect_vec(),
+                vec!["s3://bucket/ns/tbl/"],
+                "Test case: {uri}"
+            );
+        }
+    }
+
+    /// Without a prefix the request would list the whole bucket, which no table can
+    /// authorize.
+    #[test]
+    fn test_parse_s3_url_list_requires_prefix() {
+        for uri in [
+            "http://s3.example.com:8333/bucket?list-type=2",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=",
+            "https://bucket.s3.my-region.amazonaws.com/?list-type=2",
+        ] {
+            assert_eq!(
+                parse_list_err(uri, S3UrlStyleDetectionMode::Auto),
+                "ListWithoutPrefix",
+                "Test case: {uri}"
+            );
+        }
+    }
+
+    /// A prefix that a location would not round-trip cannot be authorized: the string S3
+    /// matches keys against would differ from the one that was checked. `ns//tbl/` is the
+    /// case that matters - its keys lie outside the `ns/tbl/` directory it normalizes to.
+    #[test]
+    fn test_parse_s3_url_list_rejects_prefix_that_is_not_a_location() {
+        for uri in [
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns//tbl/",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=/ns/tbl/",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/../other/",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/%00/",
+        ] {
+            assert_eq!(
+                parse_list_err(uri, S3UrlStyleDetectionMode::Auto),
+                "InvalidListPrefix",
+                "Test case: {uri}"
+            );
+        }
+    }
+
+    /// Which of two values for the same parameter S3 applies is implementation defined, so
+    /// only one of them could be authorized.
+    #[test]
+    fn test_parse_s3_url_list_rejects_repeated_parameters() {
+        for uri in [
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&prefix=other/",
+            "http://s3.example.com:8333/bucket?list-type=2&list-type=2&prefix=ns/tbl/",
+            "http://s3.example.com:8333/bucket?list-type=1&list-type=2&prefix=ns/tbl/",
+        ] {
+            assert_eq!(
+                parse_list_err(uri, S3UrlStyleDetectionMode::Auto),
+                "RepeatedListParameter",
+                "Test case: {uri}"
+            );
+        }
+    }
+
+    /// Only `ListObjectsV2` gains the keyless path - all other bucket-level requests carry
+    /// no prefix that could be authorized against a table location.
+    #[test]
+    fn test_parse_s3_url_other_bucket_requests_stay_unsignable() {
+        for uri in [
+            "http://s3.example.com:8333/bucket",
+            "http://s3.example.com:8333/bucket?versions&prefix=ns/tbl/",
+            "http://s3.example.com:8333/bucket?uploads&prefix=ns/tbl/",
+            "http://s3.example.com:8333/bucket?location",
+            // List Objects V1 is not implemented.
+            "http://s3.example.com:8333/bucket?prefix=ns/tbl/",
+        ] {
+            assert_eq!(
+                parse_list_err(uri, S3UrlStyleDetectionMode::Path),
+                "UriNotS3",
+                "Test case: {uri}"
+            );
+        }
+    }
+
+    /// The signed URI is the one that was received, and S3 dispatches on its path: a key in
+    /// the path makes the signed request a `GetObject` for that key, which ignores the
+    /// `prefix` this request was authorized against.
+    #[test]
+    fn test_parse_s3_url_list_must_address_the_bucket() {
+        for (uri, mode) in [
+            (
+                "http://s3.example.com:8333/bucket/other-ns/other-tbl/metadata/v1.json?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            (
+                "http://s3.example.com:8333/bucket/other-ns/other-tbl/metadata/v1.json?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Path,
+            ),
+            (
+                "https://bucket.s3.my-region.amazonaws.com/other-ns/other-tbl/metadata/v1.json?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::Auto,
+            ),
+            (
+                "https://bucket.s3.my-region.amazonaws.com/other-ns/other-tbl/metadata/v1.json?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::VirtualHost,
+            ),
+        ] {
+            assert_eq!(
+                parse_list_err(uri, mode),
+                "UriNotBucket",
+                "Test case: {uri}"
+            );
+        }
+
+        // The same holds for the bulk delete that takes its keys from the body.
+        let body = "<Delete><Object><Key>ns/tbl/data/a.parquet</Key></Object></Delete>";
+        let err = parse_s3_url(
+            &url::Url::parse("http://s3.example.com:8333/bucket/other-ns/other-tbl/x.json?delete")
+                .unwrap(),
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::POST,
+            Some(body),
+        )
+        .map(|(parsed, _)| parsed)
+        .expect_err("a bulk delete addressing an object must not be signable");
+        assert_eq!(err.error.r#type, "UriNotBucket", "{err:?}");
+    }
+
+    /// S3 dispatches on the query string too: a bucket sub-resource next to the list
+    /// parameters returns something else entirely, which no table location authorizes.
+    #[test]
+    fn test_parse_s3_url_list_rejects_unknown_parameters() {
+        for uri in [
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&policy",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&acl",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&versions",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&uploads",
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl/&location",
+        ] {
+            assert_eq!(
+                parse_list_err(uri, S3UrlStyleDetectionMode::Auto),
+                "UnsupportedListParameter",
+                "Test case: {uri}"
+            );
+        }
+    }
+
+    /// A list prefix must reach past the table's own path separator: S3 matches prefixes as
+    /// raw strings, so the bare table location also returns keys of same-prefixed siblings.
+    #[test]
+    fn test_validate_uri_list_prefix() {
+        let cases = vec![
+            // The directory listing Iceberg's `FileSystemWalker` issues.
+            ("ns/tbl/", "s3://bucket/ns/tbl", true),
+            // Subdirectories of the table.
+            ("ns/tbl/data/", "s3://bucket/ns/tbl", true),
+            ("ns/tbl/metadata", "s3://bucket/ns/tbl", true),
+            // Table locations may be stored with a trailing slash.
+            ("ns/tbl/", "s3://bucket/ns/tbl/", true),
+            // `s3a` and `s3n` table locations are normalized to `s3`.
+            ("ns/tbl/", "s3a://bucket/ns/tbl", true),
+            ("ns/tbl/", "s3n://bucket/ns/tbl", true),
+            // The bare table location matches siblings like `s3://bucket/ns/tbl_secret/…`.
+            ("ns/tbl", "s3://bucket/ns/tbl", false),
+            // Siblings, whether or not they share a string prefix with the table.
+            ("ns/tbl_secret/", "s3://bucket/ns/tbl", false),
+            ("ns/other/", "s3://bucket/ns/tbl", false),
+            // Parents of the table.
+            ("ns/", "s3://bucket/ns/tbl", false),
+            // Another bucket.
+            ("ns/tbl/", "s3://other-bucket/ns/tbl", false),
+        ];
+
+        for (prefix, table_location, expected_outcome) in cases {
+            let parsed = parse_list(
+                &format!("http://s3.example.com:8333/bucket?list-type=2&prefix={prefix}"),
+                S3UrlStyleDetectionMode::Auto,
+            );
+            let result = validate_uri(&parsed, &Location::from_str(table_location).unwrap());
+            assert_eq!(
+                result.is_ok(),
+                expected_outcome,
+                "prefix `{prefix}` against table location `{table_location}`: {result:?}"
+            );
         }
     }
 
