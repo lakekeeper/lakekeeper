@@ -160,11 +160,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             method: request_method,
             headers: request_headers,
             body: request_body,
-        } = request.clone();
+        } = request;
 
-        let decoded_url = urldecode_uri_path_segments(&request_url)?;
         let (parsed_url, operation) = s3_utils::parse_s3_url(
-            &decoded_url,
+            &s3_utils::SignRequestUri::new(request_url.clone())?,
             s3_url_style_detection(&warehouse)?,
             &request_method,
             request_body.as_deref(),
@@ -491,7 +490,7 @@ async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: Secre
         tracing::warn!(
             "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
             signable.location(),
-            parsed_url.url
+            parsed_url.uri.received()
         );
     }
 
@@ -629,7 +628,7 @@ fn validate_uri(
             || normalized_table_location.as_ref().is_some_and(is_within))
         {
             return Err(SignError::RequestUriMismatch {
-                request_uri: parsed_url.url.to_string(),
+                request_uri: parsed_url.uri.received().to_string(),
                 expected_location: table_location.to_string(),
                 actual_location: url_location.to_string(),
             }
@@ -654,9 +653,44 @@ pub(super) mod s3_utils {
     /// Query parameter carrying the key prefix a list request is scoped to.
     const PREFIX_QUERY_PARAM: &str = "prefix";
 
+    /// The URI of a request to sign, both as received and with its path segments url-decoded.
+    ///
+    /// The signature covers the request as received, so anything that constrains the *shape*
+    /// of the request has to look at [`Self::received`]. Locations are derived from
+    /// [`Self::decoded`], because clients url-encode object keys. Decoding can change what a
+    /// path addresses - a `%2F` hides separators from the url parser, which then collapses the
+    /// `.`/`..` behind them - so the two are kept together rather than passed around as two
+    /// look-alike arguments.
+    #[derive(Debug, Clone)]
+    pub(super) struct SignRequestUri {
+        received: url::Url,
+        decoded: url::Url,
+    }
+
+    impl SignRequestUri {
+        pub(super) fn new(received: url::Url) -> Result<Self> {
+            let decoded = super::urldecode_uri_path_segments(&received)?;
+            Ok(Self { received, decoded })
+        }
+
+        pub(super) fn received(&self) -> &url::Url {
+            &self.received
+        }
+
+        pub(super) fn decoded(&self) -> &url::Url {
+            &self.decoded
+        }
+
+        /// `false` if url-decoding changed the path, i.e. the locations derived from
+        /// [`Self::decoded`] may not describe what the signed request addresses.
+        fn path_survived_decoding(&self) -> bool {
+            self.received.path() == self.decoded.path()
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub(super) struct ParsedSignRequest {
-        pub(super) url: url::Url,
+        pub(super) uri: SignRequestUri,
         pub(super) locations: Vec<S3Location>,
         /// `true` if `locations` are S3 list prefixes rather than object keys. S3 matches
         /// list prefixes by raw string, so they require a stricter containment check.
@@ -726,8 +760,9 @@ pub(super) mod s3_utils {
         Ok(keys)
     }
 
+    /// Determine the locations a request touches.
     pub(super) fn parse_s3_url(
-        uri: &url::Url,
+        uri: &SignRequestUri,
         s3_url_style_detection: S3UrlStyleDetectionMode,
         method: &http::Method,
         body: Option<&str>,
@@ -735,7 +770,7 @@ pub(super) mod s3_utils {
         let err = |t: &str, m: &str| ErrorModel::bad_request(m, t, None);
 
         // Require https or http
-        if !matches!(uri.scheme(), "https" | "http") {
+        if !matches!(uri.received().scheme(), "https" | "http") {
             return Err(err(
                 "UriSchemeNotSupported",
                 "URI to sign does not have a supported scheme. Expected https or http",
@@ -748,7 +783,8 @@ pub(super) mod s3_utils {
             http::Method::GET | http::Method::HEAD => (Operation::Read, false),
             http::Method::POST | http::Method::PUT => {
                 // Handle special case: DeleteObjects operation (POST with ?delete and XML body)
-                if method == http::Method::POST && uri.query().is_some_and(|q| q.contains("delete"))
+                if method == http::Method::POST
+                    && uri.received().query().is_some_and(|q| q.contains("delete"))
                 {
                     (Operation::Delete, true)
                 } else {
@@ -768,7 +804,7 @@ pub(super) mod s3_utils {
 
         // `DeleteObjects` and `ListObjectsV2` address the bucket instead of a single object.
         // The keys that identify the table live in the request body resp. the query string.
-        let is_list_operation = *method == http::Method::GET && is_list_objects_v2(uri);
+        let is_list_operation = *method == http::Method::GET && is_list_objects_v2(uri.received());
         let allow_no_key = is_post_delete_operation || is_list_operation;
 
         // Parse the base URL
@@ -814,8 +850,8 @@ pub(super) mod s3_utils {
             // The URI path is just the bucket - the table is identified by the `prefix`.
             let bucket = bucket_of(&parsed_request)?;
             require_bucket_addressed(&parsed_request, &bucket)?;
-            require_known_list_parameters(uri)?;
-            parsed_request.locations = vec![list_prefix_location(uri, &bucket)?];
+            require_known_list_parameters(uri.received())?;
+            parsed_request.locations = vec![list_prefix_location(uri.received(), &bucket)?];
             parsed_request.locations_are_list_prefixes = true;
         }
 
@@ -831,15 +867,21 @@ pub(super) mod s3_utils {
     }
 
     /// Requests whose locations are taken from the body or the query string must address the
-    /// bucket itself. The URI is signed as received, and S3 dispatches on the path: a key in
-    /// the path would turn the signed request into an object operation that ignores the
-    /// parameters this authorization is based on.
+    /// bucket itself. S3 dispatches on the path: a key in the path would turn the signed
+    /// request into an object operation that ignores the parameters this authorization is
+    /// based on.
     fn require_bucket_addressed(parsed_request: &ParsedSignRequest, bucket: &str) -> Result<()> {
+        // The location the path resolves to is the bucket itself, in either url style ...
         let addresses_bucket = parsed_request.locations.first().is_some_and(|location| {
             location.location().as_str().trim_end_matches('/') == format!("s3://{bucket}")
         });
 
-        if !addresses_bucket {
+        // ... and url-decoding did not change the path, which would mean the bytes that get
+        // signed address something else than what was just checked: `%2F` hides separators
+        // from the url parser, which then collapses the `.`/`..` behind them.
+        let path_survived_decoding = parsed_request.uri.path_survived_decoding();
+
+        if !(addresses_bucket && path_survived_decoding) {
             return Err(ErrorModel::bad_request(
                 "Bucket-level requests must not address an object",
                 "UriNotBucket",
@@ -948,15 +990,15 @@ pub(super) mod s3_utils {
     }
 
     fn virtual_host_style(
-        uri: &url::Url,
+        uri: &SignRequestUri,
         allow_no_key: bool,
         is_known: bool,
     ) -> Result<ParsedSignRequest> {
-        let host = uri.host().ok_or_else(|| {
+        let host = uri.decoded().host().ok_or_else(|| {
             ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
         })?;
-        let path_segments = get_path_segments(uri, allow_no_key)?;
-        let port = uri.port_or_known_default().unwrap_or(443);
+        let path_segments = get_path_segments(uri.decoded(), allow_no_key)?;
+        let port = uri.decoded().port_or_known_default().unwrap_or(443);
 
         let host_str = host.to_string();
 
@@ -982,7 +1024,7 @@ pub(super) mod s3_utils {
             .into());
         };
         Ok(ParsedSignRequest {
-            url: uri.clone(),
+            uri: uri.clone(),
             locations: vec![
                 S3Location::new(
                     bucket,
@@ -1009,8 +1051,8 @@ pub(super) mod s3_utils {
         Ok((bucket, endpoint))
     }
 
-    fn path_style(uri: &url::Url, allow_no_key: bool) -> Result<ParsedSignRequest> {
-        let path_segments = get_path_segments(uri, allow_no_key)?;
+    fn path_style(uri: &SignRequestUri, allow_no_key: bool) -> Result<ParsedSignRequest> {
+        let path_segments = get_path_segments(uri.decoded(), allow_no_key)?;
 
         let min_path_segments = if allow_no_key { 1 } else { 2 };
 
@@ -1026,7 +1068,7 @@ pub(super) mod s3_utils {
         let path_segments_borrowed: Vec<&str> = path_segments.iter().map(String::as_str).collect();
 
         Ok(ParsedSignRequest {
-            url: uri.clone(),
+            uri: uri.clone(),
             locations: vec![
                 S3Location::new(
                     path_segments_borrowed[0],
@@ -1041,12 +1083,13 @@ pub(super) mod s3_utils {
             ],
             locations_are_list_prefixes: false,
             endpoint: uri
+                .decoded()
                 .host_str()
                 .ok_or_else(|| {
                     ErrorModel::bad_request("URI to sign does not have a host", "UriNoHost", None)
                 })?
                 .to_string(),
-            port: uri.port_or_known_default().unwrap_or(443),
+            port: uri.decoded().port_or_known_default().unwrap_or(443),
         })
     }
 
@@ -1179,7 +1222,7 @@ mod test {
     use itertools::Itertools as _;
 
     use super::*;
-    use crate::{server::s3_signer::sign::s3_utils::parse_s3_url, service::storage::S3Flavor};
+    use crate::service::storage::S3Flavor;
 
     #[derive(Debug)]
     struct TC {
@@ -1190,9 +1233,23 @@ mod test {
         expected_outcome: bool,
     }
 
+    fn parse_uri(
+        uri: &url::Url,
+        mode: S3UrlStyleDetectionMode,
+        method: &http::Method,
+        body: Option<&str>,
+    ) -> Result<(s3_utils::ParsedSignRequest, Operation)> {
+        s3_utils::parse_s3_url(
+            &s3_utils::SignRequestUri::new(uri.clone())?,
+            mode,
+            method,
+            body,
+        )
+    }
+
     fn run_validate_uri_test(test_case: &TC) {
         let request_uri = url::Url::parse(test_case.request_uri).unwrap();
-        let (request_uri, _operation) = s3_utils::parse_s3_url(
+        let (request_uri, _operation) = parse_uri(
             &request_uri,
             S3UrlStyleDetectionMode::Auto,
             &http::Method::GET,
@@ -1210,7 +1267,7 @@ mod test {
 
     #[test]
     fn test_parse_s3_url_config_path_style() {
-        let (parsed, _operation) = parse_s3_url(
+        let (parsed, _operation) = parse_uri(
             &url::Url::parse("https://not-a-bucket.s3.region.amazonaws.com/bucket/key").unwrap(),
             S3UrlStyleDetectionMode::Path,
             &http::Method::GET,
@@ -1222,7 +1279,7 @@ mod test {
 
     #[test]
     fn test_parse_s3_url_config_virtual_style() {
-        let (parsed, _operation) = parse_s3_url(
+        let (parsed, _operation) = parse_uri(
             &url::Url::parse("https://bucket.s3.region.amazonaws.com/key").unwrap(),
             S3UrlStyleDetectionMode::VirtualHost,
             &http::Method::GET,
@@ -1234,7 +1291,7 @@ mod test {
 
     #[test]
     fn test_parse_s3_url_config_virtual_style_minimal() {
-        let (parsed, _operation) = parse_s3_url(
+        let (parsed, _operation) = parse_uri(
             &url::Url::parse("https://bucket.s3-service/key").unwrap(),
             S3UrlStyleDetectionMode::VirtualHost,
             &http::Method::GET,
@@ -1328,7 +1385,7 @@ mod test {
 
         for (uri, expected) in cases {
             let uri = url::Url::parse(uri).unwrap();
-            let (parsed, _operation) = parse_s3_url(
+            let (parsed, _operation) = parse_uri(
                 &uri,
                 S3UrlStyleDetectionMode::Auto,
                 &http::Method::GET,
@@ -1368,7 +1425,7 @@ mod test {
 
         for (uri, body, expected) in cases {
             let uri = url::Url::parse(uri).unwrap();
-            let (parsed, operation) = parse_s3_url(
+            let (parsed, operation) = parse_uri(
                 &uri,
                 S3UrlStyleDetectionMode::Auto,
                 &http::Method::POST,
@@ -1505,7 +1562,7 @@ mod test {
     }
 
     fn parse_list(uri: &str, mode: S3UrlStyleDetectionMode) -> s3_utils::ParsedSignRequest {
-        let (parsed, operation) = parse_s3_url(
+        let (parsed, operation) = parse_uri(
             &url::Url::parse(uri).unwrap(),
             mode,
             &http::Method::GET,
@@ -1519,7 +1576,7 @@ mod test {
     }
 
     fn parse_list_err(uri: &str, mode: S3UrlStyleDetectionMode) -> String {
-        parse_s3_url(
+        parse_uri(
             &url::Url::parse(uri).unwrap(),
             mode,
             &http::Method::GET,
@@ -1686,6 +1743,11 @@ mod test {
                 "https://bucket.s3.my-region.amazonaws.com/other-ns/other-tbl/metadata/v1.json?list-type=2&prefix=ns/tbl/",
                 S3UrlStyleDetectionMode::VirtualHost,
             ),
+            // Virtual-host style, where the key happens to be named like the bucket.
+            (
+                "https://bucket.s3.my-region.amazonaws.com/bucket?list-type=2&prefix=ns/tbl/",
+                S3UrlStyleDetectionMode::VirtualHost,
+            ),
         ] {
             assert_eq!(
                 parse_list_err(uri, mode),
@@ -1696,7 +1758,7 @@ mod test {
 
         // The same holds for the bulk delete that takes its keys from the body.
         let body = "<Delete><Object><Key>ns/tbl/data/a.parquet</Key></Object></Delete>";
-        let err = parse_s3_url(
+        let err = parse_uri(
             &url::Url::parse("http://s3.example.com:8333/bucket/other-ns/other-tbl/x.json?delete")
                 .unwrap(),
             S3UrlStyleDetectionMode::Auto,
@@ -1706,6 +1768,64 @@ mod test {
         .map(|(parsed, _)| parsed)
         .expect_err("a bulk delete addressing an object must not be signable");
         assert_eq!(err.error.r#type, "UriNotBucket", "{err:?}");
+    }
+
+    /// Url-decoding the path reveals separators hidden in `%2F` and lets the url parser
+    /// collapse the `.`/`..` behind them, so a path that addresses a key can decode to the
+    /// bare bucket. The guard has to reject it, because the key is what gets signed.
+    #[test]
+    fn test_parse_s3_url_list_must_address_the_bucket_before_decoding() {
+        let received = url::Url::parse(
+            "http://s3.example.com:8333/bucket%2Fns%2Ftbl%2F%2E%2E%2F%2E%2E?list-type=2&prefix=ns/tbl/",
+        )
+        .unwrap();
+        let uri = s3_utils::SignRequestUri::new(received).unwrap();
+        assert_eq!(
+            uri.decoded().path(),
+            "/bucket/",
+            "decoding must collapse to the bucket for this test to mean anything"
+        );
+
+        let err = s3_utils::parse_s3_url(
+            &uri,
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::GET,
+            None,
+        )
+        .map(|(parsed, _)| parsed)
+        .expect_err("a path that only decodes to the bucket must not be signable");
+        assert_eq!(err.error.r#type, "UriNotBucket", "{err:?}");
+    }
+
+    /// `+` in a query value is form-decoded to a space, by S3 as well as by the parameter
+    /// reader here, so the prefix that is authorized is the one S3 matches keys against.
+    #[test]
+    fn test_parse_s3_url_list_prefix_plus_is_a_space() {
+        let parsed = parse_list(
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl+dir/",
+            S3UrlStyleDetectionMode::Auto,
+        );
+        assert_eq!(
+            parsed
+                .locations
+                .iter()
+                .map(ToString::to_string)
+                .collect_vec(),
+            vec!["s3://bucket/ns/tbl dir/"]
+        );
+
+        let parsed = parse_list(
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns/tbl%2Bdir/",
+            S3UrlStyleDetectionMode::Auto,
+        );
+        assert_eq!(
+            parsed
+                .locations
+                .iter()
+                .map(ToString::to_string)
+                .collect_vec(),
+            vec!["s3://bucket/ns/tbl+dir/"]
+        );
     }
 
     /// S3 dispatches on the query string too: a bucket sub-resource next to the list
@@ -1769,7 +1889,7 @@ mod test {
 
     #[test]
     fn test_uri_bucket_missing() {
-        parse_s3_url(
+        parse_uri(
             &url::Url::parse("https://s3.my-region.amazonaws.com/key").unwrap(),
             S3UrlStyleDetectionMode::Auto,
             &http::Method::GET,

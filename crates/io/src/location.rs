@@ -198,10 +198,7 @@ impl Location {
             return true;
         }
 
-        let mut other_folder = other.clone();
-        other_folder.with_trailing_slash();
-
-        self.to_string().starts_with(other_folder.as_str())
+        starts_with_folder(self.as_str(), other.as_str())
     }
 
     /// Check if every location that starts with `self`, read as a key prefix, is a
@@ -213,10 +210,7 @@ impl Location {
     /// `s3://bucket/table/` or deeper - is confined to `other`.
     #[must_use]
     pub fn is_prefix_within(&self, other: &Location) -> bool {
-        let mut other_folder = other.clone();
-        other_folder.with_trailing_slash();
-
-        self.as_str().starts_with(other_folder.as_str())
+        starts_with_folder(self.as_str(), other.as_str())
     }
 
     #[must_use]
@@ -343,6 +337,19 @@ fn is_format_or_invisible(c: char) -> bool {
 /// (object keys with literal `/./`/`/../`/`//`) for one rule that can be
 /// audited without a per-scheme matrix; matches the same trade-off made
 /// for `check_host` on Azure trailing-dot.
+/// `true` if `location` starts with `folder` as a directory, i.e. `folder` with a single
+/// trailing separator appended. Kept allocation-free because callers run it once per location
+/// of a request, and a bulk delete carries up to a thousand of them.
+fn starts_with_folder(location: &str, folder: &str) -> bool {
+    if folder.ends_with('/') {
+        return location.starts_with(folder);
+    }
+
+    location
+        .strip_prefix(folder)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn check_path_segments(authority_and_path: &str) -> Result<(), String> {
     let Some((_authority, path)) = authority_and_path.split_once('/') else {
         return Ok(()); // No path — just authority.
@@ -720,6 +727,8 @@ mod tests {
             ("s3://bucket/foo", "s3://bucket/foo/bar", true),
             ("s3://bucket/foo", "s3://bucket/baz/bar", false),
             ("s3://bucket/foo", "s3://bucket/foo-bar", false),
+            // A parent stored with a trailing separator still needs one in the sublocation.
+            ("s3://bucket/foo/", "s3://bucket/foobar", false),
         ];
 
         for (parent, maybe_sublocation, expected) in cases {
