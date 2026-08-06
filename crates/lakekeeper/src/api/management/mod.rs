@@ -25,10 +25,11 @@ pub mod v1 {
 
     use axum::{
         Extension, Json, Router,
-        extract::{Path, Query, State as AxumState},
+        extract::{Path, State as AxumState},
         response::{IntoResponse, Response},
         routing::{delete, get, post, put},
     };
+    use axum_extra::extract::Query;
     use generic_table::GenericTableManagementService as _;
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;

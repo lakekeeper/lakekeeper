@@ -39,7 +39,7 @@ aws-sdk-sts = { workspace = true }
 aws-sigv4 = { workspace = true, optional = true }
 aws-smithy-runtime-api = { workspace = true }
 axum = { workspace = true }
-axum-extra = { workspace = true, features = ["typed-header"] }
+axum-extra = { workspace = true, features = ["typed-header", "query"] }
 axum-prometheus = { workspace = true }
 azure_core = { workspace = true }
 azure_storage = { workspace = true }

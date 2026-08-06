@@ -30,6 +30,7 @@ mod request_metadata;
 
 pub use async_trait;
 pub use axum;
+pub use axum_extra;
 pub use iceberg;
 pub use limes;
 pub use request_metadata::{

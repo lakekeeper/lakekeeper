@@ -17,9 +17,10 @@ use lakekeeper::{
     },
     axum::{
         Extension, Json, Router,
-        extract::{Path, Query, State as AxumState},
+        extract::{Path, State as AxumState},
         routing::{get, post},
     },
+    axum_extra::extract::Query,
     service::{
         Actor, CatalogStore, GenericTableId, NamespaceId, Result, RoleId, SecretStore, State,
         TableId, TagDefinitionId, ViewId,
