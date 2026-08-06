@@ -223,21 +223,35 @@ async fn verify_current_schema<'e, E>(executor: E, schema: &PgSchema) -> anyhow:
 where
     E: Executor<'e, Database = Postgres>,
 {
-    let current: Option<String> = sqlx::query_scalar("SELECT current_schema()::text")
-        .fetch_one(executor)
-        .await?;
-    if current.as_deref() == Some(schema.as_str()) {
-        return Ok(());
+    match current_schema(executor).await? {
+        Some(current) if current == schema.as_str() => Ok(()),
+        current => Err(anyhow!(schema_mismatch_reason(schema, current.as_deref()))),
     }
+}
+
+async fn current_schema<'e, E>(executor: E) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(executor)
+        .await
+}
+
+/// Explains a `current_schema()` that does not match the configured schema, and
+/// how to fix it. Shared by [`ensure_schema`], which fails with it, and
+/// [`check_migration_status_in_schema`], which logs it before reporting
+/// [`MigrationState::SchemaMismatch`].
+fn schema_mismatch_reason(schema: &PgSchema, current: Option<&str>) -> String {
     let current = current.map_or_else(|| "unset".to_string(), |c| format!("\"{c}\""));
-    Err(anyhow!(
+    format!(
         "LAKEKEEPER__PG_SCHEMA requests schema \"{schema}\", but current_schema() in this session \
          is {current}. Lakekeeper sets search_path per connection: a pooler in transaction pooling \
          mode discards it, and a missing USAGE grant hides the schema. Grant USAGE (and CREATE) on \
          the schema to the connecting role, run the pooler in session pooling mode, or set it \
          server-side instead: ALTER ROLE <role> SET search_path = \"{schema}\", public;",
         schema = schema.as_str(),
-    ))
+    )
 }
 
 /// Apply every registered migration — core and all extensions — in a single
@@ -533,11 +547,17 @@ async fn check_migration_status_in_schema(
             );
             return Ok(MigrationState::NoMigrationsTable);
         }
-        // Without this, an unapplied search_path plus a legacy install in
+        // Reported as a state, not an error, so callers can tell a permanent
+        // misconfiguration apart from a transient failure they should retry.
+        // Without this check, an unapplied search_path plus an install in
         // `public` resolves the tracker table to `public._sqlx_migrations`,
         // every version matches, and the caller starts against another
         // deployment's data.
-        verify_current_schema(&mut *conn, schema).await?;
+        let current = current_schema(&mut *conn).await?;
+        if current.as_deref() != Some(schema.as_str()) {
+            tracing::warn!("{}", schema_mismatch_reason(schema, current.as_deref()));
+            return Ok(MigrationState::SchemaMismatch);
+        }
     }
 
     let m = sqlx::migrate!();
@@ -619,6 +639,12 @@ pub enum MigrationState {
     /// Running this (older) binary against it is unsafe; callers must refuse
     /// to start rather than retry (waiting never resolves a newer DB).
     Ahead,
+    /// A schema is configured but the session resolves to a different one, so
+    /// the migration state that was read belongs to another schema. Like
+    /// [`MigrationState::Ahead`] this is permanent, and callers must refuse to
+    /// start rather than retry. The mismatch and the ways to fix it are logged
+    /// at warn level by the check that returns this.
+    SchemaMismatch,
 }
 
 pub trait MigrationHook: Send + Sync + 'static {
@@ -1006,20 +1032,21 @@ mod tests {
     /// legacy install in `public`, the tracker table resolves to
     /// `public._sqlx_migrations` and every version matches.
     #[sqlx::test(migrations = false)]
-    async fn test_check_migration_status_errors_on_wrong_schema(admin_pool: PgPool) {
+    async fn test_check_migration_status_detects_wrong_schema(admin_pool: PgPool) {
         migrate_core_only(&admin_pool)
             .await
             .expect("baseline install into public");
         let schema = create_schema(&admin_pool, "lk_elsewhere").await;
 
-        // Unhooked pool plus a configured schema: the mismatch must not read as
-        // an up-to-date database.
-        let err = check_migration_status_in_schema(&admin_pool, Some(&schema))
+        // Unhooked pool plus a configured schema. Reported as a state rather
+        // than an error so callers can fail fast instead of retrying, and it
+        // must never read as an up-to-date database.
+        let state = check_migration_status_in_schema(&admin_pool, Some(&schema))
             .await
-            .expect_err("a schema mismatch must not report Complete");
+            .expect("a schema mismatch is a state, not an error");
         assert!(
-            format!("{err:#}").contains("current_schema"),
-            "error should name current_schema: {err:#}"
+            matches!(state, MigrationState::SchemaMismatch),
+            "expected SchemaMismatch, got {state:?}"
         );
     }
 

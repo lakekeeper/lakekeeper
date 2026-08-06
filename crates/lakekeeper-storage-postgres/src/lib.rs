@@ -397,7 +397,10 @@ mod search_path_tests {
 
     #[sqlx::test(migrations = false)]
     async fn test_search_path_hook_sets_current_schema(admin_pool: PgPool) {
-        let name = format!("lk_hook_{}", Uuid::new_v4().simple());
+        // Mixed case on purpose: the hook quotes the name, so Postgres has to
+        // keep it verbatim. Were the quoting dropped, the name would be read as
+        // lower case and every assertion below would fail.
+        let name = format!("LkHook_{}", Uuid::new_v4().simple());
         sqlx::query(AssertSqlSafe(format!(r#"CREATE SCHEMA "{name}""#)))
             .execute(&admin_pool)
             .await

@@ -94,7 +94,7 @@ Set `LAKEKEEPER__PG_SCHEMA=lakekeeper` to keep Lakekeeper's tables in a dedicate
 
 `public` stays on the path so extension functions and operator classes installed there keep resolving. The schema name is quoted, so it is case-sensitive, and both the read and the write role need `USAGE` on it.
 
-If you run more than one Lakekeeper in the same database, create the [required extensions](#required-postgres-extensions) in `public` first. Otherwise the first migration installs them inside its own schema, where the other deployments cannot reach them.
+Create the [required extensions](#required-postgres-extensions) in `public` before the first migration. `CREATE EXTENSION` without a `SCHEMA` clause installs into the first entry of `search_path`, so they would land in the Lakekeeper schema. Another Lakekeeper in the same DB can't reach them, and dropping the schema drops them too. They're all relocatable, so an existing install can be fixed with `ALTER EXTENSION <name> SET SCHEMA public;`
 
 Pointing an existing deployment at a new schema shows an empty catalog: the data stays where it is, so move it yourself with `ALTER TABLE ... SET SCHEMA` or a dump and restore.
 
