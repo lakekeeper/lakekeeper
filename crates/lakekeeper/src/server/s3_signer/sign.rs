@@ -655,7 +655,10 @@ pub(super) mod s3_utils {
     const PREFIX_QUERY_PARAM: &str = "prefix";
 
     /// The url path percent-encode set, which is what a `Location` built from an object key
-    /// carries. `/` is not part of it - it separates segments in both representations.
+    /// carries. `/` is not part of it - it separates segments in both representations. `\` is
+    /// not either, and there the two representations genuinely disagree: `url` treats it as a
+    /// second separator for http but not for `s3`, so an object key loses it while a list
+    /// prefix keeps the byte S3 matches against. Keeping the byte is the sound half.
     const LIST_PREFIX_ENCODE_SET: &AsciiSet = &AsciiSet::EMPTY
         .add(b' ')
         .add(b'"')
@@ -992,6 +995,21 @@ pub(super) mod s3_utils {
                     None,
                 )
             })?;
+
+        // `query_pairs` decodes lossily - a byte sequence that is not valid utf-8 becomes
+        // U+FFFD. The location built from it would describe a different key range than the
+        // one S3 matches against the bytes that get signed, so such a prefix is refused. A
+        // literal U+FFFD is refused with it, because the two are indistinguishable here -
+        // stricter than the object key path, which errors on malformed input but accepts the
+        // literal character.
+        if prefix.contains(char::REPLACEMENT_CHARACTER) {
+            return Err(ErrorModel::bad_request(
+                "List prefix is not valid utf-8",
+                "InvalidListPrefix",
+                None,
+            )
+            .into());
+        }
 
         // The prefix arrives url-decoded, so it has to be encoded again to become a location.
         // Object keys reach their location through `urldecode_uri_path_segments`, which
@@ -1690,17 +1708,30 @@ mod test {
     }
 
     /// A key must reach the same location whether it arrives as an object key in the path or
-    /// as a list prefix in the query. Otherwise a table whose location contains one of these
-    /// characters can be read file by file but never listed - and for `#` and `?` the prefix
-    /// would not even parse, because they start a fragment resp. a query string.
+    /// as a list prefix in the query. Otherwise a table whose location contains the character
+    /// can be read file by file but never listed - and for `#` and `?` the prefix would not
+    /// even parse, because they start a fragment resp. a query string.
+    ///
+    /// Swept over every byte, so a change to either representation cannot pull them apart
+    /// unnoticed. One of the two rejecting is fine - it just refuses to sign - so only the
+    /// cases where both produce a location are compared. `\` is the one disagreement, see
+    /// [`test_list_prefix_keeps_a_backslash_that_an_object_key_loses`].
     #[test]
     fn test_list_prefix_and_object_key_encode_alike() {
-        for encoded in [
-            "%20", "%22", "%23", "%3C", "%3E", "%3F", "%60", "%7B", "%7D",    // path-encoded
-            "%C3%A9", // non-ascii
-            "%25", "%2B", "%3A", "%40", // left as-is by both
-        ] {
-            let (object, _) = parse_uri(
+        let escapes = (0x00..=0xFF).map(|byte: u8| format!("%{byte:02X}")).chain([
+            "%C3%A9".to_string(),
+            "%2525".to_string(),
+            "%2f".to_string(),
+        ]);
+
+        let mut compared = 0;
+
+        for encoded in escapes {
+            if encoded == "%5C" {
+                continue;
+            }
+
+            let object = parse_uri(
                 &url::Url::parse(&format!(
                     "http://s3.example.com:8333/bucket/ns/tbl{encoded}a/f.parquet"
                 ))
@@ -1708,20 +1739,71 @@ mod test {
                 S3UrlStyleDetectionMode::Auto,
                 &http::Method::GET,
                 None,
-            )
-            .unwrap_or_else(|e| panic!("object key `{encoded}` must parse: {e:?}"));
-
-            let list = parse_list(
-                &format!(
-                    "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ftbl{encoded}a%2F"
-                ),
-                S3UrlStyleDetectionMode::Auto,
             );
 
+            let list = parse_uri(
+                &url::Url::parse(&format!(
+                    "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ftbl{encoded}a%2F"
+                ))
+                .unwrap(),
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::GET,
+                None,
+            );
+
+            if let (Ok((object, _)), Ok((list, _))) = (object, list) {
+                assert_eq!(
+                    object.locations[0].to_string(),
+                    format!("{}f.parquet", list.locations[0]),
+                    "object key and list prefix must encode `{encoded}` the same way"
+                );
+                compared += 1;
+            }
+        }
+
+        // Both rejecting is the trivially passing case, so make sure the sweep did compare the
+        // printable range rather than run empty.
+        assert_eq!(compared, 97, "the sweep must not go vacuous");
+    }
+
+    /// `\` is the one character the two representations disagree on: `url` treats it as a
+    /// second path separator for http, so the object key loses it, while the list prefix keeps
+    /// the byte S3 matches keys against. Keeping it is the sound half - the authorized string
+    /// is what gets listed - so this pins the list behaviour rather than the agreement.
+    #[test]
+    fn test_list_prefix_keeps_a_backslash_that_an_object_key_loses() {
+        let list = parse_list(
+            "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ftbl%5Ca%2F",
+            S3UrlStyleDetectionMode::Auto,
+        );
+        assert_eq!(list.locations[0].to_string(), "s3://bucket/ns/tbl\\a/");
+
+        let (object, _) = parse_uri(
+            &url::Url::parse("http://s3.example.com:8333/bucket/ns/tbl%5Ca/f.parquet").unwrap(),
+            S3UrlStyleDetectionMode::Auto,
+            &http::Method::GET,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            object.locations[0].to_string(),
+            "s3://bucket/ns/tbl/a/f.parquet"
+        );
+    }
+
+    /// A prefix whose bytes are not valid utf-8 cannot be authorized: `query_pairs` decodes it
+    /// lossily, so the location built from it describes a different key range than the one S3
+    /// matches against the bytes that get signed.
+    #[test]
+    fn test_parse_s3_url_list_rejects_malformed_prefix_encoding() {
+        for prefix in ["ns%2Ftbl%FF%FEa%2F", "ns%2Ftbl%C3%28a%2F", "ns%2Ftbl%80%2F"] {
             assert_eq!(
-                object.locations[0].to_string(),
-                format!("{}f.parquet", list.locations[0]),
-                "object key and list prefix must encode `{encoded}` the same way"
+                parse_list_err(
+                    &format!("http://s3.example.com:8333/bucket?list-type=2&prefix={prefix}"),
+                    S3UrlStyleDetectionMode::Auto
+                ),
+                "InvalidListPrefix",
+                "Test case: {prefix}"
             );
         }
     }
