@@ -64,6 +64,11 @@ static S3_HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client
 pub struct S3Profile {
     /// Name of the S3 bucket
     pub bucket: String,
+    /// AWS partition used when constructing S3 ARNs for vended-credential policies.
+    /// Defaults to the AWS commercial partition (`aws`).
+    #[serde(default = "default_partition")]
+    #[builder(default = default_partition())]
+    pub partition: String,
     /// Subpath in the bucket to use.
     #[builder(default, setter(strip_option))]
     pub key_prefix: Option<String>,
@@ -1238,7 +1243,8 @@ impl S3Profile {
             }
         })?;
         let bucket_arn = format!(
-            "arn:aws:s3:::{}",
+            "arn:{}:s3:::{}",
+            self.partition,
             table_location.bucket_name().trim_end_matches('/')
         );
         let key = escape_iam_glob_literal(&format!("{}/", table_location.key().join("/")));
@@ -1737,6 +1743,10 @@ fn fn_true() -> bool {
 
 fn fn_3600() -> u64 {
     3600
+}
+
+fn default_partition() -> String {
+    "aws".to_string()
 }
 
 impl From<S3CloudflareR2Credential> for S3Credential {
@@ -3457,6 +3467,35 @@ pub(crate) mod test {
             panic!("TableAccess Resource must be a scalar string, got: {resource}")
         });
         assert_eq!(resource, "arn:aws:s3:::bucket-name/wh/ns/table/*");
+    }
+
+    #[test]
+    fn policy_string_uses_configured_aws_partition() {
+        let table_location = "s3://bucket-name/wh/ns/table";
+        let profile = S3Profile::builder()
+            .bucket("bucket-name".to_string())
+            .partition("aws-us-gov".to_string())
+            .region("us-gov-west-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(true)
+            .sts_role_arn("arn:aws-us-gov:iam::123456789012:role/lakekeeper-sts".to_string())
+            .build();
+        let policy = profile
+            .get_sts_policy_string(
+                &table_location.parse().unwrap(),
+                StoragePermissions::ReadWriteDelete,
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
+
+        assert_eq!(
+            parsed["Statement"][0]["Resource"],
+            "arn:aws-us-gov:s3:::bucket-name/wh/ns/table/*"
+        );
+        assert_eq!(
+            parsed["Statement"][1]["Resource"],
+            "arn:aws-us-gov:s3:::bucket-name"
+        );
     }
 
     #[test]
