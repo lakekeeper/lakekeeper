@@ -642,6 +642,7 @@ fn validate_uri(
 pub(super) mod s3_utils {
     use lakekeeper_io::s3::S3Location;
     use lazy_regex::regex;
+    use percent_encoding::{AsciiSet, utf8_percent_encode};
     use serde::{Deserialize, Serialize};
 
     use super::{ErrorModel, Operation, Result};
@@ -652,6 +653,19 @@ pub(super) mod s3_utils {
     const LIST_TYPE_V2: &str = "2";
     /// Query parameter carrying the key prefix a list request is scoped to.
     const PREFIX_QUERY_PARAM: &str = "prefix";
+
+    /// The url path percent-encode set, which is what a `Location` built from an object key
+    /// carries. `/` is not part of it - it separates segments in both representations.
+    const LIST_PREFIX_ENCODE_SET: &AsciiSet = &AsciiSet::EMPTY
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'`')
+        .add(b'{')
+        .add(b'}');
 
     /// The URI of a request to sign, both as received and with its path segments url-decoded.
     ///
@@ -978,6 +992,16 @@ pub(super) mod s3_utils {
                     None,
                 )
             })?;
+
+        // The prefix arrives url-decoded, so it has to be encoded again to become a location.
+        // Object keys reach their location through `urldecode_uri_path_segments`, which
+        // re-encodes with the url path percent-encode set, so the same key has to end up as
+        // the same string here - otherwise a table whose location contains one of these
+        // characters can be read file by file but never listed. `%` and control characters
+        // are deliberately not encoded: the parser below must keep rejecting a prefix that
+        // does not round-trip - an empty segment, `.`/`..`, a control character - instead of
+        // it disappearing behind an encoding of ours.
+        let prefix = utf8_percent_encode(&prefix, LIST_PREFIX_ENCODE_SET);
 
         S3Location::try_from_str(&format!("s3://{bucket}/{prefix}"), false).map_err(|e| {
             ErrorModel::bad_request(
@@ -1665,6 +1689,43 @@ mod test {
         }
     }
 
+    /// A key must reach the same location whether it arrives as an object key in the path or
+    /// as a list prefix in the query. Otherwise a table whose location contains one of these
+    /// characters can be read file by file but never listed - and for `#` and `?` the prefix
+    /// would not even parse, because they start a fragment resp. a query string.
+    #[test]
+    fn test_list_prefix_and_object_key_encode_alike() {
+        for encoded in [
+            "%20", "%22", "%23", "%3C", "%3E", "%3F", "%60", "%7B", "%7D",    // path-encoded
+            "%C3%A9", // non-ascii
+            "%25", "%2B", "%3A", "%40", // left as-is by both
+        ] {
+            let (object, _) = parse_uri(
+                &url::Url::parse(&format!(
+                    "http://s3.example.com:8333/bucket/ns/tbl{encoded}a/f.parquet"
+                ))
+                .unwrap(),
+                S3UrlStyleDetectionMode::Auto,
+                &http::Method::GET,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("object key `{encoded}` must parse: {e:?}"));
+
+            let list = parse_list(
+                &format!(
+                    "http://s3.example.com:8333/bucket?list-type=2&prefix=ns%2Ftbl{encoded}a%2F"
+                ),
+                S3UrlStyleDetectionMode::Auto,
+            );
+
+            assert_eq!(
+                object.locations[0].to_string(),
+                format!("{}f.parquet", list.locations[0]),
+                "object key and list prefix must encode `{encoded}` the same way"
+            );
+        }
+    }
+
     /// A prefix that a location would not round-trip cannot be authorized: the string S3
     /// matches keys against would differ from the one that was checked. `ns//tbl/` is the
     /// case that matters - its keys lie outside the `ns/tbl/` directory it normalizes to.
@@ -1811,7 +1872,7 @@ mod test {
                 .iter()
                 .map(ToString::to_string)
                 .collect_vec(),
-            vec!["s3://bucket/ns/tbl dir/"]
+            vec!["s3://bucket/ns/tbl%20dir/"]
         );
 
         let parsed = parse_list(
@@ -1859,6 +1920,10 @@ mod test {
             ("ns/tbl/metadata", "s3://bucket/ns/tbl", true),
             // Table locations may be stored with a trailing slash.
             ("ns/tbl/", "s3://bucket/ns/tbl/", true),
+            // A table whose location holds an encoded `#`, addressed by the decoded prefix
+            // the client sends.
+            ("ns/tbl%23a/", "s3://bucket/ns/tbl%23a", true),
+            ("ns/tbl%23a/", "s3://bucket/ns/tbl", false),
             // `s3a` and `s3n` table locations are normalized to `s3`.
             ("ns/tbl/", "s3a://bucket/ns/tbl", true),
             ("ns/tbl/", "s3n://bucket/ns/tbl", true),
