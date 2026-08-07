@@ -1058,6 +1058,25 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
+// TBD - this is the one union `api_doc()` cannot make generator-friendly, and
+// it is deliberately skipped by `hoist_and_discriminate_one_of_variants`.
+//
+// It is a two-level union with two discriminator properties: `type` selects
+// s3/az/gcs here, and `credential-type` then selects within `S3Credential` /
+// `AzCredential` / `GcsCredential`, which are unions in their own right. On the
+// wire that is `{"type": "s3", "credential-type": "access-key", ...}`.
+//
+// An `OpenAPI` `discriminator` names exactly one property, so no single-level
+// union can express this, and the members stay `allOf: [{$ref: <a oneOf>},
+// {type: <const>}]` — the shape generators flatten incorrectly. Rewriting the
+// three inner unions on their own is worse than leaving them: their parent then
+// composes something it can no longer flatten and the generated Go does not
+// compile, which is why they are skipped too.
+//
+// Until this is resolved, downstream generators need the cartesian expansion
+// that `go-lakekeeper`'s preprocessor performs (3 outer × the inner variants =
+// 9 flat leaves). The two ways out are to expand it here the same way, or to
+// flatten the wire format to a single discriminator — the latter is breaking.
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]

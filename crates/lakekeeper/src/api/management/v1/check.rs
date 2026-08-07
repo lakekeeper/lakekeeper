@@ -46,6 +46,26 @@ use crate::{
     },
 };
 
+// TBD - the `OpenAPI` schema for this type is *not* what the derive produces.
+// `api_doc()` rewrites it into a single object with `user` and `role` both
+// optional (see `flatten_user_or_role`), because the derived `oneOf` cannot be
+// composed by code generators: the nine `*Assignment` unions embed it as
+// `allOf: [{$ref: UserOrRole}, {type: <const>}]`, and generators flatten that
+// into one struct requiring *every* branch's fields, so a valid
+// `{"type": "ownership", "user": "..."}` is rejected for a missing `role`.
+//
+// The alternative was to keep a `oneOf` but give the two branches named
+// component schemas (`UserOrRoleUser` / `UserOrRoleRole`) and `$ref` them —
+// literally the first option offered in the upstream issue. It was tried and
+// measured: it does not help. The member is still `allOf` over a `oneOf`, so
+// the same flattening happens and generated clients still reject valid
+// payloads. Naming the branches only changes what the broken types are called.
+//
+// The cost of the shape we did pick is that the schema no longer expresses the
+// exclusivity — `{"user": ..., "role": ...}` and `{}` are schema-valid. Serde
+// still rejects both here, so the constraint moved from the schema to runtime
+// rather than disappearing. Revisit if `OpenAPI` gains a way to compose a
+// union into an object, or if the wire format is ever allowed to change.
 #[derive(Hash, Eq, Debug, Clone, Serialize, Deserialize, PartialEq, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]

@@ -217,9 +217,235 @@ pub fn api_doc<A: Authorizer>(
         ManagementV1Endpoint::ScheduleTask.path(),
     );
 
+    // Order matters: `UserOrRole` must stop being a `oneOf` before the unions
+    // that embed it are hoisted, and hoisting uses the titles the naming pass
+    // assigns as component names.
+    flatten_user_or_role(&mut doc);
     name_anonymous_one_of_variants(&mut doc);
+    hoist_and_discriminate_one_of_variants(&mut doc);
 
     doc
+}
+
+/// Name of the schema flattened by [`flatten_user_or_role`].
+const USER_OR_ROLE: &str = "UserOrRole";
+
+/// Render `UserOrRole` as one object with two optional properties rather than a
+/// `oneOf`.
+///
+/// On the wire a `UserOrRole` is `{"user": "..."}` xor `{"role": "..."}`, which
+/// utoipa describes as a `oneOf` of two presence-discriminated objects. That is
+/// accurate but unusable downstream: the nine `*Assignment` unions embed it as
+/// `allOf: [{$ref: UserOrRole}, {type: <const>}]`, and a generator asked to
+/// compose a `oneOf` into a parent object flattens it into a single struct
+/// carrying *every* branch's fields as required — so `{"type": "ownership",
+/// "user": "..."}` is rejected for a missing `role` it must not have.
+///
+/// Describing the same wire shape as one object with both properties optional
+/// removes the nesting, and every embedding union then composes cleanly.
+///
+/// The trade-off is that the schema no longer expresses the exclusivity: a
+/// document with both properties, or neither, becomes schema-valid. The server
+/// still rejects those, so this moves a constraint out of the schema and into
+/// runtime validation rather than dropping it.
+fn flatten_user_or_role(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::openapi::{Object, RefOr, Schema};
+
+    let Some(components) = doc.components.as_mut() else {
+        return;
+    };
+    let Some(RefOr::T(Schema::OneOf(one_of))) = components.schemas.get(USER_OR_ROLE) else {
+        return;
+    };
+
+    let mut flattened = Object::new();
+    flattened.description.clone_from(&one_of.description);
+    for member in &one_of.items {
+        if let RefOr::T(Schema::Object(member)) = member {
+            for (name, property) in &member.properties {
+                flattened.properties.insert(name.clone(), property.clone());
+            }
+        }
+    }
+
+    components
+        .schemas
+        .insert(USER_OR_ROLE.to_owned(), RefOr::T(Schema::Object(flattened)));
+}
+
+/// Lift every `oneOf` member into a named component schema and declare the
+/// discriminator that selects between them.
+///
+/// Naming the variants (see [`name_anonymous_one_of_variants`]) fixes what the
+/// generated types are *called*; it does not tell a generator how to *choose*
+/// between them. Without a discriminator the only strategy available is to try
+/// each branch and see which parses, and our branches are frequently
+/// indistinguishable that way — every `WarehouseAssignment` variant is
+/// `{user?, role?, type}`, differing only in the value of `type`, which is a
+/// single-value enum that most generators render as a plain string rather than
+/// a constant. Decoding then fails with "matches more than one schema".
+///
+/// An `OpenAPI` `discriminator` states the rule outright, but its `mapping` can
+/// only point at named schemas — hence the hoist. Applied to every union whose
+/// members each pin the *same* single property to a *distinct* value.
+fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::openapi::{Ref, RefOr, Schema, schema::Discriminator};
+
+    let Some(components) = doc.components.as_mut() else {
+        return;
+    };
+
+    let skip = unions_left_intact(&components.schemas);
+    let mut hoisted: Vec<(String, Schema)> = Vec::new();
+    let mut rewrites: Vec<(String, Vec<RefOr<Schema>>, Discriminator)> = Vec::new();
+
+    for (union_name, union) in &components.schemas {
+        if skip.contains(union_name) {
+            continue;
+        }
+        let RefOr::T(Schema::OneOf(one_of)) = union else {
+            continue;
+        };
+        if one_of.discriminator.is_some() || one_of.items.is_empty() {
+            continue;
+        }
+
+        // Every member must name the same discriminator property, hold a
+        // distinct value for it, and already carry a title to be hoisted under.
+        let mut property_name: Option<String> = None;
+        let mut members = Vec::with_capacity(one_of.items.len());
+        for member in &one_of.items {
+            let RefOr::T(member) = member else {
+                members.clear();
+                break;
+            };
+            let (Some((property, value)), Some(title)) =
+                (sole_discriminator(member), schema_title(member).cloned())
+            else {
+                members.clear();
+                break;
+            };
+            if *property_name.get_or_insert_with(|| property.clone()) != property {
+                members.clear();
+                break;
+            }
+            members.push((title, value, member.clone()));
+        }
+        let (Some(property_name), false) = (property_name, members.is_empty()) else {
+            continue;
+        };
+
+        let distinct_values = members
+            .iter()
+            .map(|(_, value, _)| value)
+            .collect::<std::collections::BTreeSet<_>>();
+        let distinct_titles = members
+            .iter()
+            .map(|(title, _, _)| title)
+            .collect::<std::collections::BTreeSet<_>>();
+        if distinct_values.len() != members.len() || distinct_titles.len() != members.len() {
+            continue;
+        }
+
+        let mut items = Vec::with_capacity(members.len());
+        let mut mapping = std::collections::BTreeMap::new();
+        for (title, value, mut member) in members {
+            set_schema_title_none(&mut member);
+            let reference = format!("#/components/schemas/{title}");
+            items.push(RefOr::Ref(Ref::new(reference.clone())));
+            mapping.insert(value, reference);
+            hoisted.push((title, member));
+        }
+
+        rewrites.push((
+            union_name.clone(),
+            items,
+            Discriminator {
+                property_name,
+                mapping,
+                extensions: None,
+            },
+        ));
+    }
+
+    for (name, schema) in hoisted {
+        components.schemas.insert(name, RefOr::T(schema));
+    }
+    for (name, items, discriminator) in rewrites {
+        if let Some(RefOr::T(Schema::OneOf(one_of))) = components.schemas.get_mut(&name) {
+            one_of.items = items;
+            one_of.discriminator = Some(discriminator);
+        }
+    }
+}
+
+/// Unions that [`hoist_and_discriminate_one_of_variants`] must not touch.
+///
+/// Two related shapes, both rooted in `StorageCredential` — see the `TBD` note
+/// on `StorageCredential` in `service::storage`:
+///
+/// - a union whose members compose *another* union (`StorageCredential`'s
+///   members are `allOf: [{$ref: S3Credential}, {type: <const>}]`, and
+///   `S3Credential` is itself a `oneOf`). One discriminator cannot select
+///   across two levels.
+/// - the inner unions themselves (`S3Credential`, `AzCredential`,
+///   `GcsCredential`). Rewriting their members to `$ref`s independently leaves
+///   the parent composing something it can no longer flatten, and the generated
+///   client does not compile.
+fn unions_left_intact(
+    schemas: &std::collections::BTreeMap<String, utoipa::openapi::RefOr<utoipa::openapi::Schema>>,
+) -> std::collections::BTreeSet<String> {
+    use utoipa::openapi::{RefOr, Schema};
+
+    let is_union = |name: &str| {
+        matches!(
+            schemas.get(name),
+            Some(RefOr::T(Schema::OneOf(_) | Schema::AnyOf(_)))
+        )
+    };
+    let composed_unions = |member: &Schema| -> Vec<String> {
+        let Schema::AllOf(all_of) = member else {
+            return Vec::new();
+        };
+        all_of
+            .items
+            .iter()
+            .filter_map(|branch| match branch {
+                RefOr::Ref(reference) => reference.ref_location.rsplit('/').next(),
+                RefOr::T(_) => None,
+            })
+            .filter(|name| is_union(name))
+            .map(ToOwned::to_owned)
+            .collect()
+    };
+
+    let mut skip = std::collections::BTreeSet::new();
+    for (union_name, union) in schemas {
+        let RefOr::T(Schema::OneOf(one_of)) = union else {
+            continue;
+        };
+        for member in &one_of.items {
+            if let RefOr::T(member) = member {
+                let nested = composed_unions(member);
+                if !nested.is_empty() {
+                    skip.insert(union_name.clone());
+                    skip.extend(nested);
+                }
+            }
+        }
+    }
+    skip
+}
+
+fn set_schema_title_none(schema: &mut utoipa::openapi::Schema) {
+    use utoipa::openapi::Schema;
+    match schema {
+        Schema::Object(object) => object.title = None,
+        Schema::AllOf(all_of) => all_of.title = None,
+        Schema::OneOf(one_of) => one_of.title = None,
+        Schema::Array(array) => array.title = None,
+        _ => {}
+    }
 }
 
 /// Give every anonymous `oneOf` variant a `title`.
@@ -261,8 +487,9 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
             if schema_title(member).is_some() {
                 continue;
             }
-            let Some(value) =
-                sole_discriminator_value(member).or_else(|| sole_required_field(member))
+            let Some(value) = sole_discriminator(member)
+                .map(|(_, value)| value)
+                .or_else(|| sole_required_field(member))
             else {
                 continue;
             };
@@ -294,21 +521,22 @@ fn set_schema_title(schema: &mut utoipa::openapi::Schema, title: String) {
     }
 }
 
-/// The value of the variant's discriminator, if it has exactly one property
-/// pinned to a single-value enum. `allOf` branches are searched too, because
-/// utoipa renders a tagged newtype variant as `allOf: [{$ref}, {tag const}]`.
-fn sole_discriminator_value(schema: &utoipa::openapi::Schema) -> Option<String> {
+/// The variant's discriminator as `(property, value)`, if it has exactly one
+/// property pinned to a single-value enum. `allOf` branches are searched too,
+/// because utoipa renders a tagged newtype variant as
+/// `allOf: [{$ref}, {tag const}]`.
+fn sole_discriminator(schema: &utoipa::openapi::Schema) -> Option<(String, String)> {
     use utoipa::openapi::{RefOr, Schema};
 
-    fn collect(schema: &Schema, out: &mut Vec<String>) {
+    fn collect(schema: &Schema, out: &mut Vec<(String, String)>) {
         match schema {
             Schema::Object(object) => {
-                for property in object.properties.values() {
+                for (name, property) in &object.properties {
                     if let RefOr::T(Schema::Object(property)) = property
                         && let Some([value]) = property.enum_values.as_deref()
                         && let Some(value) = value.as_str()
                     {
-                        out.push(value.to_owned());
+                        out.push((name.clone(), value.to_owned()));
                     }
                 }
             }
@@ -326,7 +554,7 @@ fn sole_discriminator_value(schema: &utoipa::openapi::Schema) -> Option<String> 
     let mut values = Vec::new();
     collect(schema, &mut values);
     match values.as_slice() {
-        [value] => Some(value.clone()),
+        [discriminator] => Some(discriminator.clone()),
         _ => None,
     }
 }
