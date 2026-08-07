@@ -1,6 +1,7 @@
 # Kafka + Trino + Lakehouse Demo
 
 This project provides a Kubernetes-based demo environment for running:
+
 - **Apache Kafka** with Strimzi
 - **Trino** for interactive queries
 - **Lakekeeper** for metadata/catalog management
@@ -17,16 +18,18 @@ The environment is provisioned using a **Kind (Kubernetes in Docker)** cluster.
 - kubectl
 - GNU Make
 
-
 ## Usage
 
 All commands are run via `make`.
 
 ### Start everything (cluster + services)
+
 ```bash
 make all
 ```
+
 This will:
+
 - Create the Kind cluster (if it doesn’t exist)
 - Build Docker images (producer + Kafka Connect)
 - Install Trino
@@ -35,6 +38,7 @@ This will:
 - Install Lakekeeper catalog services
 
 ### Send dummy data
+
 ```bash
 make run-producer
 ```
@@ -45,9 +49,11 @@ make run-producer
 - Kafka UI: 8080->8080
 
 ### Tear everything down
+
 ```bash
 make destroy
 ```
+
 Deletes the namespace and the Kind cluster.
 
 ## Cleanup

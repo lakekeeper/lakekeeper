@@ -2,13 +2,11 @@
 
 This contains the non-version static site of Lakekeeper.
 
-
 ## Requirements
 
- - just
- - Python
- - pip
-
+- just
+- Python
+- pip
 
 ## Build
 
@@ -21,5 +19,3 @@ Available recipes:
     serve # Clean, build, and run the docs site locally.
 
 ```
-
-

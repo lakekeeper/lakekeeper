@@ -34,15 +34,15 @@ OpenFGA admin tuple, or deploying a Cedar policy that denies everything.
 
 Instance admins bypass authorization for **control-plane** operations:
 
-- Bootstrap.
-- Project, role, warehouse, namespace management.
-- Table / view metadata operations, including `GetMetadata`, `Commit`,
+* Bootstrap.
+* Project, role, warehouse, namespace management.
+* Table / view metadata operations, including `GetMetadata`, `Commit`,
   `Drop`, `Rename`, property changes.
-- User management.
+* User management.
 
 Instance admins do **not** bypass authorization for:
 
-- **Data-plane operations** — `CatalogTableAction::ReadData`,
+* **Data-plane operations** — `CatalogTableAction::ReadData`,
   `CatalogTableAction::WriteData`, and `CatalogViewAction::Select` still
   route through the configured Authorizer. If the instance admin does not
   hold the relevant grants, reads and writes of table row data (and
@@ -50,10 +50,10 @@ Instance admins do **not** bypass authorization for:
   OpenFGA model `Select` and `GetMetadata` resolve to the same underlying
   grant, so ordinary users see no behavioural change — the two exist as
   distinct actions so that the bypass carve-out can exclude `Select`.
-- **Role assumption** (`x-assume-role` header) — an instance admin must act
+* **Role assumption** (`x-assume-role` header) — an instance admin must act
   with their own identity. Assuming a role opts into that role's narrower
   scope.
-- **Permission-management endpoints** exposed by the active Authorizer
+* **Permission-management endpoints** exposed by the active Authorizer
   (for example `/management/v1/permissions/...` under OpenFGA; Cedar
   exposes its own set) — the instance-admin bypass does **not** apply to
   these. Writes go through the Authorizer's own grant-check path, so an
@@ -91,23 +91,23 @@ some other config systems accept (`LAKEKEEPER__INSTANCE_ADMINS__0=...`) is
 
 ### Operational notes
 
-- **Not a recovery mechanism.** If OpenFGA is unreachable or the authn layer
+* **Not a recovery mechanism.** If OpenFGA is unreachable or the authn layer
   is misconfigured such that the instance admin's identity cannot be
   resolved, the bypass does not engage. Instance admins are for day-to-day
   operator access, not break-glass recovery.
-- **Rotation.** The admin list is read once at process startup. Adding or
+* **Rotation.** The admin list is read once at process startup. Adding or
   removing an admin requires a redeploy. This is intentional: the mechanism
   is a deployment-config concern, not a runtime one.
-- **Audit.** Authorization events include a `privilege_source` field
+* **Audit.** Authorization events include a `privilege_source` field
   indicating how the decision was reached: `"internal"` (in-process call),
   `"instance_admin"` (config-granted bypass), or `"authorizer"`
   (configured Authorizer backend decision). See the
   [Logging guide](./logging.md#audit-logs-and-rust_log) for the event
   schema.
-- **Role-assumed requests.** Setting `x-assume-role` on a request from an
+* **Role-assumed requests.** Setting `x-assume-role` on a request from an
   instance admin drops the bypass for that request — the effective scope is
   whatever the assumed role holds.
-- **Permission administration.** Because instance admins cannot write to
+* **Permission administration.** Because instance admins cannot write to
   the OpenFGA permission-management endpoints, day-to-day management of
   role grants and assignments is done by a human (or service) principal
   that was bootstrapped through OpenFGA. The operator use case is

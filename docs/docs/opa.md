@@ -1,4 +1,5 @@
 # Open Policy Agent (OPA)
+
 [Lakekeeper's Open Policy Agent bridge](https://github.com/lakekeeper/lakekeeper/tree/main/authz/opa-bridge) enables compute engines that support fine-grained access control via Open Policy Agent (OPA) as authorization engine to respect privileges in Lakekeeper. We have also prepared a self-contained [Docker Compose Example](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control-advanced) to get started quickly.
 
 Let's imagine we have a trusted multi-user query engine such as trino, in addition to single-user query engines like pyiceberg or daft in Jupyter Notebooks. Managing permissions in trino independently of the other tools is not an option, as we do not want to duplicate permissions across query engines. Our multi-user query engine has two options:
@@ -11,11 +12,13 @@ The Lakekeeper OPA Bridge enables solution 2, by exposing all permissions in Lak
 The bridge also comes with a translation layer for trino to translate trino to Lakekeeper permissions and thus serve trinos OPA queries. Currently trino is the only iceberg query engine we are aware of that is flexible enough to honor external permissions via OPA. Please [let us know](https://github.com/lakekeeper/lakekeeper/issues/new/choose) if you are aware of other engines, so that we can add support.
 
 ## Configuration
+
 Lakekeeper's OPA bridge needs to access the permissions API of Lakekeeper. As such, we need a technical user for OPA (Client ID, Client Secret) that OPA can use to authenticate to Lakekeeper. Please check the [Authentication guide](./authentication.md) for more information on how to create technical users. We recommend to use the same user for creating the catalog in trino to ensure same access. In most scenarios, this user should have the `project_admin` role.
 
 The plugin can be customized by either editing the `configuration.rego` file or by setting environment variables. By editing the `configuration.rego` files you can also easily connect multiple lakekeeper instances to the same trino instance. Please find all available configuration options explained in the file.
 
 ### Lakekeeper Connection
+
 If configuration is done via environment variables, the following settings are available:
 
 | Variable                                 | Example                                                             | Description |
@@ -28,6 +31,7 @@ If configuration is done via environment variables, the following settings are a
 | <nobr>`LAKEKEEPER_MAX_BATCH_CHECK_SIZE`</nobr> | `1000`                                                       | Maximum number of checks per `batch-check` HTTP request. Larger values mean fewer HTTP calls but more load on the authorization backend. Default: `1000` |
 
 ### Catalog Mapping
+
 All above mentioned configuration options refer to a specific Lakekeeper instance. What is missing is a mapping of trino catalogs to Lakekeeper warehouses. By default we support 4 catalogs in trino, but more can easily be added in the `configuration.rego`.
 
 | Variable                                       | Example                   | Description |
@@ -48,6 +52,7 @@ All above mentioned configuration options refer to a specific Lakekeeper instanc
 | <nobr>`TRINO_ALLOW_UNMANAGED_CATALOGS`</nobr> | `true`  | Blanket-allow access to all catalogs not listed in the `trino_catalog` array. When trino has multiple authorizers configured, ALL authorizers must allow an action for it to succeed. If trino uses catalogs managed by other authorizers (e.g. a connected PostgreSQL catalog), set this to `true` so the OPA bridge does not block access to those catalogs. Default: `false`. For fine-grained control over unmanaged catalogs, use the `allow_unmanaged` extension point instead (see below). |
 
 ### Admin Users
+
 Admin users get full access to Trino system schemas and tables across all catalogs (including `system.metadata`, `system.runtime`, etc.) and can view queries owned by any user (`FilterViewQueryOwnedBy`, `ViewQueryOwnedBy`). Non-admin users can only view their own queries. Note that this only affects Trino-level authorization — access to data in Lakekeeper-managed catalogs is still governed by Lakekeeper's own authorization.
 
 | Variable                                  | Example                          | Description |
@@ -57,6 +62,7 @@ Admin users get full access to Trino system schemas and tables across all catalo
 Admin users can also be configured directly in the `trino_admin_users` list in `configuration.rego`.
 
 ### Trusted Engines and View Security
+
 If you use Lakekeeper's [DEFINER view security model](./view-security.md), Lakekeeper protects the engine's owner property (e.g. `trino.run-as-owner`) so that only trusted engines may set or remove it. Both the **Trino catalog client** and the **OPA bridge client** must be matched as trusted engines — otherwise `CREATE VIEW ... SECURITY DEFINER` and related operations will be rejected with `403 ProtectedPropertyModification`.
 
 We recommend giving the OPA bridge its **own** Keycloak client, separate from the Trino catalog client. The OPA bridge only needs permission-check access on Lakekeeper, which is a narrower privilege scope than what the Trino catalog client needs — keeping them separate limits blast radius if either credential leaks.
@@ -74,7 +80,9 @@ Alternatively, if your IdP mints a distinguishing audience for each client, use 
 See [View Security](./view-security.md) for the full configuration reference.
 
 ### Trino Configuration
+
 When OPA is running and configured, set the following configurations for trino in `access-control.properties`:
+
 ```yaml
 access-control.name=opa
 opa.policy.uri=http://<URL where OPA is reachable>/v1/data/trino/allow
@@ -84,9 +92,11 @@ opa.policy.batched-uri=http://<URL where OPA is reachable>/v1/data/trino/batch
 ```
 
 ## System Schema Handling
+
 The OPA bridge distinguishes between user-created schemas (namespaces) and system schemas. User schemas are authorized via Lakekeeper's permission system, while system schemas are handled locally by the bridge.
 
 ### Trino `system` Catalog
+
 The following schemas in the trino `system` catalog are accessible to all authenticated users:
 
 | Schema | Allowed Tables | Description |
@@ -99,6 +109,7 @@ The following schemas in the trino `system` catalog are accessible to all authen
 Admin users have unrestricted access to all tables in all system schemas.
 
 ### Lakekeeper Catalog System Schemas
+
 Within Lakekeeper-managed catalogs, the following schemas are treated as system schemas and require only catalog-level (`get_config`) access instead of namespace-level permissions:
 
 | Schema | Allowed Tables | Description |
@@ -110,14 +121,17 @@ Within Lakekeeper-managed catalogs, the following schemas are treated as system 
 User-created schemas are authorized through Lakekeeper's permission system as usual.
 
 ## Extension Points
+
 The OPA bridge provides two extension points for adding custom authorization rules without modifying the built-in policies. Both default to `false` and can be extended by creating `.rego` files in the `policies/trino/` directory.
 
 ### `allow_managed` — Managed Catalog Extensions
+
 Use `allow_managed` for additional rules on catalogs listed in `trino_catalog`. These rules run alongside Lakekeeper's permission checks (OR logic). For example, granting UDF management permissions on a Lakekeeper-managed catalog.
 
 To use it, create `policies/trino/allow_managed.rego` in the `trino` package and define `allow_managed` rules for the Trino operations you need. These rules bypass Lakekeeper's permission system, so review them carefully.
 
 ### `allow_unmanaged` — Unmanaged Catalog Extensions
+
 Use `allow_unmanaged` for catalogs **not** listed in `trino_catalog` (e.g., external database catalogs like PostgreSQL or Exasol). These rules are evaluated on a fast path that never triggers Lakekeeper HTTP calls, including in batch operations.
 
 For a simple blanket allow, set `TRINO_ALLOW_UNMANAGED_CATALOGS=true` (see above). For fine-grained control, create `policies/trino/allow_unmanaged.rego` in the `trino` package. For example, to grant read-only access to a specific external catalog for certain users:
@@ -133,6 +147,7 @@ allow_unmanaged if {
 ```
 
 ## Batch Optimization
+
 For Trino filter operations (`FilterTables`, `FilterColumns`, `SelectFromColumns`, `FilterSchemas`), the OPA bridge optimizes authorization checks on Lakekeeper-managed catalogs by batching resource checks into Lakekeeper `batch-check` HTTP requests, instead of making one HTTP call per resource.
 
 For table/column/select operations, each resource generates two checks (table + view) since Trino does not distinguish between tables and views in filter requests. A resource is allowed if either check passes. Schema filter operations generate one namespace check per resource.
@@ -144,6 +159,7 @@ System schemas (`information_schema`, `schema_discovery`, `system`) and metadata
 This optimization is transparent — it produces the same results as per-resource evaluation but with significantly fewer HTTP round-trips to Lakekeeper for non-system resources.
 
 ## Context Forwarding
+
 The OPA bridge forwards resource names to Lakekeeper's batch-check API for create actions. This enables Lakekeeper's authorizer (e.g. Cedar) to make authorization decisions based on the name of the resource being created:
 
 | Trino Operation | Lakekeeper Action | Name Forwarded |

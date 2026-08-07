@@ -1,4 +1,5 @@
 # Authentication
+
 Authentication is crucial for securing access to Lakekeeper. By enabling authentication, you ensure that only authorized users can access and interact with your data. Lakekeeper supports authentication via any OpenID (or OAuth 2) capable identity provider as well as authentication for Kubernetes service accounts, allowing you to integrate with your existing identity providers.
 
 Authentication and Authorization are distinct processes in Lakekeeper. Authentication verifies the identity of users, ensuring that only authorized individuals can access the system. This is performed via an Identity Provider (IdP) such as OpenID or Kubernetes. Authorization, on the other hand, determines what authenticated users are allowed to do within the system. Lakekeeper is extendable and can connect to different authorization systems. By default, Lakekeeper uses OpenFGA to manage and evaluate permissions, providing a robust and flexible authorization model. For more details, see the [Authorization guide](./authorization.md).
@@ -6,6 +7,7 @@ Authentication and Authorization are distinct processes in Lakekeeper. Authentic
 Lakekeeper does not issue API-Keys or Client-Credentials itself. Instead, it relies on external IdPs for authentication, ensuring a secure and centralized management of user identities. This approach minimizes the risk of credential leakage and simplifies the integration with existing security infrastructures.
 
 ## OpenID Provider
+
 Lakekeeper can be configured to integrate with all common identity providers. For best performance, tokens are validated locally against the server keys (`jwks_uri`). This requires all incoming tokens to be JWT tokens. If you require support for opaque tokens, please upvote the corresponding [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/620).
 
 If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token to match the specified value. We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
@@ -27,9 +29,11 @@ Lakekeeper determines the ID of users in the following order:
 IDs from the OIDC provider in Lakekeeper have the form `oidc~<ID from the provider>`.
 
 ### Authenticating Machine Users
+
 All common iceberg clients and IdPs support the OAuth2 `Client-Credential` flow. The `Client-Credential` flow requires a `Client-ID` and `Client-Secret` that is provided in a secure way to the client. In the following sections we demonstrate for selected IdPs how applications can be setup for machine users to connect.
 
 ### Authenticating Humans
+
 Human Authentication flows are interactive by nature and are typically performed directly by the IdP. This enables the use of all security options that the IdP supports, including 2FA, hardware keys, single-sign-on and more. The recommended flows for authentication are Authorization Code Flow [RFC6749#section-4.1](https://datatracker.ietf.org/doc/html/rfc6749#section-4.1) with PKCE and Device Code Flow [RFC8628](https://datatracker.ietf.org/doc/html/rfc8628).
 
 At the time of writing all common iceberg clients (spark, trino, starrocks, pyiceberg, ...) do not support any authorization flow that is suitable for human users natively. The iceberg community is working on introducing those flows and we started an [initiative](https://docs.google.com/document/d/1buW9PCNoHPeP7Br5_vZRTU-_3TExwLx6bs075gi94xc/edit?tab=t.0) to standardize and document them as part of the iceberg docs.
@@ -41,6 +45,7 @@ Until iceberg clients are natively ready for human flows, authentication flows h
 The lifetime of this token is specified in the corresponding application in your IdP. We recommend to set the lifetime to no longer than one day.
 
 ### Keycloak
+
 We are creating two Client: The first client with a "public" profile for the Lakekeeper API & UI and the second client for a machine client (e.g. Spark). Repeat step 2 for each machine client that is needed.
 
 ##### Client 1: Lakekeeper
@@ -54,16 +59,17 @@ We are creating two Client: The first client with a "public" profile for the Lak
     - **Valid redirect URIs**: For testing a wildcard "*" can be set. Otherwise the URL where the Lakekeeper UI is reachable for the user suffixed by `/callback`. E.g.: `http://localhost:8181/ui/callback`.
 1. When the client is created, click on the "Advanced" tab of this client, scroll down to "Advanced settings" and set "Access Token Lifespan" to "Expires in" - 12 Hours.
 1. Create a new "Client scope" in the left side menu:
-    - **Name**: choose any, for this example we choose  `lakekeeper` 
+    - **Name**: choose any, for this example we choose  `lakekeeper`
     - **Description**: `Client of Lakekeeper`
     - **Type**: Optional
 1. When the scope is created, we need to add a new mapper. This is recommended because Lakekeeper can validate the `audience` (target service) of the token for increased security. In order to add the `lakekeeper` audience to the token every time the `lakekeeper` scope is requested, we create a new mapper. Select the "Mappers" tab of the previously created `lakekeeper` scope. Select "Configure a new mapper" -> "Audience". ![](../../assets/keycloak-audience-mapper.png)
-    - **Name**: choose any, for this example we choose  `Add lakekeeper Audience` 
+    - **Name**: choose any, for this example we choose  `Add lakekeeper Audience`
     - **Included Client Audience**: Select the id of the previously created App 1. In our example this is `lakekeeper`.
     - Make sure `Add to access token` and `Add to token introspection` is enabled.
 1. Finally, we need to grant the `spark` client permission to use the `lakekeeper` scope which adds the correct audience to the issued token. Select the "Client scopes" tab of the `lakekeeper` client and select "Add client scope". Select the previously created scope, in our example this is `lakekeeper`. We recommend adding the scope as "Default".
 
 We are now ready to deploy Lakekeeper and login via the UI. Set the following environment variables / configurations:
+
 ```sh
 LAKEKEEPER__OPENID_PROVIDER_URI=http://localhost:30080/realms/iceberg (URI of the keycloak realm)
 LAKEKEEPER__OPENID_AUDIENCE=lakekeeper (ID of Client 1)
@@ -142,6 +148,7 @@ That's it! We can now use the second App Registration to sign into Lakekeeper us
 If Authorization is enabled, the client will throw an error as no permissions have been granted yet. During this initial connect to the `/config` endpoint of Lakekeeper, the user is automatically provisioned so that it should show up when searching for users in the "Grant" dialog and user search endpoints.
 
 ### Entra-ID (Azure)
+
 We are creating three App-Registrations: The first for Lakekeeper itself, the second for the Lakekeeper UI the third for a machine client (e.g. Spark) to access Lakekeeper. Repeat step 3 for each machine client that is needed. While App-Registrations can also be shared, the recommended setup we propose here offers more flexibility and better security.
 
 ##### App 1: Lakekeeper UI Application
@@ -307,6 +314,7 @@ We are now ready to deploy Lakekeeper and login via the UI. Set the following en
 Before continuing with App 2, we recommend to create a Warehouse using any of the supported storages. Please check the [Storage Documentation](./storage.md) for more information. Without a Warehouse, we won't be able to test App 3.
 
 ##### App 3: Machine User
+
 Repeat this process for each query engine / machine user that is required:
 
 1. Create a new "App Registration"
@@ -314,15 +322,18 @@ Repeat this process for each query engine / machine user that is required:
     - **Redirect URI**: Leave empty - we are going to use the Client Credential Flow
 2. When the App Registration is created, select "Manage" -> "Certificates & secrets" and create a "New client secret". Note down the secrets "Value".
 3. There might be an additional step needed before you can utilize the machine user. First, get the token for it using the credentials you created on previous steps:
-```
-curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
-https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token \
--d 'client_id={client_id}' \
--d 'grant_type=client_credentials' \
--d 'scope=email openid {APP2_client_id}%2F.default' \
--d 'client_secret={client_secret}'
-```
-Note that `scope` parameter might not accept `api://` prefix for the APP2 scope for some Entra tenants. In that case, simply use `app2_client_id/.default` as shown above. Copy the `access_token` from the response and decode it using jwt.io or any other JWT decode tool. In order for automatic registration to work, token must contain the following claims:
+
+    ```
+    curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+    https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token \
+    -d 'client_id={client_id}' \
+    -d 'grant_type=client_credentials' \
+    -d 'scope=email openid {APP2_client_id}%2F.default' \
+    -d 'client_secret={client_secret}'
+    ```
+
+    Note that `scope` parameter might not accept `api://` prefix for the APP2 scope for some Entra tenants. In that case, simply use `app2_client_id/.default` as shown above. Copy the `access_token` from the response and decode it using jwt.io or any other JWT decode tool. In order for automatic registration to work, token must contain the following claims:
+
     - `app_displayname`: name of the APP3 assigned in step 1
     - `appid`: application identifier (client identifier) of the App 3
     - `idtyp`: "app" (indicates this is an Entra service principal)
@@ -423,6 +434,7 @@ If you're using Google Cloud Platform, please advocate for proper OAuth standard
 Due to these OAuth2 limitations in Google Identity Platform, we cannot recommend it for production deployments. Nevertheless, if you wish to proceed, here's how:
 
 ##### Google Auth Platform Project: Lakekeeper Application
+
 Create a new GCP Project - each Project serves a single application as part of the "Google Auth Platform". When the new project is created, create the new internal Lakekeeper Application:
 
 1. Search for "Google Auth Platform", then select "Branding" on the left.
@@ -479,6 +491,7 @@ LAKEKEEPER__OPENID_PROVIDERS__EKSCLUSTERB__SUBJECT_CLAIMS=sub
 ### User Identity Format
 
 User IDs include the provider's `IDP_ID` as a prefix: `{idp_id}~{subject}`. For example:
+
 - `okta~user@example.com` for a user from Okta
 - `eksclustera~system:serviceaccount:namespace:my-app` for a Kubernetes service account
 
@@ -505,6 +518,7 @@ See the [Configuration Reference](./configuration.md#multiple-oidc-providers) fo
 **Identity continuity note:** Existing user IDs are formatted as `oidc~<subject>` from the primary provider configured via `LAKEKEEPER__OPENID_PROVIDER_URI`. Do not move that provider into `LAKEKEEPER__OPENID_PROVIDERS` under a different `IDP_ID` (e.g., `okta`), or existing role/user assignments will no longer match.
 
 ## Kubernetes
+
 If `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true, Lakekeeper validates incoming tokens against the default kubernetes context of the system. Lakekeeper uses the [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/) to determine the validity of a token. By default the `TokenReview` resource is protected. When deploying Lakekeeper on Kubernetes, make sure to grant the `system:auth-delegator` Cluster Role to the service account used by Lakekeeper:
 
 ```yaml
@@ -527,12 +541,14 @@ The [Lakekeeper Helm Chart](https://github.com/lakekeeper/lakekeeper-charts/tree
 Applications running in Kubernetes pods can now authenticate using the service account token, which is typically mounted at `/var/run/secrets/kubernetes.io/serviceaccount/token`. Simply read this token and include it in the `Authorization` header.
 
 **Example with CURL:**
+
 ```bash
 curl -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
      http://my-lakekeeper:8181/catalog/v1/config
 ```
 
 **Example with Spark:**
+
 ```bash
 spark-submit \
   --conf spark.sql.catalog.lakekeeper.token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
