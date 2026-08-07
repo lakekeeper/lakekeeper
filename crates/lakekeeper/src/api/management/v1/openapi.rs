@@ -1239,3 +1239,212 @@ fn add_dependent_schemas(
     };
     comps.schemas.extend(dependent_schemas);
 }
+
+/// Structural checks on the generated `OpenAPI` documents.
+///
+/// The schema passes above rewrite `components/schemas` in place — hoisting
+/// members, rewriting them to `$ref`s and attaching discriminators. Every one of
+/// those edits can leave the document internally inconsistent in a way that
+/// still serialises fine and only surfaces as a broken generated client, so the
+/// invariants are asserted here rather than discovered downstream.
+#[cfg(test)]
+mod spec_integrity_tests {
+    use serde_json::Value;
+
+    use super::api_doc;
+    use crate::service::{authz::AllowAllAuthorizer, tasks};
+
+    fn management_spec() -> Value {
+        let queue_configs = tasks::BUILT_IN_API_CONFIGS.iter().collect::<Vec<_>>();
+        let project_queue_configs = tasks::BUILT_IN_PROJECT_API_CONFIGS
+            .iter()
+            .collect::<Vec<_>>();
+        serde_json::to_value(api_doc::<AllowAllAuthorizer>(
+            &queue_configs,
+            &project_queue_configs,
+        ))
+        .expect("the generated document must serialise")
+    }
+
+    fn generic_table_spec() -> Value {
+        serde_json::to_value(crate::api::data::v1::generic_tables::api_doc())
+            .expect("the generated document must serialise")
+    }
+
+    fn schemas(spec: &Value) -> &serde_json::Map<String, Value> {
+        spec["components"]["schemas"]
+            .as_object()
+            .expect("components/schemas must be an object")
+    }
+
+    fn walk<'a>(node: &'a Value, path: &str, out: &mut Vec<(String, &'a Value)>) {
+        match node {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    let child = format!("{path}.{key}");
+                    if key == "$ref" {
+                        out.push((child.clone(), value));
+                    }
+                    walk(value, &child, out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{path}[{index}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A `$ref` that names a schema which does not exist serialises happily and
+    /// then makes every generator fail — or worse, emit a client with a missing
+    /// type.
+    fn assert_refs_resolve(spec: &Value, label: &str) {
+        let schemas = schemas(spec);
+        let mut refs = Vec::new();
+        walk(spec, "", &mut refs);
+        let dangling = refs
+            .iter()
+            .filter_map(|(path, value)| value.as_str().map(|value| (path, value)))
+            .filter(|(_, value)| value.starts_with("#/components/schemas/"))
+            .filter(|(_, value)| {
+                !schemas.contains_key(value.trim_start_matches("#/components/schemas/"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            dangling.is_empty(),
+            "{label}: $ref(s) point at schemas that do not exist: {dangling:?}"
+        );
+    }
+
+    /// A discriminator is only usable if every mapping target is one of the
+    /// union's own members and names a real schema, and if every member is
+    /// reachable — an unmapped member can never be selected.
+    fn assert_discriminators_are_consistent(spec: &Value, label: &str) {
+        let schemas = schemas(spec);
+        for (name, schema) in schemas {
+            let Some(discriminator) = schema.get("discriminator") else {
+                continue;
+            };
+            let members = schema
+                .get("oneOf")
+                .and_then(Value::as_array)
+                .map(|members| {
+                    members
+                        .iter()
+                        .filter_map(|member| member.get("$ref").and_then(Value::as_str))
+                        .collect::<std::collections::BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            let mapping = discriminator
+                .get("mapping")
+                .and_then(Value::as_object)
+                .unwrap_or_else(|| panic!("{label}: `{name}` has a discriminator with no mapping"));
+
+            assert!(
+                discriminator
+                    .get("propertyName")
+                    .and_then(Value::as_str)
+                    .is_some_and(|property| !property.is_empty()),
+                "{label}: `{name}` has a discriminator without a propertyName"
+            );
+            for (value, target) in mapping {
+                let target = target
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{label}: `{name}` maps `{value}` to a non-string"));
+                assert!(
+                    members.contains(target),
+                    "{label}: `{name}` maps `{value}` to `{target}`, which is not one of its \
+                     oneOf members"
+                );
+                assert!(
+                    schemas.contains_key(target.trim_start_matches("#/components/schemas/")),
+                    "{label}: `{name}` maps `{value}` to `{target}`, which does not exist"
+                );
+            }
+            assert_eq!(
+                mapping.len(),
+                members.len(),
+                "{label}: `{name}` has {} members but {} mapped, so some variant can never be \
+                 selected",
+                members.len(),
+                mapping.len()
+            );
+
+            // The mapping key must be the value the target actually pins for
+            // the discriminator property. A key that matches nothing on the
+            // wire makes the generator dispatch on a value it will never see.
+            let property = discriminator["propertyName"].as_str().unwrap();
+            for (value, target) in mapping {
+                let target_name = target
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("#/components/schemas/");
+                let pinned = pinned_value(&schemas[target_name], property);
+                assert_eq!(
+                    pinned.as_deref(),
+                    Some(value.as_str()),
+                    "{label}: `{name}` maps `{value}` to `{target_name}`, but that schema pins \
+                     `{property}` to {pinned:?}"
+                );
+            }
+        }
+    }
+
+    /// The single-value enum a schema pins `property` to, looking through
+    /// `allOf` branches — utoipa renders a tagged variant as
+    /// `allOf: [{$ref}, {tag const}]`.
+    fn pinned_value(schema: &Value, property: &str) -> Option<String> {
+        if let Some(Value::Array(values)) = schema
+            .get("properties")
+            .and_then(|properties| properties.get(property))
+            .and_then(|property| property.get("enum"))
+            && let [Value::String(value)] = values.as_slice()
+        {
+            return Some(value.clone());
+        }
+        schema
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find_map(|branch| pinned_value(branch, property))
+    }
+
+    /// Inline union members must carry a `title`. Without one a generator
+    /// invents a name, and because identical inline schemas are deduplicated the
+    /// invented name is frequently taken from an unrelated union.
+    fn assert_union_members_are_named(spec: &Value, label: &str) {
+        for (name, schema) in schemas(spec) {
+            let Some(members) = schema.get("oneOf").and_then(Value::as_array) else {
+                continue;
+            };
+            for (index, member) in members.iter().enumerate() {
+                if member.get("$ref").is_some() {
+                    continue;
+                }
+                assert!(
+                    member.get("title").and_then(Value::as_str).is_some(),
+                    "{label}: `{name}` member {index} is inline and has no title"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn management_spec_is_internally_consistent() {
+        let spec = management_spec();
+        assert_refs_resolve(&spec, "management");
+        assert_discriminators_are_consistent(&spec, "management");
+        assert_union_members_are_named(&spec, "management");
+    }
+
+    #[test]
+    fn generic_table_spec_is_internally_consistent() {
+        let spec = generic_table_spec();
+        assert_refs_resolve(&spec, "generic-table");
+        assert_discriminators_are_consistent(&spec, "generic-table");
+        assert_union_members_are_named(&spec, "generic-table");
+    }
+}
