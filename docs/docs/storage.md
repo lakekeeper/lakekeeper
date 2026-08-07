@@ -189,6 +189,8 @@ For maximum client compatibility, we recommend enabling both STS and remote sign
 
 Remote signing applies to [Generic Tables](./generic-tables.md) as well as Iceberg tables — see [Remote signing for generic tables](./generic-tables.md#remote-signing-s3-without-sts).
 
+Remote signing also covers prefix listings (`ListObjectsV2`), which clients use for maintenance operations such as Spark's `remove_orphan_files` with `prefix_listing => true` (requires `iceberg-spark-runtime` 1.10 or newer). The `prefix` must address a directory inside the table's location, i.e. it has to end with a `/` when listing the table location itself. S3 matches list prefixes as raw strings, so the prefix `warehouse/ns/table` would also return the keys of a sibling `warehouse/ns/table_other`, and is rejected. Iceberg's `FileSystemWalker` appends the `/` before listing; clients that don't are expected to normalize their prefix.
+
 For some older remote signing clients that cannot handle table-specific remote signing endpoint locations, Lakekeeper needs to identifying a table by its location in the storage. Since there are multiple canonical ways to specify S3 resources (virtual-host & path), Lakekeeper warehouses by default use a heuristic to determine which style is used. For some setups these heuristics may not work, or you may want to enforce a specific style. In this case, you can set the `remote-signing-url-style` field to either `path` or `virtual-host` in your storage profile. `path` will always use the first path segment as the bucket name. `virtual-host` will use the first subdomain if it is followed by `.s3` or `.s3-`. The default mode is `auto` which first tries `virtual-host` and falls back to `path` if it fails.
 
 ### Configuration Parameters

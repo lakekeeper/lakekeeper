@@ -51,7 +51,7 @@ pub(crate) use test_utils as tests;
 use tokio::sync::RwLock;
 
 use self::{
-    config::{CONFIG, DynAppConfig, PgSslMode},
+    config::{CONFIG, DynAppConfig, PgSchema, PgSslMode},
     dbutils::DBErrorHandler,
 };
 
@@ -266,15 +266,48 @@ impl<'txn> StateOrTransaction<CatalogState, PostgresTransactionType<'txn>>
     }
 }
 
+/// Install a per-connection `search_path` so Lakekeeper's tables live in
+/// `schema`. `None` installs no hook.
+///
+/// `set_config` takes the name as a bind parameter and is equivalent to a
+/// session-level `SET search_path`, which cannot be used here because `SET`
+/// takes no parameters.
+///
+/// A pooler in transaction or statement pooling mode does not keep a
+/// session-level `SET`. Use `ALTER ROLE <role> SET search_path` there instead:
+/// [`migrations::migrate`] checks `current_schema()` and fails rather than
+/// migrating into the wrong schema.
+#[must_use]
+pub fn with_search_path(pool_opts: PgPoolOptions, schema: Option<&PgSchema>) -> PgPoolOptions {
+    let Some(schema) = schema else {
+        return pool_opts;
+    };
+    // Rendered once here; the hook only clones the finished string.
+    let search_path = schema.search_path_value();
+    pool_opts.after_connect(move |conn, _meta| {
+        let search_path = search_path.clone();
+        Box::pin(async move {
+            sqlx::query("SELECT set_config('search_path', $1, false)")
+                .bind(search_path)
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        })
+    })
+}
+
 impl DynAppConfig {
     pub fn to_pool_opts(&self) -> PgPoolOptions {
-        sqlx::pool::PoolOptions::default()
-            .test_before_acquire(self.pg_test_before_acquire)
-            .acquire_timeout(core::time::Duration::from_secs(self.pg_acquire_timeout))
-            .max_lifetime(
-                self.pg_connection_max_lifetime
-                    .map(core::time::Duration::from_secs),
-            )
+        with_search_path(
+            sqlx::pool::PoolOptions::default()
+                .test_before_acquire(self.pg_test_before_acquire)
+                .acquire_timeout(core::time::Duration::from_secs(self.pg_acquire_timeout))
+                .max_lifetime(
+                    self.pg_connection_max_lifetime
+                        .map(core::time::Duration::from_secs),
+                ),
+            self.pg_schema.as_ref(),
+        )
     }
 }
 
@@ -338,8 +371,78 @@ fn build_connect_ops(typ: ConnectionType) -> anyhow::Result<PgConnectOptions> {
         port = opts.get_port(),
         database = opts.get_database(),
         username = opts.get_username(),
+        schema = CONFIG.pg_schema.as_ref().map(PgSchema::as_str),
         "Building PostgreSQL {conn_type} connection"
     );
 
     Ok(opts)
+}
+
+#[cfg(test)]
+mod search_path_tests {
+    use sqlx::{AssertSqlSafe, PgPool, postgres::PgPoolOptions};
+    use uuid::Uuid;
+
+    use super::{config::PgSchema, with_search_path};
+
+    /// Build a pool against the same database as `admin_pool`, optionally with
+    /// the `search_path` hook installed.
+    async fn pool_with(admin_pool: &PgPool, schema: Option<&PgSchema>) -> PgPool {
+        let opts = (*admin_pool.connect_options()).clone();
+        with_search_path(PgPoolOptions::new().max_connections(2), schema)
+            .connect_with(opts)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn test_search_path_hook_sets_current_schema(admin_pool: PgPool) {
+        // Mixed case on purpose: the hook quotes the name, so Postgres has to
+        // keep it verbatim. Were the quoting dropped, the name would be read as
+        // lower case and every assertion below would fail.
+        let name = format!("LkHook_{}", Uuid::new_v4().simple());
+        sqlx::query(AssertSqlSafe(format!(r#"CREATE SCHEMA "{name}""#)))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        let schema = name.parse::<PgSchema>().unwrap();
+
+        let pool = pool_with(&admin_pool, Some(&schema)).await;
+
+        // Hold two connections at once: the hook must run per connection, not
+        // once per pool.
+        let mut first = pool.acquire().await.unwrap();
+        let mut second = pool.acquire().await.unwrap();
+        for conn in [&mut first, &mut second] {
+            let current: String = sqlx::query_scalar("SELECT current_schema()::text")
+                .fetch_one(&mut **conn)
+                .await
+                .unwrap();
+            assert_eq!(current, name);
+        }
+
+        // `public` stays on the path so unqualified extension objects resolve.
+        let path: Vec<String> = sqlx::query_scalar("SELECT current_schemas(false)")
+            .fetch_one(&mut *first)
+            .await
+            .unwrap();
+        assert_eq!(path, vec![name.clone(), "public".to_string()]);
+
+        drop(first);
+        drop(second);
+        pool.close().await;
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn test_no_hook_when_schema_unset(admin_pool: PgPool) {
+        let pool = pool_with(&admin_pool, None).await;
+
+        let current: String = sqlx::query_scalar("SELECT current_schema()::text")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(current, "public");
+
+        pool.close().await;
+    }
 }

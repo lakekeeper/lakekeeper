@@ -66,6 +66,7 @@ Lakekeeper supports configuring separate database URLs for read and write operat
 | `LAKEKEEPER__PG_USER`                                  | `postgres`                                            | Username for authentication |
 | `LAKEKEEPER__PG_PASSWORD`                              | `password`                                            | Password for authentication |
 | `LAKEKEEPER__PG_DATABASE`                              | `iceberg`                                             | Database name |
+| `LAKEKEEPER__PG_SCHEMA`                                | `lakekeeper`                                          | Schema holding Lakekeeper's tables. Unset by default, meaning `public`. See [Using a non-`public` Postgres schema](#using-a-non-public-postgres-schema). |
 | `LAKEKEEPER__PG_SSL_MODE`                              | `require`                                             | SSL mode (disable, allow, prefer, require) |
 | `LAKEKEEPER__PG_SSL_ROOT_CERT`                         | `/path/to/root/cert`                                  | Path to SSL root certificate |
 | <nobr>`LAKEKEEPER__PG_ENABLE_STATEMENT_LOGGING`</nobr> | `true`                                                | Enable SQL statement logging |
@@ -89,14 +90,23 @@ CREATE EXTENSION IF NOT EXISTS "btree_gist";
 
 #### Using a non-`public` Postgres schema
 
-By default Lakekeeper creates its tables in whichever schema Postgres resolves via `search_path` — typically `public`. To install it into a dedicated schema (e.g. for tenant isolation or policies that disallow DDL in `public`), set the default `search_path` on the role Lakekeeper connects as, server-side:
+Set `LAKEKEEPER__PG_SCHEMA=lakekeeper` to keep Lakekeeper's tables in a dedicated schema instead of `public`. Lakekeeper sets `search_path` to `"lakekeeper", public` on every connection, and `lakekeeper migrate` creates the schema when the role has `CREATE` on the database. Otherwise create it first: `CREATE SCHEMA lakekeeper AUTHORIZATION lakekeeper;`
+
+`public` stays on the path so extension functions and operator classes installed there keep resolving. The schema name is quoted, so it is case-sensitive, and both the read and the write role need `USAGE` on it.
+
+Create the [required extensions](#required-postgres-extensions) in `public` before the first migration. `CREATE EXTENSION` without a `SCHEMA` clause installs into the first entry of `search_path`, so they would land in the Lakekeeper schema. Another Lakekeeper in the same DB can't reach them, and dropping the schema drops them too. They're all relocatable, so an existing install can be fixed with `ALTER EXTENSION <name> SET SCHEMA public;`
+
+Pointing an existing deployment at a new schema shows an empty catalog: the data stays where it is, so move it yourself with `ALTER TABLE ... SET SCHEMA` or a dump and restore.
+
+Behind a connection pooler in transaction or statement pooling mode a session-level `search_path` is not kept. Leave `LAKEKEEPER__PG_SCHEMA` unset there and set it on the role instead, for both the read and the write role if they differ:
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS lakekeeper AUTHORIZATION lakekeeper;
 ALTER ROLE lakekeeper SET search_path = lakekeeper, public;
 ```
 
-Postgres applies this before any query runs on a new session, so both migrations and runtime queries land in `lakekeeper`. Keep `public` in `search_path` so functions installed by extensions there (e.g. `uuid_generate_v1mc` from `uuid-ossp`) still resolve. If you use separate roles for `LAKEKEEPER__PG_DATABASE_URL_READ` and `LAKEKEEPER__PG_DATABASE_URL_WRITE`, run `ALTER ROLE` for both. Setting `search_path` via the URL `options` parameter is fragile — encoding pitfalls and connection poolers (e.g. PgBouncer in transaction pooling mode) often drop it — so the role-level default is the recommended approach.
+`lakekeeper migrate` refuses to run against the wrong schema, so a misconfigured `search_path` is caught before any data is written. If queries instead start failing with `relation ... does not exist` after a migration that succeeded, the pooler stopped applying the `search_path`: switch it to session pooling, or set the path on the role as above.
+
+Do not set `search_path` through the `options` parameter of the connection URL. It has to be percent-encoded inside the URL, and poolers reject or ignore the parameter, so it fails silently.
 
 ### Vault KV Version 2
 

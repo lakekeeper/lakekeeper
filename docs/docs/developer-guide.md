@@ -145,6 +145,8 @@ ALTER TABLE existing_table ADD COLUMN new_column INTEGER;
 
 The migration system will automatically apply the migration in the correct schema context, so explicit schema qualification is unnecessary and will cause issues in deployments where Lakekeeper is deployed to a custom schema.
 
+Operators pick that schema with [`LAKEKEEPER__PG_SCHEMA`](configuration.md#using-a-non-public-postgres-schema). Do not export it in a shell you build or test from: `cargo sqlx prepare` ignores it and uses `DATABASE_URL`, and the postgres crate reads `LAKEKEEPER_TEST__` in its own tests but `LAKEKEEPER__` when compiled as a dependency, so it would apply unevenly.
+
 ### Inspecting the db
 
 The db schema is the result of all migrations applied in order. To inspect it you can:
