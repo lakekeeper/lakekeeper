@@ -114,6 +114,7 @@ impl AuthzUserOrRole {
 /// Identifier for a namespace, either a UUID or its name and warehouse ID
 pub enum NamespaceIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "NamespaceIdentOrUuidById"))]
     Id {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         namespace_id: NamespaceId,
@@ -121,6 +122,7 @@ pub enum NamespaceIdentOrUuid {
         warehouse_id: WarehouseId,
     },
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "NamespaceIdentOrUuidByName"))]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,
@@ -149,6 +151,7 @@ impl NamespaceIdentOrUuid {
 /// accepted as input aliases for client ergonomics.
 pub enum TabularIdentOrUuid {
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidById"))]
     IdInWarehouse {
         #[cfg_attr(feature = "open-api", schema(value_type = uuid::Uuid))]
         warehouse_id: WarehouseId,
@@ -156,6 +159,7 @@ pub enum TabularIdentOrUuid {
         table_id: uuid::Uuid,
     },
     #[serde(rename_all = "kebab-case")]
+    #[cfg_attr(feature = "open-api", schema(title = "TabularIdentOrUuidByName"))]
     Name {
         #[cfg_attr(feature = "open-api", schema(value_type = Vec<String>))]
         namespace: NamespaceIdent,

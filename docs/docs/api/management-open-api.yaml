@@ -5827,6 +5827,7 @@ components:
     CatalogActionCheckOperation:
       oneOf:
         - type: object
+          title: CatalogActionCheckOperationServer
           required:
             - server
           properties:
@@ -5838,6 +5839,7 @@ components:
                 action:
                   $ref: '#/components/schemas/LakekeeperServerAction'
         - type: object
+          title: CatalogActionCheckOperationProject
           required:
             - project
           properties:
@@ -5854,6 +5856,7 @@ components:
                     - 'null'
                   format: uuid
         - type: object
+          title: CatalogActionCheckOperationWarehouse
           required:
             - warehouse
           properties:
@@ -5869,6 +5872,7 @@ components:
                   type: string
                   format: uuid
         - type: object
+          title: CatalogActionCheckOperationNamespace
           required:
             - namespace
           properties:
@@ -5882,6 +5886,7 @@ components:
                     action:
                       $ref: '#/components/schemas/LakekeeperNamespaceAction'
         - type: object
+          title: CatalogActionCheckOperationTable
           required:
             - table
           properties:
@@ -5895,6 +5900,7 @@ components:
                     action:
                       $ref: '#/components/schemas/LakekeeperTableAction'
         - type: object
+          title: CatalogActionCheckOperationView
           required:
             - view
           properties:
@@ -5908,6 +5914,7 @@ components:
                     action:
                       $ref: '#/components/schemas/LakekeeperViewAction'
         - type: object
+          title: CatalogActionCheckOperationGenericTable
           required:
             - generic-table
           properties:
@@ -5960,6 +5967,7 @@ components:
     CheckOperation:
       oneOf:
         - type: object
+          title: CheckOperationServer
           required:
             - server
           properties:
@@ -5971,6 +5979,7 @@ components:
                 action:
                   $ref: '#/components/schemas/ServerAction'
         - type: object
+          title: CheckOperationProject
           required:
             - project
           properties:
@@ -5987,6 +5996,7 @@ components:
                     - 'null'
                   format: uuid
         - type: object
+          title: CheckOperationWarehouse
           required:
             - warehouse
           properties:
@@ -6002,6 +6012,7 @@ components:
                   type: string
                   format: uuid
         - type: object
+          title: CheckOperationNamespace
           required:
             - namespace
           properties:
@@ -6015,6 +6026,7 @@ components:
                     action:
                       $ref: '#/components/schemas/NamespaceAction'
         - type: object
+          title: CheckOperationTable
           required:
             - table
           properties:
@@ -6028,6 +6040,7 @@ components:
                     action:
                       $ref: '#/components/schemas/TableAction'
         - type: object
+          title: CheckOperationView
           required:
             - view
           properties:
@@ -6041,6 +6054,7 @@ components:
                     action:
                       $ref: '#/components/schemas/ViewAction'
         - type: object
+          title: CheckOperationGenericTable
           required:
             - generic-table
           properties:
@@ -6100,6 +6114,7 @@ components:
     ControlTaskAction:
       oneOf:
         - type: object
+          title: ControlTaskActionStop
           description: Stop the task gracefully. The task will be retried.
           required:
             - action-type
@@ -6109,6 +6124,7 @@ components:
               enum:
                 - stop
         - type: object
+          title: ControlTaskActionCancel
           description: Cancel the task permanently. The task is not retried.
           required:
             - action-type
@@ -6118,6 +6134,7 @@ components:
               enum:
                 - cancel
         - type: object
+          title: ControlTaskActionRunNow
           description: |-
             Run the task immediately, moving the `scheduled_for` time to now.
             Affects only tasks in `Scheduled` or `Stopping` state.
@@ -6129,6 +6146,7 @@ components:
               enum:
                 - run-now
         - type: object
+          title: ControlTaskActionRunAt
           description: |-
             Run the task at the specified time, moving the `scheduled_for` time to the provided timestamp.
             Affects only tasks in `Scheduled` or `Stopping` state.
@@ -6395,6 +6413,7 @@ components:
     EndpointMode:
       oneOf:
         - type: object
+          title: EndpointModeDefault
           description: |-
             Use the global `OneLake` endpoint `onelake.dfs.fabric.microsoft.com`. Default.
 
@@ -6408,6 +6427,7 @@ components:
               enum:
                 - default
         - type: object
+          title: EndpointModeRegional
           description: |-
             Use a region-pinned endpoint `<region>-onelake.dfs.fabric.microsoft.com`.
             Use this when data residency requires the request to stay within a
@@ -6431,6 +6451,7 @@ components:
               enum:
                 - regional
         - type: object
+          title: EndpointModeWorkspacePrivateLink
           description: |-
             Use a workspace-scoped private-link endpoint
             `<workspaceId>.z<xy>.dfs.fabric.microsoft.com`. The host is computed
@@ -7354,6 +7375,7 @@ components:
     LakekeeperGenericTableAction:
       oneOf:
         - type: object
+          title: LakekeeperGenericTableActionDrop
           required:
             - action
           properties:
@@ -7362,6 +7384,7 @@ components:
               enum:
                 - drop
         - type: object
+          title: LakekeeperGenericTableActionReadData
           required:
             - action
           properties:
@@ -7370,6 +7393,7 @@ components:
               enum:
                 - read_data
         - type: object
+          title: LakekeeperGenericTableActionWriteData
           required:
             - action
           properties:
@@ -7378,6 +7402,7 @@ components:
               enum:
                 - write_data
         - type: object
+          title: LakekeeperGenericTableActionGetMetadata
           required:
             - action
           properties:
@@ -7386,6 +7411,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperGenericTableActionRename
           required:
             - action
           properties:
@@ -7394,6 +7420,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperGenericTableActionIncludeInList
           required:
             - action
           properties:
@@ -7402,6 +7429,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperGenericTableActionUndrop
           required:
             - action
           properties:
@@ -7410,6 +7438,7 @@ components:
               enum:
                 - undrop
         - type: object
+          title: LakekeeperGenericTableActionGetTasks
           required:
             - action
           properties:
@@ -7418,6 +7447,7 @@ components:
               enum:
                 - get_tasks
         - type: object
+          title: LakekeeperGenericTableActionControlTasks
           required:
             - action
           properties:
@@ -7426,6 +7456,7 @@ components:
               enum:
                 - control_tasks
         - type: object
+          title: LakekeeperGenericTableActionSetProtection
           required:
             - action
           properties:
@@ -7434,6 +7465,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperGenericTableActionManageTags
           required:
             - action
           properties:
@@ -7444,6 +7476,7 @@ components:
     LakekeeperNamespaceAction:
       oneOf:
         - type: object
+          title: LakekeeperNamespaceActionCreateTable
           required:
             - action
           properties:
@@ -7469,6 +7502,7 @@ components:
               format: uuid
               description: Table ID, if externally provided (e.g. via register).
         - type: object
+          title: LakekeeperNamespaceActionCreateView
           required:
             - action
           properties:
@@ -7488,6 +7522,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperNamespaceActionCreateNamespace
           required:
             - action
           properties:
@@ -7507,6 +7542,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperNamespaceActionDelete
           required:
             - action
           properties:
@@ -7529,6 +7565,7 @@ components:
                 Whether the drop recurses into child namespaces, tables and views,
                 deleting the entire subtree rooted at this namespace.
         - type: object
+          title: LakekeeperNamespaceActionUpdateProperties
           required:
             - action
           properties:
@@ -7547,6 +7584,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperNamespaceActionGetMetadata
           required:
             - action
           properties:
@@ -7555,6 +7593,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperNamespaceActionListTables
           required:
             - action
           properties:
@@ -7563,6 +7602,7 @@ components:
               enum:
                 - list_tables
         - type: object
+          title: LakekeeperNamespaceActionListViews
           required:
             - action
           properties:
@@ -7571,6 +7611,7 @@ components:
               enum:
                 - list_views
         - type: object
+          title: LakekeeperNamespaceActionListNamespaces
           required:
             - action
           properties:
@@ -7579,6 +7620,7 @@ components:
               enum:
                 - list_namespaces
         - type: object
+          title: LakekeeperNamespaceActionListEverything
           required:
             - action
           properties:
@@ -7587,6 +7629,7 @@ components:
               enum:
                 - list_everything
         - type: object
+          title: LakekeeperNamespaceActionSetProtection
           required:
             - action
           properties:
@@ -7595,6 +7638,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperNamespaceActionIncludeInList
           required:
             - action
           properties:
@@ -7603,6 +7647,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperNamespaceActionCreateGenericTable
           required:
             - action
           properties:
@@ -7642,6 +7687,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperNamespaceActionListGenericTables
           required:
             - action
           properties:
@@ -7650,6 +7696,7 @@ components:
               enum:
                 - list_generic_tables
         - type: object
+          title: LakekeeperNamespaceActionManageTags
           description: Attach/detach governance tags on this namespace.
           required:
             - action
@@ -7661,6 +7708,7 @@ components:
     LakekeeperNamespaceActionKind:
       oneOf:
         - type: object
+          title: LakekeeperNamespaceActionKindCreateTable
           required:
             - action
           properties:
@@ -7669,6 +7717,7 @@ components:
               enum:
                 - create_table
         - type: object
+          title: LakekeeperNamespaceActionKindCreateView
           required:
             - action
           properties:
@@ -7677,6 +7726,7 @@ components:
               enum:
                 - create_view
         - type: object
+          title: LakekeeperNamespaceActionKindCreateNamespace
           required:
             - action
           properties:
@@ -7685,6 +7735,7 @@ components:
               enum:
                 - create_namespace
         - type: object
+          title: LakekeeperNamespaceActionKindDelete
           required:
             - action
           properties:
@@ -7693,6 +7744,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperNamespaceActionKindUpdateProperties
           required:
             - action
           properties:
@@ -7701,6 +7753,7 @@ components:
               enum:
                 - update_properties
         - type: object
+          title: LakekeeperNamespaceActionKindGetMetadata
           required:
             - action
           properties:
@@ -7709,6 +7762,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperNamespaceActionKindListTables
           required:
             - action
           properties:
@@ -7717,6 +7771,7 @@ components:
               enum:
                 - list_tables
         - type: object
+          title: LakekeeperNamespaceActionKindListViews
           required:
             - action
           properties:
@@ -7725,6 +7780,7 @@ components:
               enum:
                 - list_views
         - type: object
+          title: LakekeeperNamespaceActionKindListNamespaces
           required:
             - action
           properties:
@@ -7733,6 +7789,7 @@ components:
               enum:
                 - list_namespaces
         - type: object
+          title: LakekeeperNamespaceActionKindListEverything
           required:
             - action
           properties:
@@ -7741,6 +7798,7 @@ components:
               enum:
                 - list_everything
         - type: object
+          title: LakekeeperNamespaceActionKindSetProtection
           required:
             - action
           properties:
@@ -7749,6 +7807,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperNamespaceActionKindIncludeInList
           required:
             - action
           properties:
@@ -7757,6 +7816,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperNamespaceActionKindCreateGenericTable
           required:
             - action
           properties:
@@ -7765,6 +7825,7 @@ components:
               enum:
                 - create_generic_table
         - type: object
+          title: LakekeeperNamespaceActionKindListGenericTables
           required:
             - action
           properties:
@@ -7773,6 +7834,7 @@ components:
               enum:
                 - list_generic_tables
         - type: object
+          title: LakekeeperNamespaceActionKindManageTags
           required:
             - action
           properties:
@@ -7783,6 +7845,7 @@ components:
     LakekeeperProjectAction:
       oneOf:
         - type: object
+          title: LakekeeperProjectActionCreateWarehouse
           required:
             - action
           properties:
@@ -7796,6 +7859,7 @@ components:
                 - 'null'
               description: Name of the warehouse to create.
         - type: object
+          title: LakekeeperProjectActionDelete
           required:
             - action
           properties:
@@ -7804,6 +7868,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperProjectActionRename
           required:
             - action
           properties:
@@ -7812,6 +7877,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperProjectActionGetMetadata
           required:
             - action
           properties:
@@ -7820,6 +7886,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperProjectActionListWarehouses
           required:
             - action
           properties:
@@ -7828,6 +7895,7 @@ components:
               enum:
                 - list_warehouses
         - type: object
+          title: LakekeeperProjectActionIncludeInList
           required:
             - action
           properties:
@@ -7836,6 +7904,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperProjectActionCreateRole
           required:
             - action
           properties:
@@ -7849,6 +7918,7 @@ components:
                 - 'null'
               description: Name of the role to create.
         - type: object
+          title: LakekeeperProjectActionListRoles
           required:
             - action
           properties:
@@ -7857,6 +7927,7 @@ components:
               enum:
                 - list_roles
         - type: object
+          title: LakekeeperProjectActionSearchRoles
           required:
             - action
           properties:
@@ -7865,6 +7936,7 @@ components:
               enum:
                 - search_roles
         - type: object
+          title: LakekeeperProjectActionGetEndpointStatistics
           required:
             - action
           properties:
@@ -7873,6 +7945,7 @@ components:
               enum:
                 - get_endpoint_statistics
         - type: object
+          title: LakekeeperProjectActionModifyTaskQueueConfig
           required:
             - action
           properties:
@@ -7881,6 +7954,7 @@ components:
               enum:
                 - modify_task_queue_config
         - type: object
+          title: LakekeeperProjectActionGetTaskQueueConfig
           required:
             - action
           properties:
@@ -7889,6 +7963,7 @@ components:
               enum:
                 - get_task_queue_config
         - type: object
+          title: LakekeeperProjectActionGetProjectTasks
           required:
             - action
           properties:
@@ -7897,6 +7972,7 @@ components:
               enum:
                 - get_project_tasks
         - type: object
+          title: LakekeeperProjectActionControlProjectTasks
           required:
             - action
           properties:
@@ -7905,6 +7981,7 @@ components:
               enum:
                 - control_project_tasks
         - type: object
+          title: LakekeeperProjectActionCreateTag
           description: Create a new governance tag definition in this project.
           required:
             - action
@@ -7919,6 +7996,7 @@ components:
                 - 'null'
               description: Name of the tag to create.
         - type: object
+          title: LakekeeperProjectActionListTags
           description: List tag definitions in this project.
           required:
             - action
@@ -7930,6 +8008,7 @@ components:
     LakekeeperProjectActionKind:
       oneOf:
         - type: object
+          title: LakekeeperProjectActionKindCreateWarehouse
           required:
             - action
           properties:
@@ -7938,6 +8017,7 @@ components:
               enum:
                 - create_warehouse
         - type: object
+          title: LakekeeperProjectActionKindDelete
           required:
             - action
           properties:
@@ -7946,6 +8026,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperProjectActionKindRename
           required:
             - action
           properties:
@@ -7954,6 +8035,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperProjectActionKindGetMetadata
           required:
             - action
           properties:
@@ -7962,6 +8044,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperProjectActionKindListWarehouses
           required:
             - action
           properties:
@@ -7970,6 +8053,7 @@ components:
               enum:
                 - list_warehouses
         - type: object
+          title: LakekeeperProjectActionKindIncludeInList
           required:
             - action
           properties:
@@ -7978,6 +8062,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperProjectActionKindCreateRole
           required:
             - action
           properties:
@@ -7986,6 +8071,7 @@ components:
               enum:
                 - create_role
         - type: object
+          title: LakekeeperProjectActionKindListRoles
           required:
             - action
           properties:
@@ -7994,6 +8080,7 @@ components:
               enum:
                 - list_roles
         - type: object
+          title: LakekeeperProjectActionKindSearchRoles
           required:
             - action
           properties:
@@ -8002,6 +8089,7 @@ components:
               enum:
                 - search_roles
         - type: object
+          title: LakekeeperProjectActionKindGetEndpointStatistics
           required:
             - action
           properties:
@@ -8010,6 +8098,7 @@ components:
               enum:
                 - get_endpoint_statistics
         - type: object
+          title: LakekeeperProjectActionKindModifyTaskQueueConfig
           required:
             - action
           properties:
@@ -8018,6 +8107,7 @@ components:
               enum:
                 - modify_task_queue_config
         - type: object
+          title: LakekeeperProjectActionKindGetTaskQueueConfig
           required:
             - action
           properties:
@@ -8026,6 +8116,7 @@ components:
               enum:
                 - get_task_queue_config
         - type: object
+          title: LakekeeperProjectActionKindGetProjectTasks
           required:
             - action
           properties:
@@ -8034,6 +8125,7 @@ components:
               enum:
                 - get_project_tasks
         - type: object
+          title: LakekeeperProjectActionKindControlProjectTasks
           required:
             - action
           properties:
@@ -8042,6 +8134,7 @@ components:
               enum:
                 - control_project_tasks
         - type: object
+          title: LakekeeperProjectActionKindCreateTag
           required:
             - action
           properties:
@@ -8050,6 +8143,7 @@ components:
               enum:
                 - create_tag
         - type: object
+          title: LakekeeperProjectActionKindListTags
           required:
             - action
           properties:
@@ -8060,6 +8154,7 @@ components:
     LakekeeperRoleActionKind:
       oneOf:
         - type: object
+          title: LakekeeperRoleActionKindRead
           required:
             - action
           properties:
@@ -8068,6 +8163,7 @@ components:
               enum:
                 - read
         - type: object
+          title: LakekeeperRoleActionKindReadMetadata
           required:
             - action
           properties:
@@ -8076,6 +8172,7 @@ components:
               enum:
                 - read_metadata
         - type: object
+          title: LakekeeperRoleActionKindDelete
           required:
             - action
           properties:
@@ -8084,6 +8181,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperRoleActionKindUpdate
           required:
             - action
           properties:
@@ -8092,6 +8190,7 @@ components:
               enum:
                 - update
         - type: object
+          title: LakekeeperRoleActionKindManageRoleAssignments
           required:
             - action
           properties:
@@ -8100,6 +8199,7 @@ components:
               enum:
                 - manage_role_assignments
         - type: object
+          title: LakekeeperRoleActionKindReadRoleAssignments
           required:
             - action
           properties:
@@ -8108,6 +8208,7 @@ components:
               enum:
                 - read_role_assignments
         - type: object
+          title: LakekeeperRoleActionKindUpdateSourceSystem
           required:
             - action
           properties:
@@ -8118,6 +8219,7 @@ components:
     LakekeeperServerAction:
       oneOf:
         - type: object
+          title: LakekeeperServerActionCreateProject
           description: Can create items inside the server (can create Warehouses).
           required:
             - action
@@ -8137,6 +8239,7 @@ components:
                 - 'null'
               description: Project ID, if externally provided.
         - type: object
+          title: LakekeeperServerActionUpdateUsers
           description: Can update all users on this server.
           required:
             - action
@@ -8146,6 +8249,7 @@ components:
               enum:
                 - update_users
         - type: object
+          title: LakekeeperServerActionDeleteUsers
           description: Can delete all users on this server.
           required:
             - action
@@ -8155,6 +8259,7 @@ components:
               enum:
                 - delete_users
         - type: object
+          title: LakekeeperServerActionListUsers
           description: Can List all users on this server.
           required:
             - action
@@ -8164,6 +8269,7 @@ components:
               enum:
                 - list_users
         - type: object
+          title: LakekeeperServerActionProvisionUsers
           description: Can provision user
           required:
             - action
@@ -8175,6 +8281,7 @@ components:
     LakekeeperServerActionKind:
       oneOf:
         - type: object
+          title: LakekeeperServerActionKindCreateProject
           required:
             - action
           properties:
@@ -8183,6 +8290,7 @@ components:
               enum:
                 - create_project
         - type: object
+          title: LakekeeperServerActionKindUpdateUsers
           required:
             - action
           properties:
@@ -8191,6 +8299,7 @@ components:
               enum:
                 - update_users
         - type: object
+          title: LakekeeperServerActionKindDeleteUsers
           required:
             - action
           properties:
@@ -8199,6 +8308,7 @@ components:
               enum:
                 - delete_users
         - type: object
+          title: LakekeeperServerActionKindListUsers
           required:
             - action
           properties:
@@ -8207,6 +8317,7 @@ components:
               enum:
                 - list_users
         - type: object
+          title: LakekeeperServerActionKindProvisionUsers
           required:
             - action
           properties:
@@ -8217,6 +8328,7 @@ components:
     LakekeeperTableAction:
       oneOf:
         - type: object
+          title: LakekeeperTableActionDrop
           required:
             - action
           properties:
@@ -8234,6 +8346,7 @@ components:
               type: boolean
               description: Whether the underlying data files are physically purged from storage.
         - type: object
+          title: LakekeeperTableActionWriteData
           required:
             - action
           properties:
@@ -8242,6 +8355,7 @@ components:
               enum:
                 - write_data
         - type: object
+          title: LakekeeperTableActionReadData
           required:
             - action
           properties:
@@ -8250,6 +8364,7 @@ components:
               enum:
                 - read_data
         - type: object
+          title: LakekeeperTableActionGetMetadata
           required:
             - action
           properties:
@@ -8258,6 +8373,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperTableActionCommit
           required:
             - action
           properties:
@@ -8290,6 +8406,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperTableActionRename
           required:
             - action
           properties:
@@ -8298,6 +8415,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperTableActionIncludeInList
           required:
             - action
           properties:
@@ -8306,6 +8424,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperTableActionUndrop
           required:
             - action
           properties:
@@ -8314,6 +8433,7 @@ components:
               enum:
                 - undrop
         - type: object
+          title: LakekeeperTableActionGetTasks
           required:
             - action
           properties:
@@ -8322,6 +8442,7 @@ components:
               enum:
                 - get_tasks
         - type: object
+          title: LakekeeperTableActionControlTasks
           required:
             - action
           properties:
@@ -8330,6 +8451,7 @@ components:
               enum:
                 - control_tasks
         - type: object
+          title: LakekeeperTableActionSetProtection
           required:
             - action
           properties:
@@ -8338,6 +8460,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperTableActionManageTags
           description: Attach/detach governance tags on this table.
           required:
             - action
@@ -8349,6 +8472,7 @@ components:
     LakekeeperTableActionKind:
       oneOf:
         - type: object
+          title: LakekeeperTableActionKindDrop
           required:
             - action
           properties:
@@ -8357,6 +8481,7 @@ components:
               enum:
                 - drop
         - type: object
+          title: LakekeeperTableActionKindWriteData
           required:
             - action
           properties:
@@ -8365,6 +8490,7 @@ components:
               enum:
                 - write_data
         - type: object
+          title: LakekeeperTableActionKindReadData
           required:
             - action
           properties:
@@ -8373,6 +8499,7 @@ components:
               enum:
                 - read_data
         - type: object
+          title: LakekeeperTableActionKindGetMetadata
           required:
             - action
           properties:
@@ -8381,6 +8508,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperTableActionKindCommit
           required:
             - action
           properties:
@@ -8389,6 +8517,7 @@ components:
               enum:
                 - commit
         - type: object
+          title: LakekeeperTableActionKindRename
           required:
             - action
           properties:
@@ -8397,6 +8526,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperTableActionKindIncludeInList
           required:
             - action
           properties:
@@ -8405,6 +8535,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperTableActionKindUndrop
           required:
             - action
           properties:
@@ -8413,6 +8544,7 @@ components:
               enum:
                 - undrop
         - type: object
+          title: LakekeeperTableActionKindGetTasks
           required:
             - action
           properties:
@@ -8421,6 +8553,7 @@ components:
               enum:
                 - get_tasks
         - type: object
+          title: LakekeeperTableActionKindControlTasks
           required:
             - action
           properties:
@@ -8429,6 +8562,7 @@ components:
               enum:
                 - control_tasks
         - type: object
+          title: LakekeeperTableActionKindSetProtection
           required:
             - action
           properties:
@@ -8437,6 +8571,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperTableActionKindManageTags
           required:
             - action
           properties:
@@ -8447,6 +8582,7 @@ components:
     LakekeeperUserAction:
       oneOf:
         - type: object
+          title: LakekeeperUserActionRead
           required:
             - action
           properties:
@@ -8455,6 +8591,7 @@ components:
               enum:
                 - read
         - type: object
+          title: LakekeeperUserActionUpdate
           required:
             - action
           properties:
@@ -8463,6 +8600,7 @@ components:
               enum:
                 - update
         - type: object
+          title: LakekeeperUserActionDelete
           required:
             - action
           properties:
@@ -8471,6 +8609,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperUserActionReadRoleAssignments
           required:
             - action
           properties:
@@ -8481,6 +8620,7 @@ components:
     LakekeeperViewAction:
       oneOf:
         - type: object
+          title: LakekeeperViewActionDrop
           required:
             - action
           properties:
@@ -8498,6 +8638,7 @@ components:
               type: boolean
               description: Whether the underlying metadata files are physically purged from storage.
         - type: object
+          title: LakekeeperViewActionGetMetadata
           required:
             - action
           properties:
@@ -8506,6 +8647,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperViewActionSelect
           required:
             - action
           properties:
@@ -8514,6 +8656,7 @@ components:
               enum:
                 - select
         - type: object
+          title: LakekeeperViewActionCommit
           required:
             - action
           properties:
@@ -8532,6 +8675,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperViewActionIncludeInList
           required:
             - action
           properties:
@@ -8540,6 +8684,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperViewActionRename
           required:
             - action
           properties:
@@ -8548,6 +8693,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperViewActionUndrop
           required:
             - action
           properties:
@@ -8556,6 +8702,7 @@ components:
               enum:
                 - undrop
         - type: object
+          title: LakekeeperViewActionGetTasks
           required:
             - action
           properties:
@@ -8564,6 +8711,7 @@ components:
               enum:
                 - get_tasks
         - type: object
+          title: LakekeeperViewActionControlTasks
           required:
             - action
           properties:
@@ -8572,6 +8720,7 @@ components:
               enum:
                 - control_tasks
         - type: object
+          title: LakekeeperViewActionSetProtection
           required:
             - action
           properties:
@@ -8580,6 +8729,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperViewActionManageTags
           description: Attach/detach governance tags on this view.
           required:
             - action
@@ -8591,6 +8741,7 @@ components:
     LakekeeperViewActionKind:
       oneOf:
         - type: object
+          title: LakekeeperViewActionKindDrop
           required:
             - action
           properties:
@@ -8599,6 +8750,7 @@ components:
               enum:
                 - drop
         - type: object
+          title: LakekeeperViewActionKindGetMetadata
           required:
             - action
           properties:
@@ -8607,6 +8759,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperViewActionKindSelect
           required:
             - action
           properties:
@@ -8615,6 +8768,7 @@ components:
               enum:
                 - select
         - type: object
+          title: LakekeeperViewActionKindCommit
           required:
             - action
           properties:
@@ -8623,6 +8777,7 @@ components:
               enum:
                 - commit
         - type: object
+          title: LakekeeperViewActionKindIncludeInList
           required:
             - action
           properties:
@@ -8631,6 +8786,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperViewActionKindRename
           required:
             - action
           properties:
@@ -8639,6 +8795,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperViewActionKindUndrop
           required:
             - action
           properties:
@@ -8647,6 +8804,7 @@ components:
               enum:
                 - undrop
         - type: object
+          title: LakekeeperViewActionKindGetTasks
           required:
             - action
           properties:
@@ -8655,6 +8813,7 @@ components:
               enum:
                 - get_tasks
         - type: object
+          title: LakekeeperViewActionKindControlTasks
           required:
             - action
           properties:
@@ -8663,6 +8822,7 @@ components:
               enum:
                 - control_tasks
         - type: object
+          title: LakekeeperViewActionKindSetProtection
           required:
             - action
           properties:
@@ -8671,6 +8831,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperViewActionKindManageTags
           required:
             - action
           properties:
@@ -8681,6 +8842,7 @@ components:
     LakekeeperWarehouseAction:
       oneOf:
         - type: object
+          title: LakekeeperWarehouseActionCreateNamespace
           required:
             - action
           properties:
@@ -8700,6 +8862,7 @@ components:
               propertyNames:
                 type: string
         - type: object
+          title: LakekeeperWarehouseActionDelete
           required:
             - action
           properties:
@@ -8708,6 +8871,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperWarehouseActionUpdateStorage
           required:
             - action
           properties:
@@ -8716,6 +8880,7 @@ components:
               enum:
                 - update_storage
         - type: object
+          title: LakekeeperWarehouseActionUpdateStorageCredential
           required:
             - action
           properties:
@@ -8724,6 +8889,7 @@ components:
               enum:
                 - update_storage_credential
         - type: object
+          title: LakekeeperWarehouseActionGetMetadata
           required:
             - action
           properties:
@@ -8732,6 +8898,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperWarehouseActionGetConfig
           required:
             - action
           properties:
@@ -8740,6 +8907,7 @@ components:
               enum:
                 - get_config
         - type: object
+          title: LakekeeperWarehouseActionListNamespaces
           required:
             - action
           properties:
@@ -8748,6 +8916,7 @@ components:
               enum:
                 - list_namespaces
         - type: object
+          title: LakekeeperWarehouseActionListEverything
           required:
             - action
           properties:
@@ -8756,6 +8925,7 @@ components:
               enum:
                 - list_everything
         - type: object
+          title: LakekeeperWarehouseActionUse
           required:
             - action
           properties:
@@ -8764,6 +8934,7 @@ components:
               enum:
                 - use
         - type: object
+          title: LakekeeperWarehouseActionIncludeInList
           required:
             - action
           properties:
@@ -8772,6 +8943,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperWarehouseActionDeactivate
           required:
             - action
           properties:
@@ -8780,6 +8952,7 @@ components:
               enum:
                 - deactivate
         - type: object
+          title: LakekeeperWarehouseActionActivate
           required:
             - action
           properties:
@@ -8788,6 +8961,7 @@ components:
               enum:
                 - activate
         - type: object
+          title: LakekeeperWarehouseActionRename
           required:
             - action
           properties:
@@ -8796,6 +8970,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperWarehouseActionListDeletedTabulars
           required:
             - action
           properties:
@@ -8804,6 +8979,7 @@ components:
               enum:
                 - list_deleted_tabulars
         - type: object
+          title: LakekeeperWarehouseActionModifySoftDeletion
           required:
             - action
           properties:
@@ -8812,6 +8988,7 @@ components:
               enum:
                 - modify_soft_deletion
         - type: object
+          title: LakekeeperWarehouseActionGetTaskQueueConfig
           required:
             - action
           properties:
@@ -8820,6 +8997,7 @@ components:
               enum:
                 - get_task_queue_config
         - type: object
+          title: LakekeeperWarehouseActionModifyTaskQueueConfig
           required:
             - action
           properties:
@@ -8828,6 +9006,7 @@ components:
               enum:
                 - modify_task_queue_config
         - type: object
+          title: LakekeeperWarehouseActionGetAllTasks
           required:
             - action
           properties:
@@ -8836,6 +9015,7 @@ components:
               enum:
                 - get_all_tasks
         - type: object
+          title: LakekeeperWarehouseActionControlAllTasks
           required:
             - action
           properties:
@@ -8844,6 +9024,7 @@ components:
               enum:
                 - control_all_tasks
         - type: object
+          title: LakekeeperWarehouseActionSetProtection
           required:
             - action
           properties:
@@ -8852,6 +9033,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperWarehouseActionSetFormatVersionPolicy
           required:
             - action
           properties:
@@ -8860,6 +9042,7 @@ components:
               enum:
                 - set_format_version_policy
         - type: object
+          title: LakekeeperWarehouseActionGetEndpointStatistics
           required:
             - action
           properties:
@@ -8868,6 +9051,7 @@ components:
               enum:
                 - get_endpoint_statistics
         - type: object
+          title: LakekeeperWarehouseActionManageTags
           description: Attach/detach governance tags on this warehouse.
           required:
             - action
@@ -8879,6 +9063,7 @@ components:
     LakekeeperWarehouseActionKind:
       oneOf:
         - type: object
+          title: LakekeeperWarehouseActionKindCreateNamespace
           required:
             - action
           properties:
@@ -8887,6 +9072,7 @@ components:
               enum:
                 - create_namespace
         - type: object
+          title: LakekeeperWarehouseActionKindDelete
           required:
             - action
           properties:
@@ -8895,6 +9081,7 @@ components:
               enum:
                 - delete
         - type: object
+          title: LakekeeperWarehouseActionKindUpdateStorage
           required:
             - action
           properties:
@@ -8903,6 +9090,7 @@ components:
               enum:
                 - update_storage
         - type: object
+          title: LakekeeperWarehouseActionKindUpdateStorageCredential
           required:
             - action
           properties:
@@ -8911,6 +9099,7 @@ components:
               enum:
                 - update_storage_credential
         - type: object
+          title: LakekeeperWarehouseActionKindGetMetadata
           required:
             - action
           properties:
@@ -8919,6 +9108,7 @@ components:
               enum:
                 - get_metadata
         - type: object
+          title: LakekeeperWarehouseActionKindGetConfig
           required:
             - action
           properties:
@@ -8927,6 +9117,7 @@ components:
               enum:
                 - get_config
         - type: object
+          title: LakekeeperWarehouseActionKindListNamespaces
           required:
             - action
           properties:
@@ -8935,6 +9126,7 @@ components:
               enum:
                 - list_namespaces
         - type: object
+          title: LakekeeperWarehouseActionKindListEverything
           required:
             - action
           properties:
@@ -8943,6 +9135,7 @@ components:
               enum:
                 - list_everything
         - type: object
+          title: LakekeeperWarehouseActionKindUse
           required:
             - action
           properties:
@@ -8951,6 +9144,7 @@ components:
               enum:
                 - use
         - type: object
+          title: LakekeeperWarehouseActionKindIncludeInList
           required:
             - action
           properties:
@@ -8959,6 +9153,7 @@ components:
               enum:
                 - include_in_list
         - type: object
+          title: LakekeeperWarehouseActionKindDeactivate
           required:
             - action
           properties:
@@ -8967,6 +9162,7 @@ components:
               enum:
                 - deactivate
         - type: object
+          title: LakekeeperWarehouseActionKindActivate
           required:
             - action
           properties:
@@ -8975,6 +9171,7 @@ components:
               enum:
                 - activate
         - type: object
+          title: LakekeeperWarehouseActionKindRename
           required:
             - action
           properties:
@@ -8983,6 +9180,7 @@ components:
               enum:
                 - rename
         - type: object
+          title: LakekeeperWarehouseActionKindListDeletedTabulars
           required:
             - action
           properties:
@@ -8991,6 +9189,7 @@ components:
               enum:
                 - list_deleted_tabulars
         - type: object
+          title: LakekeeperWarehouseActionKindModifySoftDeletion
           required:
             - action
           properties:
@@ -8999,6 +9198,7 @@ components:
               enum:
                 - modify_soft_deletion
         - type: object
+          title: LakekeeperWarehouseActionKindGetTaskQueueConfig
           required:
             - action
           properties:
@@ -9007,6 +9207,7 @@ components:
               enum:
                 - get_task_queue_config
         - type: object
+          title: LakekeeperWarehouseActionKindModifyTaskQueueConfig
           required:
             - action
           properties:
@@ -9015,6 +9216,7 @@ components:
               enum:
                 - modify_task_queue_config
         - type: object
+          title: LakekeeperWarehouseActionKindGetAllTasks
           required:
             - action
           properties:
@@ -9023,6 +9225,7 @@ components:
               enum:
                 - get_all_tasks
         - type: object
+          title: LakekeeperWarehouseActionKindControlAllTasks
           required:
             - action
           properties:
@@ -9031,6 +9234,7 @@ components:
               enum:
                 - control_all_tasks
         - type: object
+          title: LakekeeperWarehouseActionKindSetProtection
           required:
             - action
           properties:
@@ -9039,6 +9243,7 @@ components:
               enum:
                 - set_protection
         - type: object
+          title: LakekeeperWarehouseActionKindSetFormatVersionPolicy
           required:
             - action
           properties:
@@ -9047,6 +9252,7 @@ components:
               enum:
                 - set_format_version_policy
         - type: object
+          title: LakekeeperWarehouseActionKindGetEndpointStatistics
           required:
             - action
           properties:
@@ -9055,6 +9261,7 @@ components:
               enum:
                 - get_endpoint_statistics
         - type: object
+          title: LakekeeperWarehouseActionKindManageTags
           required:
             - action
           properties:
@@ -9489,6 +9696,7 @@ components:
     NamespaceIdentOrUuid:
       oneOf:
         - type: object
+          title: NamespaceIdentOrUuidById
           required:
             - namespace-id
             - warehouse-id
@@ -9500,6 +9708,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: NamespaceIdentOrUuidByName
           required:
             - namespace
             - warehouse-id
@@ -9976,6 +10185,7 @@ components:
                   type: string
                   enum:
                     - user
+          title: RoleMemberUser
           description: A user assigned to the role.
         - allOf:
             - $ref: '#/components/schemas/RoleMembership'
@@ -9988,6 +10198,7 @@ components:
                   type: string
                   enum:
                     - role
+          title: RoleMemberRole
           description: Another role that is a member of the role.
       description: |-
         A member of a role, returned by `GET /role/{id}/members`. Discriminated by
@@ -9997,6 +10208,7 @@ components:
     RoleMemberRef:
       oneOf:
         - type: object
+          title: RoleMemberRefUser
           description: A user, by `IdP` subject id.
           required:
             - id
@@ -10009,6 +10221,7 @@ components:
               enum:
                 - user
         - type: object
+          title: RoleMemberRefRole
           description: A role, by id.
           required:
             - id
@@ -10149,6 +10362,7 @@ components:
                   type: string
                   enum:
                     - access-key
+          title: S3CredentialAccessKey
           description: Authenticate to AWS using access-key and secret-key.
         - allOf:
             - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
@@ -10163,6 +10377,7 @@ components:
                   type: string
                   enum:
                     - aws-system-identity
+          title: S3CredentialAwsSystemIdentity
           description: |-
             Authenticate to AWS using the identity configured on the system
              that runs lakekeeper. The AWS SDK is used to load the credentials.
@@ -10176,6 +10391,7 @@ components:
                   type: string
                   enum:
                     - cloudflare-r2
+          title: S3CredentialCloudflareR2
         - allOf:
             - $ref: '#/components/schemas/S3AccessKeyCredential'
               description: |-
@@ -10192,6 +10408,7 @@ components:
                   type: string
                   enum:
                     - aliyun-oss
+          title: S3CredentialAliyunOss
           description: |-
             **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
             future release.
@@ -10834,6 +11051,7 @@ components:
     StorageCredentialType:
       oneOf:
         - type: object
+          title: StorageCredentialTypeS3
           description: S3 credential type
           required:
             - credential-type
@@ -10847,6 +11065,7 @@ components:
               enum:
                 - s3
         - type: object
+          title: StorageCredentialTypeAz
           description: Azure credential type
           required:
             - credential-type
@@ -10860,6 +11079,7 @@ components:
               enum:
                 - az
         - type: object
+          title: StorageCredentialTypeGcs
           description: GCS credential type
           required:
             - credential-type
@@ -10880,6 +11100,7 @@ components:
     StorageLayout:
       oneOf:
         - type: object
+          title: StorageLayoutDefault
           required:
             - type
           properties:
@@ -10897,6 +11118,7 @@ components:
                   type: string
                   enum:
                     - tabular-only
+          title: StorageLayoutTabularOnly
         - allOf:
             - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
             - type: object
@@ -10907,6 +11129,7 @@ components:
                   type: string
                   enum:
                     - full-hierarchy
+          title: StorageLayoutFullHierarchy
       description: |-
         Controls how namespace and tabular paths are constructed under the warehouse base location.
 
@@ -11179,6 +11402,7 @@ components:
     TabularIdentOrUuid:
       oneOf:
         - type: object
+          title: TabularIdentOrUuidById
           required:
             - warehouse-id
             - table-id
@@ -11190,6 +11414,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TabularIdentOrUuidByName
           required:
             - namespace
             - table
@@ -11213,6 +11438,7 @@ components:
     TabularIdentUuid:
       oneOf:
         - type: object
+          title: TabularIdentUuidTable
           required:
             - id
             - type
@@ -11225,6 +11451,7 @@ components:
               enum:
                 - table
         - type: object
+          title: TabularIdentUuidView
           required:
             - id
             - type
@@ -11237,6 +11464,7 @@ components:
               enum:
                 - view
         - type: object
+          title: TabularIdentUuidGenericTable
           required:
             - id
             - type
@@ -11311,6 +11539,7 @@ components:
     TagAttachmentTarget:
       oneOf:
         - type: object
+          title: TagAttachmentTargetWarehouse
           required:
             - warehouse-id
             - type
@@ -11323,6 +11552,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TagAttachmentTargetNamespace
           required:
             - warehouse-id
             - namespace-id
@@ -11339,6 +11569,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TagAttachmentTargetTable
           required:
             - warehouse-id
             - table-id
@@ -11355,6 +11586,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TagAttachmentTargetView
           required:
             - warehouse-id
             - view-id
@@ -11371,6 +11603,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TagAttachmentTargetGenericTable
           required:
             - warehouse-id
             - generic-table-id
@@ -11387,6 +11620,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TagAttachmentTargetColumn
           required:
             - warehouse-id
             - table-id
@@ -11461,6 +11695,7 @@ components:
     TagInheritanceSource:
       oneOf:
         - type: object
+          title: TagInheritanceSourceWarehouse
           required:
             - warehouse-id
             - type
@@ -11473,6 +11708,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: TagInheritanceSourceNamespace
           required:
             - warehouse-id
             - namespace-id
@@ -11650,6 +11886,7 @@ components:
     TimeWindowSelector:
       oneOf:
         - type: object
+          title: TimeWindowSelectorWindow
           required:
             - end
             - interval
@@ -11679,6 +11916,7 @@ components:
             end: 2023-12-31T23:59:59Z
             interval: P1D
         - type: object
+          title: TimeWindowSelectorPageToken
           required:
             - token
             - type
@@ -12256,6 +12494,7 @@ components:
     WarehouseFilter:
       oneOf:
         - type: object
+          title: WarehouseFilterWarehouseId
           description: Filter for a specific warehouse
           required:
             - id
@@ -12269,6 +12508,7 @@ components:
               enum:
                 - warehouse-id
         - type: object
+          title: WarehouseFilterUnmapped
           description: Filter for items that are not associated with a warehouse
           required:
             - type
@@ -12278,6 +12518,7 @@ components:
               enum:
                 - unmapped
         - type: object
+          title: WarehouseFilterAll
           description: Return all items in the current project, regardless of warehouse association
           required:
             - type
@@ -12354,6 +12595,7 @@ components:
     WarehouseTaskEntityFilter:
       oneOf:
         - type: object
+          title: WarehouseTaskEntityFilterTable
           description: Get tasks for a specific table
           required:
             - table-id
@@ -12367,6 +12609,7 @@ components:
               enum:
                 - table
         - type: object
+          title: WarehouseTaskEntityFilterView
           description: Get tasks for a specific view
           required:
             - view-id
@@ -12380,6 +12623,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: WarehouseTaskEntityFilterGenericTable
           description: Get tasks for a specific generic table
           required:
             - generic-table-id
@@ -12393,6 +12637,7 @@ components:
               enum:
                 - generic-table
         - type: object
+          title: WarehouseTaskEntityFilterWarehouse
           description: |-
             Get Warehouse-level tasks which are not associated with a specific entity
             inside the warehouse
@@ -12406,6 +12651,7 @@ components:
     WarehouseTaskEntityId:
       oneOf:
         - type: object
+          title: WarehouseTaskEntityIdTable
           required:
             - table-id
             - type
@@ -12418,6 +12664,7 @@ components:
               enum:
                 - table
         - type: object
+          title: WarehouseTaskEntityIdView
           required:
             - view-id
             - type
@@ -12430,6 +12677,7 @@ components:
               type: string
               format: uuid
         - type: object
+          title: WarehouseTaskEntityIdGenericTable
           required:
             - generic-table-id
             - type

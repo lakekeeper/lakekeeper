@@ -217,7 +217,148 @@ pub fn api_doc<A: Authorizer>(
         ManagementV1Endpoint::ScheduleTask.path(),
     );
 
+    name_anonymous_one_of_variants(&mut doc);
+
     doc
+}
+
+/// Give every anonymous `oneOf` variant a `title`.
+///
+/// utoipa renders a `#[serde(tag = "...")]` enum as a `oneOf` whose members are
+/// inline schemas. Inline schemas have no name, so code generators invent one —
+/// and because many of our variants are structurally identical (`{action:
+/// {enum: ["delete"]}}` recurs across every `Lakekeeper*Action` enum), generators
+/// that deduplicate identical schemas emit a *single* model and name it after
+/// whichever union they happened to visit first. The result is both wrong and
+/// unstable: `LakekeeperWarehouseActionKind` ends up referencing types called
+/// `LakekeeperGenericTableActionOneOf10`, and the names shift whenever schema
+/// order changes.
+///
+/// A `title` makes each variant distinct and names it locally. The name is
+/// derived from the variant's own discriminator — the property pinned to a
+/// single-value enum, which is exactly what `#[serde(tag)]` emits — so it stays
+/// in sync with the Rust source automatically. Variants that already carry an
+/// explicit `#[schema(title = "...")]` are left alone.
+///
+/// Variants with no single-value-enum property (the presence-discriminated ones
+/// such as `NamespaceIdentOrUuid`) cannot be named this way and keep whatever
+/// the generator picks; they need an explicit title in the Rust source.
+fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::openapi::{RefOr, Schema};
+
+    let Some(components) = doc.components.as_mut() else {
+        return;
+    };
+
+    for (parent_name, parent) in &mut components.schemas {
+        let RefOr::T(Schema::OneOf(one_of)) = parent else {
+            continue;
+        };
+        for member in &mut one_of.items {
+            let RefOr::T(member) = member else {
+                continue;
+            };
+            if schema_title(member).is_some() {
+                continue;
+            }
+            let Some(value) =
+                sole_discriminator_value(member).or_else(|| sole_required_field(member))
+            else {
+                continue;
+            };
+            let title = format!("{parent_name}{}", to_pascal_case(&value));
+            set_schema_title(member, title);
+        }
+    }
+}
+
+fn schema_title(schema: &utoipa::openapi::Schema) -> Option<&String> {
+    use utoipa::openapi::Schema;
+    match schema {
+        Schema::Object(object) => object.title.as_ref(),
+        Schema::AllOf(all_of) => all_of.title.as_ref(),
+        Schema::OneOf(one_of) => one_of.title.as_ref(),
+        Schema::Array(array) => array.title.as_ref(),
+        _ => None,
+    }
+}
+
+fn set_schema_title(schema: &mut utoipa::openapi::Schema, title: String) {
+    use utoipa::openapi::Schema;
+    match schema {
+        Schema::Object(object) => object.title = Some(title),
+        Schema::AllOf(all_of) => all_of.title = Some(title),
+        Schema::OneOf(one_of) => one_of.title = Some(title),
+        Schema::Array(array) => array.title = Some(title),
+        _ => {}
+    }
+}
+
+/// The value of the variant's discriminator, if it has exactly one property
+/// pinned to a single-value enum. `allOf` branches are searched too, because
+/// utoipa renders a tagged newtype variant as `allOf: [{$ref}, {tag const}]`.
+fn sole_discriminator_value(schema: &utoipa::openapi::Schema) -> Option<String> {
+    use utoipa::openapi::{RefOr, Schema};
+
+    fn collect(schema: &Schema, out: &mut Vec<String>) {
+        match schema {
+            Schema::Object(object) => {
+                for property in object.properties.values() {
+                    if let RefOr::T(Schema::Object(property)) = property
+                        && let Some([value]) = property.enum_values.as_deref()
+                        && let Some(value) = value.as_str()
+                    {
+                        out.push(value.to_owned());
+                    }
+                }
+            }
+            Schema::AllOf(all_of) => {
+                for branch in &all_of.items {
+                    if let RefOr::T(branch) = branch {
+                        collect(branch, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut values = Vec::new();
+    collect(schema, &mut values);
+    match values.as_slice() {
+        [value] => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// Fallback for presence-discriminated variants (`{required: [server]}` xor
+/// `{required: [project]}` …), which carry no enum to name them by: use the
+/// sole required property name. Variants requiring more than one property are
+/// left alone — there is no unambiguous choice, so they need an explicit
+/// `#[schema(title = "...")]` in the Rust source.
+fn sole_required_field(schema: &utoipa::openapi::Schema) -> Option<String> {
+    use utoipa::openapi::Schema;
+    match schema {
+        Schema::Object(object) => match object.required.as_slice() {
+            [field] => Some(field.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn to_pascal_case(value: &str) -> String {
+    value
+        .split(['-', '_', ' '])
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 /// Materialise per-queue schedule paths and request schemas.
