@@ -16,7 +16,7 @@ Adds governance tags. Backwards-compatible: existing tuples authorize the same a
 New type `lakekeeper_catalog_tag` (one instance per tag definition):
 
 - `project` parent, `ownership`, and a directly-assignable `apply` relation — the per-tag delegation point ("may attach/detach THIS tag" without owning the definition).
-- Actions `can_read`, `can_update`, `can_delete`, `can_apply`; grants `can_grant_apply`, `can_change_ownership`, `can_read_assignments`. Management derives from `ownership` or `security_admin from project`.
+- Actions `can_read`, `can_update`, `can_delete`, `can_apply`, `can_read_attachments` (reverse lookup — which objects carry the tag); grants `can_grant_apply`, `can_change_ownership`, `can_read_assignments` (who may apply/owns). Management derives from `ownership` or `security_admin from project`.
 
 `project`:
 

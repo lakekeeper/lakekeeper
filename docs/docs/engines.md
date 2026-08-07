@@ -71,6 +71,22 @@ duckdb.sql(f"""
 duckdb.sql("SELECT * FROM my_datalake.my_namespace.my_table").show()
 ```
 
+DuckDB requests vended credentials by default and does not support remote signing. If your warehouse has `sts-enabled: false`, add an S3 secret so DuckDB can reach the storage itself:
+
+```python
+duckdb.sql("""
+    CREATE SECRET storage_secret (
+        TYPE S3,
+        KEY_ID 'my-access-key',
+        SECRET 'my-secret-key',
+        ENDPOINT 's3.my-domain.com',
+        URL_STYLE 'path'
+    )
+""")
+```
+
+For a local or test storage that only serves plaintext HTTP, add `USE_SSL false` to the secret.
+
 ## <img src="/assets/trino.svg" width="30"> Trino
 
 The following docker compose examples are available for trino:

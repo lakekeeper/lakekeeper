@@ -852,11 +852,11 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
-    /// Reverse lookup: the targets a definition is directly attached to, optionally
-    /// filtered to a single `value`, keyset-paginated. No hierarchy expansion.
+    /// Reverse lookup: the targets a definition is directly attached to, narrowed by
+    /// `filter` (all criteria combined with AND), keyset-paginated. No hierarchy expansion.
     async fn list_tag_attachments_impl(
         tag_definition_id: TagDefinitionId,
-        value_filter: Option<&str>,
+        filter: &TagAttachmentFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError>;

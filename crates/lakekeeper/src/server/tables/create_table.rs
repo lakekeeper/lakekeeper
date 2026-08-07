@@ -5,7 +5,6 @@ use iceberg::spec::{
     FormatVersion, SortOrder, TableMetadata, TableMetadataBuilder, TableProperties,
     UnboundPartitionSpec,
 };
-use iceberg_ext::catalog::rest::StorageCredential;
 use lakekeeper_io::{InvalidLocationError, LakekeeperStorage as _, Location, StorageBackend};
 use uuid::Uuid;
 
@@ -338,12 +337,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     let credentials_revalidate_after_ms = config
         .credentials_expiration_ms
         .map(credential_revalidate_after_ms);
-    let storage_credentials = (!config.creds.inner().is_empty()).then(|| {
-        vec![StorageCredential {
-            prefix: table_location.to_string(),
-            config: config.creds.into(),
-        }]
-    });
+    let storage_credentials = config.storage_credentials(&table_location);
 
     let load_table_result = LoadTableResult {
         metadata_location: metadata_location.as_ref().map(ToString::to_string),

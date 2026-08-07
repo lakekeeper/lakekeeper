@@ -291,6 +291,28 @@ impl TagScope {
     }
 }
 
+/// Server-side filters for the attachment reverse lookup (`list_tag_attachments`).
+/// All fields are optional and combined with AND; an empty builder means "no filter".
+#[derive(Debug, Clone, typed_builder::TypedBuilder)]
+pub struct TagAttachmentFilter {
+    /// Exact tag value (case-sensitive). Marker attachments carry no value, so a
+    /// value filter excludes them.
+    #[builder(default)]
+    pub value: Option<String>,
+    /// Restrict to a single target object type.
+    #[builder(default)]
+    pub target_type: Option<TagScope>,
+    /// Attached at or after this instant (inclusive). Index-aligned.
+    #[builder(default)]
+    pub created_after: Option<DateTime<Utc>>,
+    /// Attached at or before this instant (inclusive).
+    #[builder(default)]
+    pub created_before: Option<DateTime<Utc>>,
+    /// Restrict to attachments within a single warehouse.
+    #[builder(default)]
+    pub warehouse_id: Option<WarehouseId>,
+}
+
 /// How a tag came to exist. Server-assigned; currently always `manual`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
@@ -993,18 +1015,17 @@ where
         Self::list_tags_for_target_impl(target, catalog_state).await
     }
 
-    /// The targets a definition is directly attached to (reverse lookup), optionally
-    /// filtered to a single `value`, keyset-paginated. Callers must resolve and
+    /// The targets a definition is directly attached to (reverse lookup), narrowed by
+    /// `filter` (all criteria combined with AND), keyset-paginated. Callers must resolve and
     /// authorize the definition first; all attachments of a project-scoped definition
     /// are in-project by construction.
     async fn list_tag_attachments(
         tag_definition_id: TagDefinitionId,
-        value_filter: Option<&str>,
+        filter: &TagAttachmentFilter,
         pagination: PaginationQuery,
         catalog_state: Self::State,
     ) -> Result<ListTagAttachmentsResponse, ListTagAttachmentsError> {
-        Self::list_tag_attachments_impl(tag_definition_id, value_filter, pagination, catalog_state)
-            .await
+        Self::list_tag_attachments_impl(tag_definition_id, filter, pagination, catalog_state).await
     }
 
     /// Gather the candidate effective tags for `target`: its own direct tags plus

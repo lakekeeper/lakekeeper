@@ -22,7 +22,7 @@ use lakekeeper::{
     },
     service::{
         Actor, CatalogStore, GenericTableId, NamespaceId, Result, RoleId, SecretStore, State,
-        TableId, ViewId,
+        TableId, TagDefinitionId, ViewId,
         authz::ActionDescriptor,
         events::{
             APIEventContext,
@@ -46,16 +46,16 @@ use super::{
         APIProjectRelation as ProjectRelation, APIRoleAction as RoleAction,
         APIRoleRelation as RoleRelation, APIServerAction as ServerAction,
         APIServerRelation as ServerRelation, APITableAction as TableAction,
-        APITableRelation as TableRelation, APIViewAction as ViewAction,
-        APIViewRelation as ViewRelation, APIWarehouseAction as WarehouseAction,
-        APIWarehouseRelation as WarehouseRelation, Assignment, GenericTableAssignment,
-        GenericTableRelation as AllGenericTableRelations, GrantableRelation, NamespaceAssignment,
-        NamespaceRelation as AllNamespaceRelations, ProjectAssignment,
-        ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
+        APITableRelation as TableRelation, APITagRelation as TagRelation,
+        APIViewAction as ViewAction, APIViewRelation as ViewRelation,
+        APIWarehouseAction as WarehouseAction, APIWarehouseRelation as WarehouseRelation,
+        Assignment, GenericTableAssignment, GenericTableRelation as AllGenericTableRelations,
+        GrantableRelation, NamespaceAssignment, NamespaceRelation as AllNamespaceRelations,
+        ProjectAssignment, ProjectRelation as AllProjectRelations, ReducedRelation, RoleAssignment,
         RoleRelation as AllRoleRelations, ServerAssignment, ServerRelation as AllServerAction,
-        TableAssignment, TableRelation as AllTableRelations, ViewAssignment,
-        ViewRelation as AllViewRelations, WarehouseAssignment,
-        WarehouseRelation as AllWarehouseRelation,
+        TableAssignment, TableRelation as AllTableRelations, TagAssignment,
+        TagRelation as AllTagRelations, ViewAssignment, ViewRelation as AllViewRelations,
+        WarehouseAssignment, WarehouseRelation as AllWarehouseRelation,
     },
 };
 #[cfg(feature = "open-api")]
@@ -279,6 +279,42 @@ pub(super) struct GetGenericTableAssignmentsQuery {
 #[serde(rename_all = "kebab-case")]
 struct GetGenericTableAssignmentsResponse {
     assignments: Vec<GenericTableAssignment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
+#[serde(rename_all = "camelCase")]
+struct GetTagAssignmentsQuery {
+    /// Relations to be loaded. If not specified, all relations are returned.
+    #[serde(default)]
+    #[cfg_attr(feature = "open-api", param(nullable = false, required = false))]
+    relations: Option<Vec<TagRelation>>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, typed_builder::TypedBuilder)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+struct GetTagAssignmentsResponse {
+    assignments: Vec<TagAssignment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+struct UpdateTagAssignmentsRequest {
+    #[serde(default)]
+    writes: Vec<TagAssignment>,
+    #[serde(default)]
+    deletes: Vec<TagAssignment>,
+}
+impl APIEventActions for UpdateTagAssignmentsRequest {
+    fn event_actions(&self) -> Vec<ActionDescriptor> {
+        vec![
+            ActionDescriptor::builder()
+                .action_name("update_tag_assignments")
+                .build(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1521,6 +1557,58 @@ async fn get_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     ))
 }
 
+/// Get user and role assignments of a tag definition (who may apply it / owns it)
+#[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/tag/{tag_definition_id}/assignments",
+    params(
+        GetTagAssignmentsQuery,
+        ("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"),
+    ),
+    responses(
+            (status = 200, body = GetTagAssignmentsResponse),
+    )
+))]
+async fn get_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
+    Path(tag_definition_id): Path<TagDefinitionId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Query(query): Query<GetTagAssignmentsQuery>,
+) -> Result<(StatusCode, Json<GetTagAssignmentsResponse>)> {
+    let authorizer = api_context.v1_state.authz;
+
+    let event_ctx = APIEventContext::for_tag(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        tag_definition_id,
+        AllTagRelations::CanReadAssignments,
+    );
+
+    let authz_result = authorizer
+        .require_action(
+            event_ctx.request_metadata(),
+            *event_ctx.action(),
+            &tag_definition_id.to_openfga(),
+        )
+        .await;
+
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    let assignments = get_relations(authorizer, query.relations, &tag_definition_id.to_openfga())
+        .await
+        .map_err(authz_to_error_no_audit)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(
+            GetTagAssignmentsResponse::builder()
+                .assignments(assignments)
+                .build(),
+        ),
+    ))
+}
+
 /// Get user and role assignments of the server
 #[cfg_attr(feature = "open-api", utoipa::path(
     get,
@@ -2282,6 +2370,49 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Update user and role assignments of a tag definition (grant/revoke apply, transfer ownership)
+#[cfg_attr(feature = "open-api", utoipa::path(
+    post,
+    tag = "permissions-openfga",
+    path = "/management/v1/permissions/tag/{tag_definition_id}/assignments",
+    request_body = UpdateTagAssignmentsRequest,
+    params(
+        ("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"),
+    ),
+    responses(
+            (status = 204, description = "Permissions updated successfully"),
+    )
+))]
+async fn update_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
+    Path(tag_definition_id): Path<TagDefinitionId>,
+    AxumState(api_context): AxumState<ApiContext<State<OpenFGAAuthorizer, C, S>>>,
+    Extension(metadata): Extension<RequestMetadata>,
+    Json(request): Json<UpdateTagAssignmentsRequest>,
+) -> Result<StatusCode> {
+    let authorizer = api_context.v1_state.authz;
+
+    let event_ctx = APIEventContext::for_tag(
+        Arc::new(metadata),
+        api_context.v1_state.events,
+        tag_definition_id,
+        request.clone(),
+    );
+
+    // A tag definition is never a valid assignment subject, so there is no
+    // self-assignment case to guard (unlike roles).
+    let authz_result = checked_write(
+        authorizer,
+        event_ctx.request_metadata().actor(),
+        request.writes,
+        request.deletes,
+        &tag_definition_id.to_openfga(),
+    )
+    .await;
+    let _ = event_ctx.emit_authz(authz_result)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg_attr(feature = "open-api", derive(OpenApi))]
 #[cfg_attr(feature = "open-api", openapi(
     tags(
@@ -2311,6 +2442,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         get_server_assignments,
         get_table_access_by_id,
         get_table_assignments_by_id,
+        get_tag_assignments_by_id,
         get_view_access_by_id,
         get_view_assignments_by_id,
         get_warehouse_access_by_id,
@@ -2325,6 +2457,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         update_role_assignments_by_id,
         update_server_assignments,
         update_table_assignments_by_id,
+        update_tag_assignments_by_id,
         update_view_assignments_by_id,
         update_warehouse_assignments_by_id,
     ),
@@ -2335,6 +2468,7 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
                        RoleRelation,
                        ServerRelation,
                        TableRelation,
+                       TagRelation,
                        ViewRelation,
                        WarehouseRelation))
 ))]
@@ -2427,6 +2561,10 @@ pub(super) fn new_v1_router<C: CatalogStore, S: SecretStore>()
         .route(
             "/permissions/role/{role_id}/assignments",
             get(get_role_assignments_by_id).post(update_role_assignments_by_id),
+        )
+        .route(
+            "/permissions/tag/{tag_definition_id}/assignments",
+            get(get_tag_assignments_by_id).post(update_tag_assignments_by_id),
         )
         .route(
             "/permissions/server/assignments",
@@ -2726,6 +2864,33 @@ mod tests {
             },
             {
               "type": "assignee",
+              "role": "b0ef03ea-f314-42df-ae26-dc5eeea8259f"
+            }
+          ]
+        });
+        assert_eq!(serialized, expected);
+    }
+
+    #[test]
+    fn test_get_tag_assignments_response_serde() {
+        let response = GetTagAssignmentsResponse::builder()
+            .assignments(vec![
+                TagAssignment::Ownership(UserOrRole::User(UserId::new_unchecked("oidc", "user1"))),
+                TagAssignment::Apply(UserOrRole::Role(
+                    RoleId::new(Uuid::from_str("b0ef03ea-f314-42df-ae26-dc5eeea8259f").unwrap())
+                        .into_api_assignee(),
+                )),
+            ])
+            .build();
+        let serialized = serde_json::to_value(&response).unwrap();
+        let expected = serde_json::json!({
+          "assignments": [
+            {
+              "type": "ownership",
+              "user": "oidc~user1"
+            },
+            {
+              "type": "apply",
               "role": "b0ef03ea-f314-42df-ae26-dc5eeea8259f"
             }
           ]
@@ -3134,6 +3299,55 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(relations.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn test_assign_to_tag() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let user_id_owner = UserId::new_unchecked("kubernetes", &Uuid::now_v7().to_string());
+            let tag_id = TagDefinitionId::new(Uuid::now_v7());
+            let user_id_applier = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let role_id = RoleId::new(Uuid::now_v7());
+
+            // Seed ownership so the owner satisfies `can_grant_apply`.
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: user_id_owner.to_openfga(),
+                        relation: TagRelation::Ownership.to_openfga().to_string(),
+                        object: tag_id.to_openfga(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let expected_owner = TagAssignment::Ownership(user_id_owner.clone().into());
+            let expected_user_apply = TagAssignment::Apply(user_id_applier.into());
+            let expected_role_apply = TagAssignment::Apply(role_id.into_api_assignee().into());
+
+            // Owner grants `apply` to a user and a role.
+            checked_write(
+                authorizer.clone(),
+                &Actor::Principal(user_id_owner.clone()),
+                vec![expected_user_apply.clone(), expected_role_apply.clone()],
+                vec![],
+                &tag_id.to_openfga(),
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<TagAssignment> =
+                get_relations(authorizer.clone(), None, &tag_id.to_openfga())
+                    .await
+                    .unwrap();
+            // ownership (seeded) + two applies, with exact principals and variants
+            assert_eq!(relations.len(), 3);
+            assert!(relations.contains(&expected_owner));
+            assert!(relations.contains(&expected_user_apply));
+            assert!(relations.contains(&expected_role_apply));
         }
 
         #[tokio::test]
