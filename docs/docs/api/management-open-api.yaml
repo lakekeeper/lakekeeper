@@ -5720,45 +5720,54 @@ components:
           description: Value the tag carries on this target
     AzCredential:
       oneOf:
-        - type: object
-          title: AzCredentialClientCredentials
-          required:
-            - client-id
-            - tenant-id
-            - client-secret
-            - credential-type
-          properties:
-            client-id:
-              type: string
-            client-secret:
-              type: string
-            credential-type:
-              type: string
-              enum:
-                - client-credentials
-            tenant-id:
-              type: string
-        - type: object
-          title: AzCredentialSharedAccessKey
-          required:
-            - key
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - shared-access-key
-            key:
-              type: string
-        - type: object
-          title: AzCredentialManagedIdentity
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - azure-system-identity
+        - $ref: '#/components/schemas/AzCredentialClientCredentials'
+        - $ref: '#/components/schemas/AzCredentialSharedAccessKey'
+        - $ref: '#/components/schemas/AzCredentialManagedIdentity'
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          azure-system-identity: '#/components/schemas/AzCredentialManagedIdentity'
+          client-credentials: '#/components/schemas/AzCredentialClientCredentials'
+          shared-access-key: '#/components/schemas/AzCredentialSharedAccessKey'
+    AzCredentialClientCredentials:
+      type: object
+      required:
+        - client-id
+        - tenant-id
+        - client-secret
+        - credential-type
+      properties:
+        client-id:
+          type: string
+        client-secret:
+          type: string
+        credential-type:
+          type: string
+          enum:
+            - client-credentials
+        tenant-id:
+          type: string
+    AzCredentialManagedIdentity:
+      type: object
+      required:
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - azure-system-identity
+    AzCredentialSharedAccessKey:
+      type: object
+      required:
+        - key
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - shared-access-key
+        key:
+          type: string
     AzCredentialType:
       type: string
       description: The type of Azure credential.
@@ -6634,36 +6643,8 @@ components:
           description: Internal type definition of the error
     GcsCredential:
       oneOf:
-        - type: object
-          title: GcsCredentialServiceAccountKey
-          description: |-
-            Service Account Key
-
-            The key is the JSON object obtained when creating a service account key in the GCP console.
-          required:
-            - key
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - service-account-key
-            key:
-              $ref: '#/components/schemas/GcsServiceKey'
-        - type: object
-          title: GcsCredentialSystemIdentity
-          description: |-
-            GCP System Identity
-
-            Use the service account that the application is running as.
-            This can be a Compute Engine default service account or a user-assigned service account.
-          required:
-            - credential-type
-          properties:
-            credential-type:
-              type: string
-              enum:
-                - gcp-system-identity
+        - $ref: '#/components/schemas/GcsCredentialServiceAccountKey'
+        - $ref: '#/components/schemas/GcsCredentialSystemIdentity'
       description: |-
         GCS Credentials
 
@@ -6684,6 +6665,41 @@ components:
               "universe_domain": "googleapis.com"
             }
         ```
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          gcp-system-identity: '#/components/schemas/GcsCredentialSystemIdentity'
+          service-account-key: '#/components/schemas/GcsCredentialServiceAccountKey'
+    GcsCredentialServiceAccountKey:
+      type: object
+      description: |-
+        Service Account Key
+
+        The key is the JSON object obtained when creating a service account key in the GCP console.
+      required:
+        - key
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - service-account-key
+        key:
+          $ref: '#/components/schemas/GcsServiceKey'
+    GcsCredentialSystemIdentity:
+      type: object
+      description: |-
+        GCP System Identity
+
+        Use the service account that the application is running as.
+        This can be a Compute Engine default service account or a user-assigned service account.
+      required:
+        - credential-type
+      properties:
+        credential-type:
+          type: string
+          enum:
+            - gcp-system-identity
     GcsCredentialType:
       type: string
       description: The type of GCS credential.
@@ -10860,70 +10876,81 @@ components:
             This is used to fetch downscoped temporary credentials for vended credentials.
     S3Credential:
       oneOf:
-        - allOf:
-            - $ref: '#/components/schemas/S3AccessKeyCredential'
-              description: Authenticate to AWS using access-key and secret-key.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - access-key
-          title: S3CredentialAccessKey
+        - $ref: '#/components/schemas/S3CredentialAccessKey'
+        - $ref: '#/components/schemas/S3CredentialAwsSystemIdentity'
+        - $ref: '#/components/schemas/S3CredentialCloudflareR2'
+        - $ref: '#/components/schemas/S3CredentialAliyunOss'
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          access-key: '#/components/schemas/S3CredentialAccessKey'
+          aliyun-oss: '#/components/schemas/S3CredentialAliyunOss'
+          aws-system-identity: '#/components/schemas/S3CredentialAwsSystemIdentity'
+          cloudflare-r2: '#/components/schemas/S3CredentialCloudflareR2'
+    S3CredentialAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
           description: Authenticate to AWS using access-key and secret-key.
-        - allOf:
-            - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
-              description: |-
-                Authenticate to AWS using the identity configured on the system
-                 that runs lakekeeper. The AWS SDK is used to load the credentials.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - aws-system-identity
-          title: S3CredentialAwsSystemIdentity
-          description: |-
-            Authenticate to AWS using the identity configured on the system
-             that runs lakekeeper. The AWS SDK is used to load the credentials.
-        - allOf:
-            - $ref: '#/components/schemas/S3CloudflareR2Credential'
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - cloudflare-r2
-          title: S3CredentialCloudflareR2
-        - allOf:
-            - $ref: '#/components/schemas/S3AccessKeyCredential'
-              description: |-
-                **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
-                future release.
-
-                Authenticate to Alibaba Cloud OSS using access-key and secret-key.
-                Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
-            - type: object
-              required:
-                - credential-type
-              properties:
-                credential-type:
-                  type: string
-                  enum:
-                    - aliyun-oss
-          title: S3CredentialAliyunOss
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - access-key
+      description: Authenticate to AWS using access-key and secret-key.
+    S3CredentialAliyunOss:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
           description: |-
             **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
             future release.
 
             Authenticate to Alibaba Cloud OSS using access-key and secret-key.
             Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aliyun-oss
+      description: |-
+        **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+        future release.
+
+        Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+        Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+    S3CredentialAwsSystemIdentity:
+      allOf:
+        - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aws-system-identity
+      description: |-
+        Authenticate to AWS using the identity configured on the system
+         that runs lakekeeper. The AWS SDK is used to load the credentials.
+    S3CredentialCloudflareR2:
+      allOf:
+        - $ref: '#/components/schemas/S3CloudflareR2Credential'
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - cloudflare-r2
     S3CredentialType:
       type: string
       description: The type of S3 credential.
@@ -11422,148 +11449,233 @@ components:
       description: Warehouse-specific configuration for the soft-deletion (tabular expiration) queue.
     StorageCredential:
       oneOf:
-        - allOf:
-            - $ref: '#/components/schemas/S3Credential'
-              description: |-
-                Credentials for S3 storage
-
-                Example payload in the code-snippet below:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "s3",
-                    "credential-type": "access-key",
-                    "access-key-id": "minio-root-user",
-                    "secret-access-key": "minio-root-password"
-                  }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - s3
-          title: StorageCredentialS3
-          description: |-
-            Credentials for S3 storage
-
-            Example payload in the code-snippet below:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "s3",
-                "credential-type": "access-key",
-                "access-key-id": "minio-root-user",
-                "secret-access-key": "minio-root-password"
-              }"#).unwrap();
-            ```
-        - allOf:
-            - $ref: '#/components/schemas/AzCredential'
-              description: |-
-                Credentials for Az storage
-
-                Example payload:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "az",
-                    "credential-type": "client-credentials",
-                    "client-id": "...",
-                    "client-secret": "...",
-                    "tenant-id": "..."
-                  }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - az
-          title: StorageCredentialAz
-          description: |-
-            Credentials for Az storage
-
-            Example payload:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "az",
-                "credential-type": "client-credentials",
-                "client-id": "...",
-                "client-secret": "...",
-                "tenant-id": "..."
-              }"#).unwrap();
-            ```
-        - allOf:
-            - $ref: '#/components/schemas/GcsCredential'
-              description: |
-                Credentials for GCS storage
-
-                Example payload in the code-snippet below:
-
-                ```
-                use lakekeeper::service::storage::StorageCredential;
-                let cred: StorageCredential = serde_json::from_str(r#"{
-                    "type": "gcs",
-                    "credential-type": "service-account-key",
-                    "key": {
-                      "type": "service_account",
-                      "project_id": "example-project-1234",
-                      "private_key_id": "....",
-                      "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
-                      "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
-                      "client_id": "123456789012345678901",
-                      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                      "token_uri": "https://oauth2.googleapis.com/token",
-                      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
-                      "universe_domain": "googleapis.com"
-                    }
-                }"#).unwrap();
-                ```
-            - type: object
-              required:
-                - type
-              properties:
-                type:
-                  type: string
-                  enum:
-                    - gcs
-          title: StorageCredentialGcs
-          description: |
-            Credentials for GCS storage
-
-            Example payload in the code-snippet below:
-
-            ```
-            use lakekeeper::service::storage::StorageCredential;
-            let cred: StorageCredential = serde_json::from_str(r#"{
-                "type": "gcs",
-                "credential-type": "service-account-key",
-                "key": {
-                  "type": "service_account",
-                  "project_id": "example-project-1234",
-                  "private_key_id": "....",
-                  "private_key": "-----BEGIN PRIVATE KEY-----\n.....\n-----END PRIVATE KEY-----\n",
-                  "client_email": "abc@example-project-1234.iam.gserviceaccount.com",
-                  "client_id": "123456789012345678901",
-                  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                  "token_uri": "https://oauth2.googleapis.com/token",
-                  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/abc%example-project-1234.iam.gserviceaccount.com",
-                  "universe_domain": "googleapis.com"
-                }
-            }"#).unwrap();
-            ```
+        - $ref: '#/components/schemas/StorageCredentialAccessKey'
+        - $ref: '#/components/schemas/StorageCredentialAwsSystemIdentity'
+        - $ref: '#/components/schemas/StorageCredentialCloudflareR2'
+        - $ref: '#/components/schemas/StorageCredentialAliyunOss'
+        - $ref: '#/components/schemas/StorageCredentialClientCredentials'
+        - $ref: '#/components/schemas/StorageCredentialSharedAccessKey'
+        - $ref: '#/components/schemas/StorageCredentialAzureSystemIdentity'
+        - $ref: '#/components/schemas/StorageCredentialServiceAccountKey'
+        - $ref: '#/components/schemas/StorageCredentialGcpSystemIdentity'
       description: Storage secret for a warehouse.
+      discriminator:
+        propertyName: credential-type
+        mapping:
+          access-key: '#/components/schemas/StorageCredentialAccessKey'
+          aliyun-oss: '#/components/schemas/StorageCredentialAliyunOss'
+          aws-system-identity: '#/components/schemas/StorageCredentialAwsSystemIdentity'
+          azure-system-identity: '#/components/schemas/StorageCredentialAzureSystemIdentity'
+          client-credentials: '#/components/schemas/StorageCredentialClientCredentials'
+          cloudflare-r2: '#/components/schemas/StorageCredentialCloudflareR2'
+          gcp-system-identity: '#/components/schemas/StorageCredentialGcpSystemIdentity'
+          service-account-key: '#/components/schemas/StorageCredentialServiceAccountKey'
+          shared-access-key: '#/components/schemas/StorageCredentialSharedAccessKey'
+    StorageCredentialAccessKey:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
+          description: Authenticate to AWS using access-key and secret-key.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - access-key
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialAliyunOss:
+      allOf:
+        - $ref: '#/components/schemas/S3AccessKeyCredential'
+          description: |-
+            **Beta:** Alibaba Cloud OSS support is in beta. The API and behavior may change in a
+            future release.
+
+            Authenticate to Alibaba Cloud OSS using access-key and secret-key.
+            Temporary credentials are vended via the Alibaba Cloud STS `AssumeRole` API.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aliyun-oss
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialAwsSystemIdentity:
+      allOf:
+        - $ref: '#/components/schemas/S3AwsSystemIdentityCredential'
+          description: |-
+            Authenticate to AWS using the identity configured on the system
+             that runs lakekeeper. The AWS SDK is used to load the credentials.
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - aws-system-identity
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialAzureSystemIdentity:
+      allOf:
+        - type: object
+          title: AzCredentialManagedIdentity
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - azure-system-identity
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - az
+    StorageCredentialClientCredentials:
+      allOf:
+        - type: object
+          title: AzCredentialClientCredentials
+          required:
+            - client-id
+            - tenant-id
+            - client-secret
+            - credential-type
+          properties:
+            client-id:
+              type: string
+            client-secret:
+              type: string
+            credential-type:
+              type: string
+              enum:
+                - client-credentials
+            tenant-id:
+              type: string
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - az
+    StorageCredentialCloudflareR2:
+      allOf:
+        - $ref: '#/components/schemas/S3CloudflareR2Credential'
+        - type: object
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - cloudflare-r2
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - s3
+    StorageCredentialGcpSystemIdentity:
+      allOf:
+        - type: object
+          title: GcsCredentialSystemIdentity
+          description: |-
+            GCP System Identity
+
+            Use the service account that the application is running as.
+            This can be a Compute Engine default service account or a user-assigned service account.
+          required:
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - gcp-system-identity
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - gcs
+    StorageCredentialServiceAccountKey:
+      allOf:
+        - type: object
+          title: GcsCredentialServiceAccountKey
+          description: |-
+            Service Account Key
+
+            The key is the JSON object obtained when creating a service account key in the GCP console.
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - service-account-key
+            key:
+              $ref: '#/components/schemas/GcsServiceKey'
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - gcs
+    StorageCredentialSharedAccessKey:
+      allOf:
+        - type: object
+          title: AzCredentialSharedAccessKey
+          required:
+            - key
+            - credential-type
+          properties:
+            credential-type:
+              type: string
+              enum:
+                - shared-access-key
+            key:
+              type: string
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - az
     StorageCredentialType:
       oneOf:
         - $ref: '#/components/schemas/StorageCredentialTypeS3'

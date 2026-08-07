@@ -217,14 +217,249 @@ pub fn api_doc<A: Authorizer>(
         ManagementV1Endpoint::ScheduleTask.path(),
     );
 
-    // Order matters: `UserOrRole` must stop being a `oneOf` before the unions
-    // that embed it are hoisted, and hoisting uses the titles the naming pass
-    // assigns as component names.
+    // Order matters. `UserOrRole` must stop being a `oneOf` first, or the
+    // `*Assignment` unions that embed it look like nested unions to the
+    // expansion pass and get multiplied out pointlessly. Hoisting runs last
+    // because it uses the titles the naming pass assigns as component names.
     flatten_user_or_role(&mut doc);
+    expand_unions_composing_unions(&mut doc);
     name_anonymous_one_of_variants(&mut doc);
     hoist_and_discriminate_one_of_variants(&mut doc);
 
     doc
+}
+
+/// Flatten unions whose members compose *another* union into a single level.
+///
+/// `StorageCredential` is the one union of this shape: its members are
+/// `allOf: [{$ref: S3Credential}, {type: <const>}]`, and `S3Credential` (like
+/// `AzCredential` and `GcsCredential`) is itself a `oneOf`. Two levels of union
+/// cannot survive into a generated client — a generator asked to compose a
+/// `oneOf` into an object flattens it into one struct carrying every branch's
+/// fields, and an `OpenAPI` `discriminator` can name only one property, so the
+/// nesting cannot be described away either.
+///
+/// The fix is to multiply the levels out: every (outer variant × inner variant)
+/// pair becomes one flat leaf carrying the inner payload plus *both* tags. Nine
+/// leaves here — four S3, three Azure, two GCS.
+///
+/// This only produces a usable union because one property still identifies a
+/// leaf on its own: `credential-type` values happen to be unique across all
+/// three providers. `type` alone would not work (`s3` maps to four leaves). If
+/// a future credential reuses a `credential-type` value under a different
+/// `type`, no single discriminator exists and this pass leaves the union
+/// untouched rather than emitting something misleading — the union then falls
+/// back to needing downstream preprocessing, as it did before this pass.
+///
+/// Runs before the other schema passes so the expanded union looks like an
+/// ordinary flat one to them.
+fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::openapi::{Ref, RefOr, Schema, schema::Discriminator};
+
+    let Some(components) = doc.components.as_mut() else {
+        return;
+    };
+
+    // Resolve the inner unions up front: the borrow checker will not allow
+    // reading `schemas` while the union being rewritten is borrowed mutably.
+    let inner_unions = components
+        .schemas
+        .iter()
+        .filter_map(|(name, schema)| match schema {
+            RefOr::T(Schema::OneOf(one_of)) => Some((name.clone(), one_of.clone())),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut expansions = Vec::new();
+    for (union_name, union) in &components.schemas {
+        let RefOr::T(Schema::OneOf(one_of)) = union else {
+            continue;
+        };
+
+        let leaves = match multiply_out(&one_of.items, &inner_unions) {
+            Expansion::Leaves(leaves) => leaves,
+            Expansion::NotNested => continue,
+            Expansion::Unsupported => {
+                tracing::warn!(
+                    union = %union_name,
+                    "OpenAPI: `{union_name}` composes another union but its members are not a \
+                     shape this pass can flatten, so it is published as a nested union. Code \
+                     generators cannot consume that: clients will reject valid payloads for this \
+                     type until it is expanded here or downstream."
+                );
+                continue;
+            }
+        };
+
+        // A leaf now carries two tags, so pick the property that identifies a
+        // leaf on its own. Bail out entirely if none does.
+        let per_leaf = leaves.iter().map(single_value_enums).collect::<Vec<_>>();
+        let Some(property_name) = per_leaf
+            .first()
+            .into_iter()
+            .flat_map(|first| first.keys().cloned())
+            .find(|candidate| {
+                let values = per_leaf
+                    .iter()
+                    .filter_map(|enums| enums.get(candidate))
+                    .collect::<std::collections::BTreeSet<_>>();
+                values.len() == leaves.len()
+            })
+        else {
+            tracing::warn!(
+                union = %union_name,
+                leaves = leaves.len(),
+                "OpenAPI: `{union_name}` was flattened into {} leaves but no single property \
+                 identifies one on its own, so no discriminator can be published and the union \
+                 is left nested. This happens when a tag value is reused across the outer \
+                 variants — see the note on `StorageCredential`.",
+                leaves.len()
+            );
+            continue;
+        };
+
+        let mut items = Vec::with_capacity(leaves.len());
+        let mut mapping = std::collections::BTreeMap::new();
+        let mut hoisted = Vec::with_capacity(leaves.len());
+        for (leaf, enums) in leaves.into_iter().zip(per_leaf) {
+            let value = enums[&property_name].clone();
+            let title = format!("{union_name}{}", to_pascal_case(&value));
+            let reference = format!("#/components/schemas/{title}");
+            items.push(RefOr::Ref(Ref::new(reference.clone())));
+            mapping.insert(value, reference);
+            hoisted.push((title, leaf));
+        }
+        expansions.push((
+            union_name.clone(),
+            items,
+            Discriminator {
+                property_name,
+                mapping,
+                extensions: None,
+            },
+            hoisted,
+        ));
+    }
+
+    for (union_name, items, discriminator, hoisted) in expansions {
+        for (title, leaf) in hoisted {
+            components.schemas.insert(title, RefOr::T(leaf));
+        }
+        if let Some(RefOr::T(Schema::OneOf(one_of))) = components.schemas.get_mut(&union_name) {
+            one_of.items = items;
+            one_of.discriminator = Some(discriminator);
+        }
+    }
+}
+
+/// Outcome of multiplying a union's members out — see [`multiply_out`].
+enum Expansion {
+    /// No member composes another union; there is nothing to expand.
+    NotNested,
+    /// A member composes a union but its shape is not one this pass can
+    /// rewrite safely, so the union is left as it is.
+    Unsupported,
+    /// One leaf per (outer variant × inner variant) pair.
+    Leaves(Vec<utoipa::openapi::Schema>),
+}
+
+/// Multiply a union's members by the members of any union they compose.
+fn multiply_out(
+    members: &[utoipa::openapi::RefOr<utoipa::openapi::Schema>],
+    inner_unions: &std::collections::BTreeMap<String, utoipa::openapi::schema::OneOf>,
+) -> Expansion {
+    use utoipa::openapi::{AllOf, RefOr, Schema};
+
+    let composes_any = members.iter().any(|member| match member {
+        RefOr::T(Schema::AllOf(member)) => member.items.iter().any(|branch| match branch {
+            RefOr::Ref(reference) => reference
+                .ref_location
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| inner_unions.contains_key(name)),
+            RefOr::T(_) => false,
+        }),
+        _ => false,
+    });
+    if !composes_any {
+        return Expansion::NotNested;
+    }
+
+    let mut leaves = Vec::new();
+    for member in members {
+        let RefOr::T(Schema::AllOf(member)) = member else {
+            return Expansion::Unsupported;
+        };
+        // Split the member into the union it composes and everything else it
+        // adds (the outer tag).
+        let mut inner = None;
+        let mut extras = Vec::new();
+        for branch in &member.items {
+            let composed = match branch {
+                RefOr::Ref(reference) => reference
+                    .ref_location
+                    .rsplit('/')
+                    .next()
+                    .and_then(|name| inner_unions.get(name)),
+                RefOr::T(_) => None,
+            };
+            match composed {
+                Some(one_of) if inner.is_none() => inner = Some(one_of),
+                _ => extras.push(branch.clone()),
+            }
+        }
+        let Some(inner) = inner else {
+            leaves.push(Schema::AllOf(member.clone()));
+            continue;
+        };
+        for inner_member in &inner.items {
+            let mut items = match inner_member {
+                RefOr::T(Schema::AllOf(inner_member)) => inner_member.items.clone(),
+                other => vec![other.clone()],
+            };
+            items.extend(extras.iter().cloned());
+            let mut leaf = AllOf::new();
+            leaf.items = items;
+            leaves.push(Schema::AllOf(leaf));
+        }
+    }
+    if leaves.is_empty() {
+        return Expansion::Unsupported;
+    }
+    Expansion::Leaves(leaves)
+}
+
+/// Every property the schema pins to a single-value enum, searching `allOf`
+/// branches. Unlike [`sole_discriminator`] this returns all candidates, because
+/// an expanded leaf carries one tag per union level.
+fn single_value_enums(
+    schema: &utoipa::openapi::Schema,
+) -> std::collections::BTreeMap<String, String> {
+    use utoipa::openapi::{RefOr, Schema};
+
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![schema];
+    while let Some(schema) = stack.pop() {
+        match schema {
+            Schema::Object(object) => {
+                for (name, property) in &object.properties {
+                    if let RefOr::T(Schema::Object(property)) = property
+                        && let Some([value]) = property.enum_values.as_deref()
+                        && let Some(value) = value.as_str()
+                    {
+                        out.insert(name.clone(), value.to_owned());
+                    }
+                }
+            }
+            Schema::AllOf(all_of) => stack.extend(all_of.items.iter().filter_map(|b| match b {
+                RefOr::T(schema) => Some(schema),
+                RefOr::Ref(_) => None,
+            })),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Name of the schema flattened by [`flatten_user_or_role`].
@@ -254,6 +489,26 @@ fn flatten_user_or_role(doc: &mut utoipa::openapi::OpenApi) {
     let Some(components) = doc.components.as_mut() else {
         return;
     };
+    match components.schemas.get(USER_OR_ROLE) {
+        Some(RefOr::T(Schema::OneOf(_))) => {}
+        Some(_) => {
+            tracing::warn!(
+                "OpenAPI: `{USER_OR_ROLE}` is no longer a `oneOf`, so it was left as-is. If its \
+                 shape changed deliberately, drop this pass and the note on the Rust type; if \
+                 not, the `*Assignment` unions that embed it may no longer generate usable \
+                 clients."
+            );
+            return;
+        }
+        None => {
+            tracing::warn!(
+                "OpenAPI: `{USER_OR_ROLE}` is not in components — renamed or removed? The \
+                 `*Assignment` unions embed it and will be published as nested unions, which \
+                 code generators cannot consume."
+            );
+            return;
+        }
+    }
     let Some(RefOr::T(Schema::OneOf(one_of))) = components.schemas.get(USER_OR_ROLE) else {
         return;
     };
@@ -265,6 +520,12 @@ fn flatten_user_or_role(doc: &mut utoipa::openapi::OpenApi) {
             for (name, property) in &member.properties {
                 flattened.properties.insert(name.clone(), property.clone());
             }
+        } else {
+            tracing::warn!(
+                "OpenAPI: a `{USER_OR_ROLE}` variant is not a plain object; its properties were \
+                 dropped while flattening. The published schema no longer describes every way a \
+                 user or role can be identified."
+            );
         }
     }
 
@@ -314,38 +575,62 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
         // distinct value for it, and already carry a title to be hoisted under.
         let mut property_name: Option<String> = None;
         let mut members = Vec::with_capacity(one_of.items.len());
+        let mut refused: Option<&'static str> = None;
         for member in &one_of.items {
             let RefOr::T(member) = member else {
-                members.clear();
+                refused = Some("a member is a bare $ref, so it carries no tag to map");
                 break;
             };
-            let (Some((property, value)), Some(title)) =
+            let (Some((property, value)), title) =
                 (sole_discriminator(member), schema_title(member).cloned())
             else {
-                members.clear();
+                // No single-value enum: presence-discriminated, which this pass
+                // cannot describe. Expected for a handful of unions, so quiet.
+                refused = Some("");
+                break;
+            };
+            let Some(title) = title else {
+                refused =
+                    Some("a member has a tag but no title, so there is nothing to hoist it under");
                 break;
             };
             if *property_name.get_or_insert_with(|| property.clone()) != property {
-                members.clear();
+                refused = Some("members disagree on which property is the tag");
                 break;
             }
             members.push((title, value, member.clone()));
         }
-        let (Some(property_name), false) = (property_name, members.is_empty()) else {
-            continue;
-        };
 
         let distinct_values = members
             .iter()
             .map(|(_, value, _)| value)
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
         let distinct_titles = members
             .iter()
             .map(|(title, _, _)| title)
-            .collect::<std::collections::BTreeSet<_>>();
-        if distinct_values.len() != members.len() || distinct_titles.len() != members.len() {
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if refused.is_none() && distinct_values != members.len() {
+            refused = Some("two members share the same tag value, so a mapping would be ambiguous");
+        } else if refused.is_none() && distinct_titles != members.len() {
+            refused = Some("two members share the same title, so they would hoist onto each other");
+        }
+
+        if let Some(reason) = refused {
+            if !reason.is_empty() {
+                tracing::warn!(
+                    union = %union_name,
+                    "OpenAPI: no discriminator published for `{union_name}`: {reason}. Code \
+                     generators must fall back to trying each variant in turn, which fails \
+                     whenever two variants have the same shape."
+                );
+            }
             continue;
         }
+        let (Some(property_name), false) = (property_name, members.is_empty()) else {
+            continue;
+        };
 
         let mut items = Vec::with_capacity(members.len());
         let mut mapping = std::collections::BTreeMap::new();
@@ -419,7 +704,7 @@ fn unions_left_intact(
             .collect()
     };
 
-    let mut skip = std::collections::BTreeSet::new();
+    let mut skip: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (union_name, union) in schemas {
         let RefOr::T(Schema::OneOf(one_of)) = union else {
             continue;
@@ -433,6 +718,15 @@ fn unions_left_intact(
                 }
             }
         }
+    }
+    if !skip.is_empty() {
+        tracing::warn!(
+            unions = ?skip,
+            "OpenAPI: these unions still nest another union and are published unflattened, so \
+             generated clients cannot decode them without downstream preprocessing. \
+             `expand_unions_composing_unions` should have flattened them — see the note on \
+             `StorageCredential`."
+        );
     }
     skip
 }
@@ -491,6 +785,14 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
                 .map(|(_, value)| value)
                 .or_else(|| sole_required_field(member))
             else {
+                tracing::warn!(
+                    union = %parent_name,
+                    "OpenAPI: a variant of `{parent_name}` has neither a single-value tag nor a \
+                     single required property, so it could not be named. Code generators will \
+                     invent a name for it, and because identical inline schemas are deduplicated \
+                     that name may be taken from an unrelated union. Give the variant an \
+                     explicit `#[schema(title = \"...\")]`."
+                );
                 continue;
             };
             let title = format!("{parent_name}{}", to_pascal_case(&value));

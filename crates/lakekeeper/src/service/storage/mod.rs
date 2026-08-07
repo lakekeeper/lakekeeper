@@ -1058,25 +1058,23 @@ impl Default for MemoryProfile {
 }
 
 /// Storage secret for a warehouse.
-// TBD - this is the one union `api_doc()` cannot make generator-friendly, and
-// it is deliberately skipped by `hoist_and_discriminate_one_of_variants`.
+// This is a two-level union: `type` selects s3/az/gcs here, and
+// `credential-type` then selects within `S3Credential` / `AzCredential` /
+// `GcsCredential`, which are unions in their own right. On the wire that is
+// `{"type": "s3", "credential-type": "access-key", ...}`.
 //
-// It is a two-level union with two discriminator properties: `type` selects
-// s3/az/gcs here, and `credential-type` then selects within `S3Credential` /
-// `AzCredential` / `GcsCredential`, which are unions in their own right. On the
-// wire that is `{"type": "s3", "credential-type": "access-key", ...}`.
+// Nested unions cannot survive into a generated client, so `api_doc()`
+// multiplies the two levels out into nine flat leaves — see
+// `expand_unions_composing_unions`. Adding a credential variant here needs no
+// change there; the expansion is derived.
 //
-// An `OpenAPI` `discriminator` names exactly one property, so no single-level
-// union can express this, and the members stay `allOf: [{$ref: <a oneOf>},
-// {type: <const>}]` — the shape generators flatten incorrectly. Rewriting the
-// three inner unions on their own is worse than leaving them: their parent then
-// composes something it can no longer flatten and the generated Go does not
-// compile, which is why they are skipped too.
-//
-// Until this is resolved, downstream generators need the cartesian expansion
-// that `go-lakekeeper`'s preprocessor performs (3 outer × the inner variants =
-// 9 flat leaves). The two ways out are to expand it here the same way, or to
-// flatten the wire format to a single discriminator — the latter is breaking.
+// One constraint to be aware of when adding variants: the expansion can only
+// emit a usable union while a single property still identifies a leaf, and the
+// only one that does is `credential-type` (`type` alone maps `s3` to four
+// leaves). Reusing a `credential-type` value under a different `type` would
+// leave no valid discriminator, and the pass then deliberately skips the union
+// rather than emit something misleading — downstream generators would need
+// their own preprocessing again.
 #[derive(Debug, Hash, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
