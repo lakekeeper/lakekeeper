@@ -2733,7 +2733,7 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
 /// Authorize an assignment update without applying it.
 ///
 /// Split out from the write so that callers can emit the authorization audit
-/// event *before* any OpenFGA side-effects are committed. Apply the writes with
+/// event *before* the OpenFGA write is issued. Apply the writes with
 /// [`apply_assignment_writes`] once the event has been emitted.
 async fn check_assignment_writes<RA: Assignment>(
     authorizer: &OpenFGAAuthorizer,
@@ -2777,7 +2777,7 @@ async fn check_assignment_writes<RA: Assignment>(
             object: object.to_string(),
         };
 
-        let allowed = authorizer.clone().check(key).await?;
+        let allowed = authorizer.check(key).await?;
         if allowed {
             Ok(())
         } else {
@@ -2794,9 +2794,10 @@ async fn check_assignment_writes<RA: Assignment>(
 
 /// Apply an assignment update that [`check_assignment_writes`] has authorized.
 ///
-/// Callers must have emitted the authorization event before calling this, and
-/// must map failures with `authz_to_error_no_audit` — the authorization outcome
-/// has already been logged, so a failing write must not emit a second event.
+/// Callers must have emitted the authorization event before calling this.
+/// Endpoint callers must additionally map failures with `authz_to_error_no_audit`
+/// — the authorization outcome has already been logged, so a failing write must
+/// not emit a second event.
 async fn apply_assignment_writes<RA: Assignment>(
     authorizer: OpenFGAAuthorizer,
     writes: Vec<RA>,
