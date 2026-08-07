@@ -14,10 +14,12 @@ use lakekeeper::{
         ArcProjectId, CachePolicy, CatalogCreateRoleRequest, CatalogListRolesByIdFilter,
         CatalogRoleOps, CatalogStore, RoleId, RoleProviderId, RoleSourceId,
         SYSTEM_ROLE_PROVIDER_ID, SystemRoleSeederCap, SystemRoleSpec, Transaction,
-        authz::AllowAllAuthorizer, role_cache::ROLE_CACHE,
+        authz::AllowAllAuthorizer, events::EventListener, role_cache::ROLE_CACHE,
     },
 };
-use lakekeeper_integration_tests::{SetupTestCatalog, memory_io_profile, random_request_metadata};
+use lakekeeper_integration_tests::{
+    CapturingAuthzListener, SetupTestCatalog, memory_io_profile, random_request_metadata,
+};
 use lakekeeper_storage_postgres::PostgresBackend;
 use sqlx::PgPool;
 
@@ -1293,5 +1295,115 @@ async fn test_upsert_system_roles_rejects_duplicate_source_ids(pool: PgPool) {
             lakekeeper::service::CreateRoleError::RoleSourceIdConflict(_)
         ),
         "expected RoleSourceIdConflict, got: {err:?}"
+    );
+}
+
+// ==================== Audit ordering ====================
+
+/// A write that fails *after* authorization succeeded must still record the
+/// authorization outcome as a success — the write failure is not an
+/// authorization failure.
+///
+/// The second request is identical to the first, so `require_project_action`
+/// passes again while the catalog rejects the duplicate `provider~source_id` —
+/// a write failure reachable only once authorization has already been decided.
+#[sqlx::test]
+async fn test_create_role_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+
+    // Attach after setup so only the two calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let request = || CreateRoleRequest {
+        name: "audit-order-role".to_string(),
+        description: None,
+        project_id: Some((*warehouse_resp.project_id).clone()),
+        provider_id: Some(make_provider()),
+        source_id: Some(make_source_id("src-audit-order")),
+    };
+
+    ApiServer::create_role(request(), ctx.clone(), random_request_metadata())
+        .await
+        .expect("first create succeeds");
+    assert_eq!(
+        listener.settled_succeeded_count(1).await,
+        1,
+        "the successful call must be audited exactly once"
+    );
+
+    let write_error = ApiServer::create_role(request(), ctx.clone(), random_request_metadata())
+        .await
+        .expect_err("re-creating the same role must fail");
+
+    assert_eq!(
+        listener.settled_succeeded_count(2).await,
+        2,
+        "the second authorization attempt must be audited as a success even though \
+         the write that followed it failed: {write_error:?}"
+    );
+    assert_eq!(
+        listener.failed_count(),
+        0,
+        "a failing write must not be logged as an authorization failure"
+    );
+}
+
+/// Same contract on the update path: renaming onto an existing name is rejected
+/// by the write, after `require_role_action` has already allowed the update.
+#[sqlx::test]
+async fn test_update_role_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(memory_io_profile())
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let project_id = &warehouse_resp.project_id;
+
+    db_create_role(&ctx, project_id, "taken-name", "src-taken").await;
+    let victim = db_create_role(&ctx, project_id, "renamable", "src-renamable").await;
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let write_error = ApiServer::update_role(
+        ctx.clone(),
+        request_metadata_with_project(project_id),
+        victim.id,
+        UpdateRoleRequest {
+            name: "taken-name".to_string(),
+            description: None,
+        },
+    )
+    .await
+    .expect_err("renaming onto an existing name must fail");
+
+    assert_eq!(
+        listener.settled_succeeded_count(1).await,
+        1,
+        "the authorization attempt must be audited as a success even though the \
+         write that followed it failed: {write_error:?}"
+    );
+    assert_eq!(
+        listener.failed_count(),
+        0,
+        "a failing write must not be logged as an authorization failure"
     );
 }

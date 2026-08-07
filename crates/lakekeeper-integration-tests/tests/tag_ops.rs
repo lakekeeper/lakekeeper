@@ -40,12 +40,12 @@ use lakekeeper::{
     server::CatalogServer,
     service::{
         CatalogNamespaceOps as _, GenericTableId, NamespaceId, State, TableId, TagScope, TagSource,
-        TagValueKind, ViewId, authz::AllowAllAuthorizer,
+        TagValueKind, ViewId, authz::AllowAllAuthorizer, events::EventListener,
     },
 };
 use lakekeeper_integration_tests::{
-    SetupTestCatalog, TestWarehouseResponse, create_generic_table, create_view, memory_io_profile,
-    random_request_metadata,
+    CapturingAuthzListener, SetupTestCatalog, TestWarehouseResponse, create_generic_table,
+    create_view, memory_io_profile, random_request_metadata,
 };
 use lakekeeper_storage_postgres::{PostgresBackend, SecretsState};
 use sqlx::PgPool;
@@ -2491,5 +2491,176 @@ async fn test_reapply_same_value_is_noop(pool: PgPool) {
         changed.value.as_deref(),
         Some("silver"),
         "the response must carry the newly-applied value, not the previous one"
+    );
+}
+
+// ==================== Audit ordering ====================
+
+/// A write that fails *after* authorization succeeded must still record the
+/// authorization outcome as a success — the write failure is not an
+/// authorization failure.
+///
+/// The second request is identical to the first, so `require_project_action`
+/// passes again while the catalog rejects the duplicate definition name — a
+/// write failure reachable only once authorization has already been decided.
+#[sqlx::test]
+async fn test_create_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let project_id = &warehouse.project_id;
+
+    // Attach after setup so only the two calls below are captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let create = || {
+        create_def(
+            &ctx,
+            project_id,
+            "audit.order",
+            vec![TagScope::Table],
+            TagValueKind::Marker,
+            None,
+        )
+    };
+
+    create().await.expect("first create succeeds");
+    assert_eq!(
+        listener.settled_succeeded_count(1).await,
+        1,
+        "the successful call must be audited exactly once"
+    );
+
+    let write_error = create()
+        .await
+        .expect_err("re-creating the same definition must fail");
+
+    assert_eq!(
+        listener.settled_succeeded_count(2).await,
+        2,
+        "the second authorization attempt must be audited as a success even though \
+         the write that followed it failed: {write_error:?}"
+    );
+    assert_eq!(
+        listener.failed_count(),
+        0,
+        "a failing write must not be logged as an authorization failure"
+    );
+}
+
+/// Same contract on the update path: renaming onto an existing definition name
+/// is rejected by the write, after `require_tag_action` has already allowed the
+/// update.
+#[sqlx::test]
+async fn test_update_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let pid = &warehouse.project_id;
+
+    create_def(
+        &ctx,
+        pid,
+        "audit.taken",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    let victim = create_def(
+        &ctx,
+        pid,
+        "audit.renamable",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let write_error = Server::update_tag_definition(
+        ctx.clone(),
+        request_metadata_with_project(pid),
+        victim.id,
+        UpdateTagDefinitionRequest {
+            name: "audit.taken".to_string(),
+            description: None,
+            scope: vec![TagScope::Table],
+            add_allowed_values: None,
+        },
+    )
+    .await
+    .expect_err("renaming onto an existing name must fail");
+
+    assert_eq!(
+        listener.settled_succeeded_count(1).await,
+        1,
+        "the authorization attempt must be audited as a success even though the \
+         write that followed it failed: {write_error:?}"
+    );
+    assert_eq!(
+        listener.failed_count(),
+        0,
+        "a failing write must not be logged as an authorization failure"
+    );
+}
+
+/// Same contract on the delete path: the in-use rejection comes from the delete
+/// statement, after `require_tag_action` has already allowed the delete.
+#[sqlx::test]
+async fn test_delete_tag_definition_audits_authz_before_failing_write(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let pid = &warehouse.project_id;
+
+    let def = create_def(
+        &ctx,
+        pid,
+        "audit.in-use",
+        vec![TagScope::Warehouse],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    Server::set_warehouse_tag(
+        warehouse.warehouse_id,
+        "audit.in-use".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Attach after setup so only the call below is captured.
+    let listener = std::sync::Arc::new(CapturingAuthzListener::default());
+    ctx.v1_state
+        .events
+        .append(listener.clone() as std::sync::Arc<dyn EventListener>)
+        .await;
+
+    let write_error =
+        Server::delete_tag_definition(ctx.clone(), request_metadata_with_project(pid), def.id)
+            .await
+            .expect_err("deleting an attached definition must fail");
+
+    assert_eq!(
+        listener.settled_succeeded_count(1).await,
+        1,
+        "the authorization attempt must be audited as a success even though the \
+         write that followed it failed: {write_error:?}"
+    );
+    assert_eq!(
+        listener.failed_count(),
+        0,
+        "a failing write must not be logged as an authorization failure"
     );
 }
