@@ -37,7 +37,7 @@ use crate::{
             APIEventContext,
             context::{
                 Unresolved, UserProvidedGenericTable, UserProvidedNamespace, UserProvidedTable,
-                UserProvidedView,
+                UserProvidedView, authz_to_error_no_audit,
             },
         },
         is_reserved_tag_name, validate_scope_widening, validate_tag_name, validate_tag_scope,
@@ -606,14 +606,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }),
         );
         let catalog_state = context.v1_state.catalog;
-        let authz_result = authorize_create_tag_definition::<A, C>(
-            authorizer,
+        let authz_result = authorizer
+            .require_project_action(
+                event_ctx.request_metadata(),
+                &project_id,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let (tag_definition, bootstrap_grants) = apply_create_tag_definition::<A, C>(
+            &authorizer,
             catalog_state,
-            &event_ctx,
+            event_ctx.request_metadata(),
+            &project_id,
             &request,
         )
-        .await;
-        let (event_ctx, (tag_definition, bootstrap_grants)) = event_ctx.emit_authz(authz_result)?;
+        .await
+        .map_err(authz_to_error_no_audit)?;
         // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
         let grant_request_metadata = event_ctx.request_metadata_arc();
@@ -735,15 +746,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result = authorize_update_tag_definition::<A, C>(
-            authorizer,
-            catalog_state,
+        let authz_result = check_tag_definition_action::<A, C>(
+            &authorizer,
+            catalog_state.clone(),
             &event_ctx,
-            project_id,
-            request,
+            &project_id,
         )
         .await;
-        let (event_ctx, (tag_definition, allowed_values)) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, current) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let (tag_definition, allowed_values) =
+            apply_update_tag_definition::<C>(catalog_state, &project_id, &current, request)
+                .await
+                .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(tag_definition);
         let mut result: TagDefinition = (**event_ctx.resolved()).clone().into();
         result.allowed_values = allowed_values;
@@ -767,14 +783,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result = authorize_delete_tag_definition::<A, C>(
-            authorizer,
-            catalog_state,
+        let authz_result = check_tag_definition_action::<A, C>(
+            &authorizer,
+            catalog_state.clone(),
             &event_ctx,
-            project_id,
+            &project_id,
         )
         .await;
-        let (event_ctx, tag_definition) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, current) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let tag_definition = apply_delete_tag_definition::<A, C>(
+            &authorizer,
+            catalog_state,
+            event_ctx.request_metadata(),
+            &project_id,
+            current,
+        )
+        .await
+        .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(tag_definition);
         event_ctx.emit_tag_definition_deleted();
         Ok(())
@@ -802,21 +829,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_set_warehouse_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             &project_id,
             &tag_name,
             request.value.as_deref(),
         )
         .await;
-        let (
-            event_ctx,
-            AppliedTagResult {
-                tag,
-                tag_definition,
-                changed,
-            },
-        ) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let AppliedTagResult {
+            tag,
+            tag_definition,
+            changed,
+        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
         // An idempotent re-apply of an identical value changed nothing — no event.
@@ -845,13 +874,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_delete_warehouse_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             &project_id,
             &tag_name,
         )
         .await;
-        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let removed = remove_tag_from_target::<C>(catalog_state, change)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
             let event_ctx = event_ctx.resolve(removed);
             event_ctx.emit_tag_removed();
@@ -912,7 +946,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_set_namespace_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             namespace_id,
             &project_id,
@@ -920,14 +954,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (
-            event_ctx,
-            AppliedTagResult {
-                tag,
-                tag_definition,
-                changed,
-            },
-        ) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let AppliedTagResult {
+            tag,
+            tag_definition,
+            changed,
+        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
         // An idempotent re-apply of an identical value changed nothing — no event.
@@ -958,14 +994,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_delete_namespace_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             namespace_id,
             &project_id,
             &tag_name,
         )
         .await;
-        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let removed = remove_tag_from_target::<C>(catalog_state, change)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
             let event_ctx = event_ctx.resolve(removed);
             event_ctx.emit_tag_removed();
@@ -1029,7 +1070,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_set_table_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             table_id,
             &project_id,
@@ -1037,14 +1078,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (
-            event_ctx,
-            AppliedTagResult {
-                tag,
-                tag_definition,
-                changed,
-            },
-        ) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let AppliedTagResult {
+            tag,
+            tag_definition,
+            changed,
+        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
         // An idempotent re-apply of an identical value changed nothing — no event.
@@ -1075,14 +1118,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_delete_table_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             table_id,
             &project_id,
             &tag_name,
         )
         .await;
-        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let removed = remove_tag_from_target::<C>(catalog_state, change)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
             let event_ctx = event_ctx.resolve(removed);
             event_ctx.emit_tag_removed();
@@ -1148,7 +1196,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_set_table_column_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             table_id,
             &column_name,
@@ -1157,14 +1205,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (
-            event_ctx,
-            AppliedTagResult {
-                tag,
-                tag_definition,
-                changed,
-            },
-        ) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let AppliedTagResult {
+            tag,
+            tag_definition,
+            changed,
+        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
         // An idempotent re-apply of an identical value changed nothing — no event.
@@ -1196,7 +1246,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_delete_table_column_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             table_id,
             &column_name,
@@ -1204,7 +1254,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             &tag_name,
         )
         .await;
-        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let removed = remove_tag_from_target::<C>(catalog_state, change)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
             let event_ctx = event_ctx.resolve(removed);
             event_ctx.emit_tag_removed();
@@ -1303,7 +1358,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_set_view_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             view_id,
             &project_id,
@@ -1311,14 +1366,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (
-            event_ctx,
-            AppliedTagResult {
-                tag,
-                tag_definition,
-                changed,
-            },
-        ) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let AppliedTagResult {
+            tag,
+            tag_definition,
+            changed,
+        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
         // An idempotent re-apply of an identical value changed nothing — no event.
@@ -1349,14 +1406,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_delete_view_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             view_id,
             &project_id,
             &tag_name,
         )
         .await;
-        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let removed = remove_tag_from_target::<C>(catalog_state, change)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
             let event_ctx = event_ctx.resolve(removed);
             event_ctx.emit_tag_removed();
@@ -1420,7 +1482,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_set_generic_table_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             generic_table_id,
             &project_id,
@@ -1428,14 +1490,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             request.value.as_deref(),
         )
         .await;
-        let (
-            event_ctx,
-            AppliedTagResult {
-                tag,
-                tag_definition,
-                changed,
-            },
-        ) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let AppliedTagResult {
+            tag,
+            tag_definition,
+            changed,
+        } = apply_tag_to_target::<C>(catalog_state, change, request.value.as_deref())
+            .await
+            .map_err(authz_to_error_no_audit)?;
         let result = AppliedTag::new(&tag, &tag_definition);
         let event_ctx = event_ctx.resolve((tag, tag_definition));
         // An idempotent re-apply of an identical value changed nothing — no event.
@@ -1466,14 +1530,19 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let catalog_state = context.v1_state.catalog;
         let authz_result = authorize_delete_generic_table_tag::<A, C>(
             &authorizer,
-            catalog_state,
+            catalog_state.clone(),
             &event_ctx,
             generic_table_id,
             &project_id,
             &tag_name,
         )
         .await;
-        let (event_ctx, removed) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, change) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let removed = remove_tag_from_target::<C>(catalog_state, change)
+            .await
+            .map_err(authz_to_error_no_audit)?;
         if let Some(removed) = removed {
             let event_ctx = event_ctx.resolve(removed);
             event_ctx.emit_tag_removed();
@@ -1514,22 +1583,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 }
 
+/// Create the tag definition. The caller must have emitted the authorization
+/// event before calling this: authorization already succeeded, so a failure here
+/// is a write failure and must be mapped with `authz_to_error_no_audit` rather
+/// than logged as a second — mislabeled — authorization outcome.
+///
 /// Also returns the grants the definition was born with, for the caller to announce once
 /// the transaction has committed.
-async fn authorize_create_tag_definition<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+async fn apply_create_tag_definition<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
     catalog_state: C::State,
-    event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
+    request_metadata: &RequestMetadata,
+    project_id: &ArcProjectId,
     request: &CreateTagDefinitionRequest,
 ) -> Result<(Arc<crate::service::TagDefinition>, Vec<GrantSpec>), AuthZError> {
-    let project_id = event_ctx.user_provided_entity_arc_ref();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-    authorizer
-        .require_project_action(request_metadata, project_id, action.clone())
-        .await?;
-
-    // -------------------- Business Logic --------------------
     let description = request.description.as_deref().filter(|d| !d.is_empty());
     let tag_definition_id = TagDefinitionId::new_random();
     let allowed_values: Vec<&str> = request
@@ -1554,11 +1621,10 @@ async fn authorize_create_tag_definition<A: Authorizer, C: CatalogStore>(
         .value_spec(value_spec)
         .build();
 
-    let mut t: <C as CatalogStore>::Transaction =
-        C::Transaction::begin_write(catalog_state.clone())
-            .await
-            .map_err(|e| CatalogBackendError::new_unexpected(e.error))
-            .map_err(CreateTagDefinitionError::from)?;
+    let mut t: <C as CatalogStore>::Transaction = C::Transaction::begin_write(catalog_state)
+        .await
+        .map_err(|e| CatalogBackendError::new_unexpected(e.error))
+        .map_err(CreateTagDefinitionError::from)?;
     let tag_definition =
         C::create_tag_definition(project_id, catalog_request, t.transaction()).await?;
     authorizer
@@ -1570,7 +1636,7 @@ async fn authorize_create_tag_definition<A: Authorizer, C: CatalogStore>(
     // Kept typed rather than folded into a backend error: a missing user row is the
     // caller's 400 and a lock conflict their retriable 409, not "the catalog is down".
     let bootstrap_grants = write_bootstrap_grants::<C, A>(
-        &authorizer,
+        authorizer,
         request_metadata,
         &GrantResource::Tag(tag_definition_id),
         t.transaction(),
@@ -1614,6 +1680,28 @@ async fn authorize_list_tag_definitions<A: Authorizer, C: CatalogStore>(
     Ok(tag_definitions)
 }
 
+/// Resolve the tag definition addressed by `event_ctx` within the request's
+/// project and authorize the context's action on it. Writes nothing, so the
+/// handler can emit the authorization event before applying any change.
+/// Non-existence surfaces as not-found via `require_tag_action`.
+async fn check_tag_definition_action<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    event_ctx: &APIEventContext<TagDefinitionId, Unresolved, CatalogTagAction>,
+    project_id: &ProjectId,
+) -> Result<crate::service::TagDefinition, AuthZError> {
+    let tag_definition_id = *event_ctx.user_provided_entity();
+    let tag_definition = C::get_tag_definition(project_id, tag_definition_id, catalog_state).await;
+    Ok(authorizer
+        .require_tag_action(
+            event_ctx.request_metadata(),
+            tag_definition_id,
+            tag_definition,
+            event_ctx.action().clone(),
+        )
+        .await?)
+}
+
 async fn authorize_get_tag_definition<A: Authorizer, C: CatalogStore>(
     authorizer: A,
     catalog_state: C::State,
@@ -1621,19 +1709,13 @@ async fn authorize_get_tag_definition<A: Authorizer, C: CatalogStore>(
     project_id: ArcProjectId,
 ) -> Result<TagDefinition, AuthZError> {
     let tag_definition_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-
-    let tag_definition =
-        C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
-    let tag_definition = authorizer
-        .require_tag_action(
-            request_metadata,
-            tag_definition_id,
-            tag_definition,
-            action.clone(),
-        )
-        .await?;
+    let tag_definition = check_tag_definition_action::<A, C>(
+        &authorizer,
+        catalog_state.clone(),
+        event_ctx,
+        &project_id,
+    )
+    .await?;
 
     // -------------------- Business Logic --------------------
     let allowed_values = if tag_definition.value_kind == TagValueKind::Enumerated {
@@ -1658,22 +1740,17 @@ async fn authorize_list_tag_attachments<A: Authorizer, C: CatalogStore>(
     query: ListTagAttachmentsQuery,
 ) -> Result<crate::service::ListTagAttachmentsResponse, AuthZError> {
     let tag_definition_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
 
     // Resolve + authorize the definition in the request's project. `ReadAttachments`
     // is restricted to tag owners / project security admins (broader disclosure than
     // `Read`); non-existence is hidden as not-found.
-    let tag_definition =
-        C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
-    let _tag_definition = authorizer
-        .require_tag_action(
-            request_metadata,
-            tag_definition_id,
-            tag_definition,
-            action.clone(),
-        )
-        .await?;
+    let _tag_definition = check_tag_definition_action::<A, C>(
+        &authorizer,
+        catalog_state.clone(),
+        event_ctx,
+        &project_id,
+    )
+    .await?;
 
     // -------------------- Business Logic --------------------
     // All attachments of a project-scoped definition are in-project by construction
@@ -1691,22 +1768,16 @@ async fn authorize_list_tag_attachments<A: Authorizer, C: CatalogStore>(
     Ok(attachments)
 }
 
-async fn authorize_update_tag_definition<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+/// Update the tag definition authorized by [`check_tag_definition_action`]. See
+/// [`apply_create_tag_definition`] for the ordering contract this must be called
+/// under.
+async fn apply_update_tag_definition<C: CatalogStore>(
     catalog_state: C::State,
-    event_ctx: &APIEventContext<TagDefinitionId, Unresolved, CatalogTagAction>,
-    project_id: ArcProjectId,
+    project_id: &ProjectId,
+    current: &crate::service::TagDefinition,
     request: UpdateTagDefinitionRequest,
 ) -> Result<(Arc<crate::service::TagDefinition>, Option<Vec<String>>), AuthZError> {
-    let tag_definition_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-
-    let current =
-        C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
-    let current = authorizer
-        .require_tag_action(request_metadata, tag_definition_id, current, action.clone())
-        .await?;
+    let tag_definition_id = current.tag_definition_id;
 
     // Reserved definitions are catalog-managed and immutable through this API.
     if current.is_protected() {
@@ -1745,7 +1816,7 @@ async fn authorize_update_tag_definition<A: Authorizer, C: CatalogStore>(
     // The store reads the merged allowed values back inside this transaction, so the
     // response reflects the write without a post-commit (replica) read.
     let (tag_definition, allowed_values) = C::update_tag_definition(
-        &project_id,
+        project_id,
         tag_definition_id,
         catalog_request,
         t.transaction(),
@@ -1762,34 +1833,29 @@ async fn authorize_update_tag_definition<A: Authorizer, C: CatalogStore>(
     Ok((Arc::new(tag_definition), allowed_values))
 }
 
-async fn authorize_delete_tag_definition<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+/// Delete the tag definition authorized by [`check_tag_definition_action`]. See
+/// [`apply_create_tag_definition`] for the ordering contract this must be called
+/// under.
+async fn apply_delete_tag_definition<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
     catalog_state: C::State,
-    event_ctx: &APIEventContext<TagDefinitionId, Unresolved, CatalogTagAction>,
-    project_id: ArcProjectId,
+    request_metadata: &RequestMetadata,
+    project_id: &ProjectId,
+    current: crate::service::TagDefinition,
 ) -> Result<Arc<crate::service::TagDefinition>, AuthZError> {
-    let tag_definition_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-
-    let current =
-        C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
-    let current = authorizer
-        .require_tag_action(request_metadata, tag_definition_id, current, action.clone())
-        .await?;
+    let tag_definition_id = current.tag_definition_id;
 
     // Reserved definitions are catalog-managed and immutable through this API.
     if current.is_protected() {
         return Err(DeleteTagDefinitionError::from(TagDefinitionReserved::new()).into());
     }
 
-    // -------------------- Business Logic --------------------
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<DeleteTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
-    C::delete_tag_definition(&project_id, tag_definition_id, t.transaction()).await?;
+    C::delete_tag_definition(project_id, tag_definition_id, t.transaction()).await?;
     t.commit()
         .await
         .map_err::<DeleteTagDefinitionError, _>(|e| {
@@ -2060,7 +2126,19 @@ async fn require_tag_definition_by_name<A: Authorizer, C: CatalogStore>(
         .await?)
 }
 
-async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
+/// A tag change whose target and definition both passed authorization. Carries
+/// no side effects: the `authorize_*` helpers produce it so the handler can emit
+/// the authorization event before [`apply_tag_to_target`] /
+/// [`remove_tag_from_target`] writes anything.
+struct AuthorizedTagChange {
+    target: TagTarget,
+    definition: crate::service::TagDefinition,
+}
+
+/// Authorize applying `tag_name` to an already-authorized `target`: resolve the
+/// definition, check `Apply` on it, and validate the target scope and value
+/// against it. Writes nothing.
+async fn check_set_tag_on_target<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
@@ -2068,7 +2146,7 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
     tag_name: &str,
     value: Option<&str>,
     target: TagTarget,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let definition = require_tag_definition_by_name::<A, C>(
         authorizer,
         request_metadata,
@@ -2080,7 +2158,7 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
     .await?;
     validate_tag_scope(&definition.scope, target.scope()).map_err(ApplyTagError::from)?;
     let allowed_values = if definition.value_kind == TagValueKind::Enumerated {
-        C::get_tag_allowed_values(definition.tag_definition_id, catalog_state.clone())
+        C::get_tag_allowed_values(definition.tag_definition_id, catalog_state)
             .await
             .map_err(RequireTagActionError::from)?
     } else {
@@ -2088,7 +2166,20 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
     };
     validate_tag_value(definition.value_kind, &allowed_values, value)
         .map_err(ApplyTagError::from)?;
+    Ok(AuthorizedTagChange { target, definition })
+}
 
+/// Apply the tag change authorized by [`check_set_tag_on_target`]. The caller
+/// must have emitted the authorization event first: authorization already
+/// succeeded, so a failure here is a write failure and must be mapped with
+/// `authz_to_error_no_audit` rather than logged as a second — mislabeled —
+/// authorization outcome.
+async fn apply_tag_to_target<C: CatalogStore>(
+    catalog_state: C::State,
+    change: AuthorizedTagChange,
+    value: Option<&str>,
+) -> Result<AppliedTagResult, AuthZError> {
+    let AuthorizedTagChange { target, definition } = change;
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err(|e| CatalogBackendError::new_unexpected(e.error))
@@ -2112,26 +2203,37 @@ async fn set_tag_on_target<A: Authorizer, C: CatalogStore>(
     })
 }
 
-/// Remove the manual tag of the given definition from the target. Returns
-/// `None` (without touching the catalog) when the definition exists but is
-/// not attached to this target — removal is idempotent.
-async fn delete_tag_from_target<A: Authorizer, C: CatalogStore>(
+/// Authorize removing `tag_name` from an already-authorized `target`: resolve
+/// the definition and check `Remove` on it. Writes nothing.
+async fn check_delete_tag_from_target<A: Authorizer, C: CatalogStore>(
     authorizer: &A,
     catalog_state: C::State,
     request_metadata: &RequestMetadata,
     project_id: &ProjectId,
     tag_name: &str,
     target: TagTarget,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let definition = require_tag_definition_by_name::<A, C>(
         authorizer,
         request_metadata,
         project_id,
         tag_name,
         CatalogTagAction::Remove,
-        catalog_state.clone(),
+        catalog_state,
     )
     .await?;
+    Ok(AuthorizedTagChange { target, definition })
+}
+
+/// Remove the manual tag authorized by [`check_delete_tag_from_target`] from the
+/// target. Returns `None` (without touching the catalog) when the definition
+/// exists but is not attached to this target — removal is idempotent. See
+/// [`apply_tag_to_target`] for the ordering contract this must be called under.
+async fn remove_tag_from_target<C: CatalogStore>(
+    catalog_state: C::State,
+    change: AuthorizedTagChange,
+) -> Result<Option<TagWithDefinition>, AuthZError> {
+    let AuthorizedTagChange { target, definition } = change;
 
     // Atomic delete-and-return in one write transaction: no replica read between
     // "find" and "delete" (so a just-applied tag is seen), and concurrent deletes
@@ -2251,7 +2353,7 @@ async fn authorize_set_warehouse_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_warehouse_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2259,7 +2361,7 @@ async fn authorize_set_warehouse_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    set_tag_on_target::<A, C>(
+    check_set_tag_on_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2277,7 +2379,7 @@ async fn authorize_delete_warehouse_tag<A: Authorizer, C: CatalogStore>(
     event_ctx: &APIEventContext<WarehouseId, Unresolved, CatalogWarehouseAction>,
     project_id: &ProjectId,
     tag_name: &str,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_warehouse_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2285,7 +2387,7 @@ async fn authorize_delete_warehouse_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    delete_tag_from_target::<A, C>(
+    check_delete_tag_from_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2321,7 +2423,7 @@ async fn authorize_set_namespace_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_namespace_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2330,7 +2432,7 @@ async fn authorize_set_namespace_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    set_tag_on_target::<A, C>(
+    check_set_tag_on_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2349,7 +2451,7 @@ async fn authorize_delete_namespace_tag<A: Authorizer, C: CatalogStore>(
     namespace_id: NamespaceId,
     project_id: &ProjectId,
     tag_name: &str,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_namespace_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2358,7 +2460,7 @@ async fn authorize_delete_namespace_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    delete_tag_from_target::<A, C>(
+    check_delete_tag_from_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2396,7 +2498,7 @@ async fn authorize_set_table_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_table_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2405,7 +2507,7 @@ async fn authorize_set_table_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    set_tag_on_target::<A, C>(
+    check_set_tag_on_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2424,7 +2526,7 @@ async fn authorize_delete_table_tag<A: Authorizer, C: CatalogStore>(
     table_id: TableId,
     project_id: &ProjectId,
     tag_name: &str,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_table_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2433,7 +2535,7 @@ async fn authorize_delete_table_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    delete_tag_from_target::<A, C>(
+    check_delete_tag_from_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2473,7 +2575,7 @@ async fn authorize_set_table_column_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_table_column_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2483,7 +2585,7 @@ async fn authorize_set_table_column_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    set_tag_on_target::<A, C>(
+    check_set_tag_on_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2503,7 +2605,7 @@ async fn authorize_delete_table_column_tag<A: Authorizer, C: CatalogStore>(
     column_name: &str,
     project_id: &ProjectId,
     tag_name: &str,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_table_column_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2513,7 +2615,7 @@ async fn authorize_delete_table_column_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    delete_tag_from_target::<A, C>(
+    check_delete_tag_from_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2620,7 +2722,7 @@ async fn authorize_set_view_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_view_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2629,7 +2731,7 @@ async fn authorize_set_view_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    set_tag_on_target::<A, C>(
+    check_set_tag_on_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2648,7 +2750,7 @@ async fn authorize_delete_view_tag<A: Authorizer, C: CatalogStore>(
     view_id: ViewId,
     project_id: &ProjectId,
     tag_name: &str,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_view_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2657,7 +2759,7 @@ async fn authorize_delete_view_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    delete_tag_from_target::<A, C>(
+    check_delete_tag_from_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2695,7 +2797,7 @@ async fn authorize_set_generic_table_tag<A: Authorizer, C: CatalogStore>(
     project_id: &ProjectId,
     tag_name: &str,
     value: Option<&str>,
-) -> Result<AppliedTagResult, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_generic_table_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2704,7 +2806,7 @@ async fn authorize_set_generic_table_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    set_tag_on_target::<A, C>(
+    check_set_tag_on_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
@@ -2723,7 +2825,7 @@ async fn authorize_delete_generic_table_tag<A: Authorizer, C: CatalogStore>(
     generic_table_id: GenericTableId,
     project_id: &ProjectId,
     tag_name: &str,
-) -> Result<Option<TagWithDefinition>, AuthZError> {
+) -> Result<AuthorizedTagChange, AuthZError> {
     let target = authorize_generic_table_tag_target::<A, C>(
         authorizer,
         catalog_state.clone(),
@@ -2732,7 +2834,7 @@ async fn authorize_delete_generic_table_tag<A: Authorizer, C: CatalogStore>(
         project_id,
     )
     .await?;
-    delete_tag_from_target::<A, C>(
+    check_delete_tag_from_target::<A, C>(
         authorizer,
         catalog_state,
         event_ctx.request_metadata(),
