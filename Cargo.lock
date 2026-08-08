@@ -2722,7 +2722,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "home",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "path-clean",
  "percent-encoding",
  "reqwest 0.12.28",
@@ -3708,6 +3708,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
 name = "jwks_client_rs"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3715,7 +3733,7 @@ checksum = "9d53eaaccb419ae77a896b482b5311ae537e941b17ab770673a3958dd0049bb8"
 dependencies = [
  "async-trait",
  "chrono",
- "jsonwebtoken",
+ "jsonwebtoken 10.4.0",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -4296,12 +4314,12 @@ dependencies = [
 
 [[package]]
 name = "limes"
-version = "0.4.2"
-source = "git+https://github.com/vakamo-labs/limes-rs.git?tag=v0.4.2#dcd1bb1b5fae6f1009111276c9695f0438a344e7"
+version = "0.5.0"
+source = "git+https://github.com/vakamo-labs/limes-rs.git?tag=v0.5.0#ba49eca84fbbb341f3340fd4f3e805d8b1f56c28"
 dependencies = [
  "axum",
  "axum-extra",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "jwks_client_rs",
  "k8s-openapi",
  "kube",
