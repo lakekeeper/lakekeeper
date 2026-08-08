@@ -17,7 +17,7 @@ Users are automatically added to Lakekeeper after successful Authentication (use
 - `claims`: all claims
 - `email`: `email` or `upn` if it contains an `@` or `preferred_username` if it contains an `@`
 
-If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`.
+If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`. To give such tokens a friendlier name — for example machine or service-account tokens that only carry an `email` — set `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` (or the per-provider `..._DISPLAY_NAME_TEMPLATE`) to a template such as `Service Account {email}`; `{claim.path}` placeholders are filled from the token's claims (double a brace as `{{`/`}}` for a literal), and a real `name` claim always takes precedence.
 Lakekeeper determines the ID of users in the following order:
 
 1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this value (or comma-separated list of values) is tried in order and the first claim present in the token is used. Setting only one claim, that claim must be present.
