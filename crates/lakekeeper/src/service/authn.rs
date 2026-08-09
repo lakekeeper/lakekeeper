@@ -336,19 +336,14 @@ fn oidc_provider_configs_from_config(
 async fn build_oidc_authenticators(
     providers: Vec<(String, OidcProviderConfig)>,
 ) -> anyhow::Result<Vec<AuthenticatorEnum>> {
-    let mut authenticators = Vec::new();
-
+    // Validate every provider's display-name template up front, before any network
+    // work. A malformed template is a static config bug, so a typo in any provider's
+    // template aborts startup cleanly rather than after earlier providers' JWKS have
+    // already been fetched. Malformed templates never take the "skip this provider"
+    // path below (which is only for connectivity failures) — that would silently
+    // disable an IdP over a typo.
+    let mut validated = Vec::with_capacity(providers.len());
     for (idp_id, provider) in providers {
-        tracing::info!(
-            "Creating OIDC authenticator for {} ({})",
-            idp_id,
-            provider.uri
-        );
-
-        // Parse the display-name template before any network work. A syntax error
-        // is a static config bug, so it aborts startup here rather than being
-        // downgraded to the "skip this provider" path below (which is only for
-        // connectivity failures) — that would silently disable an IdP over a typo.
         let display_name_template = provider
             .display_name_template
             .as_deref()
@@ -358,6 +353,16 @@ async fn build_oidc_authenticators(
             .map_err(|e| {
                 anyhow::anyhow!("invalid `display_name_template` for OIDC provider `{idp_id}`: {e}")
             })?;
+        validated.push((idp_id, provider, display_name_template));
+    }
+
+    let mut authenticators = Vec::new();
+    for (idp_id, provider, display_name_template) in validated {
+        tracing::info!(
+            "Creating OIDC authenticator for {} ({})",
+            idp_id,
+            provider.uri
+        );
 
         match build_oidc_authenticator(&idp_id, &provider, display_name_template).await {
             Ok(authenticator) => {
@@ -1091,7 +1096,7 @@ mod tests {
     async fn build_oidc_authenticators_rejects_malformed_display_name_template() {
         // A malformed template is a static config error: it must fail before any
         // network work and regardless of `require_connected_on_startup`. Parsing
-        // happens at the top of the build loop, so this errors without touching the
+        // happens in a pre-pass before the build loop, so this errors without touching the
         // network — keeping the test hermetic.
         let providers = vec![provider_with_template(Some("Service Account {email"))];
         let err = build_oidc_authenticators(providers).await.unwrap_err();
