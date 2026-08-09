@@ -104,6 +104,8 @@ async fn test_validate_warehouse_passes_and_persists_nothing(pool: PgPool) {
     )
     .await
     .unwrap();
+    // Pin the fixture, so the before/after comparison below cannot pass vacuously.
+    assert_eq!(before.len(), 1, "fixture creates exactly one warehouse");
 
     let response = ApiServer::validate_warehouse(
         CreateWarehouseRequest::builder()
@@ -478,6 +480,9 @@ async fn test_validate_storage_credential_leaves_the_stored_credential_alone(poo
     .await
     .unwrap()
     .unwrap();
+    // The memory profile needs no credential, so a stored secret appearing after
+    // the dry run is unambiguously validation's doing.
+    assert!(before.storage_secret_id.is_none());
 
     let response = ApiServer::validate_storage_credential(
         warehouse.warehouse_id,
@@ -552,6 +557,17 @@ async fn test_validate_endpoints_deny_an_unauthorized_caller(pool: PgPool) {
     )
     .await;
     assert!(storage_denied.is_err());
+
+    let credential_denied = ApiServer::validate_storage_credential(
+        warehouse.warehouse_id,
+        UpdateWarehouseCredentialRequest {
+            new_storage_credential: None,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    assert!(credential_denied.is_err());
 
     let stored_denied = ApiServer::validate_storage_access(
         warehouse.warehouse_id,

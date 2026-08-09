@@ -30,7 +30,7 @@ Creating a Warehouse or updating its storage rejects the request with a single e
 | `POST /management/v1/warehouse/{warehouse_id}/storage/validate-credential` | A replacement credential |
 | `POST /management/v1/warehouse/{warehouse_id}/storage/validate-access` | The storage the Warehouse currently runs with |
 
-Each returns `200 OK` regardless of the outcome — a failing check is a result, not a request error. Inspect `valid` and the per-check entries. A non-200 is returned only when the request itself cannot be processed: unknown Warehouse (404), missing project (400), insufficient permission (403), or an unreachable secret store (500).
+Each returns `200 OK` regardless of the outcome — a failing check is a result, not a request error. Inspect `valid` and the per-check entries. A non-200 is returned only when the request itself cannot be processed: missing project (400), insufficient permission (403), unknown Warehouse (404), or an unreachable secret store (500). A caller who cannot see the Warehouse at all gets 404 rather than 403, so an unknown Warehouse and one the caller may not access are indistinguishable by design.
 
 Validation requires the same permission as the operation it stands in for: validating a new Warehouse requires `create_warehouse` on the project, the others require `update_storage` on the Warehouse.
 

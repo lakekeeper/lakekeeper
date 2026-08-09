@@ -638,6 +638,10 @@ impl StorageProfile {
         };
         let ns_location = match self.default_namespace_location(&namespace_path) {
             Ok(loc) => loc,
+            // Reported against the read/write probe on purpose: this function owns
+            // only the physical-access checks, and profile shape has already been
+            // reported by the caller. Without a location there is nothing to write
+            // to, so the probe is what failed.
             Err(e) => {
                 report.push(ValidationCheck::failed(
                     ValidationCheckName::LakekeeperReadWrite,

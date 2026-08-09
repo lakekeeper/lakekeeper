@@ -2216,7 +2216,9 @@ fn skipped_access_checks(reason: &str) -> Vec<ValidationCheck> {
 ///
 /// Uniqueness is compared case-insensitively: `warehouse_name` is stored under a
 /// `case_insensitive` collation, so `unique_warehouse_name_in_project` treats
-/// `Analytics` and `analytics` as the same name.
+/// `Analytics` and `analytics` as the same name. That collation is ICU
+/// `und-u-ks-level2`, which folds case beyond ASCII, so the comparison here has
+/// to as well — otherwise `Ä` reports a green tick against a stored `ä`.
 ///
 /// Advisory only — the constraint is enforced by the database, and a concurrent
 /// create can still take the name between this check and the real request.
@@ -2232,10 +2234,8 @@ fn warehouse_name_check(
             ErrorModel::from(e),
         );
     }
-    if warehouses
-        .iter()
-        .any(|w| w.name.eq_ignore_ascii_case(warehouse_name))
-    {
+    let folded = warehouse_name.to_lowercase();
+    if warehouses.iter().any(|w| w.name.to_lowercase() == folded) {
         return ValidationCheck::failed(
             ValidationCheckName::WarehouseNameValid,
             elapsed_ms(started),
