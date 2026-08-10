@@ -257,6 +257,9 @@ pub fn api_doc<A: Authorizer>(
 ///
 /// Runs before the other schema passes so the expanded union looks like an
 /// ordinary flat one to them.
+// One linear decision procedure per union; splitting it would scatter the
+// refusal reasons away from the checks that produce them.
+#[allow(clippy::too_many_lines)]
 fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
     use utoipa::openapi::{Ref, RefOr, Schema, schema::Discriminator};
 
@@ -274,9 +277,9 @@ fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
             _ => None,
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    // See the same guard in `name_anonymous_one_of_variants`: a leaf name that
-    // is already a component would overwrite it when the leaves are inserted.
-    let taken = components
+    // Names the leaves must avoid; see [`reserve_name`]. Claims accumulate
+    // across unions, so two unions cannot derive the same leaf name.
+    let mut taken = components
         .schemas
         .keys()
         .cloned()
@@ -333,21 +336,40 @@ fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
         let mut items = Vec::with_capacity(leaves.len());
         let mut mapping = std::collections::BTreeMap::new();
         let mut hoisted = Vec::with_capacity(leaves.len());
+        let mut unnameable = None;
         for (leaf, enums) in leaves.into_iter().zip(per_leaf) {
             let value = enums[&property_name].clone();
-            let mut title = format!("{union_name}{}", to_pascal_case(&value));
-            if taken.contains(&title) {
-                title.push_str("Variant");
+            let preferred = format!("{union_name}{}", to_pascal_case(&value));
+            let Some(title) = reserve_name(&mut taken, &preferred) else {
+                unnameable = Some(preferred);
+                break;
+            };
+            if title != preferred {
                 tracing::warn!(
                     union = %union_name,
-                    "OpenAPI: the name derived for a leaf of `{union_name}` is already held by \
-                     another component, so the leaf is named `{title}` instead."
+                    "OpenAPI: `{preferred}`, the name derived for a leaf of `{union_name}`, is \
+                     already held by another component, so the leaf is published as `{title}` \
+                     instead. Rename the composed type to publish a better name."
                 );
             }
             let reference = format!("#/components/schemas/{title}");
             items.push(RefOr::Ref(Ref::new(reference.clone())));
             mapping.insert(value, reference);
             hoisted.push((title, leaf));
+        }
+        if let Some(preferred) = unnameable {
+            // Release what this union claimed: it is left untouched, so nothing
+            // will be inserted under those names and a later union may use them.
+            for (title, _) in &hoisted {
+                taken.remove(title);
+            }
+            tracing::warn!(
+                union = %union_name,
+                "OpenAPI: every candidate name for a leaf of `{union_name}` derived from \
+                 `{preferred}` is already taken, so the union is left nested rather than \
+                 rewritten to reference a schema that was never inserted."
+            );
+            continue;
         }
         expansions.push((
             union_name.clone(),
@@ -372,18 +394,42 @@ fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
     }
 }
 
-/// Insert a hoisted union member under its generated name, refusing to
-/// overwrite an existing component.
+/// Claim an unused component name for a union member that is about to be
+/// hoisted.
 ///
-/// The name derivation in [`name_anonymous_one_of_variants`] and
-/// [`expand_unions_composing_unions`] already sidesteps names it can see are
-/// taken, so reaching this is a bug in a pass rather than a shape in the source.
-/// It is guarded anyway because the failure is silent and expensive:
-/// `BTreeMap::insert` replaces, the replaced schema's properties vanish from the
-/// document, and any `$ref` the new schema makes to the old one becomes a
-/// self-reference that resolves fine and then makes generators emit an
-/// infinitely recursive type. Refusing leaves a dangling `$ref` instead, which
-/// `spec_integrity_tests::assert_refs_resolve` fails on loudly.
+/// `taken` holds every name already spoken for: the components the document
+/// started with, plus every name claimed earlier in the same pass. Names must be
+/// tracked across the whole pass and not merely looked up in `components`,
+/// because a pass assigns many names before inserting any of them — two unions
+/// deriving the same name would otherwise both believe it was free.
+///
+/// `preferred` wins when it is free. Otherwise a `Variant` suffix is appended,
+/// then numbered, so a clash renames the *new* schema and leaves the established
+/// one where downstream `$ref`s already point.
+///
+/// Returns `None` when every candidate is taken. Callers must treat that as a
+/// refusal for the entire union: a union rewritten to `$ref` a name that was
+/// never inserted is worse than one left alone.
+fn reserve_name(taken: &mut std::collections::BTreeSet<String>, preferred: &str) -> Option<String> {
+    if taken.insert(preferred.to_owned()) {
+        return Some(preferred.to_owned());
+    }
+    std::iter::once(format!("{preferred}Variant"))
+        .chain((2..=16).map(|n| format!("{preferred}Variant{n}")))
+        .find(|candidate| taken.insert(candidate.clone()))
+}
+
+/// Insert a hoisted union member under a name [`reserve_name`] has claimed.
+///
+/// Both hoisting passes allocate through [`reserve_name`], so the name is free
+/// by construction and this never replaces anything. The check stays as an
+/// invariant guard because the failure it prevents is silent rather than loud:
+/// `BTreeMap::insert` would drop the existing schema's properties from the
+/// document while the union's `$ref` — spelled the same either way — kept
+/// resolving, now to an unrelated schema. Nothing dangles, so
+/// `spec_integrity_tests::assert_refs_resolve` cannot catch it; only
+/// `assert_no_self_references` catches the sub-case where the hoisted member
+/// composed the schema it displaced.
 fn insert_hoisted(
     schemas: &mut std::collections::BTreeMap<
         String,
@@ -393,11 +439,15 @@ fn insert_hoisted(
     schema: utoipa::openapi::Schema,
 ) {
     if schemas.contains_key(&name) {
+        debug_assert!(
+            false,
+            "hoisted name `{name}` was not reserved through `reserve_name`"
+        );
         tracing::error!(
             schema = %name,
             "OpenAPI: refusing to hoist a union variant as `{name}`: a component of that name \
-             already exists and overwriting it would drop it from the document. The union keeps a \
-             `$ref` to `{name}` that now points at the wrong schema."
+             already exists and overwriting it would drop it from the document. The union now \
+             holds a `$ref` to `{name}` that resolves to an unrelated schema."
         );
         return;
     }
@@ -606,6 +656,9 @@ fn flatten_user_or_role(doc: &mut utoipa::openapi::OpenApi) {
 /// An `OpenAPI` `discriminator` states the rule outright, but its `mapping` can
 /// only point at named schemas — hence the hoist. Applied to every union whose
 /// members each pin the *same* single property to a *distinct* value.
+// As with `expand_unions_composing_unions`: the refusal reasons belong next to
+// the checks that set them.
+#[allow(clippy::too_many_lines)]
 fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
     use utoipa::openapi::{Ref, RefOr, Schema, schema::Discriminator};
 
@@ -616,6 +669,17 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
     let skip = unions_left_intact(&components.schemas);
     let mut hoisted: Vec<(String, Schema)> = Vec::new();
     let mut rewrites: Vec<(String, Vec<RefOr<Schema>>, Discriminator)> = Vec::new();
+    // Hoisting publishes each member as a component under its title, so a title
+    // that is already spoken for would displace the schema holding it. Titles
+    // derived by `name_anonymous_one_of_variants` are unique by construction, but
+    // an explicit `#[schema(title = "...")]` in the Rust source is not checked
+    // anywhere else. Claims accumulate across unions because nothing is inserted
+    // until every union has been examined.
+    let mut claimed = components
+        .schemas
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
 
     for (union_name, union) in &components.schemas {
         if skip.contains(union_name) {
@@ -688,6 +752,29 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
         let (Some(property_name), false) = (property_name, members.is_empty()) else {
             continue;
         };
+
+        // Preflight every title before rewriting anything. Hoisting a member
+        // under a name that is taken would drop the schema holding it while the
+        // union's `$ref` kept resolving — to the wrong schema. Refuse the whole
+        // union instead of renaming, because a title that clashes here was
+        // written by hand and silently publishing it under another name would
+        // contradict the author.
+        if let Some(clash) = members
+            .iter()
+            .map(|(title, _, _)| title)
+            .find(|title| claimed.contains(title.as_str()))
+        {
+            tracing::warn!(
+                union = %union_name,
+                "OpenAPI: no discriminator published for `{union_name}`: its variant title \
+                 `{clash}` is already held by another component, so hoisting the variant would \
+                 overwrite that schema. Rename the variant's `#[schema(title = \"...\")]`."
+            );
+            continue;
+        }
+        for (title, _, _) in &members {
+            claimed.insert(title.clone());
+        }
 
         let mut items = Vec::with_capacity(members.len());
         let mut mapping = std::collections::BTreeMap::new();
@@ -828,11 +915,13 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
         return;
     };
 
-    // Snapshot the component names before any title is assigned: a derived name
-    // that is already taken must be sidestepped here, because
-    // `hoist_and_discriminate_one_of_variants` later inserts the variant under
-    // its title. Taken up front — the loop below borrows `schemas` mutably.
-    let taken = components
+    // Names a derived title must avoid, because
+    // `hoist_and_discriminate_one_of_variants` later inserts each variant as a
+    // component under its title. Seeded from the existing components — the loop
+    // below borrows `schemas` mutably, so it cannot be consulted again — and
+    // extended by [`reserve_name`] as titles are handed out, so two variants
+    // never leave this pass sharing a name.
+    let mut taken = components
         .schemas
         .keys()
         .cloned()
@@ -863,21 +952,30 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
                 );
                 continue;
             };
-            let mut title = format!("{parent_name}{}", to_pascal_case(&value));
-            if taken.contains(&title) {
-                // A component already holds this name, and the variant usually
-                // *composes* that component (`allOf: [{$ref: X}, {tag}]`), so
-                // hoisting under this name would replace `X` with a schema that
+            let preferred = format!("{parent_name}{}", to_pascal_case(&value));
+            let Some(title) = reserve_name(&mut taken, &preferred) else {
+                tracing::warn!(
+                    union = %parent_name,
+                    "OpenAPI: every candidate name derived from `{preferred}` for a variant of \
+                     `{parent_name}` is already taken, so the variant is left unnamed. Code \
+                     generators will invent a name for it. Give it an explicit \
+                     `#[schema(title = \"...\")]`."
+                );
+                continue;
+            };
+            if title != preferred {
+                // A component already holds the derived name, and the variant
+                // usually *composes* that component (`allOf: [{$ref: X}, {tag}]`),
+                // so hoisting under it would replace `X` with a schema that
                 // references itself. `StorageLayout::Full` is exactly this case:
                 // the tag `full-hierarchy` derives the name of the struct the
                 // variant wraps.
-                title.push_str("Variant");
                 tracing::warn!(
                     union = %parent_name,
-                    "OpenAPI: the name derived for a variant of `{parent_name}` is already held by \
-                     another component, so the variant is named `{title}` instead. Give the \
-                     variant an explicit `#[schema(title = \"...\")]`, or rename the composed \
-                     type, to publish a better name."
+                    "OpenAPI: `{preferred}`, the name derived for a variant of `{parent_name}`, \
+                     is already held by another component, so the variant is named `{title}` \
+                     instead. Give the variant an explicit `#[schema(title = \"...\")]`, or \
+                     rename the composed type, to publish a better name."
                 );
             }
             set_schema_title(member, title);
@@ -1322,6 +1420,241 @@ fn add_dependent_schemas(
         return;
     };
     comps.schemas.extend(dependent_schemas);
+}
+
+/// Collision handling in the two hoisting passes.
+///
+/// The shapes here cannot be expressed from the current Rust source — no two
+/// unions derive the same variant name today, and no component is named
+/// `<Something>Variant`. They are built by hand because the failure they guard
+/// against is silent: a hoisted member inserted under a name another schema
+/// already holds displaces that schema, while the union's `$ref` keeps
+/// resolving, now to something unrelated.
+#[cfg(test)]
+mod name_allocation_tests {
+    use utoipa::openapi::{Components, Object, OneOf, RefOr, Schema, schema::Discriminator};
+
+    use super::{
+        hoist_and_discriminate_one_of_variants, name_anonymous_one_of_variants, reserve_name,
+    };
+
+    /// A member shaped like a `#[serde(tag = "...")]` variant: an object whose
+    /// only single-value enum is the tag, which is what `sole_discriminator`
+    /// looks for.
+    fn tagged(tag: &str, value: &str, title: Option<&str>) -> RefOr<Schema> {
+        let mut tag_property = Object::new();
+        tag_property.enum_values = Some(vec![serde_json::json!(value)]);
+        let mut member = Object::new();
+        member
+            .properties
+            .insert(tag.to_owned(), RefOr::T(Schema::Object(tag_property)));
+        member.title = title.map(ToOwned::to_owned);
+        RefOr::T(Schema::Object(member))
+    }
+
+    /// A plain component carrying a marker property, so displacement is visible.
+    fn marker(name: &str) -> RefOr<Schema> {
+        let mut object = Object::new();
+        object.properties.insert(
+            format!("marker_{name}"),
+            RefOr::T(Schema::Object(Object::new())),
+        );
+        RefOr::T(Schema::Object(object))
+    }
+
+    fn union(members: Vec<RefOr<Schema>>) -> RefOr<Schema> {
+        let mut one_of = OneOf::new();
+        one_of.items = members;
+        RefOr::T(Schema::OneOf(one_of))
+    }
+
+    fn doc(schemas: Vec<(&str, RefOr<Schema>)>) -> utoipa::openapi::OpenApi {
+        let mut components = Components::new();
+        for (name, schema) in schemas {
+            components.schemas.insert(name.to_owned(), schema);
+        }
+        utoipa::openapi::OpenApiBuilder::new()
+            .components(Some(components))
+            .build()
+    }
+
+    fn run_passes(doc: &mut utoipa::openapi::OpenApi) {
+        name_anonymous_one_of_variants(doc);
+        hoist_and_discriminate_one_of_variants(doc);
+    }
+
+    fn schema_names(doc: &utoipa::openapi::OpenApi) -> Vec<String> {
+        doc.components
+            .as_ref()
+            .expect("components")
+            .schemas
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// What a union ended up as: the `$ref` targets of its members, plus whether
+    /// a discriminator was published.
+    fn union_refs(
+        doc: &utoipa::openapi::OpenApi,
+        name: &str,
+    ) -> (Vec<String>, Option<Discriminator>) {
+        let Some(RefOr::T(Schema::OneOf(one_of))) = doc
+            .components
+            .as_ref()
+            .expect("components")
+            .schemas
+            .get(name)
+        else {
+            panic!("`{name}` is not a oneOf");
+        };
+        let refs = one_of
+            .items
+            .iter()
+            .map(|item| match item {
+                RefOr::Ref(reference) => reference
+                    .ref_location
+                    .rsplit('/')
+                    .next()
+                    .expect("ref location")
+                    .to_owned(),
+                RefOr::T(_) => "<inline>".to_owned(),
+            })
+            .collect();
+        (refs, one_of.discriminator.clone())
+    }
+
+    #[test]
+    fn reserve_name_walks_a_suffix_ladder_then_gives_up() {
+        let mut taken = std::collections::BTreeSet::new();
+        assert_eq!(reserve_name(&mut taken, "Foo").as_deref(), Some("Foo"));
+        // The same preferred name must not be handed out twice, even though
+        // nothing has been inserted into the document yet.
+        assert_eq!(
+            reserve_name(&mut taken, "Foo").as_deref(),
+            Some("FooVariant")
+        );
+        assert_eq!(
+            reserve_name(&mut taken, "Foo").as_deref(),
+            Some("FooVariant2")
+        );
+
+        let mut exhausted = std::collections::BTreeSet::new();
+        exhausted.insert("Bar".to_owned());
+        exhausted.insert("BarVariant".to_owned());
+        for n in 2..=16 {
+            exhausted.insert(format!("BarVariant{n}"));
+        }
+        assert_eq!(
+            reserve_name(&mut exhausted, "Bar"),
+            None,
+            "an exhausted ladder must refuse rather than return a taken name"
+        );
+    }
+
+    /// Two unions whose derived variant names coincide: `Foo` + tag `bar-baz`
+    /// and `FooBar` + tag `baz` both want `FooBarBaz`. Each must get its own
+    /// component, and neither may reference the other's.
+    #[test]
+    fn colliding_derived_names_across_unions_get_distinct_components() {
+        let mut doc = doc(vec![
+            ("Foo", union(vec![tagged("type", "bar-baz", None)])),
+            ("FooBar", union(vec![tagged("type", "baz", None)])),
+        ]);
+        run_passes(&mut doc);
+
+        // BTreeMap order: `Foo` is visited before `FooBar`, so `Foo` claims the
+        // preferred name and `FooBar` takes the suffixed one.
+        let (foo_refs, foo_discriminator) = union_refs(&doc, "Foo");
+        let (foo_bar_refs, foo_bar_discriminator) = union_refs(&doc, "FooBar");
+        assert_eq!(foo_refs, vec!["FooBarBaz".to_owned()]);
+        assert_eq!(foo_bar_refs, vec!["FooBarBazVariant".to_owned()]);
+        assert_ne!(
+            foo_refs, foo_bar_refs,
+            "the two unions must not share a variant schema"
+        );
+        assert!(foo_discriminator.is_some() && foo_bar_discriminator.is_some());
+
+        let names = schema_names(&doc);
+        assert!(names.contains(&"FooBarBaz".to_owned()));
+        assert!(names.contains(&"FooBarBazVariant".to_owned()));
+    }
+
+    /// The `Variant` fallback can itself be occupied. The ladder must continue
+    /// rather than hand back a name that would displace an existing schema.
+    #[test]
+    fn an_occupied_variant_suffix_continues_the_ladder() {
+        let mut doc = doc(vec![
+            ("FooBar", marker("FooBar")),
+            ("FooBarVariant", marker("FooBarVariant")),
+            ("Foo", union(vec![tagged("type", "bar", None)])),
+        ]);
+        run_passes(&mut doc);
+
+        let (refs, discriminator) = union_refs(&doc, "Foo");
+        assert_eq!(refs, vec!["FooBarVariant2".to_owned()]);
+        assert!(discriminator.is_some());
+
+        // Both occupied names must still hold their original schemas.
+        for occupied in ["FooBar", "FooBarVariant"] {
+            let Some(RefOr::T(Schema::Object(object))) = doc
+                .components
+                .as_ref()
+                .expect("components")
+                .schemas
+                .get(occupied)
+            else {
+                panic!("`{occupied}` was displaced");
+            };
+            assert!(
+                object
+                    .properties
+                    .contains_key(&format!("marker_{occupied}")),
+                "`{occupied}` lost its properties to a hoisted variant"
+            );
+        }
+    }
+
+    /// A hand-written `#[schema(title = "...")]` is never rewritten by the
+    /// naming pass, so the hoisting pass is the only thing standing between it
+    /// and an existing component. It must refuse the union rather than publish
+    /// the variant under a name the author did not choose.
+    #[test]
+    fn an_explicit_title_clashing_with_a_component_refuses_the_union() {
+        let mut doc = doc(vec![
+            ("Taken", marker("Taken")),
+            (
+                "Union",
+                union(vec![tagged("type", "whatever", Some("Taken"))]),
+            ),
+        ]);
+        run_passes(&mut doc);
+
+        let (refs, discriminator) = union_refs(&doc, "Union");
+        assert_eq!(
+            refs,
+            vec!["<inline>".to_owned()],
+            "the union must be left untouched, not rewritten to a $ref"
+        );
+        assert!(
+            discriminator.is_none(),
+            "no discriminator may be published for a refused union"
+        );
+
+        let Some(RefOr::T(Schema::Object(object))) = doc
+            .components
+            .as_ref()
+            .expect("components")
+            .schemas
+            .get("Taken")
+        else {
+            panic!("`Taken` was displaced");
+        };
+        assert!(
+            object.properties.contains_key("marker_Taken"),
+            "`Taken` lost its properties to a hoisted variant"
+        );
+    }
 }
 
 /// Structural checks on the generated `OpenAPI` documents.
