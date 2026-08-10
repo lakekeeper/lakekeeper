@@ -1135,9 +1135,6 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::CreateNamespace { .. } => WarehouseRelation::CanCreateNamespace,
             CatalogWarehouseAction::Delete => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
-            CatalogWarehouseAction::UpdateStorageCredential => {
-                WarehouseRelation::CanUpdateStorageCredential
-            }
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
             CatalogWarehouseAction::GetMetadata => WarehouseRelation::CanGetMetadata,
             CatalogWarehouseAction::GetConfig => WarehouseRelation::CanGetConfig,

@@ -10,7 +10,7 @@ Lakekeeper does not issue API-Keys or Client-Credentials itself. Instead, it rel
 
 Lakekeeper can be configured to integrate with all common identity providers. For best performance, tokens are validated locally against the server keys (`jwks_uri`). This requires all incoming tokens to be JWT tokens. If you require support for opaque tokens, please upvote the corresponding [GitHub Issue](https://github.com/lakekeeper/lakekeeper/issues/620).
 
-If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token to match the specified value. We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
+If `LAKEKEEPER__OPENID_PROVIDER_URI` is specified, Lakekeeper will  verify access tokens against this provider. The provider must provide the `.well-known/openid-configuration` endpoint and the openid-configuration needs to have `jwks_uri` and `issuer` defined. Optionally, if `LAKEKEEPER__OPENID_AUDIENCE` is specified, Lakekeeper validates the `aud` field of the provided token. Multiple audiences can be provided as a comma-separated list, and a token is accepted if its `aud` claim contains any one of them (OR). We recommend to specify the audience in all deployments, so that tokens leaked for other applications in the same IdP cannot be used to access data in Lakekeeper.
 
 Users are automatically added to Lakekeeper after successful Authentication (user provides a valid token with the correct issuer and audience). If a User does not yet exist in Lakekeeper's Database, the provided JWT token is parsed. The following fields are parsed:
 
@@ -19,7 +19,7 @@ Users are automatically added to Lakekeeper after successful Authentication (use
 - `claims`: all claims
 - `email`: `email` or `upn` if it contains an `@` or `preferred_username` if it contains an `@`
 
-If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`.
+If the `name` cannot be determined because none of the claims are available, the principal is registered under the name `Nameless App with ID <user-id>`. To give such tokens a friendlier name — for example machine or service-account tokens that only carry an `email` — set `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` (or the per-provider `..._DISPLAY_NAME_TEMPLATE`) to a template such as `Service Account {email}`; `{claim.path}` placeholders are filled from the token's claims (double a brace as `{{`/`}}` for a literal), and a real `name` claim always takes precedence. If a referenced claim is missing or not a string, the template is skipped and the principal keeps the default `Nameless App with ID <user-id>` name; a template with unbalanced or empty braces fails validation and aborts startup.
 Lakekeeper determines the ID of users in the following order:
 
 1. If `LAKEKEEPER__OPENID_SUBJECT_CLAIM` is set, this value (or comma-separated list of values) is tried in order and the first claim present in the token is used. Setting only one claim, that claim must be present.

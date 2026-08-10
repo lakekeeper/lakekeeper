@@ -440,6 +440,13 @@ pub struct DynAppConfig {
     /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     pub openid_roles_claim: Option<String>,
+    /// Template for a user's display name when the token carries no name claim
+    /// (e.g. a machine / service-account token). Placeholders `{claim.path}` are
+    /// substituted from the token's claims (dot notation); `{email}` and `{sub}`
+    /// are the common cases. Example: `Service Account {email}`. Applies to the
+    /// single-provider `openid_provider_uri` setup; the per-provider equivalent is
+    /// `openid_providers.<id>.display_name_template`.
+    pub openid_display_name_template: Option<String>,
     /// Multiple OIDC providers keyed by identity provider ID.
     /// When set, each provider gets its own JWKS authenticator and is added
     /// in addition to the single-provider configuration (`openid_provider_uri`).
@@ -1089,6 +1096,7 @@ impl Default for DynAppConfig {
             kubernetes_authentication_subject_source: KubernetesSubjectSource::default(),
             openid_subject_claim: None,
             openid_roles_claim: None,
+            openid_display_name_template: None,
             openid_providers: HashMap::new(),
             listen_port: 8181,
             bind_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -2528,6 +2536,10 @@ mod test {
                 "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__ROLES_CLAIM",
                 "groups",
             );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__DISPLAY_NAME_TEMPLATE",
+                "Service Account {email}",
+            );
 
             let config = get_config();
             assert_eq!(config.openid_providers.len(), 1);
@@ -2550,6 +2562,10 @@ mod test {
                 Some(vec!["oid".to_string(), "sub".to_string()])
             );
             assert_eq!(provider.roles_claim, Some("groups".to_string()));
+            assert_eq!(
+                provider.display_name_template,
+                Some("Service Account {email}".to_string())
+            );
 
             Ok(())
         });
