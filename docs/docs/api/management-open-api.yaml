@@ -11738,7 +11738,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/StorageLayoutDefault'
         - $ref: '#/components/schemas/StorageLayoutTabularOnly'
-        - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
+        - $ref: '#/components/schemas/StorageLayoutFullHierarchyVariant'
       description: |-
         Controls how namespace and tabular paths are constructed under the warehouse base location.
 
@@ -11760,7 +11760,7 @@ components:
         propertyName: type
         mapping:
           default: '#/components/schemas/StorageLayoutDefault'
-          full-hierarchy: '#/components/schemas/StorageLayoutFullHierarchy'
+          full-hierarchy: '#/components/schemas/StorageLayoutFullHierarchyVariant'
           tabular-only: '#/components/schemas/StorageLayoutTabularOnly'
     StorageLayoutDefault:
       type: object
@@ -11786,6 +11786,24 @@ components:
       example:
         tabular: '{name}-{uuid}'
     StorageLayoutFullHierarchy:
+      type: object
+      description: |-
+        One directory per namespace level, one per tabular.
+
+        For a tabular `my_tabular` (uuid `…003`) in `grandparent_ns` / `parent_ns` the path is:
+        `<base>/<grandparent-segment>/<parent-segment>/<tabular-segment>`.
+      required:
+        - namespace
+        - tabular
+      properties:
+        namespace:
+          $ref: '#/components/schemas/StorageLayoutNamespaceTemplate'
+        tabular:
+          $ref: '#/components/schemas/StorageLayoutTabularTemplate'
+      example:
+        namespace: '{name}-{uuid}'
+        tabular: '{name}-{uuid}'
+    StorageLayoutFullHierarchyVariant:
       allOf:
         - $ref: '#/components/schemas/StorageLayoutFullHierarchy'
         - type: object

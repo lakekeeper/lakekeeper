@@ -270,6 +270,13 @@ fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
             _ => None,
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    // See the same guard in `name_anonymous_one_of_variants`: a leaf name that
+    // is already a component would overwrite it when the leaves are inserted.
+    let taken = components
+        .schemas
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
 
     let mut expansions = Vec::new();
     for (union_name, union) in &components.schemas {
@@ -324,7 +331,15 @@ fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
         let mut hoisted = Vec::with_capacity(leaves.len());
         for (leaf, enums) in leaves.into_iter().zip(per_leaf) {
             let value = enums[&property_name].clone();
-            let title = format!("{union_name}{}", to_pascal_case(&value));
+            let mut title = format!("{union_name}{}", to_pascal_case(&value));
+            if taken.contains(&title) {
+                title.push_str("Variant");
+                tracing::warn!(
+                    union = %union_name,
+                    "OpenAPI: the name derived for a leaf of `{union_name}` is already held by \
+                     another component, so the leaf is named `{title}` instead."
+                );
+            }
             let reference = format!("#/components/schemas/{title}");
             items.push(RefOr::Ref(Ref::new(reference.clone())));
             mapping.insert(value, reference);
@@ -344,13 +359,45 @@ fn expand_unions_composing_unions(doc: &mut utoipa::openapi::OpenApi) {
 
     for (union_name, items, discriminator, hoisted) in expansions {
         for (title, leaf) in hoisted {
-            components.schemas.insert(title, RefOr::T(leaf));
+            insert_hoisted(&mut components.schemas, title, leaf);
         }
         if let Some(RefOr::T(Schema::OneOf(one_of))) = components.schemas.get_mut(&union_name) {
             one_of.items = items;
             one_of.discriminator = Some(discriminator);
         }
     }
+}
+
+/// Insert a hoisted union member under its generated name, refusing to
+/// overwrite an existing component.
+///
+/// The name derivation in [`name_anonymous_one_of_variants`] and
+/// [`expand_unions_composing_unions`] already sidesteps names it can see are
+/// taken, so reaching this is a bug in a pass rather than a shape in the source.
+/// It is guarded anyway because the failure is silent and expensive:
+/// `BTreeMap::insert` replaces, the replaced schema's properties vanish from the
+/// document, and any `$ref` the new schema makes to the old one becomes a
+/// self-reference that resolves fine and then makes generators emit an
+/// infinitely recursive type. Refusing leaves a dangling `$ref` instead, which
+/// `spec_integrity_tests::assert_refs_resolve` fails on loudly.
+fn insert_hoisted(
+    schemas: &mut std::collections::BTreeMap<
+        String,
+        utoipa::openapi::RefOr<utoipa::openapi::Schema>,
+    >,
+    name: String,
+    schema: utoipa::openapi::Schema,
+) {
+    if schemas.contains_key(&name) {
+        tracing::error!(
+            schema = %name,
+            "OpenAPI: refusing to hoist a union variant as `{name}`: a component of that name \
+             already exists and overwriting it would drop it from the document. The union keeps a \
+             `$ref` to `{name}` that now points at the wrong schema."
+        );
+        return;
+    }
+    schemas.insert(name, utoipa::openapi::RefOr::T(schema));
 }
 
 /// Outcome of multiplying a union's members out — see [`multiply_out`].
@@ -406,6 +453,12 @@ fn multiply_out(
             };
             match composed {
                 Some(one_of) if inner.is_none() => inner = Some(one_of),
+                // A member composing two unions would have to be multiplied out
+                // in both directions. Pushing the second into `extras` instead
+                // would leave a `$ref` to a `oneOf` in every leaf and publish a
+                // union that is still nested — the shape this pass exists to
+                // remove. Refuse, so the caller warns and leaves it untouched.
+                Some(_) => return Expansion::Unsupported,
                 _ => extras.push(branch.clone()),
             }
         }
@@ -654,7 +707,7 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
     }
 
     for (name, schema) in hoisted {
-        components.schemas.insert(name, RefOr::T(schema));
+        insert_hoisted(&mut components.schemas, name, schema);
     }
     for (name, items, discriminator) in rewrites {
         if let Some(RefOr::T(Schema::OneOf(one_of))) = components.schemas.get_mut(&name) {
@@ -666,8 +719,9 @@ fn hoist_and_discriminate_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
 
 /// Unions that [`hoist_and_discriminate_one_of_variants`] must not touch.
 ///
-/// Two related shapes, both rooted in `StorageCredential` — see the `TBD` note
-/// on `StorageCredential` in `service::storage`:
+/// Two related shapes, both rooted in `StorageCredential` — see the
+/// two-level-union note on `StorageCredential` in `service::storage`, and
+/// [`expand_unions_composing_unions`] for how that shape is flattened:
 ///
 /// - a union whose members compose *another* union (`StorageCredential`'s
 ///   members are `allOf: [{$ref: S3Credential}, {type: <const>}]`, and
@@ -770,6 +824,16 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
         return;
     };
 
+    // Snapshot the component names before any title is assigned: a derived name
+    // that is already taken must be sidestepped here, because
+    // `hoist_and_discriminate_one_of_variants` later inserts the variant under
+    // its title. Taken up front — the loop below borrows `schemas` mutably.
+    let taken = components
+        .schemas
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
     for (parent_name, parent) in &mut components.schemas {
         let RefOr::T(Schema::OneOf(one_of)) = parent else {
             continue;
@@ -795,7 +859,23 @@ fn name_anonymous_one_of_variants(doc: &mut utoipa::openapi::OpenApi) {
                 );
                 continue;
             };
-            let title = format!("{parent_name}{}", to_pascal_case(&value));
+            let mut title = format!("{parent_name}{}", to_pascal_case(&value));
+            if taken.contains(&title) {
+                // A component already holds this name, and the variant usually
+                // *composes* that component (`allOf: [{$ref: X}, {tag}]`), so
+                // hoisting under this name would replace `X` with a schema that
+                // references itself. `StorageLayout::Full` is exactly this case:
+                // the tag `full-hierarchy` derives the name of the struct the
+                // variant wraps.
+                title.push_str("Variant");
+                tracing::warn!(
+                    union = %parent_name,
+                    "OpenAPI: the name derived for a variant of `{parent_name}` is already held by \
+                     another component, so the variant is named `{title}` instead. Give the \
+                     variant an explicit `#[schema(title = \"...\")]`, or rename the composed \
+                     type, to publish a better name."
+                );
+            }
             set_schema_title(member, title);
         }
     }
@@ -1412,6 +1492,35 @@ mod spec_integrity_tests {
             .find_map(|branch| pinned_value(branch, property))
     }
 
+    /// No schema may reference itself.
+    ///
+    /// The hoisting passes name a variant after its parent union plus its tag
+    /// value. When that derived name is one an existing component already holds,
+    /// inserting the variant replaces that component — and because a variant
+    /// usually *composes* the schema it is named after
+    /// (`allOf: [{$ref: X}, {tag}]`), the replacement `$ref`s itself. That
+    /// resolves, so [`assert_refs_resolve`] passes; the original schema's
+    /// properties are simply gone from the document, and generators emit an
+    /// infinitely recursive type.
+    fn assert_no_self_references(spec: &Value, label: &str) {
+        let schemas = schemas(spec);
+        for (name, schema) in schemas {
+            let mut refs = Vec::new();
+            walk(schema, "", &mut refs);
+            let target = format!("#/components/schemas/{name}");
+            let self_refs = refs
+                .iter()
+                .filter(|(_, value)| value.as_str() == Some(target.as_str()))
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                self_refs.is_empty(),
+                "{label}: `{name}` references itself at {self_refs:?} — a name derived for a \
+                 hoisted union variant collided with it and overwrote it"
+            );
+        }
+    }
+
     /// Inline union members must carry a `title`. Without one a generator
     /// invents a name, and because identical inline schemas are deduplicated the
     /// invented name is frequently taken from an unrelated union.
@@ -1436,6 +1545,7 @@ mod spec_integrity_tests {
     fn management_spec_is_internally_consistent() {
         let spec = management_spec();
         assert_refs_resolve(&spec, "management");
+        assert_no_self_references(&spec, "management");
         assert_discriminators_are_consistent(&spec, "management");
         assert_union_members_are_named(&spec, "management");
     }
@@ -1444,6 +1554,7 @@ mod spec_integrity_tests {
     fn generic_table_spec_is_internally_consistent() {
         let spec = generic_table_spec();
         assert_refs_resolve(&spec, "generic-table");
+        assert_no_self_references(&spec, "generic-table");
         assert_discriminators_are_consistent(&spec, "generic-table");
         assert_union_members_are_named(&spec, "generic-table");
     }
