@@ -659,7 +659,6 @@ pub enum CatalogWarehouseAction {
     },
     Delete,
     UpdateStorage,
-    UpdateStorageCredential,
     GetMetadata,
     GetConfig,
     ListNamespaces,
@@ -681,7 +680,7 @@ pub enum CatalogWarehouseAction {
     /// Attach/detach governance tags on this warehouse.
     ManageTags,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 22]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -689,7 +688,6 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyL
         },
         CatalogWarehouseAction::Delete,
         CatalogWarehouseAction::UpdateStorage,
-        CatalogWarehouseAction::UpdateStorageCredential,
         CatalogWarehouseAction::GetMetadata,
         CatalogWarehouseAction::GetConfig,
         CatalogWarehouseAction::ListNamespaces,
@@ -713,7 +711,7 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyL
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 23] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 22] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -730,7 +728,6 @@ impl CatalogWarehouseAction {
         match self {
             CatalogWarehouseAction::Delete
             | CatalogWarehouseAction::UpdateStorage
-            | CatalogWarehouseAction::UpdateStorageCredential
             | CatalogWarehouseAction::Deactivate
             | CatalogWarehouseAction::Activate
             | CatalogWarehouseAction::Rename
@@ -1452,7 +1449,6 @@ pub enum CatalogWarehouseActionKind {
     CreateNamespace,
     Delete,
     UpdateStorage,
-    UpdateStorageCredential,
     GetMetadata,
     GetConfig,
     ListNamespaces,
@@ -1479,7 +1475,6 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::CreateNamespace { .. } => Self::CreateNamespace,
             CatalogWarehouseAction::Delete => Self::Delete,
             CatalogWarehouseAction::UpdateStorage => Self::UpdateStorage,
-            CatalogWarehouseAction::UpdateStorageCredential => Self::UpdateStorageCredential,
             CatalogWarehouseAction::GetMetadata => Self::GetMetadata,
             CatalogWarehouseAction::GetConfig => Self::GetConfig,
             CatalogWarehouseAction::ListNamespaces => Self::ListNamespaces,
@@ -2046,7 +2041,6 @@ pub mod tests {
         for a in [
             A::Delete,
             A::UpdateStorage,
-            A::UpdateStorageCredential,
             A::Deactivate,
             A::Activate,
             A::Rename,

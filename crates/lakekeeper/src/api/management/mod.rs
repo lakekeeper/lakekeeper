@@ -81,7 +81,7 @@ pub mod v1 {
         RenameWarehouseRequest, Service as _, SetWarehouseManagedByRequest,
         UpdateWarehouseCredentialRequest, UpdateWarehouseDeleteProfileRequest,
         UpdateWarehouseFormatVersionPolicyRequest, UpdateWarehouseStorageRequest,
-        WarehouseStatisticsResponse,
+        ValidateWarehouseResponse, WarehouseStatisticsResponse,
     };
 
     /// Macro to create an Arc wrapper for a response type that implements `IntoResponse`.
@@ -2128,6 +2128,124 @@ pub mod v1 {
         .await
     }
 
+    /// Validate Warehouse Configuration
+    ///
+    /// Runs the checks `Create Warehouse` runs — profile syntax, name
+    /// availability, location overlap, format-version policy, `managed-by`, and
+    /// physical storage access including credential vending — without creating
+    /// anything. No warehouse is persisted and no credential is stored.
+    ///
+    /// Returns 200 whether or not the configuration is usable; inspect `valid` and
+    /// the per-check results. Requires the same permission as creating a warehouse.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::ValidateWarehouse.path(),
+        request_body = CreateWarehouseRequest,
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Validation ran; see `valid` and `checks` for the outcome", body = ValidateWarehouseResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn validate_warehouse<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<CreateWarehouseRequest>,
+    ) -> Result<ValidateWarehouseResponse> {
+        ApiServer::<C, A, S>::validate_warehouse(request, api_context, metadata).await
+    }
+
+    /// Validate Storage Profile Update
+    ///
+    /// Dry-run of `Update Storage Profile`: checks that the warehouse's spec may
+    /// be changed, that the new profile is a permitted evolution of the current
+    /// one, and that the storage is reachable — without changing the warehouse.
+    ///
+    /// Probes the incoming profile as supplied, before it would be merged into
+    /// the stored one, matching what the real update validates.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::ValidateStorageProfile.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = UpdateWarehouseStorageRequest,
+        responses(
+            (status = 200, description = "Validation ran; see `valid` and `checks` for the outcome", body = ValidateWarehouseResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn validate_storage_profile<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateWarehouseStorageRequest>,
+    ) -> Result<ValidateWarehouseResponse> {
+        ApiServer::<C, A, S>::validate_storage_profile(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Validate Storage Credential
+    ///
+    /// Dry-run of `Update Storage Credential`: probes the warehouse's stored
+    /// storage profile with the supplied replacement credential. The stored
+    /// credential is left untouched.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::ValidateStorageCredential.path(),
+        params(("warehouse_id" = Uuid,)),
+        request_body = UpdateWarehouseCredentialRequest,
+        responses(
+            (status = 200, description = "Validation ran; see `valid` and `checks` for the outcome", body = ValidateWarehouseResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn validate_storage_credential<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<UpdateWarehouseCredentialRequest>,
+    ) -> Result<ValidateWarehouseResponse> {
+        ApiServer::<C, A, S>::validate_storage_credential(
+            warehouse_id.into(),
+            request,
+            api_context,
+            metadata,
+        )
+        .await
+    }
+
+    /// Validate Stored Warehouse Configuration
+    ///
+    /// Re-runs the storage checks against the configuration the warehouse is
+    /// currently running with, using its stored profile and stored credential.
+    /// Use this to find out whether a warehouse's storage access still works —
+    /// for example after a credential has expired or a bucket policy changed.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "warehouse",
+        path = ManagementV1Endpoint::ValidateStorageAccess.path(),
+        params(("warehouse_id" = Uuid,)),
+        responses(
+            (status = 200, description = "Validation ran; see `valid` and `checks` for the outcome", body = ValidateWarehouseResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn validate_storage_access<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+        Path(warehouse_id): Path<uuid::Uuid>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ValidateWarehouseResponse> {
+        ApiServer::<C, A, S>::validate_storage_access(warehouse_id.into(), api_context, metadata)
+            .await
+    }
+
     #[derive(Deserialize, Debug)]
     #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
     pub struct SetProtectionRequest {
@@ -3342,6 +3460,11 @@ pub mod v1 {
                 )
                 // Create a new warehouse
                 .route("/warehouse", post(create_warehouse).get(list_warehouses))
+                // Dry-run of warehouse creation
+                .route(
+                    ManagementV1Endpoint::ValidateWarehouse.path_in_management_v1(),
+                    post(validate_warehouse),
+                )
                 // List all projects
                 .route("/project-list", get(list_projects))
                 .route(
@@ -3370,6 +3493,20 @@ pub mod v1 {
                 .route(
                     "/warehouse/{warehouse_id}/storage-credential",
                     post(update_storage_credential),
+                )
+                // Dry-runs of the two storage updates above
+                .route(
+                    ManagementV1Endpoint::ValidateStorageProfile.path_in_management_v1(),
+                    post(validate_storage_profile),
+                )
+                .route(
+                    ManagementV1Endpoint::ValidateStorageCredential.path_in_management_v1(),
+                    post(validate_storage_credential),
+                )
+                // Validate the configuration the warehouse currently runs with
+                .route(
+                    ManagementV1Endpoint::ValidateStorageAccess.path_in_management_v1(),
+                    post(validate_storage_access),
                 )
                 // Get warehouse statistics
                 .route(

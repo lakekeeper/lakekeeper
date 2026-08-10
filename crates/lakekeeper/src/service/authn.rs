@@ -141,6 +141,17 @@ pub struct OidcProviderConfig {
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
     #[serde(default)]
     pub roles_claim: Option<String>,
+    /// Template for a user's display name when the token carries no name claim
+    /// (e.g. a machine / service-account token). Placeholders of the form
+    /// `{claim.path}` are substituted from the token's claims using dot notation;
+    /// `{email}` and `{sub}` are the common cases. Example: `Service Account {email}`.
+    /// Write a literal brace by doubling it (`{{`/`}}`). If any referenced claim is
+    /// absent or not a string, the template is skipped and the user keeps the
+    /// default placeholder name. A real name claim always takes precedence.
+    /// Validated at startup: a structurally malformed template (unbalanced braces
+    /// or an empty `{}`) aborts boot. Unset by default.
+    #[serde(default)]
+    pub display_name_template: Option<String>,
     /// If true, fail startup when this provider's OIDC/JWKS configuration cannot be loaded.
     #[serde(default = "default_true")]
     pub require_connected_on_startup: bool,
@@ -298,6 +309,7 @@ fn oidc_provider_configs_from_config(
                 scope: config.openid_scope.clone(),
                 subject_claims: config.openid_subject_claim.clone(),
                 roles_claim: config.openid_roles_claim.clone(),
+                display_name_template: config.openid_display_name_template.clone(),
                 require_connected_on_startup: true,
             },
         ));
@@ -324,16 +336,35 @@ fn oidc_provider_configs_from_config(
 async fn build_oidc_authenticators(
     providers: Vec<(String, OidcProviderConfig)>,
 ) -> anyhow::Result<Vec<AuthenticatorEnum>> {
-    let mut authenticators = Vec::new();
-
+    // Validate every provider's display-name template up front, before any network
+    // work. A malformed template is a static config bug, so a typo in any provider's
+    // template aborts startup cleanly rather than after earlier providers' JWKS have
+    // already been fetched. Malformed templates never take the "skip this provider"
+    // path below (which is only for connectivity failures) — that would silently
+    // disable an IdP over a typo.
+    let mut validated = Vec::with_capacity(providers.len());
     for (idp_id, provider) in providers {
+        let display_name_template = provider
+            .display_name_template
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .map(limes::jwks::DisplayNameTemplate::parse)
+            .transpose()
+            .map_err(|e| {
+                anyhow::anyhow!("invalid `display_name_template` for OIDC provider `{idp_id}`: {e}")
+            })?;
+        validated.push((idp_id, provider, display_name_template));
+    }
+
+    let mut authenticators = Vec::new();
+    for (idp_id, provider, display_name_template) in validated {
         tracing::info!(
             "Creating OIDC authenticator for {} ({})",
             idp_id,
             provider.uri
         );
 
-        match build_oidc_authenticator(&idp_id, &provider).await {
+        match build_oidc_authenticator(&idp_id, &provider, display_name_template).await {
             Ok(authenticator) => {
                 authenticators.push(AuthenticatorEnum::from(authenticator));
                 tracing::info!("Successfully added OIDC authenticator: {}", idp_id);
@@ -361,6 +392,7 @@ async fn build_oidc_authenticators(
 async fn build_oidc_authenticator(
     idp_id: &str,
     provider: &OidcProviderConfig,
+    display_name_template: Option<limes::jwks::DisplayNameTemplate>,
 ) -> anyhow::Result<limes::jwks::JWKSWebAuthenticator> {
     let mut authenticator = limes::jwks::JWKSWebAuthenticator::new(
         provider.uri.as_ref(),
@@ -404,6 +436,11 @@ async fn build_oidc_authenticator(
     if let Some(roles_claim) = &provider.roles_claim {
         tracing::debug!("Setting roles claim for {idp_id}: {roles_claim}");
         authenticator = authenticator.with_role_claim(roles_claim.clone());
+    }
+
+    if let Some(template) = display_name_template {
+        tracing::debug!("Setting display name template for {idp_id}");
+        authenticator = authenticator.with_display_name_template(template);
     }
 
     Ok(authenticator)
@@ -952,6 +989,7 @@ mod tests {
         config.openid_scope = Some("openid".to_string());
         config.openid_subject_claim = Some(vec!["sub".to_string()]);
         config.openid_roles_claim = Some("roles".to_string());
+        config.openid_display_name_template = Some("Service Account {email}".to_string());
 
         let providers = oidc_provider_configs_from_config(&config);
 
@@ -968,6 +1006,10 @@ mod tests {
         assert_eq!(providers[0].1.scope, Some("openid".to_string()));
         assert_eq!(providers[0].1.subject_claims, Some(vec!["sub".to_string()]));
         assert_eq!(providers[0].1.roles_claim, Some("roles".to_string()));
+        assert_eq!(
+            providers[0].1.display_name_template,
+            Some("Service Account {email}".to_string())
+        );
         assert!(providers[0].1.require_connected_on_startup);
     }
 
@@ -984,6 +1026,7 @@ mod tests {
                 scope: None,
                 subject_claims: None,
                 roles_claim: Some("groups".to_string()),
+                display_name_template: None,
                 require_connected_on_startup: false,
             },
         );
@@ -1020,6 +1063,7 @@ mod tests {
                     scope: None,
                     subject_claims: None,
                     roles_claim: None,
+                    display_name_template: None,
                     require_connected_on_startup: true,
                 },
             );
@@ -1030,6 +1074,35 @@ mod tests {
 
         // No primary URI → just the extras, alphabetically.
         assert_eq!(ids, vec!["entra", "okta", "zapier"]);
+    }
+
+    fn provider_with_template(template: Option<&str>) -> (String, OidcProviderConfig) {
+        (
+            "acme".to_string(),
+            OidcProviderConfig {
+                uri: url::Url::parse("https://issuer.example.com").unwrap(),
+                audience: None,
+                additional_issuers: None,
+                scope: None,
+                subject_claims: None,
+                roles_claim: None,
+                display_name_template: template.map(str::to_string),
+                require_connected_on_startup: true,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn build_oidc_authenticators_rejects_malformed_display_name_template() {
+        // A malformed template is a static config error: it must fail before any
+        // network work and regardless of `require_connected_on_startup`. Parsing
+        // happens in a pre-pass before the build loop, so this errors without touching the
+        // network — keeping the test hermetic.
+        let providers = vec![provider_with_template(Some("Service Account {email"))];
+        let err = build_oidc_authenticators(providers).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("display_name_template"), "message: {msg}");
+        assert!(msg.contains("acme"), "message names the provider: {msg}");
     }
 
     #[tokio::test]
@@ -1046,6 +1119,7 @@ mod tests {
                 scope: None,
                 subject_claims: None,
                 roles_claim: None,
+                display_name_template: None,
                 require_connected_on_startup: true,
             },
         );
@@ -1102,6 +1176,7 @@ mod tests {
                 scope: None,
                 subject_claims: None,
                 roles_claim: None,
+                display_name_template: None,
                 require_connected_on_startup: false,
             },
         );
@@ -1142,6 +1217,7 @@ mod tests {
                 scope: None,
                 subject_claims: None,
                 roles_claim: None,
+                display_name_template: None,
                 require_connected_on_startup: true,
             },
         );
@@ -1169,6 +1245,7 @@ mod tests {
                 scope: None,
                 subject_claims: None,
                 roles_claim: None,
+                display_name_template: None,
                 require_connected_on_startup: false,
             },
         );
@@ -1204,6 +1281,7 @@ mod tests {
                 scope: None,
                 subject_claims: None,
                 roles_claim: None,
+                display_name_template: None,
                 require_connected_on_startup: true,
             },
         );

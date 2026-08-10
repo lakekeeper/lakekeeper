@@ -1973,15 +1973,19 @@ async fn update_server_assignments<C: CatalogStore, S: SecretStore>(
         request.clone(),
         lakekeeper::service::authz::Authorizer::server_id(&authorizer),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
+        &request.writes,
+        &request.deletes,
         &server_id,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &server_id)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2013,15 +2017,20 @@ async fn update_project_assignments<C: CatalogStore, S: SecretStore>(
         project_id,
         Arc::new(request.clone()),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = event_ctx.user_provided_entity().to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &event_ctx.user_provided_entity().to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2053,15 +2062,20 @@ async fn update_project_assignments_by_id<C: CatalogStore, S: SecretStore>(
         project_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = event_ctx.user_provided_entity().to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &event_ctx.user_provided_entity().to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2093,15 +2107,20 @@ async fn update_warehouse_assignments_by_id<C: CatalogStore, S: SecretStore>(
         warehouse_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = event_ctx.user_provided_entity().to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &event_ctx.user_provided_entity().to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2133,15 +2152,20 @@ async fn update_namespace_assignments_by_id<C: CatalogStore, S: SecretStore>(
         namespace_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = namespace_id.to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &namespace_id.to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2175,15 +2199,20 @@ async fn update_table_assignments_by_id<C: CatalogStore, S: SecretStore>(
         table_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = (warehouse_id, table_id).to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &(warehouse_id, table_id).to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2217,15 +2246,20 @@ async fn update_view_assignments_by_id<C: CatalogStore, S: SecretStore>(
         view_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = (warehouse_id, view_id).to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &(warehouse_id, view_id).to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2306,15 +2340,20 @@ async fn update_generic_table_assignments_by_id<C: CatalogStore, S: SecretStore>
         generic_table_id,
         request.clone(),
     );
-    let authz_result = checked_write(
-        authorizer,
+    let object = (warehouse_id, generic_table_id).to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &(warehouse_id, generic_table_id).to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2347,6 +2386,8 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
         request.clone(),
     );
 
+    let object = role_id.to_openfga();
+
     // Improve error message of role being assigned to itself
     let authz_result = 'authz: {
         for assignment in &request.writes {
@@ -2357,16 +2398,20 @@ async fn update_role_assignments_by_id<C: CatalogStore, S: SecretStore>(
                 break 'authz Err(OpenFGAError::SelfAssignment(role_id.to_string()));
             }
         }
-        checked_write(
-            authorizer,
+        check_assignment_writes(
+            &authorizer,
             event_ctx.request_metadata().actor(),
-            request.writes,
-            request.deletes,
-            &role_id.to_openfga(),
+            &request.writes,
+            &request.deletes,
+            &object,
         )
         .await
     };
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2401,15 +2446,20 @@ async fn update_tag_assignments_by_id<C: CatalogStore, S: SecretStore>(
 
     // A tag definition is never a valid assignment subject, so there is no
     // self-assignment case to guard (unlike roles).
-    let authz_result = checked_write(
-        authorizer,
+    let object = tag_definition_id.to_openfga();
+    let authz_result = check_assignment_writes(
+        &authorizer,
         event_ctx.request_metadata().actor(),
-        request.writes,
-        request.deletes,
-        &tag_definition_id.to_openfga(),
+        &request.writes,
+        &request.deletes,
+        &object,
     )
     .await;
     let _ = event_ctx.emit_authz(authz_result)?;
+
+    apply_assignment_writes(authorizer, request.writes, request.deletes, &object)
+        .await
+        .map_err(authz_to_error_no_audit)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2681,11 +2731,16 @@ async fn get_allowed_actions<A: ReducedRelation + IntoEnumIterator>(
     Ok(actions)
 }
 
-async fn checked_write<RA: Assignment>(
-    authorizer: OpenFGAAuthorizer,
+/// Authorize an assignment update without applying it.
+///
+/// Split out from the write so that callers can emit the authorization audit
+/// event *before* the OpenFGA write is issued. Apply the writes with
+/// [`apply_assignment_writes`] once the event has been emitted.
+async fn check_assignment_writes<RA: Assignment>(
+    authorizer: &OpenFGAAuthorizer,
     actor: &Actor,
-    writes: Vec<RA>,
-    deletes: Vec<RA>,
+    writes: &[RA],
+    deletes: &[RA],
     object: &str,
 ) -> OpenFGAResult<()> {
     // Fail fast
@@ -2723,7 +2778,7 @@ async fn checked_write<RA: Assignment>(
             object: object.to_string(),
         };
 
-        let allowed = authorizer.clone().check(key).await?;
+        let allowed = authorizer.check(key).await?;
         if allowed {
             Ok(())
         } else {
@@ -2735,7 +2790,21 @@ async fn checked_write<RA: Assignment>(
     }))
     .await?;
 
-    // ---------------------- APPLY WRITE OPERATIONS -----------------------
+    Ok(())
+}
+
+/// Apply an assignment update that [`check_assignment_writes`] has authorized.
+///
+/// Callers must have emitted the authorization event before calling this.
+/// Endpoint callers must additionally map failures with `authz_to_error_no_audit`
+/// — the authorization outcome has already been logged, so a failing write must
+/// not emit a second event.
+async fn apply_assignment_writes<RA: Assignment>(
+    authorizer: OpenFGAAuthorizer,
+    writes: Vec<RA>,
+    deletes: Vec<RA>,
+    object: &str,
+) -> OpenFGAResult<()> {
     let writes = writes
         .into_iter()
         .map(|ra| TupleKey {
@@ -2907,14 +2976,32 @@ mod tests {
                 ArcProjectId, ResolvedWarehouse, Role,
                 authn::UserId,
                 authz::{Authorizer, NamespaceParent},
+                events::{AuthorizationSucceededEvent, EventListener},
             },
             tokio,
         };
+        use lakekeeper_integration_tests::SetupTestCatalog;
         use openfga_client::client::TupleKey;
         use uuid::Uuid;
 
         use super::{super::*, *};
         use crate::migration::tests::authorizer_for_empty_store;
+
+        /// Run both halves of an assignment update back to back.
+        ///
+        /// Production endpoints keep them apart so the authorization event is
+        /// emitted in between (see [`check_assignment_writes`]); tests that only
+        /// assert on the resulting tuples don't care about that seam.
+        async fn checked_write<RA: Assignment>(
+            authorizer: OpenFGAAuthorizer,
+            actor: &Actor,
+            writes: Vec<RA>,
+            deletes: Vec<RA>,
+            object: &str,
+        ) -> OpenFGAResult<()> {
+            check_assignment_writes(&authorizer, actor, &writes, &deletes, object).await?;
+            apply_assignment_writes(authorizer, writes, deletes, object).await
+        }
 
         #[tokio::test]
         async fn test_cannot_assign_role_to_itself() {
@@ -3867,6 +3954,171 @@ mod tests {
             assert!(
                 result.is_err(),
                 "User A with assumed role should NOT be able to grant select when warehouse has managed access enabled"
+            );
+        }
+
+        /// Records every `authorization_succeeded` event it receives.
+        #[derive(Debug, Default)]
+        struct CapturingListener {
+            succeeded: std::sync::Mutex<Vec<AuthorizationSucceededEvent>>,
+        }
+
+        impl std::fmt::Display for CapturingListener {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "CapturingListener")
+            }
+        }
+
+        #[lakekeeper::async_trait::async_trait]
+        impl EventListener for CapturingListener {
+            async fn authorization_succeeded(
+                &self,
+                event: AuthorizationSucceededEvent,
+            ) -> anyhow::Result<()> {
+                self.succeeded.lock().unwrap().push(event);
+                Ok(())
+            }
+        }
+
+        impl CapturingListener {
+            fn count(&self) -> usize {
+                self.succeeded.lock().unwrap().len()
+            }
+
+            /// Events are dispatched from a spawned task, so give it a moment to
+            /// land before asserting. Waits for `expected` events, then waits a
+            /// little longer so surplus emits are caught rather than raced past.
+            async fn settled_count(&self, expected: usize) -> usize {
+                for _ in 0..100 {
+                    if self.count() >= expected {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                self.count()
+            }
+        }
+
+        /// The authorization check must not touch OpenFGA state.
+        ///
+        /// Endpoints emit the audit event between the check and the write, so a
+        /// check that also wrote would commit the side-effect before the attempt
+        /// was ever logged — the ordering bug this split exists to prevent.
+        #[tokio::test]
+        async fn test_check_assignment_writes_has_no_side_effects() {
+            let (_, authorizer) = authorizer_for_empty_store().await;
+
+            let admin_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let grantee_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let openfga_server = authorizer.openfga_server();
+
+            authorizer
+                .write(
+                    Some(vec![TupleKey {
+                        user: admin_id.to_openfga(),
+                        relation: ServerRelation::Admin.to_openfga().to_string(),
+                        object: openfga_server.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let writes = vec![ServerAssignment::Admin(grantee_id.clone().into())];
+            check_assignment_writes(
+                &authorizer,
+                &Actor::Principal(admin_id.clone()),
+                &writes,
+                &[],
+                &openfga_server,
+            )
+            .await
+            .unwrap();
+
+            let relations: Vec<ServerAssignment> =
+                get_relations(authorizer.clone(), None, &openfga_server)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                relations,
+                vec![ServerAssignment::Admin(admin_id.into())],
+                "check_assignment_writes must not apply the assignment - only the \
+                 pre-existing admin tuple should be present"
+            );
+
+            // The write still lands when applied explicitly.
+            apply_assignment_writes(authorizer.clone(), writes, vec![], &openfga_server)
+                .await
+                .unwrap();
+            let relations: Vec<ServerAssignment> = get_relations(authorizer, None, &openfga_server)
+                .await
+                .unwrap();
+            assert_eq!(relations.len(), 2);
+        }
+
+        /// Drives the real endpoint: a write that fails *after* authorization
+        /// succeeded must still leave the authorization attempt in the audit log,
+        /// and must not log it twice.
+        ///
+        /// The second call is byte-identical to the first, so the authorization
+        /// check passes again while OpenFGA rejects the duplicate tuple - a write
+        /// failure reachable only once authorization has already been decided.
+        #[sqlx::test]
+        async fn test_endpoint_audits_authz_before_failing_write(pool: sqlx::PgPool) {
+            let operator_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let authorizer = authorizer_for_empty_store().await.1;
+            let (ctx, warehouse) = SetupTestCatalog::builder()
+                .pool(pool)
+                .authorizer(authorizer)
+                .user_id(Some(operator_id.clone()))
+                .build()
+                .setup()
+                .await;
+
+            // Attach after setup so only the two calls below are captured.
+            let listener = Arc::new(CapturingListener::default());
+            ctx.v1_state
+                .events
+                .append(listener.clone() as Arc<dyn EventListener>)
+                .await;
+
+            let grantee_id = UserId::new_unchecked("oidc", &Uuid::now_v7().to_string());
+            let request = UpdateWarehouseAssignmentsRequest {
+                writes: vec![WarehouseAssignment::Select(grantee_id.into())],
+                deletes: vec![],
+            };
+            let metadata = RequestMetadata::test_user(operator_id);
+
+            update_warehouse_assignments_by_id(
+                Path(warehouse.warehouse_id),
+                AxumState(ctx.clone()),
+                Extension(metadata.clone()),
+                Json(request.clone()),
+            )
+            .await
+            .expect("first assignment update succeeds");
+            assert_eq!(
+                listener.settled_count(1).await,
+                1,
+                "the successful call must be audited exactly once"
+            );
+
+            let write_error = update_warehouse_assignments_by_id(
+                Path(warehouse.warehouse_id),
+                AxumState(ctx),
+                Extension(metadata),
+                Json(request),
+            )
+            .await
+            .expect_err("re-writing an existing tuple must fail");
+
+            assert_eq!(
+                listener.settled_count(2).await,
+                2,
+                "the second authorization attempt must be audited exactly once even \
+                 though the write that followed it failed: {write_error:?}"
             );
         }
     }

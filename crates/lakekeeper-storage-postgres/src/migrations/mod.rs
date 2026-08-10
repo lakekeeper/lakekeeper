@@ -16,13 +16,15 @@ use lakekeeper::service::{ServerId, Transaction};
 /// import line, not a Cargo dependency.
 pub use sqlx::migrate::Migrator as SqlxMigrator;
 use sqlx::{
-    Error, Postgres,
+    AssertSqlSafe, Error, Executor, Postgres,
     migrate::{AppliedMigration, Migrate, MigrateError, Migration as SqlxMigration, Migrator},
 };
 use typed_builder::TypedBuilder;
 
 use crate::{
-    CatalogState, PostgresTransaction, bootstrap::get_or_set_server_id,
+    CatalogState, PostgresTransaction,
+    bootstrap::get_or_set_server_id,
+    config::{CONFIG, PgSchema},
     migrations::split_table_metadata::SplitTableMetadataHook,
 };
 
@@ -41,6 +43,10 @@ const CORE_MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 /// scoped `pg_advisory_lock` and one using our transaction-scoped
 /// `pg_advisory_xact_lock` still serializes on the same i64 key, so
 /// concurrent migrations across the rollover are mutually exclusive.
+///
+/// The key covers the whole database, not one schema, so two deployments
+/// separated by `LAKEKEEPER__PG_SCHEMA` migrate one after the other. The
+/// migrations create extensions, which are per-database, not per-schema.
 fn migration_lock_id(database_name: &str) -> i64 {
     const CRC_IEEE: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
     // 0x3d32ad9e: same magic constant sqlx uses, "chosen by fair dice roll".
@@ -159,6 +165,95 @@ pub async fn migrate_core_only(pool: &sqlx::PgPool) -> anyhow::Result<ServerId> 
     migrate(pool, Vec::new()).await
 }
 
+/// Create `schema` if it is missing, then check that this session resolves to
+/// it.
+async fn ensure_schema(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    schema: &PgSchema,
+) -> anyhow::Result<()> {
+    // Probe first: `CREATE SCHEMA IF NOT EXISTS` checks CREATE on the database
+    // before the IF NOT EXISTS short-circuit, so it fails with 42501 for a
+    // low-privilege role even when the schema is already there. Reading
+    // `pg_namespace` needs no privileges.
+    if schema_exists(&mut **transaction, schema).await? {
+        tracing::debug!(schema = schema.as_str(), "Schema already exists");
+    } else {
+        tracing::info!(
+            schema = schema.as_str(),
+            "Creating schema for Lakekeeper tables"
+        );
+        // The caller holds the migration advisory lock, so nothing races here.
+        // IF NOT EXISTS still covers a schema created outside that lock.
+        sqlx::query(AssertSqlSafe(format!(
+            r#"CREATE SCHEMA IF NOT EXISTS "{}""#,
+            schema.as_str()
+        )))
+        .execute(&mut **transaction)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create schema \"{schema}\" requested by LAKEKEEPER__PG_SCHEMA. Grant \
+                 CREATE ON DATABASE to the role Lakekeeper connects as, or have an administrator \
+                 run once: CREATE SCHEMA IF NOT EXISTS \"{schema}\" AUTHORIZATION <role>;",
+                schema = schema.as_str(),
+            )
+        })?;
+    }
+
+    verify_current_schema(&mut **transaction, schema).await
+}
+
+async fn schema_exists<'e, E>(executor: E, schema: &PgSchema) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1)")
+        .bind(schema.as_str())
+        .fetch_one(executor)
+        .await
+}
+
+/// Fail unless this session resolves unqualified names to `schema`.
+///
+/// `current_schema()` silently skips `search_path` entries that do not exist or
+/// that the role has no `USAGE` on, so this one query catches both a pooler that
+/// discarded the session `SET` and a missing grant. Without it, either mistake
+/// would quietly create the whole catalog in `public`.
+async fn verify_current_schema<'e, E>(executor: E, schema: &PgSchema) -> anyhow::Result<()>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    match current_schema(executor).await? {
+        Some(current) if current == schema.as_str() => Ok(()),
+        current => Err(anyhow!(schema_mismatch_reason(schema, current.as_deref()))),
+    }
+}
+
+async fn current_schema<'e, E>(executor: E) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(executor)
+        .await
+}
+
+/// Explains a `current_schema()` that does not match the configured schema, and
+/// how to fix it. Shared by [`ensure_schema`], which fails with it, and
+/// [`check_migration_status_in_schema`], which logs it before reporting
+/// [`MigrationState::SchemaMismatch`].
+fn schema_mismatch_reason(schema: &PgSchema, current: Option<&str>) -> String {
+    let current = current.map_or_else(|| "unset".to_string(), |c| format!("\"{c}\""));
+    format!(
+        "LAKEKEEPER__PG_SCHEMA requests schema \"{schema}\", but current_schema() in this session \
+         is {current}. Lakekeeper sets search_path per connection: a pooler in transaction pooling \
+         mode discards it, and a missing USAGE grant hides the schema. Grant USAGE (and CREATE) on \
+         the schema to the connecting role, run the pooler in session pooling mode, or set it \
+         server-side instead: ALTER ROLE <role> SET search_path = \"{schema}\", public;",
+        schema = schema.as_str(),
+    )
+}
+
 /// Apply every registered migration — core and all extensions — in a single
 /// outer transaction. Either every migration succeeds and the transaction
 /// commits, or it rolls back — partial state is impossible.
@@ -183,7 +278,22 @@ pub async fn migrate_core_only(pool: &sqlx::PgPool) -> anyhow::Result<ServerId> 
 /// Returns an error if any migration fails.
 pub async fn migrate(
     pool: &sqlx::PgPool,
+    extensions: Vec<ExtensionMigrations>,
+) -> anyhow::Result<ServerId> {
+    migrate_in_schema(pool, extensions, CONFIG.pg_schema.as_ref()).await
+}
+
+/// [`migrate`], with the target schema passed in rather than read from the
+/// process configuration, so tests can drive it without touching the global
+/// [`CONFIG`].
+///
+/// When `schema` is `Some`, it is created if missing and the migration refuses
+/// to run unless the session actually resolves to it. `pool` must carry the
+/// matching `search_path`, which [`crate::with_search_path`] installs.
+async fn migrate_in_schema(
+    pool: &sqlx::PgPool,
     mut extensions: Vec<ExtensionMigrations>,
+    schema: Option<&PgSchema>,
 ) -> anyhow::Result<ServerId> {
     // Fail fast on misconfigured extension names — before any DB work, before
     // the advisory lock is acquired. Catches typos in caller crate source and
@@ -243,6 +353,12 @@ pub async fn migrate(
         .bind(migration_lock_id(&db_name))
         .execute(&mut **transaction)
         .await?;
+
+    // Under the lock, so `CREATE SCHEMA` cannot race, and inside the outer
+    // transaction, so a failed migration takes the schema with it.
+    if let Some(schema) = schema {
+        ensure_schema(transaction, schema).await?;
+    }
 
     // 1. Pre-flight per source: ensure tracker table, dirty-check, list applied.
     //    Done before the apply loop so we can look up already-applied state per
@@ -407,7 +523,43 @@ async fn run_checks(
 /// # Errors
 /// Returns an error if db connection fails or if migrations are missing.
 pub async fn check_migration_status(pool: &sqlx::PgPool) -> anyhow::Result<MigrationState> {
+    check_migration_status_in_schema(pool, CONFIG.pg_schema.as_ref()).await
+}
+
+/// [`check_migration_status`], with the target schema passed in rather than read
+/// from the process configuration, so tests can drive it without touching the
+/// global [`CONFIG`].
+///
+/// A configured schema that does not exist yet is reported as
+/// [`MigrationState::NoMigrationsTable`], not an error: that is the normal state
+/// before the first `migrate`.
+async fn check_migration_status_in_schema(
+    pool: &sqlx::PgPool,
+    schema: Option<&PgSchema>,
+) -> anyhow::Result<MigrationState> {
     let mut conn: sqlx::pool::PoolConnection<Postgres> = pool.acquire().await?;
+
+    if let Some(schema) = schema {
+        if !schema_exists(&mut *conn, schema).await? {
+            tracing::debug!(
+                schema = schema.as_str(),
+                "Configured schema does not exist yet, so nothing can have been migrated into it."
+            );
+            return Ok(MigrationState::NoMigrationsTable);
+        }
+        // Reported as a state, not an error, so callers can tell a permanent
+        // misconfiguration apart from a transient failure they should retry.
+        // Without this check, an unapplied search_path plus an install in
+        // `public` resolves the tracker table to `public._sqlx_migrations`,
+        // every version matches, and the caller starts against another
+        // deployment's data.
+        let current = current_schema(&mut *conn).await?;
+        if current.as_deref() != Some(schema.as_str()) {
+            tracing::warn!("{}", schema_mismatch_reason(schema, current.as_deref()));
+            return Ok(MigrationState::SchemaMismatch);
+        }
+    }
+
     let m = sqlx::migrate!();
     let changed_migrations = get_changed_migration_ids();
     tracing::info!(
@@ -487,6 +639,12 @@ pub enum MigrationState {
     /// Running this (older) binary against it is unsafe; callers must refuse
     /// to start rather than retry (waiting never resolves a newer DB).
     Ahead,
+    /// A schema is configured but the session resolves to a different one, so
+    /// the migration state that was read belongs to another schema. Like
+    /// [`MigrationState::Ahead`] this is permanent, and callers must refuse to
+    /// start rather than retry. The mismatch and the ways to fix it are logged
+    /// at warn level by the check that returns this.
+    SchemaMismatch,
 }
 
 pub trait MigrationHook: Send + Sync + 'static {
@@ -562,8 +720,335 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ExtensionMigrations, MigrationState, check_migration_status, migrate, migrate_core_only,
+        ExtensionMigrations, MigrationState, check_migration_status,
+        check_migration_status_in_schema, migrate, migrate_core_only, migrate_in_schema,
     };
+    use crate::{config::PgSchema, with_search_path};
+
+    /// Extensions the core migrations install. Pre-created in `public` by tests
+    /// that must not have them land inside the Lakekeeper schema.
+    const REQUIRED_EXTENSIONS: [&str; 5] = [
+        "uuid-ossp",
+        "pgcrypto",
+        "pg_trgm",
+        "btree_gin",
+        "btree_gist",
+    ];
+
+    async fn create_extensions_in_public(admin_pool: &PgPool) {
+        for ext in REQUIRED_EXTENSIONS {
+            sqlx::query(AssertSqlSafe(format!(
+                r#"CREATE EXTENSION IF NOT EXISTS "{ext}" WITH SCHEMA public"#
+            )))
+            .execute(admin_pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Create a uniquely named schema and return it as a validated [`PgSchema`].
+    async fn create_schema(admin_pool: &PgPool, prefix: &str) -> PgSchema {
+        let name = format!("{prefix}_{}", Uuid::new_v4().simple());
+        sqlx::query(AssertSqlSafe(format!(r#"CREATE SCHEMA "{name}""#)))
+            .execute(admin_pool)
+            .await
+            .unwrap();
+        name.parse().unwrap()
+    }
+
+    fn unique_schema(prefix: &str) -> PgSchema {
+        format!("{prefix}_{}", Uuid::new_v4().simple())
+            .parse()
+            .unwrap()
+    }
+
+    /// Pool against the same database as `admin_pool`, with the `search_path`
+    /// hook installed when `schema` is given.
+    async fn app_pool(admin_pool: &PgPool, schema: Option<&PgSchema>) -> PgPool {
+        let opts = (*admin_pool.connect_options()).clone();
+        with_search_path(PgPoolOptions::new().max_connections(2), schema)
+            .connect_with(opts)
+            .await
+            .unwrap()
+    }
+
+    async fn table_exists_in_schema(pool: &PgPool, schema: &str, name: &str) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = $2)",
+        )
+        .bind(schema)
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The schema is created when absent and the role may create it.
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_creates_missing_schema(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema = unique_schema("lk_new");
+        let pool = app_pool(&admin_pool, Some(&schema)).await;
+
+        migrate_in_schema(&pool, Vec::new(), Some(&schema))
+            .await
+            .expect("migrations should create the schema and run in it");
+
+        for table in ["warehouse", "_sqlx_migrations"] {
+            assert!(
+                table_exists_in_schema(&admin_pool, schema.as_str(), table).await,
+                "`{table}` should exist in {}",
+                schema.as_str()
+            );
+            assert!(
+                !table_exists_in_schema(&admin_pool, "public", table).await,
+                "`{table}` must not leak into public"
+            );
+        }
+        pool.close().await;
+    }
+
+    /// Client-side twin of `test_migrate_into_custom_schema_as_low_privilege_user`:
+    /// same low-privilege setup, but the schema is selected by
+    /// `LAKEKEEPER__PG_SCHEMA` instead of `ALTER ROLE`. Proves `CREATE SCHEMA` is
+    /// never issued when the schema already exists, which matters because
+    /// `CREATE SCHEMA IF NOT EXISTS` checks CREATE on the database before its
+    /// short-circuit and would fail for this role.
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_into_existing_schema_without_create_on_database(admin_pool: PgPool) {
+        let suffix = Uuid::new_v4().simple().to_string();
+        let role = format!("lk_cfg_user_{suffix}");
+        let password = "lk_app_password";
+        create_extensions_in_public(&admin_pool).await;
+
+        let schema = format!("lk_cfg_{suffix}");
+        sqlx::query(AssertSqlSafe(format!(
+            r#"CREATE ROLE "{role}" LOGIN PASSWORD '{password}'"#
+        )))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+        sqlx::query(AssertSqlSafe(format!(
+            r#"CREATE SCHEMA "{schema}" AUTHORIZATION "{role}""#
+        )))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+
+        let db = admin_pool
+            .connect_options()
+            .get_database()
+            .unwrap()
+            .to_string();
+        for stmt in [
+            format!(r#"GRANT CONNECT ON DATABASE "{db}" TO "{role}""#),
+            format!(r#"GRANT USAGE ON SCHEMA public TO "{role}""#),
+            format!(r#"REVOKE CREATE ON SCHEMA public FROM "{role}""#),
+        ] {
+            sqlx::query(AssertSqlSafe(stmt))
+                .execute(&admin_pool)
+                .await
+                .unwrap();
+        }
+
+        let schema: PgSchema = schema.parse().unwrap();
+        let admin_opts = admin_pool.connect_options();
+        let app_opts = PgConnectOptions::new()
+            .host(admin_opts.get_host())
+            .port(admin_opts.get_port())
+            .database(&db)
+            .username(&role)
+            .password(password);
+        // No `ALTER ROLE`: the search_path comes from the pool hook alone.
+        let app_pool = with_search_path(PgPoolOptions::new().max_connections(2), Some(&schema))
+            .connect_with(app_opts)
+            .await
+            .unwrap();
+
+        migrate_in_schema(&app_pool, Vec::new(), Some(&schema))
+            .await
+            .expect("migrations should succeed for low-privilege user in a pre-created schema");
+
+        assert!(
+            table_exists_in_schema(&admin_pool, schema.as_str(), "warehouse").await,
+            "`warehouse` should be created in {}",
+            schema.as_str()
+        );
+        assert!(
+            !table_exists_in_schema(&admin_pool, "public", "warehouse").await,
+            "`warehouse` must not leak into public"
+        );
+
+        app_pool.close().await;
+        for stmt in [
+            format!(r#"DROP SCHEMA "{}" CASCADE"#, schema.as_str()),
+            format!(r#"DROP OWNED BY "{role}""#),
+            format!(r#"DROP ROLE "{role}""#),
+        ] {
+            let _ = sqlx::query(AssertSqlSafe(stmt)).execute(&admin_pool).await;
+        }
+    }
+
+    /// A pooler that strips the session `SET` must abort the migration rather
+    /// than silently populate `public`.
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_rejects_when_search_path_not_applied(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema = create_schema(&admin_pool, "lk_unset").await;
+        let pool = app_pool(&admin_pool, None).await;
+
+        let err = migrate_in_schema(&pool, Vec::new(), Some(&schema))
+            .await
+            .expect_err("migration must refuse to run outside the configured schema");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("current_schema"),
+            "error should name current_schema: {rendered}"
+        );
+        assert!(
+            rendered.contains("PG_SCHEMA"),
+            "error should name the setting: {rendered}"
+        );
+        assert!(
+            !table_exists_in_schema(&admin_pool, "public", "warehouse").await,
+            "the failed migration must roll back"
+        );
+        pool.close().await;
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn test_migrate_in_schema_is_idempotent(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema = unique_schema("lk_idem");
+        let pool = app_pool(&admin_pool, Some(&schema)).await;
+
+        migrate_in_schema(&pool, Vec::new(), Some(&schema))
+            .await
+            .unwrap();
+        let applied: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        migrate_in_schema(&pool, Vec::new(), Some(&schema))
+            .await
+            .expect("second run should be a no-op");
+        let applied_again: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(applied, applied_again);
+        pool.close().await;
+    }
+
+    /// Two deployments in one database stay independent. Requires the extensions
+    /// to live in `public`, which is why multi-schema deployments must
+    /// pre-create them.
+    #[sqlx::test(migrations = false)]
+    async fn test_two_schemas_coexist_in_one_database(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema_a = unique_schema("lk_a");
+        let schema_b = unique_schema("lk_b");
+        let pool_a = app_pool(&admin_pool, Some(&schema_a)).await;
+        let pool_b = app_pool(&admin_pool, Some(&schema_b)).await;
+
+        migrate_in_schema(&pool_a, Vec::new(), Some(&schema_a))
+            .await
+            .unwrap();
+        migrate_in_schema(&pool_b, Vec::new(), Some(&schema_b))
+            .await
+            .unwrap();
+
+        for schema in [&schema_a, &schema_b] {
+            assert!(
+                table_exists_in_schema(&admin_pool, schema.as_str(), "warehouse").await,
+                "`warehouse` should exist in {}",
+                schema.as_str()
+            );
+        }
+
+        // Each deployment reads only its own rows.
+        let projects_a: i64 = sqlx::query_scalar("SELECT count(*) FROM project")
+            .fetch_one(&pool_a)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO project (project_id, project_name) VALUES ($1, 'a-only')")
+            .bind(Uuid::new_v4())
+            .execute(&pool_a)
+            .await
+            .unwrap();
+        let projects_b: i64 = sqlx::query_scalar("SELECT count(*) FROM project")
+            .fetch_one(&pool_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            projects_b, projects_a,
+            "a row written through pool A must be invisible through pool B"
+        );
+
+        pool_a.close().await;
+        pool_b.close().await;
+    }
+
+    /// The advisory lock is keyed on the database, so concurrent migrations into
+    /// different schemas serialize instead of racing on the database-global
+    /// `CREATE EXTENSION`.
+    #[sqlx::test(migrations = false)]
+    async fn test_concurrent_migrate_into_two_schemas_serializes(admin_pool: PgPool) {
+        create_extensions_in_public(&admin_pool).await;
+        let schema_a = unique_schema("lk_par_a");
+        let schema_b = unique_schema("lk_par_b");
+        let pool_a = app_pool(&admin_pool, Some(&schema_a)).await;
+        let pool_b = app_pool(&admin_pool, Some(&schema_b)).await;
+
+        let (a, b) = tokio::join!(
+            migrate_in_schema(&pool_a, Vec::new(), Some(&schema_a)),
+            migrate_in_schema(&pool_b, Vec::new(), Some(&schema_b)),
+        );
+        a.expect("schema A migration should succeed");
+        b.expect("schema B migration should succeed");
+
+        pool_a.close().await;
+        pool_b.close().await;
+    }
+
+    /// A schema that does not exist yet is "not migrated", not an error: this is
+    /// the normal state before the first `migrate`, and `wait-for-db` must keep
+    /// retrying through it.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_migration_status_no_migrations_table_for_missing_schema(
+        admin_pool: PgPool,
+    ) {
+        let schema = unique_schema("lk_absent");
+        let state = check_migration_status_in_schema(&admin_pool, Some(&schema))
+            .await
+            .unwrap();
+        assert!(matches!(state, MigrationState::NoMigrationsTable));
+    }
+
+    /// Guard against a false `Complete`: with the search_path unapplied and a
+    /// legacy install in `public`, the tracker table resolves to
+    /// `public._sqlx_migrations` and every version matches.
+    #[sqlx::test(migrations = false)]
+    async fn test_check_migration_status_detects_wrong_schema(admin_pool: PgPool) {
+        migrate_core_only(&admin_pool)
+            .await
+            .expect("baseline install into public");
+        let schema = create_schema(&admin_pool, "lk_elsewhere").await;
+
+        // Unhooked pool plus a configured schema. Reported as a state rather
+        // than an error so callers can fail fast instead of retrying, and it
+        // must never read as an up-to-date database.
+        let state = check_migration_status_in_schema(&admin_pool, Some(&schema))
+            .await
+            .expect("a schema mismatch is a state, not an error");
+        assert!(
+            matches!(state, MigrationState::SchemaMismatch),
+            "expected SchemaMismatch, got {state:?}"
+        );
+    }
 
     async fn table_exists(pool: &PgPool, name: &str) -> bool {
         sqlx::query_scalar::<_, bool>(

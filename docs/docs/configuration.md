@@ -66,6 +66,7 @@ Lakekeeper supports configuring separate database URLs for read and write operat
 | `LAKEKEEPER__PG_USER`                                  | `postgres`                                            | Username for authentication |
 | `LAKEKEEPER__PG_PASSWORD`                              | `password`                                            | Password for authentication |
 | `LAKEKEEPER__PG_DATABASE`                              | `iceberg`                                             | Database name |
+| `LAKEKEEPER__PG_SCHEMA`                                | `lakekeeper`                                          | Schema holding Lakekeeper's tables. Unset by default, meaning `public`. See [Using a non-`public` Postgres schema](#using-a-non-public-postgres-schema). |
 | `LAKEKEEPER__PG_SSL_MODE`                              | `require`                                             | SSL mode (disable, allow, prefer, require) |
 | `LAKEKEEPER__PG_SSL_ROOT_CERT`                         | `/path/to/root/cert`                                  | Path to SSL root certificate |
 | <nobr>`LAKEKEEPER__PG_ENABLE_STATEMENT_LOGGING`</nobr> | `true`                                                | Enable SQL statement logging |
@@ -89,14 +90,23 @@ CREATE EXTENSION IF NOT EXISTS "btree_gist";
 
 #### Using a non-`public` Postgres schema
 
-By default Lakekeeper creates its tables in whichever schema Postgres resolves via `search_path` — typically `public`. To install it into a dedicated schema (e.g. for tenant isolation or policies that disallow DDL in `public`), set the default `search_path` on the role Lakekeeper connects as, server-side:
+Set `LAKEKEEPER__PG_SCHEMA=lakekeeper` to keep Lakekeeper's tables in a dedicated schema instead of `public`. Lakekeeper sets `search_path` to `"lakekeeper", public` on every connection, and `lakekeeper migrate` creates the schema when the role has `CREATE` on the database. Otherwise create it first: `CREATE SCHEMA lakekeeper AUTHORIZATION lakekeeper;`
+
+`public` stays on the path so extension functions and operator classes installed there keep resolving. The schema name is quoted, so it is case-sensitive, and both the read and the write role need `USAGE` on it.
+
+Create the [required extensions](#required-postgres-extensions) in `public` before the first migration. `CREATE EXTENSION` without a `SCHEMA` clause installs into the first entry of `search_path`, so they would land in the Lakekeeper schema. Another Lakekeeper in the same DB can't reach them, and dropping the schema drops them too. They're all relocatable, so an existing install can be fixed with `ALTER EXTENSION <name> SET SCHEMA public;`
+
+Pointing an existing deployment at a new schema shows an empty catalog: the data stays where it is, so move it yourself with `ALTER TABLE ... SET SCHEMA` or a dump and restore.
+
+Behind a connection pooler in transaction or statement pooling mode a session-level `search_path` is not kept. Leave `LAKEKEEPER__PG_SCHEMA` unset there and set it on the role instead, for both the read and the write role if they differ:
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS lakekeeper AUTHORIZATION lakekeeper;
 ALTER ROLE lakekeeper SET search_path = lakekeeper, public;
 ```
 
-Postgres applies this before any query runs on a new session, so both migrations and runtime queries land in `lakekeeper`. Keep `public` in `search_path` so functions installed by extensions there (e.g. `uuid_generate_v1mc` from `uuid-ossp`) still resolve. If you use separate roles for `LAKEKEEPER__PG_DATABASE_URL_READ` and `LAKEKEEPER__PG_DATABASE_URL_WRITE`, run `ALTER ROLE` for both. Setting `search_path` via the URL `options` parameter is fragile — encoding pitfalls and connection poolers (e.g. PgBouncer in transaction pooling mode) often drop it — so the role-level default is the recommended approach.
+`lakekeeper migrate` refuses to run against the wrong schema, so a misconfigured `search_path` is caught before any data is written. If queries instead start failing with `relation ... does not exist` after a migration that succeeded, the pooler stopped applying the `search_path`: switch it to session pooling, or set the path on the role as above.
+
+Do not set `search_path` through the `options` parameter of the connection URL. It has to be percent-encoded inside the URL, and poolers reject or ignore the parameter, so it fails silently.
 
 ### Vault KV Version 2
 
@@ -228,11 +238,12 @@ Please check the [Authentication Guide](./authentication.md) for more details.
 | Variable                                                                  | Example                                      | Description |
 |---------------------------------------------------------------------------|----------------------------------------------|-----|
 | <nobr>`LAKEKEEPER__OPENID_PROVIDER_URI`</nobr>                            | `https://keycloak.local/realms/{your-realm}` | OpenID Provider URL. Lakekeeper expects to find `<LAKEKEEPER__OPENID_PROVIDER_URI>/.well-known/openid-configuration` and load JWKS tokens from there. Do not include the `/.well-known/openid-configuration` in the provided URL. |
-| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | Strongly recommended. If set, the `aud` of the provided token must match the value provided. Multiple allowed audiences can be provided as a comma separated list. If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
+| `LAKEKEEPER__OPENID_AUDIENCE`                                             | `the-client-id-of-my-app`                    | Strongly recommended. If set, the token's `aud` claim must contain at least one of the configured audiences. Multiple audiences can be provided as a comma-separated list; a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS`                                   | `https://sts.windows.net/<Tenant>/`          | A comma separated list of additional issuers to trust. The issuer defined in the `issuer` field of the `.well-known/openid-configuration` is always trusted. `LAKEKEEPER__OPENID_ADDITIONAL_ISSUERS` has no effect if `LAKEKEEPER__OPENID_PROVIDER_URI` is not set. |
 | `LAKEKEEPER__OPENID_SCOPE`                                                | `lakekeeper`                                 | Specify a scope that must be present in provided tokens received from the openid provider. |
 | `LAKEKEEPER__OPENID_SUBJECT_CLAIM`                                        | `sub` or `oid,sub`                           | Specify the claim(s) in the user's JWT used to identify a User. Accepts a single claim name or a comma-separated list of claim names; the first claim present in the token is used. By default Lakekeeper tries `oid` first, then falls back to `sub`. We strongly recommend setting this configuration explicitly in production deployments. Entra-ID users want to use `oid`; users from all other IdPs most likely want to use `sub`. |
 | `LAKEKEEPER__OPENID_ROLES_CLAIM`                                          | `resource_access.lakekeeper.roles`           | Specify the claim to use in provided JWT tokens to extract roles. The field should contain an array of strings or a single string. Supports nested claims using dot notation, e.g., "resource_access.account.roles". Used by authorizers that consume token roles, including Cedar and custom implementations. The default OpenFGA implementation does not use token roles. Requires a project ID to be set via the `x-project-id` header or `LAKEKEEPER__DEFAULT_PROJECT_ID`. |
+| `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE`                                | `Service Account {email}`                    | Fallback display name for tokens that carry no name claim (typically machine / service-account tokens). Placeholders `{claim.path}` are substituted from the token's claims using dot notation; write a literal brace by doubling it (`{{`/`}}`). A real name claim always takes precedence; if a referenced claim is absent or not a string the template is skipped and the user keeps the `Nameless App with ID <user-id>` placeholder. A structurally malformed template (unbalanced or empty braces) aborts startup. Applies to the single-provider `LAKEKEEPER__OPENID_PROVIDER_URI` setup. |
 | `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION`                            | true                                         | If true, kubernetes service accounts can authenticate to Lakekeeper. This option is compatible with `LAKEKEEPER__OPENID_PROVIDER_URI` - multiple IdPs (OIDC and Kubernetes) can be enabled simultaneously. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_AUDIENCE`                          | `https://kubernetes.default.svc`             | Audiences that are expected in Kubernetes tokens. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
 | `LAKEKEEPER__KUBERNETES_AUTHENTICATION_ACCEPT_LEGACY_SERVICEACCOUNT` | `false`                                      | Add an authenticator that handles tokens with no audiences and the issuer set to `kubernetes/serviceaccount`. Only has an effect if `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is true. |
@@ -254,11 +265,12 @@ A token is routed to the **first** authenticator whose `iss` set contains the to
 | Variable suffix | Required | Example | Description |
 |-----------------|----------|---------|-------------|
 | `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
-| `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. Comma-separated for multiple. If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
+| `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. If set, the token's `aud` must contain at least one of the configured audiences; provide multiple as a comma-separated list and a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
 | `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
 | `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
 | `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
 | `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
+| `__DISPLAY_NAME_TEMPLATE` | No | `Service Account {email}` | Fallback display name for this provider's tokens that carry no name claim. Same syntax and precedence as `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` in the OpenID table above (dot-notation `{claim.path}` placeholders, `{{`/`}}` for literal braces, a real name claim wins, malformed templates abort startup). |
 | `__REQUIRE_CONNECTED_ON_STARTUP` | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
 
 **Example: Okta + EKS OIDC**

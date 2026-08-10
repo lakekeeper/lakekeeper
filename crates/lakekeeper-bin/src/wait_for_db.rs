@@ -64,6 +64,21 @@ pub(crate) async fn wait_for_db(
                         "Database is newer than this binary (migrated by a newer Lakekeeper); refusing to start."
                     );
                 }
+                Ok(MigrationState::SchemaMismatch) => {
+                    // A search_path that does not resolve to the configured
+                    // schema is a misconfiguration, so retrying never fixes it.
+                    // Fail fast like `Ahead` rather than spending the retry
+                    // budget. `check_migration_status` has already logged which
+                    // schema was reached and how to correct it.
+                    tracing::error!(
+                        "This session does not resolve to the schema set in LAKEKEEPER__PG_SCHEMA. \
+                         Refusing to start to avoid running against a different schema's data. See \
+                         the preceding warning for how to fix it."
+                    );
+                    anyhow::bail!(
+                        "Session does not resolve to the configured Postgres schema; refusing to start."
+                    );
+                }
                 unready => {
                     tracing::info!(?unready, "Database is not up to date with binary.");
                 }

@@ -3383,6 +3383,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse-creation-validation:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Warehouse Configuration
+      description: |-
+        Runs the checks `Create Warehouse` runs — profile syntax, name
+        availability, location overlap, format-version policy, `managed-by`, and
+        physical storage access including credential vending — without creating
+        anything. No warehouse is persisted and no credential is stored.
+
+        Returns 200 whether or not the configuration is usable; inspect `valid` and
+        the per-check results. Requires the same permission as creating a warehouse.
+      operationId: validate_warehouse
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWarehouseRequest'
+        required: true
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -4489,6 +4531,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage/validate-access:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Stored Warehouse Configuration
+      description: |-
+        Re-runs the storage checks against the configuration the warehouse is
+        currently running with, using its stored profile and stored credential.
+        Use this to find out whether a warehouse's storage access still works —
+        for example after a credential has expired or a bucket policy changed.
+      operationId: validate_storage_access
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage/validate-credential:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Storage Credential
+      description: |-
+        Dry-run of `Update Storage Credential`: probes the warehouse's stored
+        storage profile with the supplied replacement credential. The stored
+        credential is left untouched.
+      operationId: validate_storage_credential
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseCredentialRequest'
+        required: true
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage/validate-profile:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Storage Profile Update
+      description: |-
+        Dry-run of `Update Storage Profile`: checks that the warehouse's spec may
+        be changed, that the new profile is a permitted evolution of the current
+        one, and that the storage is reachable — without changing the warehouse.
+
+        Probes the incoming profile as supplied, before it would be merged into
+        the stored one, matching what the real update validates.
+      operationId: validate_storage_profile
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseStorageRequest'
+        required: true
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -9214,7 +9362,6 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionCreateNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionDelete'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
-        - $ref: '#/components/schemas/LakekeeperWarehouseActionUpdateStorageCredential'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetMetadata'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionGetConfig'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionListNamespaces'
@@ -9258,7 +9405,6 @@ components:
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionUpdateStorage'
-          update_storage_credential: '#/components/schemas/LakekeeperWarehouseActionUpdateStorageCredential'
           use: '#/components/schemas/LakekeeperWarehouseActionUse'
     LakekeeperWarehouseActionActivate:
       type: object
@@ -9375,7 +9521,6 @@ components:
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindCreateNamespace'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindDelete'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
-        - $ref: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorageCredential'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetMetadata'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindGetConfig'
         - $ref: '#/components/schemas/LakekeeperWarehouseActionKindListNamespaces'
@@ -9419,7 +9564,6 @@ components:
           set_format_version_policy: '#/components/schemas/LakekeeperWarehouseActionKindSetFormatVersionPolicy'
           set_protection: '#/components/schemas/LakekeeperWarehouseActionKindSetProtection'
           update_storage: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorage'
-          update_storage_credential: '#/components/schemas/LakekeeperWarehouseActionKindUpdateStorageCredential'
           use: '#/components/schemas/LakekeeperWarehouseActionKindUse'
     LakekeeperWarehouseActionKindActivate:
       type: object
@@ -9610,15 +9754,6 @@ components:
           type: string
           enum:
             - update_storage
-    LakekeeperWarehouseActionKindUpdateStorageCredential:
-      type: object
-      required:
-        - action
-      properties:
-        action:
-          type: string
-          enum:
-            - update_storage_credential
     LakekeeperWarehouseActionKindUse:
       type: object
       required:
@@ -9719,15 +9854,6 @@ components:
           type: string
           enum:
             - update_storage
-    LakekeeperWarehouseActionUpdateStorageCredential:
-      type: object
-      required:
-        - action
-      properties:
-        action:
-          type: string
-          enum:
-            - update_storage_credential
     LakekeeperWarehouseActionUse:
       type: object
       required:
@@ -13002,6 +13128,97 @@ components:
       enum:
         - human
         - application
+    ValidateWarehouseResponse:
+      type: object
+      description: |-
+        Outcome of validating a warehouse configuration.
+
+        Returned with HTTP 200 whether or not the configuration is usable — a failing
+        check is a result, not a request error. Only authorization and malformed
+        bodies produce a 4xx.
+      required:
+        - valid
+        - checks
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationCheck'
+          description: |-
+            Every check that was considered, in execution order — passed, failed and
+            skipped alike, so the caller can see what was and was not covered.
+        valid:
+          type: boolean
+          description: True when no check failed. Skipped checks do not make a configuration invalid.
+    ValidationCheck:
+      type: object
+      required:
+        - name
+        - status
+      properties:
+        duration-ms:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Wall-clock duration of the check. Absent for skipped checks.
+          minimum: 0
+        error:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ErrorModel'
+              description: What went wrong. Only set for `failed`.
+        name:
+          $ref: '#/components/schemas/ValidationCheckName'
+        reason:
+          type:
+            - string
+            - 'null'
+          description: Why the check was skipped. Only set for `skipped`.
+        status:
+          $ref: '#/components/schemas/ValidationCheckStatus'
+    ValidationCheckName:
+      type: string
+      description: |-
+        A single check performed against a warehouse configuration.
+
+        Each name is a claim about the configuration that is true exactly when the
+        check's `status` is `passed`. A check that asserts a property of a subject is
+        named `<subject>-<predicate>`, the predicate an adjective or past participle;
+        a check that exercises an operation is named after the operation. A check is
+        never named after the failure it detects — a requirement that is naturally
+        negative is stated as the positive property that must hold.
+
+        These are stable wire identifiers. Adding a value is a breaking change for
+        generated clients, which reject unknown enum values, so new checks ship in a
+        release that clients must upgrade to.
+      enum:
+        - profile-well-formed
+        - profile-compatible
+        - warehouse-name-valid
+        - location-exclusive
+        - spec-mutable
+        - format-version-policy-consistent
+        - managed-by-allowed
+        - storage-client-initialized
+        - lakekeeper-read-write
+        - vended-credentials-issued
+        - vended-credentials-read-write
+        - vended-credentials-scope-enforced
+        - cleanup
+    ValidationCheckStatus:
+      type: string
+      description: |-
+        The outcome of a single check.
+
+        `passed` and `failed` are verdicts about the configuration. `skipped` is not
+        a verdict: the check did not apply, or a prerequisite failed, and `reason`
+        says which. Skipped checks never make a configuration invalid, so a report
+        can be `valid` with nothing actually verified — read the individual checks.
+      enum:
+        - passed
+        - failed
+        - skipped
     ViewAction:
       type: string
       enum:
