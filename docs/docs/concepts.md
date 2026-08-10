@@ -228,7 +228,7 @@ Force deletion is an administrative override that allows deletion of protected e
 
 Add the `force=true` query parameter to deletion requests:
 
-```
+```http
 DELETE /catalog/v1/{prefix}/namespaces/{namespace}?force=true
 ```
 

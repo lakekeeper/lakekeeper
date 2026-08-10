@@ -323,7 +323,7 @@ Repeat this process for each query engine / machine user that is required:
 2. When the App Registration is created, select "Manage" -> "Certificates & secrets" and create a "New client secret". Note down the secrets "Value".
 3. There might be an additional step needed before you can utilize the machine user. First, get the token for it using the credentials you created on previous steps:
 
-    ```
+    ```sh
     curl -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
     https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token \
     -d 'client_id={client_id}' \
