@@ -14,7 +14,15 @@ publish = false
 [features]
 # Forwards lakekeeper's `open-api` to compile `utoipa::ToSchema` derives that
 # the `QueueConfig` trait bound requires when the upstream feature is on.
-open-api = ["lakekeeper/open-api", "dep:utoipa"]
+#
+# `Authorizer::api_doc` is required once `lakekeeper/open-api` is on.
+# Forwarding only `lakekeeper/open-api` leaves the `OpenFGAAuthorizer` impl
+# compiled out and the trait unimplemented.
+open-api = [
+    "lakekeeper/open-api",
+    "lakekeeper-authz-openfga/open-api",
+    "dep:utoipa",
+]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -25,9 +33,15 @@ http = { workspace = true }
 iceberg = { workspace = true }
 iceberg-ext = { path = "../iceberg-ext", features = ["axum"] }
 itertools = { workspace = true }
-lakekeeper = { path = "../lakekeeper", features = ["test-utils", "router", "sqlx-postgres"] }
+lakekeeper = { path = "../lakekeeper", features = [
+    "test-utils",
+    "router",
+    "sqlx-postgres",
+] }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
-lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres", features = ["test-utils"] }
+lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres", features = [
+    "test-utils",
+] }
 maplit = { workspace = true }
 pastey = { workspace = true }
 serde = { workspace = true }
@@ -45,7 +59,9 @@ aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 http-body-util = { workspace = true }
 # Real OpenFGA authorizer for the OpenFGA+Postgres role-membership e2e harness.
-lakekeeper-authz-openfga = { path = "../authz-openfga", features = ["test-utils"] }
+lakekeeper-authz-openfga = { path = "../authz-openfga", features = [
+    "test-utils",
+] }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 similar = { workspace = true }
