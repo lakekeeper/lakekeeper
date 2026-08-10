@@ -264,26 +264,26 @@ A token is routed to the **first** authenticator whose `iss` set contains the to
 
 | Variable suffix | Required | Example | Description |
 |-----------------|----------|---------|-------------|
-| `__URI` | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
-| `__AUDIENCE` | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. If set, the token's `aud` must contain at least one of the configured audiences; provide multiple as a comma-separated list and a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
-| `__ADDITIONAL_ISSUERS` | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
-| `__SCOPE` | No | `lakekeeper` | Scope that must be present in tokens. |
-| `__SUBJECT_CLAIMS` | No | `sub` or `oid,sub` | Claims to use as user ID (comma-separated, in order of preference). Defaults to `oid,sub`. |
-| `__ROLES_CLAIM` | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
-| `__DISPLAY_NAME_TEMPLATE` | No | `Service Account {email}` | Fallback display name for this provider's tokens that carry no name claim. Same syntax and precedence as `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` in the OpenID table above (dot-notation `{claim.path}` placeholders, `{{`/`}}` for literal braces, a real name claim wins, malformed templates abort startup). |
-| `__REQUIRE_CONNECTED_ON_STARTUP` | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
+| <nobr>`__URI`</nobr> | Yes | `https://company.okta.com` | OIDC provider URI (must expose `.well-known/openid-configuration`). |
+| <nobr>`__AUDIENCE`</nobr> | No (strongly recommended) | `lakekeeper,warehouse` | Expected audience(s) for tokens. If set, the token's `aud` must contain at least one of the configured audiences; provide multiple as a comma-separated list and a token is accepted if its `aud` matches any one of them (OR). If unset, audience validation is **skipped** — tokens for any audience are accepted as long as signature and issuer validate. Set this in production. |
+| <nobr>`__ADDITIONAL_ISSUERS`</nobr> | No | `https://sts.windows.net/tenant/` | Additional issuers to trust (comma-separated). |
+| <nobr>`__SCOPE`</nobr> | No | `lakekeeper` | Scope that must be present in tokens. |
+| <nobr>`__SUBJECT_CLAIM`</nobr> | No | `sub` or `oid,sub` | Claim(s) to use as user ID (comma-separated, in order of preference; the first claim present in the token is used). Defaults to `oid,sub`. The plural `__SUBJECT_CLAIMS` is still accepted for backwards compatibility. |
+| <nobr>`__ROLES_CLAIM`</nobr> | No | `resource_access.lakekeeper.roles` | Claim to use in provided JWT tokens to extract roles. |
+| <nobr>`__DISPLAY_NAME_TEMPLATE`</nobr> | No | `Service Account {email}` | Fallback display name for this provider's tokens that carry no name claim. Same syntax and precedence as `LAKEKEEPER__OPENID_DISPLAY_NAME_TEMPLATE` in the OpenID table above (dot-notation `{claim.path}` placeholders, `{{`/`}}` for literal braces, a real name claim wins, malformed templates abort startup). |
+| <nobr>`__REQUIRE_CONNECTED_ON_STARTUP`</nobr> | No | `true` | When `true` (default), Lakekeeper refuses to start if this provider's OIDC/JWKS configuration cannot be loaded. Set to `false` to skip this provider while continuing startup. |
 
 **Example: Okta + EKS OIDC**
 
 ```bash
 LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
 LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
-LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIM=sub
 LAKEKEEPER__OPENID_PROVIDERS__OKTA__ROLES_CLAIM=resource_access.lakekeeper.roles
 
 LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__URI=https://oidc.eks.us-east-1.amazonaws.com/id/ABC123DEF456
 LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__AUDIENCE=sts.amazonaws.com
-LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__SUBJECT_CLAIMS=sub
+LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__SUBJECT_CLAIM=sub
 LAKEKEEPER__OPENID_PROVIDERS__EKSPROD__REQUIRE_CONNECTED_ON_STARTUP=false
 ```
 

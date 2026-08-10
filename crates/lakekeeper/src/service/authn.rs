@@ -83,7 +83,7 @@ pub(crate) const OIDC_IDP_ID: &str = "oidc";
 pub(crate) const K8S_IDP_ID: &str = "kubernetes";
 
 /// Default subject-claim preference order applied when a provider does not set
-/// `subject_claims` explicitly. Kept in sync with the `subject_claims` doc on
+/// `subject_claim` explicitly. Kept in sync with the `subject_claim` doc on
 /// [`OidcProviderConfig`].
 ///
 /// `oid` is preferred so Entra-ID gets the stable per-tenant identifier
@@ -104,7 +104,7 @@ const DEFAULT_SUBJECT_CLAIMS: &[&str] = &["oid", "sub"];
 /// ```bash
 /// LAKEKEEPER__OPENID_PROVIDERS__OKTA__URI=https://company.okta.com
 /// LAKEKEEPER__OPENID_PROVIDERS__OKTA__AUDIENCE=https://company.okta.com
-/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS=sub
+/// LAKEKEEPER__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIM=sub
 /// ```
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct OidcProviderConfig {
@@ -128,14 +128,19 @@ pub struct OidcProviderConfig {
     /// A scope that must be present in tokens from this provider.
     #[serde(default)]
     pub scope: Option<String>,
-    /// Claims to use as the subject (user ID), in order of preference.
-    /// Defaults to `oid`, then `sub` if not specified.
+    /// Claim(s) to use as the subject (user ID). Accepts a comma-separated list;
+    /// the first claim present in the token is used. Defaults to `oid`, then
+    /// `sub` if not specified.
+    ///
+    /// Named to match the single-provider `OPENID_SUBJECT_CLAIM`; the plural
+    /// `subject_claims` this field originally shipped as stays accepted.
     #[serde(
         default,
+        alias = "subject_claims",
         deserialize_with = "crate::config::deserialize_comma_separated",
         serialize_with = "crate::config::serialize_comma_separated"
     )]
-    pub subject_claims: Option<Vec<String>>,
+    pub subject_claim: Option<Vec<String>>,
     /// Claim to use in provided JWT tokens to extract roles.
     /// The field should contain a single string claim path.
     /// Supports nested claims using dot notation, e.g., `resource_access.account.roles`
@@ -307,7 +312,7 @@ fn oidc_provider_configs_from_config(
                 audience: config.openid_audience.clone(),
                 additional_issuers: config.openid_additional_issuers.clone(),
                 scope: config.openid_scope.clone(),
-                subject_claims: config.openid_subject_claim.clone(),
+                subject_claim: config.openid_subject_claim.clone(),
                 roles_claim: config.openid_roles_claim.clone(),
                 display_name_template: config.openid_display_name_template.clone(),
                 require_connected_on_startup: true,
@@ -416,14 +421,14 @@ async fn build_oidc_authenticator(
         authenticator = authenticator.set_scope(scope.clone());
     }
 
-    if let Some(claims) = &provider.subject_claims {
+    if let Some(claims) = &provider.subject_claim {
         tracing::debug!("Setting subject claims for {idp_id}: {claims:?}");
         authenticator = authenticator.with_subject_claims(claims.clone());
     } else {
         tracing::debug!(
             "Defaulting subject claims for {idp_id} to: {DEFAULT_SUBJECT_CLAIMS:?}. \
              We prefer `oid` for Entra-ID (where `sub` differs per application); other IdPs \
-             fall through to `sub`. Set `subject_claims` explicitly in production."
+             fall through to `sub`. Set `subject_claim` explicitly in production."
         );
         authenticator = authenticator.with_subject_claims(
             DEFAULT_SUBJECT_CLAIMS
@@ -1004,7 +1009,7 @@ mod tests {
             Some(vec!["https://sts.example.com".to_string()])
         );
         assert_eq!(providers[0].1.scope, Some("openid".to_string()));
-        assert_eq!(providers[0].1.subject_claims, Some(vec!["sub".to_string()]));
+        assert_eq!(providers[0].1.subject_claim, Some(vec!["sub".to_string()]));
         assert_eq!(providers[0].1.roles_claim, Some("roles".to_string()));
         assert_eq!(
             providers[0].1.display_name_template,
@@ -1024,7 +1029,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: Some("groups".to_string()),
                 display_name_template: None,
                 require_connected_on_startup: false,
@@ -1061,7 +1066,7 @@ mod tests {
                     audience: None,
                     additional_issuers: None,
                     scope: None,
-                    subject_claims: None,
+                    subject_claim: None,
                     roles_claim: None,
                     display_name_template: None,
                     require_connected_on_startup: true,
@@ -1084,7 +1089,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: None,
                 display_name_template: template.map(str::to_string),
                 require_connected_on_startup: true,
@@ -1117,7 +1122,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: true,
@@ -1174,7 +1179,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: false,
@@ -1215,7 +1220,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: true,
@@ -1243,7 +1248,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: false,
@@ -1279,7 +1284,7 @@ mod tests {
                 audience: None,
                 additional_issuers: None,
                 scope: None,
-                subject_claims: None,
+                subject_claim: None,
                 roles_claim: None,
                 display_name_template: None,
                 require_connected_on_startup: true,

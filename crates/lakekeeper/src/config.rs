@@ -1833,7 +1833,7 @@ mod test {
             );
             jail.set_env("LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SCOPE", "openid");
             jail.set_env(
-                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIM",
                 "sub,oid",
             );
             jail.set_env(
@@ -1858,7 +1858,7 @@ mod test {
             );
             assert_eq!(provider.scope, Some("openid".to_string()));
             assert_eq!(
-                provider.subject_claims,
+                provider.subject_claim,
                 Some(vec!["sub".to_string(), "oid".to_string()])
             );
             assert_eq!(
@@ -1866,6 +1866,29 @@ mod test {
                 Some("resource_access.lakekeeper.roles".to_string())
             );
             assert!(!provider.require_connected_on_startup);
+            Ok(())
+        });
+    }
+
+    /// `SUBJECT_CLAIMS` was the original spelling before it was aligned with the
+    /// single-provider `OPENID_SUBJECT_CLAIM`. Deployments still set it.
+    #[test]
+    fn test_openid_provider_subject_claim_accepts_legacy_plural() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__URI",
+                "https://company.okta.com",
+            );
+            jail.set_env(
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "sub,oid",
+            );
+            let config = get_config();
+            let provider = config.openid_providers.get("okta").unwrap();
+            assert_eq!(
+                provider.subject_claim,
+                Some(vec!["sub".to_string(), "oid".to_string()])
+            );
             Ok(())
         });
     }
@@ -2480,7 +2503,7 @@ mod test {
                 "https://company.okta.com",
             );
             jail.set_env(
-                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIMS",
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__OKTA__SUBJECT_CLAIM",
                 "sub",
             );
             jail.set_env(
@@ -2500,7 +2523,7 @@ mod test {
                 okta.audience,
                 Some(vec!["https://company.okta.com".to_string()])
             );
-            assert_eq!(okta.subject_claims, Some(vec!["sub".to_string()]));
+            assert_eq!(okta.subject_claim, Some(vec!["sub".to_string()]));
 
             let eks = config.openid_providers.get("eks-prod").unwrap();
             assert_eq!(eks.audience, Some(vec!["sts.amazonaws.com".to_string()]));
@@ -2529,7 +2552,7 @@ mod test {
                 "lakekeeper",
             );
             jail.set_env(
-                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__SUBJECT_CLAIMS",
+                "LAKEKEEPER_TEST__OPENID_PROVIDERS__ENTRA__SUBJECT_CLAIM",
                 "oid,sub",
             );
             jail.set_env(
@@ -2558,7 +2581,7 @@ mod test {
             );
             assert_eq!(provider.scope, Some("lakekeeper".to_string()));
             assert_eq!(
-                provider.subject_claims,
+                provider.subject_claim,
                 Some(vec!["oid".to_string(), "sub".to_string()])
             );
             assert_eq!(provider.roles_claim, Some("groups".to_string()));
