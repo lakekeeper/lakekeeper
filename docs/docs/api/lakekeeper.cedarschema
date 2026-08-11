@@ -155,7 +155,16 @@ namespace Lakekeeper {
     // Provider of this role (e.g. "oidc", "lakekeeper", etc.)
     provider_id: String,
     // The ID of this role in its provider
-    source_id: String, 
+    source_id: String,
+  };
+
+  // A governance-tag definition: a project-scoped vocabulary entry that can be
+  // attached to warehouses, namespaces, tables, views, generic tables and columns.
+  // ID: UUID  e.g. "01943e3d-43c5-7a4e-b6dd-a99f0029gcgd"
+  entity Tag in [Project] {
+    project: Project,
+    // Name of the tag definition (e.g. "pii.classification").
+    name: String,
   };
 
   // ---------- Resource Hierarchy ----------
@@ -316,7 +325,7 @@ namespace Lakekeeper {
   action "ProjectModifyActions" in ["ProjectActions"];
   action GetProjectMetadata, ListWarehouses, IncludeProjectInList, ListRoles,
          SearchRoles, GetProjectEndpointStatistics, GetProjectTaskQueueConfig,
-         GetProjectTasks in ["ProjectDescribeActions"]
+         GetProjectTasks, ListTags in ["ProjectDescribeActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Project]
@@ -346,6 +355,16 @@ namespace Lakekeeper {
         // Name of the role being created. Absent when listing allowed actions
         // or when not specified via the check API.
         role_name?: String,
+      }
+    };
+  action CreateTag in ["ProjectModifyActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Project],
+      context: {
+        // Name of the tag definition being created. Absent when listing allowed
+        // actions or when not specified via the check API.
+        tag_name?: String,
       }
     };
 
@@ -380,6 +399,23 @@ namespace Lakekeeper {
       }
     };
 
+  // ---------- Tag Actions ----------
+  // Actions on a governance-tag definition.
+  //   ReadTag            — read a tag definition (name, value kind, allowed values).
+  //   UpdateTag          — update a tag definition (rename, widen scope, add values).
+  //   DeleteTag          — delete a tag definition.
+  //   ApplyTag           — attach this tag to a target (also gated by ManageTags on the target).
+  //   RemoveTag          — detach this tag from a target (also gated by ManageTags on the target).
+  //   ReadTagAttachments      — list every target a tag definition is attached to (reverse lookup).
+  //   IntrospectTagAuthorization — inspect another principal's access to this tag.
+  action "TagActions";
+  action ReadTag, UpdateTag, DeleteTag, ApplyTag, RemoveTag,
+         ReadTagAttachments, IntrospectTagAuthorization in ["TagActions"]
+    appliesTo {
+      principal: [User, Role],
+      resource: [Tag]
+    };
+
   // ---------- Warehouse Actions ----------
   action "WarehouseActions";
   action "WarehouseDescribeActions" in ["WarehouseActions", "WarehouseModifyActions"];
@@ -395,7 +431,7 @@ namespace Lakekeeper {
          DeactivateWarehouse, ActivateWarehouse,
          RenameWarehouse, ModifySoftDeletion,
          ModifyTaskQueueConfig, ControlAllTasks, SetWarehouseProtection,
-         SetWarehouseFormatVersionPolicy in ["WarehouseModifyActions"]
+         SetWarehouseFormatVersionPolicy, ManageWarehouseTags in ["WarehouseModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Warehouse]
@@ -426,7 +462,7 @@ namespace Lakekeeper {
       resource: [Namespace]
     };
   action IntrospectNamespaceAuthorization,
-         SetNamespaceProtection in ["NamespaceModifyActions"]
+         SetNamespaceProtection, ManageNamespaceTags in ["NamespaceModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Namespace]
@@ -536,7 +572,7 @@ namespace Lakekeeper {
     };
   action IntrospectTableAuthorization, WriteTableData, RenameTable,
          UndropTable, ControlTableTasks,
-         SetTableProtection in ["TableModifyActions"]
+         SetTableProtection, ManageTableTags in ["TableModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [Table]
@@ -582,7 +618,7 @@ namespace Lakekeeper {
       resource: [View]
     };
   action IntrospectViewAuthorization, RenameView, UndropView,
-         ControlViewTasks, SetViewProtection in ["ViewModifyActions"]
+         ControlViewTasks, SetViewProtection, ManageViewTags in ["ViewModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [View]
@@ -630,7 +666,7 @@ namespace Lakekeeper {
     };
   action IntrospectGenericTableAuthorization, DropGenericTable, WriteGenericTableData,
          RenameGenericTable, UndropGenericTable, ControlGenericTableTasks,
-         SetGenericTableProtection in ["GenericTableModifyActions"]
+         SetGenericTableProtection, ManageGenericTableTags in ["GenericTableModifyActions"]
     appliesTo {
       principal: [User, Role],
       resource: [GenericTable]

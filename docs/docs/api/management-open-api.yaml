@@ -3383,6 +3383,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse-creation-validation:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Warehouse Configuration
+      description: |-
+        Runs the checks `Create Warehouse` runs — profile syntax, name
+        availability, location overlap, format-version policy, `managed-by`, and
+        physical storage access including credential vending — without creating
+        anything. No warehouse is persisted and no credential is stored.
+
+        Returns 200 whether or not the configuration is usable; inspect `valid` and
+        the per-check results. Requires the same permission as creating a warehouse.
+      operationId: validate_warehouse
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWarehouseRequest'
+        required: true
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}:
     get:
       tags:
@@ -4489,6 +4531,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage/validate-access:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Stored Warehouse Configuration
+      description: |-
+        Re-runs the storage checks against the configuration the warehouse is
+        currently running with, using its stored profile and stored credential.
+        Use this to find out whether a warehouse's storage access still works —
+        for example after a credential has expired or a bucket policy changed.
+      operationId: validate_storage_access
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage/validate-credential:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Storage Credential
+      description: |-
+        Dry-run of `Update Storage Credential`: probes the warehouse's stored
+        storage profile with the supplied replacement credential. The stored
+        credential is left untouched.
+      operationId: validate_storage_credential
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseCredentialRequest'
+        required: true
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/storage/validate-profile:
+    post:
+      tags:
+        - warehouse
+      summary: Validate Storage Profile Update
+      description: |-
+        Dry-run of `Update Storage Profile`: checks that the warehouse's spec may
+        be changed, that the new profile is a permitted evolution of the current
+        one, and that the storage is reachable — without changing the warehouse.
+
+        Probes the incoming profile as supplied, before it would be merged into
+        the stored one, matching what the real update validates.
+      operationId: validate_storage_profile
+      parameters:
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWarehouseStorageRequest'
+        required: true
+      responses:
+        '200':
+          description: Validation ran; see `valid` and `checks` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateWarehouseResponse'
         4XX:
           description: ''
           content:
@@ -6726,6 +6874,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -6798,6 +6947,17 @@ components:
                   enum:
                     - modify
           title: GenericTableAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: GenericTableAssignmentManageTags
     GenericTableRelation:
       type: string
       enum:
@@ -6807,6 +6967,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     GetEndpointStatisticsRequest:
       type: object
       required:
@@ -8722,14 +8883,6 @@ components:
             action:
               type: string
               enum:
-                - update_storage_credential
-        - type: object
-          required:
-            - action
-          properties:
-            action:
-              type: string
-              enum:
                 - get_metadata
         - type: object
           required:
@@ -8902,14 +9055,6 @@ components:
               type: string
               enum:
                 - update_storage
-        - type: object
-          required:
-            - action
-          properties:
-            action:
-              type: string
-              enum:
-                - update_storage_credential
         - type: object
           required:
             - action
@@ -9406,6 +9551,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - set_protection
     NamespaceAssignment:
       oneOf:
@@ -9486,6 +9632,17 @@ components:
                   enum:
                     - modify
           title: NamespaceAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: NamespaceAssignmentManageTags
     NamespaceIdentOrUuid:
       oneOf:
         - type: object
@@ -9522,6 +9679,7 @@ components:
         - select
         - create
         - modify
+        - manage_tags
     OneLakeProfile:
       type: object
       description: |-
@@ -9585,6 +9743,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9599,11 +9758,13 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
     OpenFGAProjectAction:
       type: string
       enum:
         - read_assignments
         - grant_role_creator
+        - grant_tag_creator
         - grant_create
         - grant_describe
         - grant_modify
@@ -9629,6 +9790,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9639,6 +9801,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9653,6 +9816,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - change_ownership
     ProjectAction:
       type: string
@@ -9666,6 +9830,7 @@ components:
         - search_roles
         - read_assignments
         - grant_role_creator
+        - grant_tag_creator
         - grant_create
         - grant_describe
         - grant_modify
@@ -9729,6 +9894,17 @@ components:
                 type:
                   type: string
                   enum:
+                    - tag_creator
+          title: ProjectAssignmentTagCreator
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
                     - describe
           title: ProjectAssignmentDescribe
         - allOf:
@@ -9771,6 +9947,7 @@ components:
         - security_admin
         - data_admin
         - role_creator
+        - tag_creator
         - describe
         - select
         - create
@@ -11039,6 +11216,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -11114,6 +11292,17 @@ components:
                   enum:
                     - modify
           title: TableAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: TableAssignmentManageTags
     TableRelation:
       type: string
       enum:
@@ -11123,6 +11312,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     TableUpdateKind:
       type: string
       description: |-
@@ -12051,6 +12241,97 @@ components:
       enum:
         - human
         - application
+    ValidateWarehouseResponse:
+      type: object
+      description: |-
+        Outcome of validating a warehouse configuration.
+
+        Returned with HTTP 200 whether or not the configuration is usable — a failing
+        check is a result, not a request error. Only authorization and malformed
+        bodies produce a 4xx.
+      required:
+        - valid
+        - checks
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationCheck'
+          description: |-
+            Every check that was considered, in execution order — passed, failed and
+            skipped alike, so the caller can see what was and was not covered.
+        valid:
+          type: boolean
+          description: True when no check failed. Skipped checks do not make a configuration invalid.
+    ValidationCheck:
+      type: object
+      required:
+        - name
+        - status
+      properties:
+        duration-ms:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          description: Wall-clock duration of the check. Absent for skipped checks.
+          minimum: 0
+        error:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/ErrorModel'
+              description: What went wrong. Only set for `failed`.
+        name:
+          $ref: '#/components/schemas/ValidationCheckName'
+        reason:
+          type:
+            - string
+            - 'null'
+          description: Why the check was skipped. Only set for `skipped`.
+        status:
+          $ref: '#/components/schemas/ValidationCheckStatus'
+    ValidationCheckName:
+      type: string
+      description: |-
+        A single check performed against a warehouse configuration.
+
+        Each name is a claim about the configuration that is true exactly when the
+        check's `status` is `passed`. A check that asserts a property of a subject is
+        named `<subject>-<predicate>`, the predicate an adjective or past participle;
+        a check that exercises an operation is named after the operation. A check is
+        never named after the failure it detects — a requirement that is naturally
+        negative is stated as the positive property that must hold.
+
+        These are stable wire identifiers. Adding a value is a breaking change for
+        generated clients, which reject unknown enum values, so new checks ship in a
+        release that clients must upgrade to.
+      enum:
+        - profile-well-formed
+        - profile-compatible
+        - warehouse-name-valid
+        - location-exclusive
+        - spec-mutable
+        - format-version-policy-consistent
+        - managed-by-allowed
+        - storage-client-initialized
+        - lakekeeper-read-write
+        - vended-credentials-issued
+        - vended-credentials-read-write
+        - vended-credentials-scope-enforced
+        - cleanup
+    ValidationCheckStatus:
+      type: string
+      description: |-
+        The outcome of a single check.
+
+        `passed` and `failed` are verdicts about the configuration. `skipped` is not
+        a verdict: the check did not apply, or a prerequisite failed, and `reason`
+        says which. Skipped checks never make a configuration invalid, so a report
+        can be `valid` with nothing actually verified — read the individual checks.
+      enum:
+        - passed
+        - failed
+        - skipped
     ViewAction:
       type: string
       enum:
@@ -12062,6 +12343,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -12137,6 +12419,17 @@ components:
                   enum:
                     - modify
           title: ViewAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: ViewAssignmentManageTags
     ViewRelation:
       type: string
       enum:
@@ -12146,6 +12439,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     WarehouseAction:
       type: string
       enum:
@@ -12168,6 +12462,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - change_ownership
         - get_all_tasks
         - control_all_tasks
@@ -12253,6 +12548,17 @@ components:
                   enum:
                     - modify
           title: WarehouseAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: WarehouseAssignmentManageTags
     WarehouseFilter:
       oneOf:
         - type: object
@@ -12296,6 +12602,7 @@ components:
         - select
         - create
         - modify
+        - manage_tags
     WarehouseStatistics:
       type: object
       required:
