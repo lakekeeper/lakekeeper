@@ -50,11 +50,13 @@ storage-gcs = [
     "dep:time",
 ]
 storage-in-memory = ["dep:iceberg"]
-# Bridge exposing a `LakekeeperStorage` as an `object_store::ObjectStore`.
-# Requires at least one storage backend (for the streaming writer). Off by
-# default — enabled by consumers that need the object_store integration
-# (e.g. DataFusion-based compaction).
-object-store = ["dep:object_store"]
+# Bridges a `LakekeeperStorage` to `object_store::ObjectStore` (and, via
+# `storage-in-memory`, to iceberg `FileIO`). The streaming writer requires a
+# storage backend, so this pulls the minimal one (`storage-in-memory`, which also
+# enables the `iceberg` dep and the `iceberg_bridge`/`object_store_bridge`
+# modules) — no cloud SDK is forced. Off by default; enabled by consumers that
+# need the object_store integration (e.g. DataFusion-based compaction).
+object-store = ["dep:object_store", "storage-in-memory"]
 default = ["storage-s3", "storage-adls", "storage-gcs"]
 
 [dependencies]
