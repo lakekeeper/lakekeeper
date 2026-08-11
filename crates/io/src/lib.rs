@@ -30,6 +30,17 @@ pub mod gcs;
 mod location;
 #[cfg(feature = "storage-in-memory")]
 pub mod memory;
+
+#[cfg(all(
+    feature = "object-store",
+    any(
+        feature = "storage-adls",
+        feature = "storage-gcs",
+        feature = "storage-in-memory",
+        feature = "storage-s3"
+    )
+))]
+pub mod object_store_bridge;
 #[cfg(feature = "storage-s3")]
 pub mod s3;
 
