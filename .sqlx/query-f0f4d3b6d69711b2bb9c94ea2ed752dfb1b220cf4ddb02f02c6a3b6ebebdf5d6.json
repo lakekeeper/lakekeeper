@@ -170,6 +170,10 @@
                 "management-v1-set-generic-table-tag",
                 "management-v1-delete-generic-table-tag",
                 "management-v1-list-generic-table-tags",
+                "management-v1-validate-warehouse",
+                "management-v1-validate-storage-profile",
+                "management-v1-validate-storage-credential",
+                "management-v1-validate-storage-access",
                 "management-v1-list-grants",
                 "management-v1-get-grantable-privileges",
                 "management-v1-list-warehouse-grants",
@@ -196,11 +200,7 @@
                 "management-v1-get-table-grantable-privileges",
                 "management-v1-get-view-grantable-privileges",
                 "management-v1-get-generic-table-grantable-privileges",
-                "management-v1-get-tag-grantable-privileges",
-                "management-v1-validate-warehouse",
-                "management-v1-validate-storage-profile",
-                "management-v1-validate-storage-credential",
-                "management-v1-validate-storage-access"
+                "management-v1-get-tag-grantable-privileges"
               ]
             }
           }
