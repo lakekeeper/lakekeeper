@@ -19,7 +19,12 @@ ignored = ["cloudevents-sdk", "k8s-openapi"]
 [features]
 all = ["s3-signer", "router", "open-api"]
 s3-signer = ["dep:aws-sigv4"]
-router = ["dep:tower-http", "dep:tower"]
+router = [
+    "dep:opentelemetry",
+    "dep:tower-http",
+    "dep:tower",
+    "dep:tracing-opentelemetry",
+]
 default = ["s3-signer", "router"]
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
@@ -73,6 +78,7 @@ lakekeeper-io = { path = "../io", features = [
 lazy-regex = { workspace = true }
 limes = { workspace = true }
 moka = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
 pastey = { workspace = true }
 percent-encoding = { workspace = true }
 quick-xml = { workspace = true }
@@ -99,6 +105,7 @@ tower-http = { workspace = true, optional = true, features = [
     "cors",
 ] }
 tracing = { workspace = true, features = ["attributes", "valuable"] }
+tracing-opentelemetry = { workspace = true, optional = true }
 typed-builder = { workspace = true }
 unicase = { workspace = true }
 url = { workspace = true }
@@ -120,6 +127,7 @@ lakekeeper = { path = ".", features = ["test-utils"] }
 lakekeeper-io = { path = "../io", features = ["storage-in-memory"] }
 maplit = { workspace = true }
 mockall = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_norway = { workspace = true }
 similar = { workspace = true }

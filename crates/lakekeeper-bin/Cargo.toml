@@ -39,10 +39,15 @@ lakekeeper-events-nats = { path = "../lakekeeper-events-nats" }
 lakekeeper-secrets-kv2 = { path = "../lakekeeper-secrets-kv2" }
 lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
 limes = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 tikv-jemallocator = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["background_threads"] }

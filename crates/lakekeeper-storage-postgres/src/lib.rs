@@ -89,8 +89,20 @@ type PostgresTransactionType<'a> = &'a mut sqlx::Transaction<'static, sqlx::Post
 impl Transaction<CatalogState> for PostgresTransaction {
     type Transaction<'a> = PostgresTransactionType<'a>;
 
+    #[tracing::instrument(
+        name = "postgres.transaction.begin",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            db.system.name = "postgresql",
+            db.operation.name = "begin",
+            lakekeeper.postgres.pool = "write"
+        )
+    )]
     async fn begin_write(db_state: CatalogState) -> Result<Self> {
         let transaction = db_state.write_pool().begin().await.map_err(|e| {
+            tracing::error!(error = ?e, "Failed to begin PostgreSQL write transaction");
             if crate::pool_metrics::is_pool_timeout(&e) {
                 crate::pool_metrics::record_acquire_timeout("write");
             }
@@ -100,8 +112,20 @@ impl Transaction<CatalogState> for PostgresTransaction {
         Ok(Self { transaction })
     }
 
+    #[tracing::instrument(
+        name = "postgres.transaction.begin",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            db.system.name = "postgresql",
+            db.operation.name = "begin",
+            lakekeeper.postgres.pool = "read"
+        )
+    )]
     async fn begin_read(db_state: CatalogState) -> Result<Self> {
         let mut transaction = db_state.read_pool().begin().await.map_err(|e| {
+            tracing::error!(error = ?e, "Failed to begin PostgreSQL read transaction");
             if crate::pool_metrics::is_pool_timeout(&e) {
                 crate::pool_metrics::record_acquire_timeout("read");
             }
@@ -112,24 +136,45 @@ impl Transaction<CatalogState> for PostgresTransaction {
             .execute("SET TRANSACTION READ ONLY")
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, "Failed to mark PostgreSQL transaction as read-only");
                 e.into_error_model("Error setting transaction to read-only".to_string())
             })?;
         Ok(Self { transaction })
     }
 
+    #[tracing::instrument(
+        name = "postgres.transaction.commit",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            db.system.name = "postgresql",
+            db.operation.name = "commit"
+        )
+    )]
     async fn commit(self) -> Result<()> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(|e| e.into_error_model("Error committing transaction".to_string()))?;
+        self.transaction.commit().await.map_err(|e| {
+            tracing::error!(error = ?e, "Failed to commit PostgreSQL transaction");
+            e.into_error_model("Error committing transaction".to_string())
+        })?;
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "postgres.transaction.rollback",
+        level = "info",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            db.system.name = "postgresql",
+            db.operation.name = "rollback"
+        )
+    )]
     async fn rollback(self) -> Result<()> {
-        self.transaction
-            .rollback()
-            .await
-            .map_err(|e| e.into_error_model("Error rolling back transaction".to_string()))?;
+        self.transaction.rollback().await.map_err(|e| {
+            tracing::error!(error = ?e, "Failed to roll back PostgreSQL transaction");
+            e.into_error_model("Error rolling back transaction".to_string())
+        })?;
         Ok(())
     }
 

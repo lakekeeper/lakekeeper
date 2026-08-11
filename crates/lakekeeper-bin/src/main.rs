@@ -16,14 +16,13 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use clap::{Parser, Subcommand, ValueEnum};
 use lakekeeper::{CONFIG, tokio, tracing};
 use lakekeeper_storage_postgres::{CatalogState, PostgresBackend};
-use tracing_subscriber::{EnvFilter, filter::LevelFilter};
-
 mod authorizer;
 mod config;
 mod events;
 mod healthcheck;
 mod secrets;
 mod serve;
+mod telemetry;
 #[cfg(feature = "ui")]
 mod ui;
 mod wait_for_db;
@@ -182,20 +181,9 @@ impl From<ReconcileModeArg> for lakekeeper_authz_openfga::ReconcileMode {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_current_span(false)
-        .with_span_list(true)
-        .with_file(CONFIG_BIN.debug.extended_logs)
-        .with_line_number(CONFIG_BIN.debug.extended_logs)
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    let serves_requests = matches!(&cli.command, Some(Commands::Serve { .. }))
+        || (cli.command.is_none() && CONFIG_BIN.debug.auto_serve);
+    let _telemetry = telemetry::init(serves_requests)?;
 
     match cli.command {
         Some(Commands::WaitForDB {
