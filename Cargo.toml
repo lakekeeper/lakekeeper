@@ -129,6 +129,7 @@ metrics = "0.24"
 middle = { version = "0.4", features = ["tonic"] }
 mockall = "0.14.0"
 moka = { version = "^0.12", features = ["future"] }
+object_store = { version = "0.13", default-features = false }
 pastey = "0.2.1"
 percent-encoding = "2.3.1"
 pretty_assertions = "~1.4"

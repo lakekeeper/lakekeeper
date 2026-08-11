@@ -50,6 +50,11 @@ storage-gcs = [
     "dep:time",
 ]
 storage-in-memory = ["dep:iceberg"]
+# Bridge exposing a `LakekeeperStorage` as an `object_store::ObjectStore`.
+# Requires at least one storage backend (for the streaming writer). Off by
+# default — enabled by consumers that need the object_store integration
+# (e.g. DataFusion-based compaction).
+object-store = ["dep:object_store"]
 default = ["storage-s3", "storage-adls", "storage-gcs"]
 
 [dependencies]
@@ -80,6 +85,7 @@ google-cloud-token = { workspace = true, optional = true }
 iceberg = { workspace = true, optional = true }
 md5 = { workspace = true }
 moka = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true, optional = true }
