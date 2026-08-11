@@ -55,13 +55,16 @@ Instance admins do **not** bypass authorization for:
 - **Role assumption** (`x-assume-role` header) — an instance admin must act
   with their own identity. Assuming a role opts into that role's narrower
   scope.
-- **Permission-management endpoints** exposed by the active Authorizer
-  (for example `/management/v1/permissions/...` under OpenFGA; Cedar
-  exposes its own set) — the instance-admin bypass does **not** apply to
-  these. Writes go through the Authorizer's own grant-check path, so an
-  instance admin cannot directly make Alice a `project_admin`. Ongoing
-  permission administration stays with a principal that holds real grants
-  in the configured Authorizer.
+- **Permission management** — the [`/management/v1/.../grants`](./grants.md)
+  API under every Authorizer, and the endpoints the active Authorizer exposes
+  itself (for example `/management/v1/permissions/...` under OpenFGA; Cedar
+  exposes its own set). The instance-admin bypass does **not** apply to any
+  of them: writes go through the Authorizer's own grant-check path, so an
+  instance admin cannot directly make Alice a `project_admin`. Reading grant
+  authority is refused on the same footing — a `grants/grantable-privileges`
+  listing reports an instance admin as able to grant nothing, because that is
+  the truth. Ongoing permission administration stays with a principal that
+  holds real grants in the configured Authorizer.
 
 This split keeps a leaked operator credential from being trivially used
 either to exfiltrate data or to escalate arbitrary principals to admin.
@@ -109,9 +112,11 @@ some other config systems accept (`LAKEKEEPER__INSTANCE_ADMINS__0=...`) is
 - **Role-assumed requests.** Setting `x-assume-role` on a request from an
   instance admin drops the bypass for that request — the effective scope is
   whatever the assumed role holds.
-- **Permission administration.** Because instance admins cannot write to
-  the OpenFGA permission-management endpoints, day-to-day management of
-  role grants and assignments is done by a human (or service) principal
-  that was bootstrapped through OpenFGA. The operator use case is
-  provisioning (creating projects/warehouses, initial bootstrap), not
-  ongoing user administration.
+- **Permission administration.** Because instance admins cannot write
+  grants or permission assignments, day-to-day management of them is done by
+  a human (or service) principal that holds real grants in the configured
+  Authorizer — under OpenFGA, one bootstrapped through it. The operator use
+  case is provisioning (creating projects/warehouses, initial bootstrap), not
+  ongoing user administration. A fresh deployment gets its first grant-holder
+  without one: bootstrap makes the bootstrapping principal a server admin (or
+  operator), and creating a project makes its creator that project's admin.

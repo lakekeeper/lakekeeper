@@ -9,7 +9,7 @@ The two words are used strictly throughout the API: a *privilege* is only ever t
 
 ## Grants and the authorizer
 
-The configured [Authorizer](./authorization.md) decides every request; grants are records it decides from. The `/management/v1/.../grants` API is the same under **every** authorizer — that is what distinguishes it from the OpenFGA-specific `/management/v1/permissions/...` API, which returns 404 elsewhere — but the authorizer, not the API, defines what a grant means:
+The configured [Authorizer](./authorization.md) decides every request; grants are records it decides from. The `/management/v1/.../grants` API works under **every** authorizer — that is what distinguishes it from the OpenFGA-specific `/management/v1/permissions/...` API, which returns 404 elsewhere — but the authorizer, not the API, defines what a grant means:
 
 - **Which privileges exist.** Each authorizer publishes its own vocabulary. Fetch it from `GET /management/v1/grants/grantable-privileges` rather than hardcoding names — sending a name the server does not know is a `400`.
 - **What a privilege implies.** Whether `select` includes `describe`, and whether a warehouse grant reaches the tables inside it, is the authorizer's model. Under OpenFGA, see [Grants in the OpenFGA model](./authorization-openfga.md#grants).
@@ -52,6 +52,9 @@ The same shape works on every level: `server`, `project`, `warehouse`, `namespac
 - `writes` must name privileges from the vocabulary; `deletes` need not — a privilege that has left the vocabulary must stay revocable, or its grants would be stuck forever.
 
 Applying a grant requires grant authority on the resource — under OpenFGA, the matching `can_grant_*` relation (via `manage_grants`, or `pass_grants` plus holding the privilege yourself).
+
+!!! note "Instance admins cannot grant"
+    The [instance-admin bypass](./authorization.md#instance-admins) does not reach this API. Granting is permission administration, so it always goes through the configured Authorizer — otherwise a leaked operator credential could make any principal an admin. Instance admins provision; a principal holding real grants administers permissions.
 
 !!! note "Why no delta is returned"
     Whether a grant was *newly* created or already held is not something every authorizer can determine. The catalog database computes it inside the apply transaction; an authorizer that owns its grants writes idempotently and cannot see the prior state without a second read it may not be able to make consistently. Reporting it would mean one response field meaning different things on different deployments. Ask `GET .../grants` for what exists now, and read the `grant_created`/`grant_revoked` audit events for what changed. The same reasoning applies to the older `/permissions/…/assignments` diff endpoints, which likewise return `204`.
@@ -109,16 +112,23 @@ returns the level's **whole** vocabulary, each entry marked `allowed: true|false
 
 All three fields come from the authorizer; treat an unrecognized category as its own group and `null` as ungrouped. Add `principalUser`/`principalRole` to ask on someone else's behalf, which requires the resource's grant-read permission.
 
-## The project-wide view
+## What one principal holds
 
-One listing spans the whole project — the export and audit view:
+One listing spans the whole project, for a single principal — "what does alice have here":
 
 ```http
-GET /management/v1/grants
 GET /management/v1/grants?principalUser=oidc~alice
+GET /management/v1/grants?principalRole=<role_id>
 ```
 
-Unnarrowed, it lists every grant in the project and requires the project's grant-read permission; narrowed to yourself, it is free. Server grants belong to no project and are excluded — use `GET /management/v1/server/grants`. Under OpenFGA this listing is assembled in one pass rather than paged; see [the OpenFGA notes](./authorization-openfga.md#managing-grants-through-the-grants-api).
+Exactly one of the two is **required**: a request naming neither is refused with `MissingGrantPrincipal` (400). The listing crosses every resource in the project, so an unnarrowed answer would be sized by the deployment rather than by the question — to read every grant on one resource, use that resource's own listing.
+
+Asking about another principal requires the project's grant-read permission; asking about yourself is free. Server grants belong to no project and are excluded — use `GET /management/v1/server/grants`.
+
+!!! warning "Not available under every authorizer"
+    This is the one endpoint on the grants surface whose availability depends on where grants are stored. An authorizer that indexes permissions by resource cannot answer it without reading its whole store, so it reports `GrantListingNotImplemented` (501) instead — **OpenFGA does**. With grants in the catalog database it works and pages normally. `GET /info` reports the configured backend, and every per-resource listing works under every authorizer.
+
+To answer "who can do what in this project", walk the resources you care about and read each one's grants. There is no whole-project export endpoint.
 
 ## Reference
 
@@ -126,7 +136,7 @@ Unnarrowed, it lists every grant in the project and requires the project's grant
 
 - Deleting a resource revokes its grants with it.
 - Deleting a user revokes their grants, so a re-created user id never inherits access. Per-grant `GrantRevoked` events are emitted under the catalog store; an authorizer that owns its grants removes them with the user's other relations, without per-grant events.
-- Soft-deleted tables and views keep their grants until expiration, so an undrop restores the access that was there before. They stay visible on the resource's own listing; whether they also appear in the project-wide roll-up depends on the authorizer (see below).
+- Soft-deleted tables and views keep their grants until expiration, so an undrop restores the access that was there before. They stay visible on the resource's own listing; whether they also appear in the project-scoped listing depends on the authorizer (see below).
 - Deactivating a warehouse hides its children's grants (its tables read as absent) but not its own, so an administrator can still audit and revoke at the warehouse level.
 
 **Auditing.** Every grant read and write emits an authorization event, and every change that actually happened emits a typed `GrantCreated` or `GrantRevoked` event carrying the full triple. Both reach the audit log.
@@ -135,7 +145,7 @@ Grants are current state, not history: a listing tells you what access exists, n
 
 **Boundaries.** Grants say what a principal *may* do. They cannot express deny rules, conditions (time windows, IP ranges), or row filters and column masks — those belong to a policy engine. Combine grants with roles to keep the grant count manageable: grant to a role once, then manage membership.
 
-**Authorizer differences.** The API surface is identical; a few behaviors differ by where grants are stored:
+**Authorizer differences.** Every endpoint is reachable under every authorizer, with one exception noted in the table; behaviors differ by where grants are stored:
 
 | | Catalog store | OpenFGA |
 |---|---|---|
@@ -143,14 +153,13 @@ Grants are current state, not history: a listing tells you what access exists, n
 | Principal must exist | yes — an unknown user or role is `404 GrantTargetNotFound` | a user is taken as given, so granting to a mistyped id succeeds silently. Roles are still checked, but by the API rather than the store, so a role must exist and be in the project — except at the **server** level, which has no project to check against: there a grant to a nonexistent role succeeds |
 | Revoking an unrecognized privilege | works | refused with `403` |
 | Paging one resource's grants | normal paging | also pages, but an empty page can still carry a continuation token — non-privilege tuples are filtered out *after* paging, so only an absent token means the end |
-| Paging the project and principal roll-ups | normal paging | assembled in one pass: `pageSize` and page tokens are refused with `GrantListingNotPageable` (400) rather than ignored, and a roll-up too large to assemble at once is refused with `GrantListingTooLarge` (400). The unnarrowed roll-up reads the authorizer's whole store — every relation of every object, not only grants — so the limit is a function of how many objects the deployment holds, not how many grants. Expect it around 50,000 stored relations, which a catalog of roughly 16,000 tables reaches with no grants recorded at all. Narrow with `principalUser`/`principalRole`, or read one resource's grants from its own endpoint |
+| The project-scoped listing `GET /grants` | supported, pages normally | **not supported** — `GrantListingNotImplemented` (501). Tuples are indexed by object, so answering it means reading the store a level at a time; read one resource's grants from its own endpoint, or query OpenFGA directly |
 | Applying below the warehouse under an assumed role | works | refused with `GrantNotSupported` — managed access has no public userset below the warehouse, so the request cannot be evaluated for a role. The same restriction the `/permissions` assignments API applies |
 | Grant events on user deletion | one `grant_revoked` per grant | none — the authorizer removes the principal's grants with its other relations, without enumerating them |
 | No-op grant events | suppressed | not suppressed — grant events are at-least-once under both, but only the catalog store can tell a no-op from a change |
-| Grants on a soft-deleted table in the project roll-up | excluded — a trashed table's grants stay off a principal's access list until it is restored | included: soft-deleting a tabular removes nothing from the authorizer, and resolving a grant to its project uses only the authorizer's own hierarchy, which cannot see the deletion |
 | `pageSize` above 100 on a resource's grants | honoured up to the deployment maximum (default 1000) | clamped to 100 — the authorizer's read caps a page there. Follow the token rather than raising the page size |
 | A privilege no longer in the vocabulary | listed with `recognized: false`, and still revocable | dropped from the listing entirely — the privilege is stored as a relation, and one the model does not define has no name to report |
-| A grant whose resource is deleted | removed in the same transaction as the resource, by foreign key | removed afterwards, best effort. If that write fails the grant stays: it keeps appearing in the project roll-up and can no longer be revoked, because the resource's own endpoint now answers `404`. `openfga reconcile` does not clean grants |
+| A grant whose resource is deleted | removed in the same transaction as the resource, by foreign key | removed afterwards, best effort. If that write fails the grant stays: the grant stays and can no longer be revoked, because the resource's own endpoint now answers `404`. `openfga reconcile` does not clean grants |
 | Deleting a warehouse | removes the grants on its namespaces and tabulars too | removes only the warehouse's own. Grants inside it are left behind — invisible to listings, since the path back to the project is gone, but never reclaimed |
 | Two applies racing on one resource | serialized per resource; a contended apply may be refused with `GrantLockTimeout` (409) and should be retried | one atomic write, so there is no lock to wait on and no conflict to surface |
 

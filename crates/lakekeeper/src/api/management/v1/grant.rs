@@ -385,13 +385,14 @@ impl axum::response::IntoResponse for ResourceGrantablePrivilegesResponse {
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
 pub struct ListGrantsQuery {
-    /// List only the grants held by this user. Mutually exclusive with `principalRole`;
-    /// supplying neither lists every principal's.
+    /// List only the grants held by this user. Mutually exclusive with `principalRole`.
+    /// A resource's own listing accepts neither and then lists every principal's; the
+    /// project-wide listing requires one of the two.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<String>))]
     pub principal_user: Option<UserId>,
-    /// List only the grants held by this role. Mutually exclusive with `principalUser`;
-    /// supplying neither lists every principal's.
+    /// List only the grants held by this role. Mutually exclusive with `principalUser`,
+    /// and subject to the same requirement on the project-wide listing.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<uuid::Uuid>))]
     pub principal_role: Option<crate::service::RoleId>,
@@ -401,6 +402,24 @@ impl ListGrantsQuery {
     /// Which principal to narrow to, or `None` for all of them.
     fn try_principal(&self) -> Result<Option<UserOrRoleId>> {
         principal_from_params(self.principal_user.as_ref(), self.principal_role)
+    }
+
+    /// The principal to narrow to, refusing a listing that names none.
+    ///
+    /// Only the project-wide listing requires one. A resource's own listing is bounded
+    /// by the resource, so listing every principal's grants there costs what the caller
+    /// asked for; the project-wide listing is bounded by the project, so an unnarrowed
+    /// answer grows with the deployment instead.
+    fn require_principal(&self) -> Result<UserOrRoleId> {
+        self.try_principal()?.ok_or_else(|| {
+            bad_request(
+                "Specify `principalUser` or `principalRole`: this listing answers for \
+                 one principal at a time. To read every grant held on a single resource, \
+                 use that resource's own listing.",
+                "MissingGrantPrincipal",
+            )
+            .into()
+        })
     }
 }
 
@@ -1042,10 +1061,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await
     }
 
-    /// List grants across a whole project, optionally narrowed to one principal.
+    /// List one principal's grants across a whole project.
     ///
-    /// This is the audit and export view. Server grants are excluded: they belong to no
-    /// project, so `GET /server/grants` covers them.
+    /// This is the "what does this principal hold here" view. A principal is required:
+    /// see [`ListGrantsQuery::require_principal`]. Server grants are excluded: they
+    /// belong to no project, so `GET /server/grants` covers them.
     ///
     /// Grants are reported at the layer they are held: a grant a role holds is listed
     /// under that role, not under the users who have the role, and a grant on an
@@ -1058,18 +1078,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         pagination: PaginationQuery,
     ) -> Result<ListGrantsResponse> {
         let project_id = request_metadata.require_project_id(None)?;
-        let principal = query.try_principal()?;
+        // Before the gate, as the two-principals rejection is: a request that names no
+        // principal has no listing to authorize.
+        let principal = query.require_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
 
         // Asking about yourself is free — the same self-introspection allowance the
-        // action endpoints make. Any other principal, and the project-wide listing,
-        // read other people's access and need the project-level gate. Unlike the
-        // per-resource listings there is no resource to be allowed to see, so the self
-        // path falls back to the project's can-see action rather than to no check at
-        // all: `project_id` comes from `x-project-id`, and an unchecked path would
-        // answer for a project the caller has no relation to.
-        let is_self = is_self_read(principal.as_ref(), &request_metadata);
+        // action endpoints make. Any other principal reads someone else's access and
+        // needs the project-level gate. Unlike the per-resource listings there is no
+        // resource to be allowed to see, so the self path falls back to the project's
+        // can-see action rather than to no check at all: `project_id` comes from
+        // `x-project-id`, and an unchecked path would answer for a project the caller
+        // has no relation to.
+        let is_self = is_self_read(Some(&principal), &request_metadata);
 
         let required = if is_self {
             CatalogProjectAction::GetMetadata
@@ -1092,12 +1114,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .map_err(AuthZError::from);
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
 
-        let filter = match principal {
-            Some(principal) => GrantFilter::ByPrincipal {
-                principal,
-                project_id: (*project_id).clone(),
-            },
-            None => GrantFilter::ByProject((*project_id).clone()),
+        let filter = GrantFilter::ByPrincipal {
+            principal,
+            project_id: (*project_id).clone(),
         };
         list_and_render::<A, C>(
             &authorizer,

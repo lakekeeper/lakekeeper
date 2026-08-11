@@ -222,12 +222,21 @@ pub enum GrantFilter {
     /// principal hold"). Project-scoped because a principal's grants otherwise
     /// span every project. Server grants are not project-scoped and are excluded;
     /// name the server resource to read those.
+    ///
+    /// Only the catalog store answers this. An authorizer that owns its grants may
+    /// have no index by principal or by project, and is expected to report
+    /// [`GrantListingNotImplemented`] rather than walk its store.
     ByPrincipal {
         principal: UserOrRoleId,
         project_id: ProjectId,
     },
     /// Every grant in a project, for export and audit. Server grants are excluded
     /// for the same reason as above.
+    ///
+    /// No endpoint constructs this: the project-wide listing requires a principal,
+    /// because an unnarrowed answer is sized by the deployment rather than by the
+    /// request. Kept as a catalog-store capability for an export surface that can
+    /// stream a whole project.
     ByProject(ProjectId),
 }
 
@@ -392,19 +401,20 @@ impl AuthorizationFailureSource for GrantNotSupported {
     }
 }
 
-/// The listing spans more grants than the authorizer will assemble in one request.
+/// This authorizer cannot answer a listing that is not scoped to one resource.
 ///
-/// A request-shape problem, not an availability one: the backend is healthy and the
-/// same question asked about one principal or one resource succeeds. Reported as 400 so
-/// an operator is not sent to check a backend that is fine, and carrying the narrowing
-/// that works, since it is the only thing a caller can act on.
+/// A statement about the deployment, not the request, so 501 rather than 4xx: the same
+/// question is answerable on a resource's own listing, and on a deployment whose grants
+/// live in the catalog it is answerable here too. Reported rather than approximated —
+/// an authorizer that has to walk its whole store to answer would have to choose
+/// between a request sized by the deployment and a silently short result.
 #[derive(Debug, thiserror::Error)]
 #[error("{reason}")]
-pub struct GrantListingTooLarge {
+pub struct GrantListingNotImplemented {
     reason: String,
 }
 
-impl GrantListingTooLarge {
+impl GrantListingNotImplemented {
     #[must_use]
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
@@ -413,40 +423,9 @@ impl GrantListingTooLarge {
     }
 }
 
-impl AuthorizationFailureSource for GrantListingTooLarge {
+impl AuthorizationFailureSource for GrantListingNotImplemented {
     fn into_error_model(self) -> ErrorModel {
-        ErrorModel::bad_request(self.reason, "GrantListingTooLarge", None)
-    }
-
-    fn to_failure_reason(&self) -> AuthorizationFailureReason {
-        AuthorizationFailureReason::InvalidRequestData
-    }
-}
-
-/// The caller asked to page a listing the authorizer assembles in one pass.
-///
-/// Reported rather than ignored: a silently dropped `pageSize` returns a single
-/// response that looks like a first page, and a client that trusts it stops early
-/// believing it has seen everything. Refusing is the only outcome the caller can
-/// detect. A request that asks for no paging is unaffected.
-#[derive(Debug, thiserror::Error)]
-#[error("{reason}")]
-pub struct GrantListingNotPageable {
-    reason: String,
-}
-
-impl GrantListingNotPageable {
-    #[must_use]
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-}
-
-impl AuthorizationFailureSource for GrantListingNotPageable {
-    fn into_error_model(self) -> ErrorModel {
-        ErrorModel::bad_request(self.reason, "GrantListingNotPageable", None)
+        ErrorModel::not_implemented(self.reason, "GrantListingNotImplemented", None)
     }
 
     fn to_failure_reason(&self) -> AuthorizationFailureReason {
@@ -481,8 +460,7 @@ impl From<ApplyGrantsError> for ErrorModel {
 pub enum ListGrantsError {
     BackendUnavailable(AuthorizationBackendUnavailable),
     Malformed(MalformedGrant),
-    TooLarge(GrantListingTooLarge),
-    NotPageable(GrantListingNotPageable),
+    NotImplemented(GrantListingNotImplemented),
 }
 
 impl From<ListGrantsError> for ErrorModel {
@@ -490,8 +468,7 @@ impl From<ListGrantsError> for ErrorModel {
         match err {
             ListGrantsError::BackendUnavailable(e) => e.into_error_model(),
             ListGrantsError::Malformed(e) => e.into_error_model(),
-            ListGrantsError::TooLarge(e) => e.into_error_model(),
-            ListGrantsError::NotPageable(e) => e.into_error_model(),
+            ListGrantsError::NotImplemented(e) => e.into_error_model(),
         }
     }
 }
@@ -554,9 +531,9 @@ pub trait AuthZGrantOps: Authorizer {
     /// be a variant of a catalog-wide action enum, and resolving it may fail (an unknown
     /// name is a deny, not a panic).
     ///
-    /// Asking about yourself is normalized away and the control-plane bypass is applied
-    /// before the authorizer is consulted, the same wrapper every
-    /// `are_allowed_*_actions_vec` applies.
+    /// Asking about yourself is normalized away before the authorizer is consulted, as
+    /// every `are_allowed_*_actions_vec` does. The control-plane bypass is **not**
+    /// applied — see the body.
     async fn are_allowed_grants(
         &self,
         metadata: &RequestMetadata,
@@ -569,9 +546,12 @@ pub trait AuthZGrantOps: Authorizer {
         if metadata.actor().to_user_or_role().as_ref() == for_user {
             for_user = None;
         }
-        if metadata.bypasses_control_plane_authz(for_user) {
-            return Ok(vec![AuthorizationDecision::allow(); privileges.len()]);
-        }
+        // No `bypasses_control_plane_authz` here, unlike every other control-plane
+        // check. Granting is permission administration: an instance admin holds a
+        // static config credential, and letting it write grants would let a leaked one
+        // escalate any principal to admin — under an authorizer that owns its grants,
+        // by writing the very records its own permission API refuses them. Instance
+        // admins provision; they do not administer permissions.
         let decisions = self
             .are_allowed_grants_impl(metadata, for_user, resource, privileges)
             .await?;

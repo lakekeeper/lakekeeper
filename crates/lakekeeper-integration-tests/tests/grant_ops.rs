@@ -131,6 +131,14 @@ fn no_pagination() -> PaginationQuery {
     PaginationQuery::new(PageToken::Empty, None)
 }
 
+/// The project-wide listing requires a principal, so every call to it names one.
+fn for_user(user: &UserId) -> ListGrantsQuery {
+    ListGrantsQuery {
+        principal_user: Some(user.clone()),
+        principal_role: None,
+    }
+}
+
 /// A role in the request's project, so it is a legal grant principal.
 async fn create_role_in_project(ctx: &Ctx, metadata: &RequestMetadata) -> RoleId {
     let created = Server::create_role(
@@ -251,7 +259,7 @@ async fn apply_and_list_namespace_grants(pool: PgPool) {
     let all = Server::list_grants(
         f.ctx.clone(),
         f.metadata.clone(),
-        ListGrantsQuery::default(),
+        for_user(&f.alice),
         no_pagination(),
     )
     .await
@@ -440,10 +448,11 @@ async fn apply_and_list_server_grants(pool: PgPool) {
     assert_eq!(page.grants.len(), 1);
     assert_eq!(page.grants[0].resource, GrantResourceResponse::Server);
 
+    // The project-scoped listing excludes them even for the principal who holds them.
     let all = Server::list_grants(
         f.ctx.clone(),
         f.metadata.clone(),
-        ListGrantsQuery::default(),
+        for_user(&f.alice),
         no_pagination(),
     )
     .await
@@ -522,7 +531,7 @@ async fn the_project_listing_covers_every_level(pool: PgPool) {
     let page = Server::list_grants(
         f.ctx.clone(),
         f.metadata.clone(),
-        ListGrantsQuery::default(),
+        for_user(&f.alice),
         no_pagination(),
     )
     .await
@@ -541,20 +550,25 @@ async fn the_project_listing_covers_every_level(pool: PgPool) {
     kinds.sort();
     // The server grant is deliberately absent: it has no project to be listed under.
     assert_eq!(kinds, vec!["project", "table", "warehouse"]);
+}
 
-    // Narrowing to the principal reports the same set.
-    let page = Server::list_grants(
+/// The listing answers for one principal, so a request that names none is a client
+/// error rather than a licence to read the whole project. Refused before the
+/// authorization check, like the two-principals rejection: there is no listing to
+/// authorize yet.
+#[sqlx::test]
+async fn the_project_listing_requires_a_principal(pool: PgPool) {
+    let f = setup(pool).await;
+    let err = Server::list_grants(
         f.ctx.clone(),
         f.metadata.clone(),
-        ListGrantsQuery {
-            principal_user: Some(f.alice.clone()),
-            principal_role: None,
-        },
+        ListGrantsQuery::default(),
         no_pagination(),
     )
     .await
-    .unwrap();
-    assert_eq!(page.grants.len(), 3);
+    .unwrap_err();
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "MissingGrantPrincipal");
 }
 
 /// Grants are reported at the layer they are held. A grant a role holds must not
@@ -1482,7 +1496,8 @@ async fn your_own_grants_need_no_authority_but_another_principals_do(pool: PgPoo
     assert_eq!(err.error.code, 403);
     assert_eq!(err.error.r#type, "ProjectActionForbidden");
 
-    // The project-wide listing (no principal) is gated too.
+    // Naming nobody is refused outright rather than falling back to the gate, so a
+    // caller who omits the principal never learns whether they would have been allowed.
     let err = DenyServer::list_grants(
         f.ctx.clone(),
         as_principal(&f.alice, &f.project_id),
@@ -1494,7 +1509,8 @@ async fn your_own_grants_need_no_authority_but_another_principals_do(pool: PgPoo
     )
     .await
     .unwrap_err();
-    assert_eq!(err.error.code, 403);
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "MissingGrantPrincipal");
 }
 
 /// The same self-read allowance on a per-resource listing: a user with no grant-read
@@ -1817,7 +1833,7 @@ async fn deactivating_a_warehouse_hides_child_grants_but_not_its_own(pool: PgPoo
     let page = Server::list_grants(
         f.ctx.clone(),
         f.metadata.clone(),
-        ListGrantsQuery::default(),
+        for_user(&f.alice),
         no_pagination(),
     )
     .await
@@ -1940,6 +1956,13 @@ async fn every_grant_route_is_reachable_through_the_router(pool: PgPool) {
             .replace("{view_id}", &view_id.to_string())
             .replace("{generic_table_id}", &generic_table_id.to_string())
             .replace("{tag_definition_id}", &tag_definition_id.to_string());
+        // The project-scoped listing requires a principal, so the request that proves
+        // its route resolves has to name one. Every other path answers without a query.
+        let path = if matches!(endpoint, ManagementV1Endpoint::ListGrants) {
+            format!("{path}?principalUser={}", f.alice)
+        } else {
+            path
+        };
         let body = if endpoint.method() == http::Method::POST {
             Body::from(revoke.clone())
         } else {

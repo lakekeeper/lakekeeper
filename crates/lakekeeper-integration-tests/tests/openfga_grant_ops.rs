@@ -304,6 +304,67 @@ mod grant {
             assert_eq!(unknown, vec![false]);
         }
 
+        /// The instance-admin bypass stops at the grant surface. It is a static config
+        /// credential, so if it could write grants a leaked one would escalate any
+        /// principal to admin — here, by writing the very tuples the `/permissions` API
+        /// refuses it. This is the one control-plane surface the bypass does not reach,
+        /// so the exemption needs a test that fails if someone "restores consistency".
+        #[sqlx::test]
+        async fn an_instance_admin_cannot_grant_or_inspect_grant_authority(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let operator = UserId::new_unchecked("oidc", "leaked-operator");
+            let carol = UserId::new_unchecked("oidc", "carol");
+            let as_instance_admin = RequestMetadataTestBuilder::builder()
+                .actor(Actor::Principal(operator.clone()))
+                .project_id(Some(project_id.clone()))
+                .is_instance_admin(true)
+                .build();
+
+            // The escalation the split exists to prevent.
+            let err = Server::apply_project_grants(
+                ctx.clone(),
+                as_instance_admin.clone(),
+                writes(vec![entry("project_admin", &carol)]),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.error.code, 403);
+            assert_eq!(err.error.r#type, "GrantActionForbidden");
+
+            // Nothing was written: carol holds no project grant, and the only
+            // `project_admin` is the bootstrapped operator.
+            let page = Server::list_project_grants(
+                ctx.clone(),
+                metadata(&admin, &project_id),
+                ListGrantsQuery::default(),
+                no_pagination(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                page.grants
+                    .iter()
+                    .map(|g| (g.principal.clone(), g.privilege.clone()))
+                    .collect::<Vec<_>>(),
+                vec![(UserOrRole::User(admin.clone()), "project_admin".to_string())]
+            );
+
+            // The authority check itself denies rather than allowing wholesale, so the
+            // vocabulary endpoint reports what an instance admin may really grant: nothing.
+            let decisions = ctx
+                .v1_state
+                .authz
+                .are_allowed_grants(
+                    &as_instance_admin,
+                    None,
+                    &GrantResource::Warehouse(warehouse_id),
+                    &["select", "modify"],
+                )
+                .await
+                .unwrap();
+            assert_eq!(decisions, vec![false, false]);
+        }
+
         /// Answering for another principal requires read-assignments authority on the
         /// resource, enforced inside the authorizer rather than by its callers.
         #[sqlx::test]
@@ -343,16 +404,16 @@ mod grant {
             assert_eq!(err.code, 403);
         }
 
-        /// The project-scoped listing resolves every object back to its project
-        /// through the model's hierarchy edges — including a namespace, whose object
-        /// carries no warehouse and is recovered by walking `parent`.
+        /// This authorizer indexes permissions by resource, so it cannot answer
+        /// "everything one principal holds in this project" without reading the store a
+        /// level at a time. It refuses instead of returning one unpageable response
+        /// sized by the deployment. The catalog-backed arm answers the same request
+        /// normally — see the `grant_ops` twin.
         #[sqlx::test]
-        async fn a_project_listing_resolves_objects_through_the_hierarchy(pool: PgPool) {
+        async fn the_project_scoped_listing_is_not_implemented(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let md = metadata(&admin, &project_id);
             let bob = UserId::new_unchecked("oidc", "bob");
-            let namespace_id = create_namespace(&ctx, &md, warehouse_id, "grant_ofga").await;
-
             Server::apply_warehouse_grants(
                 warehouse_id,
                 ctx.clone(),
@@ -361,17 +422,24 @@ mod grant {
             )
             .await
             .unwrap();
-            Server::apply_namespace_grants(
-                warehouse_id,
-                namespace_id,
+
+            let err = Server::list_grants(
                 ctx.clone(),
                 md.clone(),
-                writes(vec![entry("select", &bob)]),
+                ListGrantsQuery {
+                    principal_user: Some(bob.clone()),
+                    principal_role: None,
+                },
+                no_pagination(),
             )
             .await
-            .unwrap();
+            .unwrap_err();
+            assert_eq!(err.error.code, 501);
+            assert_eq!(err.error.r#type, "GrantListingNotImplemented");
 
-            let page = Server::list_grants(
+            // The remedy the refusal names has to actually work.
+            let page = Server::list_warehouse_grants(
+                warehouse_id,
                 ctx.clone(),
                 md,
                 ListGrantsQuery {
@@ -382,64 +450,85 @@ mod grant {
             )
             .await
             .unwrap();
-
-            let mut resources: Vec<GrantResourceResponse> =
-                page.grants.into_iter().map(|g| g.resource).collect();
-            resources.sort_by_key(|r| format!("{r:?}"));
             assert_eq!(
-                resources,
-                vec![
-                    GrantResourceResponse::Namespace {
-                        warehouse_id,
-                        namespace_id,
-                    },
-                    GrantResourceResponse::Warehouse { warehouse_id },
-                ]
+                page.grants
+                    .iter()
+                    .map(|g| g.privilege.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["select"]
             );
         }
 
-        /// The audit and export view: every grant in the project, no principal named.
-        /// Reads the store differently from the narrowed form — with no principal there
-        /// is no user to filter tuples by — so it needs its own coverage.
+        /// A namespace is the one level whose `OpenFGA` object carries no warehouse, so
+        /// its own listing is a distinct read path from the tabular levels. Kept because
+        /// the refusal above sends clients here, and a nested resource is the case where
+        /// that advice is least obviously sufficient.
         #[sqlx::test]
-        async fn a_project_listing_without_a_principal_returns_every_grant(pool: PgPool) {
+        async fn a_namespace_grant_is_applied_and_read_back_on_its_own_listing(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
-            let admin_principal = UserOrRole::User(admin.clone());
             let md = metadata(&admin, &project_id);
             let bob = UserId::new_unchecked("oidc", "bob");
-            let carol = UserId::new_unchecked("oidc", "carol");
+            let namespace_id = create_namespace(&ctx, &md, warehouse_id, "grant_ofga").await;
 
-            Server::apply_warehouse_grants(
+            Server::apply_namespace_grants(
                 warehouse_id,
+                namespace_id,
                 ctx.clone(),
                 md.clone(),
-                writes(vec![entry("select", &bob), entry("describe", &carol)]),
+                writes(vec![entry("select", &bob)]),
             )
             .await
             .unwrap();
 
-            let page =
-                Server::list_grants(ctx.clone(), md, ListGrantsQuery::default(), no_pagination())
-                    .await
-                    .unwrap();
-
-            let mut listed: Vec<(UserOrRole, String)> = page
-                .grants
-                .into_iter()
-                .filter(|g| g.resource == GrantResourceResponse::Warehouse { warehouse_id })
-                .map(|g| (g.principal, g.privilege))
-                .collect();
-            listed.sort_by_key(|(principal, privilege)| format!("{principal:?}{privilege}"));
-            // Creating the warehouse made admin its owner, so that tuple is a grant on
-            // the warehouse too and belongs in an unnarrowed listing.
+            let page = Server::list_namespace_grants(
+                warehouse_id,
+                namespace_id,
+                ctx.clone(),
+                md,
+                ListGrantsQuery {
+                    principal_user: Some(bob.clone()),
+                    principal_role: None,
+                },
+                no_pagination(),
+            )
+            .await
+            .unwrap();
             assert_eq!(
-                listed,
-                vec![
-                    (admin_principal, "ownership".to_string()),
-                    (UserOrRole::User(bob), "select".to_string()),
-                    (UserOrRole::User(carol), "describe".to_string()),
-                ]
+                page.grants
+                    .iter()
+                    .map(|g| (g.resource.clone(), g.privilege.clone()))
+                    .collect::<Vec<_>>(),
+                vec![(
+                    GrantResourceResponse::Namespace {
+                        warehouse_id,
+                        namespace_id,
+                    },
+                    "select".to_string()
+                )]
             );
+        }
+
+        /// Unsupported must not become a capability oracle: a caller with no relations
+        /// is refused for lacking authority, and only an authorized one learns that the
+        /// listing is unavailable. The gate runs before the store is consulted.
+        #[sqlx::test]
+        async fn the_authorization_gate_precedes_the_refusal(pool: PgPool) {
+            let (ctx, _admin, project_id, _warehouse_id) = setup(pool).await;
+            let nobody = UserId::new_unchecked("oidc", "nobody");
+
+            let err = Server::list_grants(
+                ctx.clone(),
+                metadata(&nobody, &project_id),
+                ListGrantsQuery {
+                    principal_user: Some(UserId::new_unchecked("oidc", "bob")),
+                    principal_role: None,
+                },
+                no_pagination(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.error.code, 403);
+            assert_eq!(err.error.r#type, "ProjectActionForbidden");
         }
 
         /// A grant written through `/grants` is visible through the older

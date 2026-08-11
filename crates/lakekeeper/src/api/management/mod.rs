@@ -948,36 +948,35 @@ pub mod v1 {
     ///
     /// This API may change in a backward-incompatible way in a future release.
     ///
-    /// Lists grants across the whole project — the audit and export view. Supply
-    /// `principalUser` or `principalRole` to narrow to one principal, or neither to list
-    /// every grant in the project.
+    /// Lists everything one principal holds across the project — "what does this
+    /// principal have here". Exactly one of `principalUser` or `principalRole` is
+    /// **required**; a request naming neither is refused with `MissingGrantPrincipal`
+    /// (400). To read every grant held on a single resource, use that resource's own
+    /// listing.
     ///
     /// Grants are reported at the layer they are held: a grant a role holds is listed
     /// under that role, not under the users who have the role, and a grant on an
     /// ancestor is listed under the ancestor. Server grants belong to no project and are
     /// not included.
     ///
-    /// Listing your own grants needs no extra permission; any other principal, and the
-    /// project-wide listing, require the project-level grant-read permission.
+    /// Listing your own grants needs no extra permission; any other principal requires
+    /// the project-level grant-read permission.
     ///
-    /// **Pagination depends on the configured authorizer.** With grants in the catalog
-    /// this pages normally. With an authorizer that owns them, this listing is assembled
-    /// in one pass: `pageSize` is ignored and `next-page-token` is always absent, so read
-    /// the whole response rather than looping until the token is empty. The per-resource
-    /// listings page normally under every authorizer.
-    ///
-    /// A project holding more grants than can be assembled in one pass is reported as
-    /// `GrantListingTooLarge` (400), not as a backend failure. Narrow with
-    /// `principalUser` or `principalRole`, or read one resource's grants from its own
-    /// endpoint.
+    /// **Availability depends on the configured authorizer.** This listing crosses every
+    /// resource in the project, which an authorizer that stores permissions per resource
+    /// cannot answer without reading its whole store. Those report
+    /// `GrantListingNotImplemented` (501) — under OpenFGA, for example. Read one
+    /// resource's grants from its own endpoint instead; those listings work, and page,
+    /// under every authorizer. `GET /info` reports the configured backend.
     #[cfg_attr(feature = "open-api", utoipa::path(
         get,
         tag = "grant",
         path = ManagementV1Endpoint::ListGrants.path(),
         params(ListGrantsQuery, PaginationQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
         responses(
-            (status = 200, description = "Grants in the project", body = ListGrantsResponse),
+            (status = 200, description = "Grants the principal holds in the project", body = ListGrantsResponse),
             (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Project-wide grant listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
         )
     ))]
     async fn list_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
@@ -1187,7 +1186,8 @@ pub mod v1 {
     ///
     /// Lists the grants held on the project named by `x-project-id`, or the default
     /// project. Grants on resources inside the project are not included — use those
-    /// resources' own endpoints, or the project-wide listing.
+    /// resources' own endpoints, or `GET /grants` for one principal's across the whole
+    /// project.
     ///
     /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
     /// yourself requires only permission to see the project; every other listing requires

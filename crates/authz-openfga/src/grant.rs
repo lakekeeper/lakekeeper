@@ -20,23 +20,15 @@
 use std::{collections::HashMap, str::FromStr, sync::LazyLock};
 
 use lakekeeper::{
-    ProjectId, WarehouseId,
-    api::{
-        RequestMetadata,
-        iceberg::v1::{PageToken, PaginationQuery},
-    },
+    api::{RequestMetadata, iceberg::v1::PaginationQuery},
     async_trait,
-    service::{
-        GenericTableId, InternalErrorMessage, NamespaceId, TableId, TagDefinitionId, ViewId,
-        authz::{
-            AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-            CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantFilter,
-            GrantListingNotPageable, GrantListingTooLarge, GrantNotSupported, GrantResource,
-            GrantRow, GrantSpec, IsAllowedActionError, ListGrantsError, ListGrantsResultPage,
-            MalformedGrant, ManagesGrants, PrivilegeDescriptor, ResourceType, UserOrRole,
-            UserOrRoleId,
-        },
+    service::authz::{
+        AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogGenericTableAction,
+        CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
+        CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantFilter,
+        GrantListingNotImplemented, GrantNotSupported, GrantResource, GrantRow, GrantSpec,
+        IsAllowedActionError, ListGrantsError, ListGrantsResultPage, MalformedGrant, ManagesGrants,
+        PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
     },
 };
 use openfga_client::client::{
@@ -45,34 +37,15 @@ use openfga_client::client::{
 use strum::IntoEnumIterator as _;
 
 use crate::{
-    FgaType,
     authorizer::OpenFGAAuthorizer,
     entities::OpenFgaEntity,
     error::OpenFGABackendUnavailable,
-    reconcile::{parse_uuid, split_fga},
     relations::{
         APIGenericTableRelation, APINamespaceRelation, APIProjectRelation, APIServerRelation,
         APITableRelation, APITagRelation, APIViewRelation, APIWarehouseRelation, GrantableRelation,
         ReducedRelation,
     },
 };
-
-/// A namespace tree deeper than this is a cycle, not a hierarchy. Bounds the parent
-/// walk that recovers a namespace's warehouse.
-const MAX_NAMESPACE_DEPTH: usize = 64;
-
-/// Resource types a project-scoped listing covers: every one except the server, which
-/// belongs to no project — the same rule the catalog store applies.
-///
-/// Derived rather than listed, so a new resource type joins the project-wide listing
-/// instead of silently going missing from it.
-static PROJECT_SCOPED_LEVELS: LazyLock<Vec<ResourceType>> = LazyLock::new(|| {
-    <ResourceType as strum::VariantArray>::VARIANTS
-        .iter()
-        .copied()
-        .filter(|resource_type| *resource_type != ResourceType::Server)
-        .collect()
-});
 
 /// Run `$body` with `$R` bound to the `API*Relation` enum of one resource level.
 ///
@@ -384,32 +357,6 @@ impl OpenFGAAuthorizer {
     }
 }
 
-/// The `OpenFGA` type each resource level is stored under.
-fn fga_type(resource_type: ResourceType) -> FgaType {
-    match resource_type {
-        ResourceType::Server => FgaType::Server,
-        ResourceType::Project => FgaType::Project,
-        ResourceType::Warehouse => FgaType::Warehouse,
-        ResourceType::Namespace => FgaType::Namespace,
-        ResourceType::Table => FgaType::Table,
-        ResourceType::View => FgaType::View,
-        ResourceType::GenericTable => FgaType::GenericTable,
-        ResourceType::Tag => FgaType::Tag,
-    }
-}
-
-/// The grantable level an object type addresses, or `None` for a type no grant can name.
-///
-/// Inverse of [`fga_type`], derived from it rather than restated so the two cannot drift.
-/// The server is excluded with the other non-project levels: it belongs to no project, so
-/// a project-scoped scan must not surface it.
-fn level_of_fga_type(fga: &FgaType) -> Option<ResourceType> {
-    PROJECT_SCOPED_LEVELS
-        .iter()
-        .copied()
-        .find(|resource_type| &fga_type(*resource_type) == fga)
-}
-
 #[async_trait::async_trait]
 impl ManagesGrants for OpenFGAAuthorizer {
     /// One idempotent `Write`, so the diff lands atomically.
@@ -503,41 +450,23 @@ impl ManagesGrants for OpenFGAAuthorizer {
                 self.list_grants_on(resource, principal.as_ref(), pagination)
                     .await
             }
-            GrantFilter::ByPrincipal {
-                principal,
-                project_id,
-            } => {
-                reject_paging(&pagination, "principalUser/principalRole")?;
-                self.scan_grants(Some(principal), &project_id).await
-            }
-            GrantFilter::ByProject(project_id) => {
-                reject_paging(&pagination, "principalUser/principalRole")?;
-                self.scan_grants(None, &project_id).await
+            // Tuples are indexed by object, not by principal or by project, so
+            // answering these would mean reading the store a level at a time and
+            // resolving every object back to its project through the hierarchy: one
+            // unpageable response sized by the deployment rather than the request.
+            // Refused instead. A resource's own listing answers the same question
+            // within its scope and pages normally, and OpenFGA can be queried
+            // directly for a store-wide view.
+            GrantFilter::ByPrincipal { .. } | GrantFilter::ByProject(_) => {
+                Err(GrantListingNotImplemented::new(
+                    "Listing grants across a project is not supported by the OpenFGA \
+                     authorizer, which indexes permissions by resource. Read one \
+                     resource's grants from its own endpoint instead.",
+                )
+                .into())
             }
         }
     }
-}
-
-/// Refuse a paging request this listing cannot honour.
-///
-/// Only an *explicit* ask is refused. `PageToken::Empty` is the default a client sends
-/// merely to signal it understands pagination, and `page_size` unset means no opinion —
-/// neither is a claim that the response will be partial, so neither is worth failing.
-fn reject_paging(
-    pagination: &PaginationQuery,
-    narrowing: &str,
-) -> Result<(), GrantListingNotPageable> {
-    let asked = match (&pagination.page_token, pagination.page_size) {
-        (PageToken::Present(_), _) => "a page token",
-        (_, Some(_)) => "`pageSize`",
-        _ => return Ok(()),
-    };
-    Err(GrantListingNotPageable::new(format!(
-        "This listing is assembled in one pass under the OpenFGA authorizer and cannot be \
-         paged, so {asked} would be ignored and the response would look like a first page. \
-         Re-send without it, narrow with {narrowing}, or list one resource's grants from \
-         its own endpoint."
-    )))
 }
 
 impl OpenFGAAuthorizer {
@@ -592,360 +521,6 @@ impl OpenFGAAuthorizer {
             next_page_token: Some(response.continuation_token).filter(|t| !t.is_empty()),
         })
     }
-
-    /// Every grant in a project, optionally narrowed to one principal.
-    ///
-    /// Tuples are not indexed by project, so this reads the assignment tuples of each
-    /// project-scoped resource type and resolves every object back to its project
-    /// through the model's own hierarchy edges (`warehouse#project`,
-    /// `lakekeeper_catalog_tag#project`, `namespace#parent`). Each lookup is cached
-    /// per call, so the extra reads scale with the number of distinct containers in
-    /// the result, not with the number of grants.
-    ///
-    /// **Unpaginated.** A single opaque token cannot describe a position in a fan-out
-    /// over seven concurrent reads, so `page_size` is ignored and `next_page_token`
-    /// is always `None`. This is a management and audit path; the per-resource
-    /// listings above page normally.
-    async fn scan_grants(
-        &self,
-        principal: Option<UserOrRoleId>,
-        project_id: &ProjectId,
-    ) -> Result<ListGrantsResultPage, ListGrantsError> {
-        let mut containers = ContainerProjects::default();
-        let mut grants = Vec::new();
-
-        // Two read shapes, because `Read` constrains what may be left empty: an object
-        // named by type alone is only legal alongside a non-empty user. With a principal
-        // that lets each level be read separately; without one the only legal read is
-        // the whole store, sorted into levels here instead.
-        let tuples = match principal.as_ref() {
-            Some(principal) => {
-                let user = principal.to_openfga();
-                // One read per level, all in flight together: they are independent, so
-                // issuing them in sequence would make their latencies additive.
-                let per_level = futures::future::try_join_all(PROJECT_SCOPED_LEVELS.iter().map(
-                    |&resource_type| {
-                        let user = user.clone();
-                        async move {
-                            self.read_all_result(Some(ReadRequestTupleKey {
-                                user,
-                                // Every relation on the type: one read per level rather
-                                // than one per level and privilege. Non-privilege
-                                // relations are dropped below.
-                                relation: String::new(),
-                                object: format!("{}:", fga_type(resource_type)),
-                            }))
-                            .await
-                            .map(|tuples| (resource_type, tuples))
-                            .map_err(|e| scan_read_error(e, Some(resource_type)))
-                        }
-                    },
-                ))
-                .await?;
-                per_level
-                    .into_iter()
-                    .flat_map(|(resource_type, tuples)| {
-                        tuples.into_iter().map(move |tuple| (resource_type, tuple))
-                    })
-                    .collect::<Vec<_>>()
-            }
-            None => self
-                .read_all_result(None::<ReadRequestTupleKey>)
-                .await
-                .map_err(|e| scan_read_error(e, None))?
-                .into_iter()
-                .filter_map(|tuple| {
-                    // Everything the store holds arrives here, so a tuple on a type no
-                    // grant can name — including the server, which belongs to no
-                    // project — is dropped before any resolution work.
-                    let resource_type = {
-                        let key = tuple.key.as_ref()?;
-                        level_of_fga_type(&split_fga(&key.object)?.0)?
-                    };
-                    Some((resource_type, tuple))
-                })
-                .collect::<Vec<_>>(),
-        };
-
-        // Resolution is sequential: it shares the container cache, so racing it would
-        // repeat the parent walks the cache exists to avoid.
-        for (resource_type, tuple) in tuples {
-            let created_at = tuple_timestamp(tuple.timestamp.map(|ts| (ts.seconds, ts.nanos)));
-            let key = require_key(tuple.key)?;
-            let Some(privilege) = privilege_of_relation(resource_type, &key.relation) else {
-                continue;
-            };
-            let Some(resource) = self
-                .grant_resource_of(resource_type, &key.object, &mut containers)
-                .await?
-            else {
-                continue;
-            };
-            if !self
-                .resource_is_in_project(&resource, project_id, &mut containers)
-                .await?
-            {
-                continue;
-            }
-            grants.push(GrantRow {
-                principal: parse_grant_principal(&key.user)?,
-                resource,
-                privilege,
-                created_at,
-            });
-        }
-
-        Ok(ListGrantsResultPage {
-            grants,
-            next_page_token: None,
-        })
-    }
-
-    /// The grant resource an object string addresses, or `None` when it cannot be
-    /// resolved — a malformed id, or a namespace whose warehouse edge is gone.
-    ///
-    /// Only the namespace level needs a lookup: its object carries no warehouse,
-    /// because namespace ids are unique across warehouses. Tables, views and generic
-    /// tables encode `warehouse/resource`, so they resolve from the string alone.
-    async fn grant_resource_of(
-        &self,
-        resource_type: ResourceType,
-        object: &str,
-        containers: &mut ContainerProjects,
-    ) -> Result<Option<GrantResource>, ListGrantsError> {
-        let Some((_, id)) = split_fga(object) else {
-            return Ok(None);
-        };
-        let composite = |id: &str| -> Option<(WarehouseId, uuid::Uuid)> {
-            let (warehouse, resource) = id.split_once('/')?;
-            Some((
-                WarehouseId::new(parse_uuid(warehouse)?),
-                parse_uuid(resource)?,
-            ))
-        };
-        Ok(match resource_type {
-            ResourceType::Server => Some(GrantResource::Server),
-            ResourceType::Project => ProjectId::from_str(id).ok().map(GrantResource::Project),
-            ResourceType::Warehouse => parse_uuid(id)
-                .map(WarehouseId::new)
-                .map(GrantResource::Warehouse),
-            ResourceType::Namespace => {
-                let Some(namespace_id) = parse_uuid(id).map(NamespaceId::new) else {
-                    return Ok(None);
-                };
-                self.warehouse_of_namespace(namespace_id, containers)
-                    .await?
-                    .map(|warehouse_id| GrantResource::Namespace {
-                        warehouse_id,
-                        namespace_id,
-                    })
-            }
-            ResourceType::Table => {
-                composite(id).map(|(warehouse_id, table_id)| GrantResource::Table {
-                    warehouse_id,
-                    table_id: TableId::new(table_id),
-                })
-            }
-            ResourceType::View => {
-                composite(id).map(|(warehouse_id, view_id)| GrantResource::View {
-                    warehouse_id,
-                    view_id: ViewId::new(view_id),
-                })
-            }
-            ResourceType::GenericTable => {
-                composite(id).map(
-                    |(warehouse_id, generic_table_id)| GrantResource::GenericTable {
-                        warehouse_id,
-                        generic_table_id: GenericTableId::new(generic_table_id),
-                    },
-                )
-            }
-            ResourceType::Tag => parse_uuid(id)
-                .map(TagDefinitionId::new)
-                .map(GrantResource::Tag),
-        })
-    }
-
-    /// Walk `parent` up from a namespace to its warehouse.
-    ///
-    /// Depth is bounded: the catalog cannot produce a cycle here, so exceeding the
-    /// bound means the stored graph is corrupt and is reported rather than looped on.
-    async fn warehouse_of_namespace(
-        &self,
-        namespace_id: NamespaceId,
-        containers: &mut ContainerProjects,
-    ) -> Result<Option<WarehouseId>, ListGrantsError> {
-        if let Some(cached) = containers.namespaces.get(&namespace_id) {
-            return Ok(*cached);
-        }
-        let mut object = namespace_id.to_openfga();
-        let mut warehouse = None;
-        let mut terminated = false;
-        // Every namespace passed through on the way up gets the same answer, so record
-        // them all. Without this, N sibling namespaces at depth D cost N*D reads instead
-        // of N+D — the walk would re-derive the shared ancestry once per sibling.
-        let mut walked = vec![namespace_id];
-        for _ in 0..MAX_NAMESPACE_DEPTH {
-            let Some(parent) = self.single_edge_target(&object, "parent").await? else {
-                // No parent edge: the container is gone and the tuple is dangling.
-                terminated = true;
-                break;
-            };
-            match split_fga(&parent) {
-                Some((FgaType::Warehouse, id)) => {
-                    warehouse = parse_uuid(id).map(WarehouseId::new);
-                    terminated = true;
-                    break;
-                }
-                Some((FgaType::Namespace, id)) => {
-                    if let Some(parsed) = parse_uuid(id).map(NamespaceId::new) {
-                        // Cached only once the walk terminates: an aborted walk has no
-                        // answer to record for anything it passed through.
-                        walked.push(parsed);
-                    }
-                    object = parent;
-                }
-                _ => {
-                    terminated = true;
-                    break;
-                }
-            }
-        }
-        if !terminated {
-            return Err(MalformedGrant::new(
-                "authorization backend returned a namespace hierarchy that does not terminate",
-                InternalErrorMessage(format!(
-                    "namespace {namespace_id} has no warehouse within {MAX_NAMESPACE_DEPTH} parents"
-                )),
-            )
-            .into());
-        }
-        for id in walked {
-            containers.namespaces.insert(id, warehouse);
-        }
-        Ok(warehouse)
-    }
-
-    /// Whether `resource` lives in `project_id`, resolving containers through the
-    /// model and caching each answer for the rest of the call.
-    async fn resource_is_in_project(
-        &self,
-        resource: &GrantResource,
-        project_id: &ProjectId,
-        containers: &mut ContainerProjects,
-    ) -> Result<bool, ListGrantsError> {
-        let owner = match resource {
-            GrantResource::Project(id) => Some(id.clone()),
-            GrantResource::Tag(tag_definition_id) => {
-                self.project_of_tag(*tag_definition_id, containers).await?
-            }
-            GrantResource::Server => None,
-            _ => match resource.warehouse_id() {
-                Some(warehouse_id) => self.project_of_warehouse(warehouse_id, containers).await?,
-                None => None,
-            },
-        };
-        // An object with no resolvable project is one whose container has since been
-        // deleted: a dangling tuple, not part of any project's grants.
-        Ok(owner.as_ref() == Some(project_id))
-    }
-
-    async fn project_of_warehouse(
-        &self,
-        warehouse_id: WarehouseId,
-        containers: &mut ContainerProjects,
-    ) -> Result<Option<ProjectId>, ListGrantsError> {
-        if let Some(cached) = containers.warehouses.get(&warehouse_id) {
-            return Ok(cached.clone());
-        }
-        let project = self
-            .single_edge_target(&warehouse_id.to_openfga(), "project")
-            .await?
-            .and_then(|target| ProjectId::from_str(split_fga(&target)?.1).ok());
-        containers.warehouses.insert(warehouse_id, project.clone());
-        Ok(project)
-    }
-
-    async fn project_of_tag(
-        &self,
-        tag_definition_id: TagDefinitionId,
-        containers: &mut ContainerProjects,
-    ) -> Result<Option<ProjectId>, ListGrantsError> {
-        if let Some(cached) = containers.tags.get(&tag_definition_id) {
-            return Ok(cached.clone());
-        }
-        let project = self
-            .single_edge_target(&tag_definition_id.to_openfga(), "project")
-            .await?
-            .and_then(|target| ProjectId::from_str(split_fga(&target)?.1).ok());
-        containers.tags.insert(tag_definition_id, project.clone());
-        Ok(project)
-    }
-
-    /// The single object on the far side of a hierarchy edge, e.g. the project a
-    /// warehouse belongs to. `None` when the edge is absent.
-    async fn single_edge_target(
-        &self,
-        object: &str,
-        relation: &str,
-    ) -> Result<Option<String>, ListGrantsError> {
-        let tuples = self
-            .read_all(Some(ReadRequestTupleKey {
-                user: String::new(),
-                relation: relation.to_string(),
-                object: object.to_string(),
-            }))
-            .await
-            .map_err(unavailable)?;
-        // A hierarchy edge is single-valued; extra tuples would be a model change, so
-        // take the first and ignore the rest rather than inventing a merge rule.
-        match tuples.into_iter().next() {
-            Some(tuple) => Ok(Some(require_key(tuple.key)?.user)),
-            None => Ok(None),
-        }
-    }
-}
-
-/// Container-to-project answers resolved during one scan. A project-wide listing
-/// touches the same warehouse repeatedly; without this it would re-read the same edge
-/// once per grant.
-#[derive(Default)]
-struct ContainerProjects {
-    warehouses: HashMap<WarehouseId, Option<ProjectId>>,
-    namespaces: HashMap<NamespaceId, Option<WarehouseId>>,
-    tags: HashMap<TagDefinitionId, Option<ProjectId>>,
-}
-
-fn unavailable(err: OpenFGABackendUnavailable) -> ListGrantsError {
-    ListGrantsError::BackendUnavailable(err.into())
-}
-
-/// A project-wide scan reads every tuple of a level, which past a few tens of thousands
-/// exceeds what one request will assemble. That is a size problem, not an outage, so it
-/// must not be reported as one — an operator sent to check a healthy backend looks in
-/// the wrong place, and the caller is told nothing they can act on.
-fn scan_read_error(
-    err: openfga_client::error::Error,
-    resource_type: Option<ResourceType>,
-) -> ListGrantsError {
-    match err {
-        openfga_client::error::Error::TooManyPages { .. } => {
-            // Deliberately not phrased as a count of grants. The read returns every
-            // stored relation on the type — each object's structural and ownership
-            // edges included — and privileges are filtered out of it afterwards, so a
-            // deployment can exceed this with no grants recorded at all.
-            let scope = resource_type.map_or_else(
-                || "this deployment".to_string(),
-                |resource_type| format!("{} objects in this deployment", resource_type.as_str()),
-            );
-            ListGrantsError::TooLarge(GrantListingTooLarge::new(format!(
-                "Too many stored permissions on {scope} to assemble this listing in one \
-                 pass. Narrow it with `principalUser` or `principalRole`, or read one \
-                 resource's grants from its own endpoint."
-            )))
-        }
-        other => unavailable(OpenFGABackendUnavailable::from(Box::new(other))),
-    }
 }
 
 /// `OpenFGA`'s `Read` caps `page_size` at 100. Clamp rather than turn an over-large
@@ -957,6 +532,10 @@ fn clamp_page_size(pagination: &PaginationQuery) -> i32 {
         .filter(|s| *s > 0)
         .unwrap_or(100)
         .min(100)
+}
+
+fn unavailable(err: OpenFGABackendUnavailable) -> ListGrantsError {
+    ListGrantsError::BackendUnavailable(err.into())
 }
 
 /// A `Read` response tuple always carries a key. A missing one is a malformed
@@ -1005,6 +584,23 @@ fn tuple_timestamp(seconds_and_nanos: Option<(i64, i32)>) -> Option<chrono::Date
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FgaType;
+
+    /// The `OpenFGA` type each resource level is stored under. Lives here because the
+    /// sweep test is its only caller; the match stays exhaustive, so a new resource
+    /// level still cannot slip past it.
+    fn fga_type(resource_type: ResourceType) -> FgaType {
+        match resource_type {
+            ResourceType::Server => FgaType::Server,
+            ResourceType::Project => FgaType::Project,
+            ResourceType::Warehouse => FgaType::Warehouse,
+            ResourceType::Namespace => FgaType::Namespace,
+            ResourceType::Table => FgaType::Table,
+            ResourceType::View => FgaType::View,
+            ResourceType::GenericTable => FgaType::GenericTable,
+            ResourceType::Tag => FgaType::Tag,
+        }
+    }
 
     /// Deleting a principal sweeps the object types listed in `user_of`, so every type a
     /// grant can name must be there — otherwise that principal's grants on it survive the
@@ -1027,80 +623,6 @@ mod tests {
                     resource_type.as_str()
                 );
             }
-        }
-    }
-
-    /// The page cap means "too many grants", not "backend down". Reporting it as a 503
-    /// would send an operator to check a healthy backend, so the two must map apart —
-    /// and the message must name the narrowing that works, since it is the only thing
-    /// the caller can act on.
-    #[test]
-    fn the_page_cap_is_a_request_error_not_an_outage() {
-        let too_many = openfga_client::error::Error::TooManyPages {
-            max_pages: 500,
-            tuple: None,
-        };
-        let model =
-            lakekeeper::api::ErrorModel::from(scan_read_error(too_many, Some(ResourceType::Table)));
-        assert_eq!(model.code, 400);
-        assert_eq!(model.r#type, "GrantListingTooLarge");
-        assert!(model.message.contains("principalUser"), "{}", model.message);
-
-        // A genuine transport failure keeps reporting unavailability.
-        let failed = openfga_client::error::Error::InvalidEndpoint("nowhere".to_string());
-        let model =
-            lakekeeper::api::ErrorModel::from(scan_read_error(failed, Some(ResourceType::Table)));
-        assert_eq!(model.code, 503);
-    }
-
-    /// The scan cannot page, so an explicit paging request must fail rather than return
-    /// a full result that a client reads as a first page and stops after.
-    #[test]
-    fn an_explicit_paging_request_on_the_one_pass_listing_is_refused() {
-        let by_size = reject_paging(
-            &PaginationQuery::new(PageToken::Empty, Some(50)),
-            "principalUser/principalRole",
-        )
-        .expect_err("`pageSize` cannot be honoured by a one-pass listing");
-        let model = lakekeeper::api::ErrorModel::from(ListGrantsError::NotPageable(by_size));
-        assert_eq!(model.code, 400);
-        assert_eq!(model.r#type, "GrantListingNotPageable");
-        assert!(model.message.contains("pageSize"), "{}", model.message);
-        assert!(
-            model.message.contains("principalUser"),
-            "the refusal must name the narrowing that works: {}",
-            model.message
-        );
-
-        let by_token = reject_paging(
-            &PaginationQuery::new(PageToken::Present("opaque".to_string()), None),
-            "principalUser/principalRole",
-        )
-        .expect_err("a continuation token cannot be honoured either");
-        let model = lakekeeper::api::ErrorModel::from(ListGrantsError::NotPageable(by_token));
-        assert_eq!(model.code, 400);
-        assert_eq!(model.r#type, "GrantListingNotPageable");
-        assert!(model.message.contains("page token"), "{}", model.message);
-    }
-
-    /// The default a paging-aware client sends is not a claim that it expects pages.
-    /// Refusing it would break every caller that simply did not opt out.
-    #[test]
-    fn a_listing_that_asks_for_no_paging_is_not_refused() {
-        for (label, pagination) in [
-            (
-                "paging-aware default",
-                PaginationQuery::new(PageToken::Empty, None),
-            ),
-            (
-                "no pagination parameters at all",
-                PaginationQuery::new(PageToken::NotSpecified, None),
-            ),
-        ] {
-            assert!(
-                reject_paging(&pagination, "principalUser/principalRole").is_ok(),
-                "{label} must be accepted"
-            );
         }
     }
 
