@@ -18,7 +18,7 @@ use crate::{
             AuthZServerOps, AuthZUserOps, Authorizer, CatalogServerAction, CatalogUserAction,
             RequireServerActionError,
         },
-        events::{APIEventContext, context::ServerActionSearchUsers},
+        events::{APIEventContext, GrantsChangedEvent, context::ServerActionSearchUsers},
     },
 };
 
@@ -529,6 +529,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     ) -> Result<()> {
         // ------------------- AuthZ -------------------
         let authorizer = context.v1_state.authz;
+        let events = context.v1_state.events.clone();
 
         let event_ctx = APIEventContext::for_user(
             Arc::new(request_metadata),
@@ -554,6 +555,12 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .into());
         };
+        // Grants are not covered by the soft delete: the user row survives, so the
+        // grant foreign key never cascades, and the same `UserId` returns on re-login.
+        // Remove them in the same transaction. Authorizers that keep grants in their
+        // own store clean them up in `delete_user` below, leaving nothing to do here.
+        let revoked_grants = C::delete_grants_for_user_impl(&user_id, t.transaction()).await?;
+
         // Keep authz cleanup pre-commit and propagating (unlike object deletes):
         // a `UserId` returns on re-login and has no `create_user` `require_no_relations`
         // guard, so best-effort cleanup could leave grants a re-provisioned user inherits.
@@ -561,6 +568,17 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .delete_user(event_ctx.request_metadata(), user_id.clone())
             .await?;
         t.commit().await?;
+
+        // One event, not one per grant: a user can hold an unbounded number.
+        if !revoked_grants.is_empty() {
+            events
+                .grants_changed(GrantsChangedEvent::new(
+                    revoked_grants,
+                    Vec::new(),
+                    event_ctx.request_metadata_arc(),
+                ))
+                .await;
+        }
 
         // Post-commit (infallible, in-memory): the user's assignments were
         // removed, so their effective-roles entry and each affected role's

@@ -15,6 +15,8 @@ Lakekeeper currently supports the following Authorizers:
 
 Check the [Authorization Configuration](./configuration.md#authorization) for setup details.
 
+Whichever authorizer is configured, direct permissions are managed through one API: see [Permissions & Grants](./grants.md) for granting, revoking, and reviewing access.
+
 ## Instance Admins
 
 *Available since Lakekeeper 0.12.1.*

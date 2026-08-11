@@ -1,0 +1,209 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        -- `!` on the columns declared NOT NULL: this statement has no ORDER BY, and\n        -- without one sqlx's nullability inference stops seeing through the LEFT JOINs\n        -- and reports every output as nullable.\n        SELECT\n            ga.grant_id AS \"grant_id!\",\n            ga.principal_type AS \"principal_type!: PrincipalType\", ga.user_id, ga.role_id,\n            ga.privilege AS \"privilege!\",\n            ga.resource_type AS \"resource_type!: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            t.typ AS \"tabular_typ?: TabularType\",\n            ga.created_at AS \"created_at!\"\n        FROM grant_assignment ga\n        LEFT JOIN warehouse w ON ga.warehouse_id = w.warehouse_id\n        LEFT JOIN tag_definition td ON ga.tag_definition_id = td.tag_definition_id\n        LEFT JOIN tabular t\n               ON ga.warehouse_id = t.warehouse_id AND ga.tabular_id = t.tabular_id\n          -- Leading predicate, and the selective one: it is what keeps this an index\n          -- probe. The two arms are split by discriminator so each uses its own\n          -- partial index.\n        WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1))\n               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)))\n          AND (ga.resource_type = 'server'::grant_resource_type\n               OR w.project_id = $3\n               OR (ga.resource_type = 'project'::grant_resource_type AND ga.project_id = $3)\n               OR (ga.resource_type = 'tag'::grant_resource_type AND td.project_id = $3))\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "principal_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "role_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "privilege"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type!: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "UuidArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "dbbf478ba7afc78dfdc74d595c4e0ff7361113891993b01367c0fcf03c094786"
+}

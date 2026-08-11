@@ -18,10 +18,11 @@ use crate::{
         authn::UserId,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AuthorizationDecision, Authorizer,
-            AuthzBackendErrorOrBadRequest, CatalogGenericTableAction, CatalogNamespaceAction,
-            CatalogProjectAction, CatalogRoleAction, CatalogServerAction, CatalogTableAction,
-            CatalogTagAction, CatalogUserAction, CatalogViewAction, CatalogWarehouseAction,
-            IsAllowedActionError, ListProjectsResponse, NamespaceParent, UserOrRole,
+            AuthzBackendErrorOrBadRequest, CatalogAction, CatalogGenericTableAction,
+            CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
+            CatalogTableAction, CatalogTagAction, CatalogUserAction, CatalogViewAction,
+            CatalogWarehouseAction, GrantResource, IsAllowedActionError, ListProjectsResponse,
+            NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -55,6 +56,33 @@ impl HealthExt for AllowAllAuthorizer {
 #[derive(Debug, OpenApi)]
 #[openapi()]
 pub(super) struct ApiDoc;
+
+/// Gate action for reading grants; not itself a grantable privilege.
+const READ_GRANTS_ACTION: &str = "read_grants";
+
+/// The grantable vocabulary of one resource level: every catalog action on it,
+/// except the grant-reading gate.
+fn privileges_from_actions<A: CatalogAction>(
+    actions: &'static [A],
+    resource_type: ResourceType,
+) -> Vec<PrivilegeDescriptor> {
+    actions
+        .iter()
+        .filter_map(|action| {
+            let name = action.action_descriptor().action_name;
+            (name != READ_GRANTS_ACTION).then(|| PrivilegeDescriptor {
+                name: name.to_string(),
+                display_name: name.replace('_', " "),
+                // Nothing to describe or group by: this vocabulary is the whole catalog
+                // action set, and an authorizer that enforces nothing would be inventing
+                // meaning for a hundred names. Real authorizers supply both.
+                description: None,
+                category: None,
+                resource_type,
+            })
+        })
+        .collect()
+}
 
 #[async_trait]
 impl Authorizer for AllowAllAuthorizer {
@@ -238,6 +266,32 @@ impl Authorizer for AllowAllAuthorizer {
         Ok(vec![AuthorizationDecision::allow(); actions.len()])
     }
 
+    /// Every catalog action, at every level, is grantable here.
+    ///
+    /// This authorizer allows every action regardless of grants, so grant rows
+    /// recorded under it are an inventory only and enforce nothing.
+    fn grantable_privileges(&self, resource_type: ResourceType) -> &'static [PrivilegeDescriptor] {
+        static VOCABULARIES: std::sync::LazyLock<
+            std::collections::HashMap<ResourceType, Vec<PrivilegeDescriptor>>,
+        > = std::sync::LazyLock::new(|| {
+            <ResourceType as strum::VariantArray>::VARIANTS
+                .iter()
+                .map(|resource_type| (*resource_type, build_vocabulary(*resource_type)))
+                .collect()
+        });
+        VOCABULARIES.get(&resource_type).map_or(&[], Vec::as_slice)
+    }
+
+    async fn are_allowed_grants_impl(
+        &self,
+        _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
+        _resource: &GrantResource,
+        privileges: &[&str],
+    ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::allow(); privileges.len()])
+    }
+
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {
         Ok(())
     }
@@ -366,5 +420,146 @@ impl Authorizer for AllowAllAuthorizer {
         _generic_table_id: GenericTableId,
     ) -> Result<()> {
         Ok(())
+    }
+}
+
+/// The catalog's own action set per resource type, which is this authorizer's whole
+/// vocabulary: it enforces nothing, so everything the catalog can express is grantable.
+fn build_vocabulary(resource_type: ResourceType) -> Vec<PrivilegeDescriptor> {
+    match resource_type {
+        ResourceType::Server => {
+            privileges_from_actions(CatalogServerAction::variants(), resource_type)
+        }
+        ResourceType::Project => {
+            privileges_from_actions(CatalogProjectAction::variants(), resource_type)
+        }
+        ResourceType::Warehouse => {
+            privileges_from_actions(CatalogWarehouseAction::variants(), resource_type)
+        }
+        ResourceType::Namespace => {
+            privileges_from_actions(CatalogNamespaceAction::variants(), resource_type)
+        }
+        ResourceType::Table => {
+            privileges_from_actions(CatalogTableAction::variants(), resource_type)
+        }
+        ResourceType::View => privileges_from_actions(CatalogViewAction::variants(), resource_type),
+        ResourceType::GenericTable => {
+            privileges_from_actions(CatalogGenericTableAction::variants(), resource_type)
+        }
+        ResourceType::Tag => privileges_from_actions(CatalogTagAction::variants(), resource_type),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::super::{AuthZGrantOps, InvalidGrantPrivilege},
+        *,
+    };
+
+    fn privilege_names(resource_type: ResourceType) -> Vec<String> {
+        AllowAllAuthorizer::default()
+            .grantable_privileges(resource_type)
+            .iter()
+            .map(|descriptor| descriptor.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn read_grants_action_name_is_the_excluded_one() {
+        assert_eq!(
+            CatalogWarehouseAction::ReadGrants
+                .action_descriptor()
+                .action_name,
+            READ_GRANTS_ACTION
+        );
+    }
+
+    #[test]
+    fn warehouse_vocabulary_has_actions_but_not_the_grant_gate() {
+        let names = privilege_names(ResourceType::Warehouse);
+        assert!(
+            names.contains(&"get_metadata".to_string()),
+            "expected get_metadata in {names:?}"
+        );
+        assert!(
+            !names.contains(&"read_grants".to_string()),
+            "read_grants must not be grantable, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn descriptors_have_readable_display_names() {
+        let authorizer = AllowAllAuthorizer::default();
+        let descriptor = authorizer
+            .grantable_privileges(ResourceType::Warehouse)
+            .iter()
+            .find(|descriptor| descriptor.name == "get_metadata")
+            .expect("get_metadata is grantable on a warehouse");
+        assert_eq!(descriptor.display_name, "get metadata");
+        assert_eq!(descriptor.description, None);
+        assert_eq!(descriptor.resource_type, ResourceType::Warehouse);
+    }
+
+    #[test]
+    fn every_resource_type_has_a_non_empty_vocabulary() {
+        let authorizer = AllowAllAuthorizer::default();
+        for resource_type in <ResourceType as strum::VariantArray>::VARIANTS {
+            let descriptors = authorizer.grantable_privileges(*resource_type);
+            assert!(
+                !descriptors.is_empty(),
+                "`{}` has no grantable privileges",
+                resource_type.as_str()
+            );
+            for descriptor in descriptors {
+                assert_eq!(descriptor.resource_type, *resource_type);
+                assert_ne!(descriptor.name, READ_GRANTS_ACTION);
+            }
+        }
+    }
+
+    #[test]
+    fn validate_accepts_only_names_from_the_vocabulary() {
+        let authorizer = AllowAllAuthorizer::default();
+        assert_eq!(
+            authorizer.validate_grant_privilege(ResourceType::Warehouse, "get_metadata"),
+            Ok(())
+        );
+        assert_eq!(
+            authorizer.validate_grant_privilege(ResourceType::Warehouse, "read_grants"),
+            Err(InvalidGrantPrivilege {
+                resource_type: ResourceType::Warehouse,
+                privilege: "read_grants".to_string(),
+            })
+        );
+        assert_eq!(
+            authorizer.validate_grant_privilege(ResourceType::Warehouse, "not_a_privilege"),
+            Err(InvalidGrantPrivilege {
+                resource_type: ResourceType::Warehouse,
+                privilege: "not_a_privilege".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn grant_authority_is_allowed_for_every_privilege() {
+        let authorizer = AllowAllAuthorizer::default();
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let decisions = authorizer
+            .are_allowed_grants(
+                &RequestMetadata::new_unauthenticated(),
+                None,
+                &resource,
+                &["get_metadata", "not_a_privilege"],
+            )
+            .await
+            .expect("allow-all never fails a grant-authority check");
+        assert_eq!(decisions, vec![true, true]);
+    }
+
+    #[test]
+    fn grants_are_stored_in_the_catalog() {
+        // No `ManagesGrants` facet: grant rows land in the catalog's own table.
+        assert!(AllowAllAuthorizer::default().grants().is_none());
     }
 }

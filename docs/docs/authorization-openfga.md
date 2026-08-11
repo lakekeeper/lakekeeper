@@ -68,6 +68,24 @@ The `manage_grants` grant allows a user to manage all grants on an object, inclu
 ##### Manage Tags
 The `manage_tags` grant allows a user to attach and detach governance tags on an object (warehouse, namespace, table, view, or generic table) and its columns. It is **independent of `modify`** — a separation-of-duties choice, so a data steward can classify objects without holding data or schema-modification rights. `manage_tags` inherits down the object hierarchy. Attaching or detaching a *specific* tag additionally requires the `apply` grant on that tag definition (see [Tags](#tags)).
 
+## Managing grants through the grants API
+
+The grants above can be managed through two APIs:
+
+- [`/management/v1/.../grants`](./grants.md) — the authorizer-independent surface, recommended for new consoles and scripts.
+- `/management/v1/permissions/...` — the older, OpenFGA-specific API.
+
+Under OpenFGA these are **two views of one set of tuples**: a grant written through either is visible through both, and there is nothing to migrate. Note that only the `/grants` path emits typed `GrantCreated`/`GrantRevoked` events; the `/permissions` path never has.
+
+Because a grant *is* a tuple, a few behaviors differ from deployments that store grants in the catalog database:
+
+- **No grantor.** A tuple has nowhere to record who wrote it. Grant listings publish no grantor under any authorizer, so this costs nothing at the API — but it does mean the `grant_created` audit event is the only record of who granted a privilege here. `created-at` is the tuple's write timestamp.
+- **Principals are taken as given.** OpenFGA does not check that a user or role exists, so granting to a mistyped id succeeds silently.
+- **Grant events are never deduplicated.** Grant events assert state rather than transitions and are at-least-once under every authorizer (see [Logging](./logging.md#audit-logs)). A tuple write additionally reports nothing about prior state, so here no no-op can be suppressed at all: re-applying an unchanged diff emits the full set of events every time. Deployments that store grants in the catalog database skip events for no-ops; this one cannot.
+- **Unknown privileges cannot be revoked.** A privilege outside the model has no relation, so there is no tuple to remove and no `can_grant_…` relation to check — the request is refused with `403`. Nothing revocable is withheld; just do not mix unknown privileges into a diff with real ones.
+- **The project-wide listing is assembled in one pass.** Tuples are not indexed by project, so `GET /management/v1/grants` reads each level's tuples and resolves them through the hierarchy, returning the whole result with no continuation token. Sending `pageSize` or a page token is **refused** with `GrantListingNotPageable` (400) rather than ignored — a dropped `pageSize` would return a complete result that reads as a first page, and a client that stopped there would believe it had seen everything. Omitting both is the paging-aware default and is accepted. A roll-up too large to assemble at once is refused with `GrantListingTooLarge` (400) — narrow it with `principalUser`/`principalRole`, or read one resource's grants from its own endpoint. **The limit tracks deployment size, not grant count.** Without a principal the read is unfiltered, so it walks every relation of every object in the store — hierarchy and ownership edges included, of which there are about three per object. It gives up at roughly 50,000 relations, which a catalog of around 16,000 tables reaches with no grants recorded at all. Narrowing by principal restricts the read to the grantable levels and raises the effective headroom considerably.
+- **Per-resource listings page normally, but an empty page is not the end.** A resource's grants come from one `Read` of that object, which pages with a continuation token like any other listing. Non-privilege tuples on the same object are filtered out *after* the page is fetched, so a page can come back short or empty while more grants remain. Follow the token until it is absent; do not stop on a short page.
+
 ## Tags
 Governance tags are project-scoped definitions, each represented in the model as a `lakekeeper_catalog_tag` object parented to its project. A [`tag_creator`](#project-tag-creator) creates definitions and becomes the definition's `ownership`, which — together with a project `security_admin` — allows updating it, deleting it, and delegating who may apply it. The directly-assignable `apply` grant lets a principal attach and detach that specific tag ("may apply *this* tag") without owning the definition.
 

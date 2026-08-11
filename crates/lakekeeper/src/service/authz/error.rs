@@ -355,6 +355,7 @@ pub enum AuthZError {
     BackendUnavailableOrCountMismatch(BackendUnavailableOrCountMismatch),
     BadRequest(AuthzBadRequest),
     IsAllowedActionError(IsAllowedActionError),
+    GrantActionForbidden(super::grant::AuthZGrantActionForbidden),
 }
 impl From<ResolveTasksError> for AuthZError {
     fn from(err: ResolveTasksError) -> Self {
@@ -473,6 +474,7 @@ delegate_authorization_failure_source!(AuthZError => {
     ColumnNotFound,
     TagTargetNotFound,
     AuthZUserActionForbidden,
+    GrantActionForbidden,
     BackendUnavailableOrCountMismatch,
     BadRequest,
     IsAllowedActionError

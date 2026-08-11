@@ -323,6 +323,13 @@ impl EventDispatcher {
         dispatch_event!(self, tag_removed, event);
     }
 
+    // ===== Grant Events =====
+
+    // Emitted once per applied grant by the grant management endpoints.
+    pub(crate) async fn grants_changed(&self, event: types::GrantsChangedEvent) {
+        dispatch_event!(self, grants_changed, event);
+    }
+
     // ===== Role Assignment Sync Events =====
 
     pub(crate) async fn role_members_synced(&self, event: types::RoleMembersSyncedEvent) {
@@ -682,6 +689,13 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     /// Invoked after a tag has been successfully removed from a target
     async fn tag_removed(&self, _event: types::TagRemovedEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // ===== Grant Events =====
+
+    /// Invoked after a grant has been successfully created
+    async fn grants_changed(&self, _event: types::GrantsChangedEvent) -> anyhow::Result<()> {
         Ok(())
     }
 

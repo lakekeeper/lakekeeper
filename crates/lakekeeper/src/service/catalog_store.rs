@@ -38,6 +38,9 @@ use crate::{
     service::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
+        authz::{
+            AppliedGrants, GrantFilter, GrantRow, GrantSpec, ListGrantsResultPage, UserOrRoleId,
+        },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
         tasks::{
@@ -80,6 +83,8 @@ pub mod generic_table;
 pub use generic_table::*;
 mod tag;
 pub use tag::*;
+mod grant;
+pub use grant::*;
 
 macro_rules! define_version_newtype {
     ($name:ident) => {
@@ -767,6 +772,58 @@ where
         idents: &[&RoleIdent],
         catalog_state: Self::State,
     ) -> Result<Vec<Role>, CatalogBackendError>;
+
+    // ---------------- Grants ----------------
+    /// Apply a grant diff in one transaction, returning the grants actually created
+    /// and removed. Idempotent: re-granting creates nothing, re-revoking removes
+    /// nothing. Deletes are applied before writes, so a diff carrying the same grant
+    /// on both sides ends in the granted state.
+    async fn apply_grants_impl<'a>(
+        writes: &[GrantSpec],
+        deletes: &[GrantSpec],
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<AppliedGrants, ApplyGrantsStoreError>;
+
+    /// Remove every grant held by a user, returning what was removed.
+    ///
+    /// Needed because users are soft-deleted, so no foreign key cascade fires for
+    /// them, and a returning account would otherwise regain its old grants.
+    async fn delete_grants_for_user_impl<'a>(
+        user_id: &UserId,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
+    ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
+
+    /// List direct grants matching `filter`.
+    async fn list_grants_impl(
+        filter: &GrantFilter,
+        pagination: PaginationQuery,
+        catalog_state: Self::State,
+    ) -> Result<ListGrantsResultPage, ListGrantsStoreError>;
+
+    /// Every grant held by any of `principals`, on the server or in `project_id`.
+    ///
+    /// For authorization evaluation: an authorizer that resolves inherited permissions
+    /// itself needs the grants that could bear on this request, then filters them
+    /// against the resource chain it has already resolved.
+    ///
+    /// Narrowed by principal, not by resource, and that is deliberate. A coarse resource
+    /// routinely holds one grant per principal in the deployment — a `USE`-style
+    /// privilege granted to each user individually — so a resource-keyed fetch matches a
+    /// large fraction of the table and costs the whole table per decision. A principal
+    /// and their roles hold tens of grants, which is an index probe.
+    ///
+    /// `principals` must be the **effective** set: the acting principal plus every role
+    /// they hold, transitively. This resolves nothing itself, so an omitted role costs
+    /// access rather than granting it.
+    ///
+    /// Server grants are always included — they belong to no project yet apply in every
+    /// one. Unpaginated and unordered. Like the resource-scoped listing (and unlike the
+    /// project roll-ups), grants on soft-deleted tabulars are included.
+    async fn list_grants_for_principals_impl(
+        principals: &[UserOrRoleId],
+        project_id: &ProjectId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<GrantRow>, ListGrantsStoreError>;
 
     // ---------------- Tag Management ----------------
     async fn create_tag_definition_impl<'a>(

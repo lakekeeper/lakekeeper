@@ -18,10 +18,10 @@ use lakekeeper::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, IsAllowedActionError, ListProjectsResponse,
+            CatalogUserAction, GrantResource, IsAllowedActionError, ListProjectsResponse,
             ListRoleAssignmentsError, ListRoleAssignmentsResultPage, MalformedRoleAssignment,
-            ManagesRoleAssignments, NamespaceParent, RoleAssignmentFilter, RoleAssignmentRow,
-            UserOrRole, UserOrRoleId,
+            ManagesGrants, ManagesRoleAssignments, NamespaceParent, PrivilegeDescriptor,
+            ResourceType, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole, UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -994,6 +994,31 @@ impl Authorizer for OpenFGAAuthorizer {
     fn role_assignments(&self) -> Option<&dyn ManagesRoleAssignments> {
         Some(self)
     }
+
+    fn grants(&self) -> Option<&dyn ManagesGrants> {
+        Some(self)
+    }
+
+    fn grantable_privileges(&self, resource_type: ResourceType) -> &'static [PrivilegeDescriptor] {
+        crate::grant::vocabulary(resource_type)
+    }
+
+    /// Parses the name back to a relation instead of scanning the vocabulary — same
+    /// answer, without walking a list per listed row.
+    fn is_grantable_privilege(&self, resource_type: ResourceType, privilege: &str) -> bool {
+        crate::grant::is_known_privilege(resource_type, privilege)
+    }
+
+    async fn are_allowed_grants_impl(
+        &self,
+        metadata: &RequestMetadata,
+        for_user: Option<&UserOrRole>,
+        resource: &GrantResource,
+        privileges: &[&str],
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        self.grant_authority(metadata, for_user, resource, privileges)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1267,7 +1292,7 @@ impl OpenFGAAuthorizer {
     ///
     /// `tuple_key` accepts `None` for an unfiltered store-wide read; see
     /// [`openfga_client::client::OpenFgaClient::read`].
-    async fn read_higher_consistency(
+    pub(crate) async fn read_higher_consistency(
         &self,
         page_size: i32,
         tuple_key: impl Into<Option<ReadRequestTupleKey>>,
@@ -1288,10 +1313,21 @@ impl OpenFGAAuthorizer {
         &self,
         tuple_key: Option<impl Into<ReadRequestTupleKey>>,
     ) -> Result<Vec<Tuple>, OpenFGABackendUnavailable> {
-        self.client
-            .read_all_pages(tuple_key, 100, 500)
+        self.read_all_result(tuple_key)
             .await
             .map_err(|e| OpenFGABackendUnavailable::from(Box::new(e)))
+    }
+
+    /// As [`Self::read_all`], but with the client error verbatim.
+    ///
+    /// The page cap is reported as an error rather than by truncating, and it means
+    /// "too many tuples", not "backend down". Use this where the two must be told
+    /// apart; [`Self::read_all`] folds both into unavailability.
+    pub(crate) async fn read_all_result(
+        &self,
+        tuple_key: Option<impl Into<ReadRequestTupleKey>>,
+    ) -> Result<Vec<Tuple>, openfga_client::error::Error> {
+        self.client.read_all_pages(tuple_key, 100, 500).await
     }
 
     /// A convenience wrapper around check
@@ -1314,7 +1350,7 @@ impl OpenFGAAuthorizer {
     /// The `items` parameter should contain the pre-built check requests for the actions.
     /// The `guard_tuples` parameter should contain permission checks to verify the actor
     /// has the right to inspect another user's permissions. If empty, no permission checks are performed.
-    async fn check_actions_with_permission_guard(
+    pub(crate) async fn check_actions_with_permission_guard(
         &self,
         _actor: &Actor,
         mut items: Vec<CheckRequestTupleKey>,

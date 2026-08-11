@@ -1,0 +1,235 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        DELETE FROM grant_assignment ga\n        USING UNNEST($1::text[], $2::text[]) AS t(user_id, privilege)\n        WHERE ga.principal_type = 'user'::grant_principal_type\n          -- Constant, so it joins `grant_unique`'s third column to the entry's own two.\n          AND ga.role_id IS NULL\n          AND ga.user_id = t.user_id\n          AND ga.privilege = t.privilege\n          AND ga.resource_type = $3::grant_resource_type\n          -- Only the columns this resource kind populates; see the module docs.\n          AND ($4::text IS NULL OR ga.project_id = $4)\n          AND ($5::uuid IS NULL OR ga.warehouse_id = $5)\n          AND ($6::uuid IS NULL OR ga.namespace_id = $6)\n          AND ($7::uuid IS NULL OR ga.tabular_id = $7)\n          AND ($8::uuid IS NULL OR ga.tag_definition_id = $8)\n          -- Revoking on one kind of tabular must not remove another kind's grants, so\n          -- the tabular has to really be of the kind named. Correlated on the\n          -- parameters only, hence evaluated once rather than per row.\n          AND ($9::tabular_type IS NULL\n               OR EXISTS (SELECT 1 FROM tabular tab\n                          WHERE tab.warehouse_id = $5 AND tab.tabular_id = $7\n                            AND tab.typ = $9))\n        RETURNING\n            ga.grant_id, ga.principal_type AS \"principal_type: PrincipalType\", ga.user_id,\n            ga.role_id, ga.privilege, ga.resource_type AS \"resource_type: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            -- Not joined: the statement above already proved the caller's kind, which\n            -- is echoed onto each returned grant.\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "principal_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "role_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "privilege"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      false
+    ]
+  },
+  "hash": "358508ce595d4595b3bbb9056aae2abd0a13d5bb4317ded4408ce63e44163504"
+}

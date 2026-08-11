@@ -2493,3 +2493,108 @@ async fn test_reapply_same_value_is_noop(pool: PgPool) {
         "the response must carry the newly-applied value, not the previous one"
     );
 }
+
+/// Tag definitions were the one grantable level with no action-introspection
+/// endpoint, so every `CatalogTagAction` — including the grant-read gate — was
+/// enforceable but invisible to a console. Driven through the real router, which also
+/// proves the route is mounted; under AllowAll every action is permitted, pinning the
+/// full list.
+#[sqlx::test]
+async fn tag_actions_lists_every_action(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let project_id = (*warehouse.project_id).clone();
+    let definition = create_def(
+        &ctx,
+        &project_id,
+        "actions_pii",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let body = tag_actions_request(&ctx, &project_id, definition.id, StatusCode::OK).await;
+    let mut actions: Vec<&str> = body["allowed-actions"]
+        .as_array()
+        .expect("allowed-actions is an array")
+        .iter()
+        .map(|action| {
+            action["action"]
+                .as_str()
+                .expect("each action carries its name")
+        })
+        .collect();
+    actions.sort_unstable();
+    assert_eq!(
+        actions,
+        vec![
+            "apply",
+            "delete",
+            "read",
+            "read_attachments",
+            "read_grants",
+            "remove",
+            "update"
+        ]
+    );
+}
+
+/// A definition in another project must read as absent, not as a denial that would
+/// confirm it exists.
+#[sqlx::test]
+async fn tag_actions_hides_a_definition_from_another_project(pool: PgPool) {
+    let (ctx, warehouse) = setup_catalog(pool).await;
+    let project_id = (*warehouse.project_id).clone();
+    let definition = create_def(
+        &ctx,
+        &project_id,
+        "actions_other",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    tag_actions_request(
+        &ctx,
+        &ProjectId::new_random(),
+        definition.id,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+}
+
+/// `GET /management/v1/tag-definition/{id}/actions` through the built router, with the
+/// metadata extension the auth middleware would attach. Returns the parsed body.
+async fn tag_actions_request(
+    ctx: &Ctx,
+    project_id: &ProjectId,
+    tag_definition_id: lakekeeper::service::TagDefinitionId,
+    expected: StatusCode,
+) -> serde_json::Value {
+    use lakekeeper::axum::{Router, body::Body, http::Request};
+    use tower::ServiceExt as _;
+
+    let router: Router = Router::new()
+        .nest("/management/v1", Server::new_v1_router(&ctx.v1_state.authz))
+        .with_state(ctx.clone());
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/management/v1/tag-definition/{tag_definition_id}/actions"
+                ))
+                .extension(request_metadata_with_project(project_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), expected);
+    let bytes = lakekeeper::axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
