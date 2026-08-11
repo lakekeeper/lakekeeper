@@ -55,16 +55,20 @@ Instance admins do **not** bypass authorization for:
 - **Role assumption** (`x-assume-role` header) — an instance admin must act
   with their own identity. Assuming a role opts into that role's narrower
   scope.
-- **Permission management** — the [`/management/v1/.../grants`](./grants.md)
-  API under every Authorizer, and the endpoints the active Authorizer exposes
-  itself (for example `/management/v1/permissions/...` under OpenFGA; Cedar
-  exposes its own set). The instance-admin bypass does **not** apply to any
-  of them: writes go through the Authorizer's own grant-check path, so an
-  instance admin cannot directly make Alice a `project_admin`. Reading grant
-  authority is refused on the same footing — a `grants/grantable-privileges`
-  listing reports an instance admin as able to grant nothing, because that is
-  the truth. Ongoing permission administration stays with a principal that
-  holds real grants in the configured Authorizer.
+- **Handing out permissions** — writes through the
+  [`/management/v1/.../grants`](./grants.md) API under every Authorizer, and
+  through the endpoints the active Authorizer exposes itself (for example
+  `/management/v1/permissions/...` under OpenFGA; Cedar exposes its own set).
+  These always go through the Authorizer's own grant-check path, so an instance
+  admin cannot directly make Alice a `project_admin`, and
+  `grants/grantable-privileges` reports them as able to grant nothing — that
+  being the truth. Ongoing permission administration stays with a principal
+  that holds real grants in the configured Authorizer.
+
+    *Reading* permissions is not restricted. A grant listing is a control-plane
+    read like any other, so an instance admin can audit who holds what. The
+    split is deliberate: disclosure to an operator who can already read every
+    other record is not an escalation, whereas writing a grant is.
 
 This split keeps a leaked operator credential from being trivially used
 either to exfiltrate data or to escalate arbitrary principals to admin.

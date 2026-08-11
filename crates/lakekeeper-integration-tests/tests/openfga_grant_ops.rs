@@ -305,13 +305,16 @@ mod grant {
             assert_eq!(unknown, vec![false]);
         }
 
-        /// The instance-admin bypass stops at the grant surface. It is a static config
-        /// credential, so if it could write grants a leaked one would escalate any
-        /// principal to admin — here, by writing the very tuples the `/permissions` API
-        /// refuses it. This is the one control-plane surface the bypass does not reach,
-        /// so the exemption needs a test that fails if someone "restores consistency".
+        /// The instance-admin bypass splits at the grant surface: reads pass, writes do
+        /// not. It is a static config credential, so if it could write grants a leaked one
+        /// would escalate any principal to admin — here, by writing the very tuples the
+        /// `/permissions` API refuses it. Reading is left bypassed like every other
+        /// control-plane read, so an operator can still audit who holds what. Both halves
+        /// are pinned: the write exemption is the only one of its kind and would be
+        /// undone by anyone "restoring consistency", and the read half is what stops that
+        /// exemption from being over-applied.
         #[sqlx::test]
-        async fn an_instance_admin_cannot_grant_or_inspect_grant_authority(pool: PgPool) {
+        async fn an_instance_admin_may_read_grants_but_not_write_them(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let operator = UserId::new_unchecked("oidc", "leaked-operator");
             let carol = UserId::new_unchecked("oidc", "carol");
@@ -364,6 +367,26 @@ mod grant {
                 .await
                 .unwrap();
             assert_eq!(decisions, vec![false, false]);
+
+            // Reading is a different question from granting. An instance admin holds no
+            // relations in the model, so without the bypass this listing would be
+            // refused; it is allowed because auditing access is a control-plane read.
+            let page = Server::list_warehouse_grants(
+                warehouse_id,
+                ctx.clone(),
+                as_instance_admin,
+                ListGrantsQuery::default(),
+                no_pagination(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                page.grants
+                    .iter()
+                    .map(|g| g.privilege.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["ownership"]
+            );
         }
 
         /// Answering for another principal requires read-assignments authority on the
