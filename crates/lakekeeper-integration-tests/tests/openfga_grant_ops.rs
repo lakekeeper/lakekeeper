@@ -224,7 +224,8 @@ mod grant {
                     "describe",
                     "select",
                     "create",
-                    "modify"
+                    "modify",
+                    "manage_tags"
                 ]
             );
 
@@ -604,6 +605,7 @@ mod grant {
                     "create",
                     "describe",
                     "manage_grants",
+                    "manage_tags",
                     "modify",
                     "ownership",
                     "pass_grants",
@@ -628,8 +630,8 @@ mod grant {
                 .filter(|p| !p.allowed)
                 .map(|p| p.privilege.name.as_str())
                 .collect();
-            assert_eq!(unavailable.len(), 7);
-            assert_eq!(as_nobody.privileges.len(), 7);
+            assert_eq!(unavailable.len(), 8);
+            assert_eq!(as_nobody.privileges.len(), 8);
         }
 
         /// A per-resource listing narrowed to one principal is served by narrowing the

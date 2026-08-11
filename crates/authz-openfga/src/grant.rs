@@ -164,6 +164,11 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
             "Create new roles in the project. Does not confer the ability to add members to \
              roles that already exist."
         }),
+        "tag_creator" => ("administration", {
+            "Create new governance tag definitions in the project. Managing a definition \
+             that already exists — updating it, deleting it, or delegating who may apply \
+             it — is not conferred."
+        }),
         // Object-level privileges.
         "ownership" => ("security", {
             "Own the object. Implies its full privilege set, including managing its grants."
@@ -174,6 +179,12 @@ fn documentation_of(privilege: &str) -> Option<PrivilegeDocumentation> {
         }),
         "manage_grants" => ("security", {
             "Grant and revoke any privilege on this object and everything beneath it."
+        }),
+        "manage_tags" => ("metadata", {
+            "Attach and detach governance tags on this object, its columns, and everything \
+             beneath it. Independent of `modify`, so a steward can classify objects without \
+             the right to change them. Attaching a specific tag additionally requires the \
+             right to apply that tag."
         }),
         "describe" => ("metadata", "Read the object's metadata."),
         "select" => ("read", "Read the object's data."),
@@ -663,7 +674,8 @@ mod tests {
                 "describe",
                 "select",
                 "create",
-                "modify"
+                "modify",
+                "manage_tags"
             ]
         );
     }
