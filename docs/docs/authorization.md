@@ -26,7 +26,7 @@ Configuration for each is in the [Authorization configuration](./configuration.m
 
 - **Evaluating Lakekeeper?** Read the page for the authorizer you are leaning towards, and stop there.
 - **Setting one up?** The same page — each carries its own model, roles and configuration.
-- **Need Alice to read a table?** Use the UI, or the [Grants API](./grants.md) if you are automating it. Under OpenFGA, object owners can hand out access to their own objects.
+- **Need Alice to read a table?** Under OpenFGA, use the UI — or the [Grants API](./grants.md) if you are automating it — and note that object owners can hand out access to their own objects. Under Cedar, access comes from your policy source, so change that instead.
 - **Operating the deployment?** See [Instance Admins](./instance-admins.md) for administrative access that does not depend on the authorizer being healthy.
 
 ## Grants, privileges and roles

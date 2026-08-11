@@ -4,8 +4,10 @@
 
 **Instance admins** are principals listed directly in Lakekeeper's static
 configuration. They bypass the configured Authorizer for administrative
-actions, so they can always manage the catalog — even if the Authorizer
-itself is broken or misconfigured.
+actions, so they can still manage the catalog when the Authorizer itself is
+broken or misconfigured. The bypass applies once a request has authenticated
+and resolved to a configured identity: it replaces the authorization decision,
+not the rest of the request path.
 
 The typical instance admin is an automation account: a Kubernetes Operator
 reconciling Lakekeeper resources, for example, or an infrastructure admin
@@ -40,11 +42,16 @@ Instance admins do **not** bypass authorization for:
   [`/management/v1/.../grants`](./grants.md) API under every Authorizer, and
   through the endpoints the active Authorizer exposes itself (for example
   `/management/v1/permissions/...` under OpenFGA; Cedar exposes its own set).
-  These always go through the Authorizer's own grant-check path, so an instance
-  admin cannot directly make Alice a `project_admin`, and
+  These always go through the Authorizer's own grant-check path, so the outcome
+  is the Authorizer's to decide rather than the static configuration's. Under
+  OpenFGA an instance admin who holds no relations is refused, and
   `grants/grantable-privileges` reports them as able to grant nothing — that
   being the truth. Ongoing permission administration stays with a principal
   that holds real grants in the configured Authorizer.
+
+    The carve-out covers grant *writes*, not every route to access. Role
+    membership is a control-plane operation, so an instance admin can still
+    place a principal into a role that already holds privileges.
 
     *Reading* permissions is not restricted. A grant listing is a control-plane
     read like any other, so an instance admin can audit who holds what. The
@@ -52,7 +59,7 @@ Instance admins do **not** bypass authorization for:
     other record is not an escalation, whereas writing a grant is.
 
 This split keeps a leaked operator credential from being trivially used
-either to exfiltrate data or to escalate arbitrary principals to admin.
+either to exfiltrate data or to write itself the grants it does not hold.
 
 ## Configuration
 

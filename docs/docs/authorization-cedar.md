@@ -12,12 +12,7 @@
 Check the [Authorization Configuration](./configuration.md#authorization) for configuration options.
 
 !!! note "Permissions are policies, not grants"
-    Cedar decides from policies you author and deploy, so there is nothing to hand out at
-    runtime: the [Grants API](./grants.md) publishes no grantable privileges here and its
-    writes are rejected. Grant support for Cedar is planned for 0.14. Initial access comes
-    from your policy source, or from [Instance Admins](./instance-admins.md).
-    If you want permissions managed at runtime by admins and object owners instead, see
-    [OpenFGA](./authorization-openfga.md).
+    Cedar decides from policies you author and deploy, so there is nothing to hand out at runtime: the [Grants API](./grants.md) publishes no grantable privileges here and its writes are rejected. Grant support for Cedar is planned for 0.14. Initial access comes from your policy source, or from [Instance Admins](./instance-admins.md). If you want permissions managed at runtime by admins and object owners instead, see [OpenFGA](./authorization-openfga.md).
 
 ## How it Works
 

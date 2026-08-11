@@ -325,7 +325,8 @@ impl EventDispatcher {
 
     // ===== Grant Events =====
 
-    // Emitted once per applied grant by the grant management endpoints.
+    // Emitted once per request, carrying everything it created and removed. Emitters:
+    // the grant apply endpoints, and the cascade when a user is deleted.
     pub(crate) async fn grants_changed(&self, event: types::GrantsChangedEvent) {
         dispatch_event!(self, grants_changed, event);
     }
@@ -694,7 +695,9 @@ pub trait EventListener: Send + Sync + Debug + Display {
 
     // ===== Grant Events =====
 
-    /// Invoked after a grant has been successfully created
+    /// Invoked once after a request has successfully changed grants, with everything it
+    /// created and everything it removed. Either list may be empty — revoking only, or
+    /// deleting a user, emits removals alone.
     async fn grants_changed(&self, _event: types::GrantsChangedEvent) -> anyhow::Result<()> {
         Ok(())
     }

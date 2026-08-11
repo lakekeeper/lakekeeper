@@ -336,7 +336,7 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 
 **Grant changes (`operation = "grant_created"` / `"grant_revoked"`):**
 
-Emitted once per grant that actually changed, after the change is committed. `outcome` is always `success` — a change that did not happen produces no event.
+Emitted after the change is committed, one event per grant the backend reported as applied. `outcome` is always `success`: the event asserts the state the apply left behind, not that the grant differed from what was there before.
 
 These are the confirmed counterpart to the `apply_grants` authorization event. The authorization event records the *attempt* and deduplicates principals and privileges into separate lists, so it cannot say which principal received which privilege; these events carry the full triple, one per grant:
 
@@ -348,7 +348,7 @@ These are the confirmed counterpart to the `apply_grants` authorization event. T
 | `resource_id`  | The exact resource. Absent for `server` grants, which have no id            |
 | `warehouse_id` | The containing warehouse, for warehouse-scoped resources only               |
 
-Grants are hard-deleted and keep no history, so where a `grant_revoked` event is emitted it is the only surviving record that the access existed. Retain these if you need to answer who held what, when.
+Grants are hard-deleted and keep no history, so a `grant_revoked` event is the only lasting trace of the revocation. It is not proof the access existed: these events report post-apply state, so revoking a grant nobody held can emit one too. Retain them if you need to answer who held what, when.
 
 **These events do not cover every way a grant disappears.** Two paths remove grants without emitting one:
 
@@ -357,7 +357,9 @@ Grants are hard-deleted and keep no history, so where a `grant_revoked` event is
 
 So a `grant_created` event with no matching `grant_revoked` does **not** imply the grant is still held. To determine current access, read `GET .../grants`; use these events for attribution and change history, not as a ledger you can replay to a current balance.
 
-**These events assert state, not transitions, and are at-least-once.** A `grant_created` means *this grant is now in effect as of this request* — not that it did not exist before. A `grant_revoked` means *this grant is now not in effect*. Applying the same diff twice can therefore emit the same events twice, and revoking a grant nobody held can emit a `grant_revoked`.
+**These events assert state, not transitions, and may repeat.** A `grant_created` means *this grant is now in effect as of this request* — not that it did not exist before. A `grant_revoked` means *this grant is now not in effect*. Applying the same diff twice can therefore emit the same events twice, and revoking a grant nobody held can emit a `grant_revoked`.
+
+**Delivery is best-effort, after the fact.** Listeners are invoked once the change is committed, so a listener that fails, or a process that stops between the commit and the dispatch, loses the record — the failure is logged and not retried. The grant itself still stands. Treat a missing event as possible rather than impossible, and do not use these events as the authoritative account of what changed.
 
 That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
 

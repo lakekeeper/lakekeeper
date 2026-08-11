@@ -50,8 +50,8 @@ Grant to a **role** rather than to individual users wherever you can — one gra
 
 Granting requires the authority to hand that privilege on, on that resource. Your authorizer decides who has it; under OpenFGA see [Grants](./authorization-openfga.md#grants).
 
-!!! note "Instance admins cannot grant"
-    The [instance-admin bypass](./instance-admins.md) does not cover handing out permissions. Granting always goes through the configured authorizer.
+!!! note "The instance-admin bypass does not apply to grant writes"
+    Handing out permissions is not covered by the [instance-admin bypass](./instance-admins.md). Grant writes always go through the configured authorizer, which decides the outcome.
 
 ## Revoking access
 
