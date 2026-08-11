@@ -920,8 +920,9 @@ pub mod v1 {
     /// Idempotent: granting twice creates one grant, revoking a grant that is not
     /// held is not an error. Which privileges are legal differs between authorizers.
     ///
-    /// Returns what actually changed, so a revocation that matched nothing is
-    /// distinguishable from one that took effect.
+    /// Success is `204` with no body: whether an entry was already in the requested
+    /// state is not reported. Read the grants back, or read the `grant_created` and
+    /// `grant_revoked` audit records, for what changed.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1031,7 +1032,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1102,7 +1104,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1159,7 +1162,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1216,7 +1220,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1283,7 +1288,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1354,7 +1360,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",
@@ -1425,7 +1432,8 @@ pub mod v1 {
     /// This API may change in a backward-incompatible way in a future release.
     ///
     /// Creates the grants in `writes` and removes those in `deletes`, atomically.
-    /// Idempotent, and returns what actually changed.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
     #[cfg_attr(feature = "open-api", utoipa::path(
         post,
         tag = "grant",

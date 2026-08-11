@@ -295,10 +295,9 @@ pub struct ListGrantsResponse {
     /// can still carry a token, so follow it until a request returns no grants —
     /// do not treat a full page as the only signal to continue.
     ///
-    /// Always absent on the principal- and project-scoped listing when the authorizer
-    /// owns grants: that listing is a fan-out across resource types, which one opaque
-    /// token cannot describe, so it returns every match in a single response and
-    /// ignores `pageSize`.
+    /// The project-scoped listing pages like the rest, but only where grants live in
+    /// the catalog. An authorizer that owns its grants may not implement that listing
+    /// at all — see its `501` response.
     pub next_page_token: Option<String>,
 }
 

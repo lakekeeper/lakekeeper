@@ -4,6 +4,11 @@ Lakekeeper can use [OpenFGA](https://openfga.dev) to store and evaluate permissi
 
 Check the [Authorization Configuration](./configuration.md#authorization) for setup details.
 
+Choose OpenFGA when you want permissions managed at runtime — admins and object owners
+handing out access through the UI and API. For policy-as-code with conditions on
+attributes, see [Cedar](./authorization-cedar.md); the
+[Overview](./authorization.md#choose-an-authorizer) compares the two.
+
 !!! note "Minimum OpenFGA version"
     **OpenFGA v1.11 or later is required.** The bootstrap and `lakekeeper openfga reconcile` paths use OpenFGA's idempotent-write semantics (`on_duplicate: ignore` / `on_missing: ignore`), introduced in v1.11. Earlier versions will fail with `cannot write a tuple which already exists` during a re-bootstrap or reconcile run. We test against v1.14.
 
@@ -84,6 +89,10 @@ Because a grant *is* a tuple, a few behaviors differ from deployments that store
 - **Grant events are never deduplicated.** Grant events assert state rather than transitions and are at-least-once under every authorizer (see [Logging](./logging.md#audit-logs)). A tuple write additionally reports nothing about prior state, so here no no-op can be suppressed at all: re-applying an unchanged diff emits the full set of events every time. Deployments that store grants in the catalog database skip events for no-ops; this one cannot.
 - **Unknown privileges cannot be revoked.** A privilege outside the model has no relation, so there is no tuple to remove and no `can_grant_…` relation to check — the request is refused with `403`. Nothing revocable is withheld; just do not mix unknown privileges into a diff with real ones.
 - **The project-scoped listing is not supported.** `GET /management/v1/grants` reports `GrantListingNotImplemented` (501) here. Tuples are indexed by object, so "everything one principal holds in this project" has no index to answer it from: it would mean reading the store a level at a time and resolving every object back to its project through the hierarchy, producing one unpageable response sized by the deployment rather than by the request. Rather than ship that, the arm refuses. Read one resource's grants from `GET .../{resource}/grants` — those page normally and take `principalUser`/`principalRole` — or query OpenFGA directly, where the tuples are. Deployments that keep grants in the catalog database answer the project-scoped listing normally.
+- **`pageSize` is clamped to 100.** The authorizer's read caps a page there, whatever the deployment maximum is. Follow the continuation token rather than raising the page size.
+- **A privilege the model no longer defines disappears from listings.** It is stored as a relation, and a relation the model does not define has no name to report — so such a grant is invisible *and*, per the point above, unrevocable through the API. `openfga reconcile` does not clean grants. Remove the tuple in OpenFGA directly, or keep the relation in the model until its grants are gone.
+- **Applying below the warehouse under an assumed role is refused** with `GrantNotSupported`: managed access has no public userset below the warehouse, so the request cannot be evaluated for a role. The `/permissions` assignments API applies the same restriction.
+- **Grants outlive the resources they name.** When a table, namespace or warehouse is deleted, its tuples are removed afterwards on a best-effort basis rather than in the same transaction — and deleting a warehouse removes only the warehouse's own grants, not those on the namespaces and tabulars inside it. Leftover tuples are invisible to listings, because the path back to the project is gone, and are never reclaimed. Deployments that keep grants in the catalog database remove them by foreign key with the resource.
 - **Per-resource listings page normally, but an empty page is not the end.** A resource's grants come from one `Read` of that object, which pages with a continuation token like any other listing. Non-privilege tuples on the same object are filtered out *after* the page is fetched, so a page can come back short or empty while more grants remain. Follow the token until it is absent; do not stop on a short page.
 
 ## Tags
@@ -176,5 +185,5 @@ OpenFGA can be enabled, or its store replaced, on an already-bootstrapped Lakeke
 
 Switching *away* from OpenFGA (for example to Cedar) is not covered by reconcile and generally requires a new Lakekeeper instance.
 
-> Instance admins are useful as a parallel safety net while the OpenFGA store has no admin tuples: they can still manage projects, warehouses, namespaces, and tables. They do **not** confer data-plane access (`ReadData`, `WriteData`, view `Select`) and they **cannot** write to the OpenFGA permission-management endpoints — see [Instance Admins](./authorization.md#instance-admins).
+> Instance admins are useful as a parallel safety net while the OpenFGA store has no admin tuples: they can still manage projects, warehouses, namespaces, and tables. They do **not** confer data-plane access (`ReadData`, `WriteData`, view `Select`) and they **cannot** write to the OpenFGA permission-management endpoints — see [Instance Admins](./instance-admins.md).
 

@@ -1815,7 +1815,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_project_grants
       parameters:
         - name: x-project-id
@@ -3051,7 +3052,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_server_grants
       requestBody:
         content:
@@ -3557,7 +3559,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_tag_grants
       parameters:
         - name: tag_definition_id
@@ -4518,7 +4521,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_generic_table_grants
       parameters:
         - name: warehouse_id
@@ -4951,8 +4955,9 @@ paths:
         Idempotent: granting twice creates one grant, revoking a grant that is not
         held is not an error. Which privileges are legal differs between authorizers.
 
-        Returns what actually changed, so a revocation that matched nothing is
-        distinguishable from one that took effect.
+        Success is `204` with no body: whether an entry was already in the requested
+        state is not reported. Read the grants back, or read the `grant_created` and
+        `grant_revoked` audit records, for what changed.
       operationId: apply_warehouse_grants
       parameters:
         - name: warehouse_id
@@ -5230,7 +5235,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_namespace_grants
       parameters:
         - name: warehouse_id
@@ -6227,7 +6233,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_table_grants
       parameters:
         - name: warehouse_id
@@ -7069,7 +7076,8 @@ paths:
         This API may change in a backward-incompatible way in a future release.
 
         Creates the grants in `writes` and removes those in `deletes`, atomically.
-        Idempotent, and returns what actually changed.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
       operationId: apply_view_grants
       parameters:
         - name: warehouse_id
@@ -11381,10 +11389,9 @@ components:
             can still carry a token, so follow it until a request returns no grants —
             do not treat a full page as the only signal to continue.
 
-            Always absent on the principal- and project-scoped listing when the authorizer
-            owns grants: that listing is a fan-out across resource types, which one opaque
-            token cannot describe, so it returns every match in a single response and
-            ignores `pageSize`.
+            The project-scoped listing pages like the rest, but only where grants live in
+            the catalog. An authorizer that owns its grants may not implement that listing
+            at all — see its `501` response.
     ListProjectTasksRequest:
       type: object
       properties:

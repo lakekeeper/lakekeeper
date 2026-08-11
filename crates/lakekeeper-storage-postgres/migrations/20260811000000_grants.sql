@@ -106,6 +106,13 @@ create table grant_assignment (
 -- grant per principal, so without it each page sorts the whole level and paginating
 -- costs the level's size squared.
 --
+-- The three that key off a resource column carry resource_type before it, even though
+-- the column already implies the type. Every listing filters on resource_type, and an
+-- index that cannot prove that equality has it applied as an independent filter
+-- instead: the row estimate falls below the page size, the planner stops discounting
+-- the ordered scan, and each page bitmap-scans and sorts the whole level — the exact
+-- cost the trailing keyset exists to avoid.
+--
 -- The warehouse-contained levels need three separate indexes: a combined
 -- (warehouse_id, namespace_id, tabular_id, resource_type) cannot replace them, because
 -- the tabular cascade that fires on every drop has no contiguous range in it, and
@@ -114,9 +121,11 @@ create table grant_assignment (
 create index grant_warehouse_idx on grant_assignment
     (warehouse_id, resource_type, created_at, grant_id);
 create index grant_namespace_idx on grant_assignment
-    (warehouse_id, namespace_id, created_at, grant_id) where namespace_id is not null;
+    (warehouse_id, namespace_id, resource_type, created_at, grant_id)
+    where namespace_id is not null;
 create index grant_tabular_idx on grant_assignment
-    (warehouse_id, tabular_id, created_at, grant_id) where tabular_id is not null;
+    (warehouse_id, tabular_id, resource_type, created_at, grant_id)
+    where tabular_id is not null;
 -- Principal-scoped listing, plus the user and role cascade checks.
 create index grant_user_idx on grant_assignment (user_id, created_at, grant_id)
     where user_id is not null;
@@ -125,7 +134,8 @@ create index grant_role_idx on grant_assignment (role_id, created_at, grant_id)
 -- Project and tag-definition cascade checks, and their scoped listings.
 create index grant_project_idx on grant_assignment (project_id, created_at, grant_id)
     where project_id is not null;
-create index grant_tag_idx on grant_assignment (tag_definition_id, created_at, grant_id)
+create index grant_tag_idx on grant_assignment
+    (tag_definition_id, resource_type, created_at, grant_id)
     where tag_definition_id is not null;
 -- A server grant populates no resource column, so nothing else can locate one and
 -- listing them would otherwise scan in proportion to every grant in the deployment.

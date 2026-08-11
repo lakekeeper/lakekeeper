@@ -680,9 +680,12 @@ pub(crate) async fn delete_grants(
 /// filter over every grant on the resource: it compared half a million rows to delete a
 /// hundred on a warehouse holding five thousand grants, and the cost grows with the
 /// resource's grant count times the diff's size. Splitting lets each arm compare its one
-/// populated principal column with `=` and hold the other `NULL` as a constant, which
-/// gives a full leading-column match on `grant_unique` — one index probe per entry. It is
-/// also the shape the read path already uses.
+/// populated principal column with `=` and hold the other `NULL` as a constant, so each
+/// entry probes an index on its principal instead of scanning the resource. The planner
+/// takes `grant_user_idx`/`grant_role_idx` on the principal alone and filters the rest,
+/// so the cost is per entry times that principal's grant count — bounded in practice by
+/// the 100-entry diff cap, not the single probe an exact `grant_unique` match would give.
+/// It is also the shape the read path already uses.
 async fn delete_grants_on_resource(
     resource: &GrantResource,
     specs: Vec<&GrantSpec>,
@@ -2124,6 +2127,11 @@ mod tests {
         .await
         .expect("create tag definition");
 
+        // A second principal, so the project-wide filter cannot pass by returning the
+        // same set as the principal-scoped one — the only variant that distinguishes
+        // them has no endpoint, so this test is its whole coverage.
+        let other = seed_user(&pool, "oidc~bob").await;
+
         let specs = vec![
             user_spec(&user, GrantResource::Warehouse(warehouse_id), "select"),
             user_spec(
@@ -2134,6 +2142,7 @@ mod tests {
             user_spec(&user, GrantResource::Tag(tag_definition_id), "apply"),
             // Server grants have no project, so they are out of scope by design.
             user_spec(&user, GrantResource::Server, "admin"),
+            user_spec(&other, GrantResource::Warehouse(warehouse_id), "modify"),
         ];
         insert_grants(&specs, &mut txn).await.unwrap();
         txn.commit().await.unwrap();
@@ -2154,7 +2163,8 @@ mod tests {
         listed.sort();
         assert_eq!(listed, vec!["apply", "create_warehouse", "select"]);
 
-        // Every grant in the project, regardless of principal.
+        // Every grant in the project, regardless of principal: alice's three plus
+        // bob's one, and still no server grant.
         let page = list_grants(
             &GrantFilter::ByProject((*project_id).clone()),
             no_pagination(),
@@ -2162,7 +2172,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(page.grants.len(), 3);
+        let mut listed: Vec<_> = page.grants.iter().map(|g| g.privilege.clone()).collect();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec!["apply", "create_warehouse", "modify", "select"]
+        );
     }
 
     /// A soft-deleted table still has its row, so its grants survive for undrop.

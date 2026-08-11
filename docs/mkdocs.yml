@@ -27,9 +27,10 @@ nav:
           - authentication.md
           - Authorization:
                 - Overview: authorization.md
-                - Permissions & Grants: grants.md
                 - OpenFGA: authorization-openfga.md
-                - Cedar: authorization-cedar.md
+                - Cedar <span class="lkp"></span>: authorization-cedar.md
+                - Instance Admins: instance-admins.md
+                - Grants API <span class="lkp-preview"></span>: grants.md
           - Governance Tags: tags.md
           - Admission Gates: admission.md
           - View Security: view-security.md
