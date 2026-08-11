@@ -9,6 +9,8 @@ Choose OpenFGA when you want permissions managed at runtime — admins and objec
 !!! note "Minimum OpenFGA version"
     **OpenFGA v1.11 or later is required.** The bootstrap and `lakekeeper openfga reconcile` paths use OpenFGA's idempotent-write semantics (`on_duplicate: ignore` / `on_missing: ignore`), introduced in v1.11. Earlier versions will fail with `cannot write a tuple which already exists` during a re-bootstrap or reconcile run. We test against v1.14.
 
+    The server's `OPENFGA_MAX_TUPLES_PER_WRITE` must be at least **100** (its default). A grant diff is applied as one write of up to 100 tuples, and Lakekeeper cannot see the server's setting — a smaller cap fails those writes at runtime.
+
 ## Grants
 The default permission model is focused on collaborating on data. Permissions are additive. The underlying OpenFGA model is defined in [`schema.fga` on GitHub](https://github.com/lakekeeper/lakekeeper/blob/main/authz/openfga/). The following grants are available:
 

@@ -106,20 +106,30 @@ create table grant_assignment (
 -- grant per principal, so without it each page sorts the whole level and paginating
 -- costs the level's size squared.
 --
--- The three that key off a resource column carry resource_type before it, even though
--- the column already implies the type. Every listing filters on resource_type, and an
--- index that cannot prove that equality has it applied as an independent filter
--- instead: the row estimate falls below the page size, the planner stops discounting
--- the ordered scan, and each page bitmap-scans and sorts the whole level — the exact
--- cost the trailing keyset exists to avoid.
+-- Each index that keys off a resource column also proves resource_type — as a column
+-- before the keyset, or as its partial predicate — even though the column already
+-- implies the type. Every listing filters on resource_type, and an index that cannot
+-- prove that equality has it applied as an independent filter instead: the row
+-- estimate falls below the page size, the planner stops discounting the ordered scan,
+-- and each page bitmap-scans and sorts the whole level — the exact cost the trailing
+-- keyset exists to avoid.
 --
 -- The warehouse-contained levels need three separate indexes: a combined
 -- (warehouse_id, namespace_id, tabular_id, resource_type) cannot replace them, because
 -- the tabular cascade that fires on every drop has no contiguous range in it, and
 -- warehouse-level rows are not isolated by namespace_id IS NULL — tabular grants have a
 -- null namespace_id too.
-create index grant_warehouse_idx on grant_assignment
-    (warehouse_id, resource_type, created_at, grant_id);
+--
+-- The warehouse level alone splits its two duties. Its cascade covers every
+-- warehouse-contained grant, not just its own level, and an index wide enough for the
+-- listing's keyset makes every entry unique — which forfeits btree deduplication and
+-- pays for the width on every cascade probe. The bare column deduplicates; the
+-- listing gets its own partial keyset index, whose predicate is what proves the
+-- resource_type equality.
+create index grant_warehouse_cascade_idx on grant_assignment (warehouse_id)
+    where warehouse_id is not null;
+create index grant_warehouse_idx on grant_assignment (warehouse_id, created_at, grant_id)
+    where resource_type = 'warehouse';
 create index grant_namespace_idx on grant_assignment
     (warehouse_id, namespace_id, resource_type, created_at, grant_id)
     where namespace_id is not null;
@@ -131,8 +141,11 @@ create index grant_user_idx on grant_assignment (user_id, created_at, grant_id)
     where user_id is not null;
 create index grant_role_idx on grant_assignment (role_id, created_at, grant_id)
     where role_id is not null;
--- Project and tag-definition cascade checks, and their scoped listings.
-create index grant_project_idx on grant_assignment (project_id, created_at, grant_id)
+-- Project and tag-definition cascade checks, and their scoped listings. The cascade
+-- probes carry no resource_type equality, so these keep the `is not null` predicate
+-- and prove the type through the column instead.
+create index grant_project_idx on grant_assignment
+    (project_id, resource_type, created_at, grant_id)
     where project_id is not null;
 create index grant_tag_idx on grant_assignment
     (tag_definition_id, resource_type, created_at, grant_id)
@@ -141,9 +154,9 @@ create index grant_tag_idx on grant_assignment
 -- listing them would otherwise scan in proportion to every grant in the deployment.
 create index grant_server_idx on grant_assignment (created_at, grant_id)
     where resource_type = 'server';
--- The project roll-up has no single resource column to narrow by, so it walks this in
--- order and stops at the page size.
-create index grant_keyset_idx on grant_assignment (created_at, grant_id);
+-- Deliberately no whole-table (created_at, grant_id) index: the only query shape that
+-- would walk one — every grant in a project regardless of principal — has no endpoint.
+-- If a project export surface lands, it brings that index with it.
 
 -- Endpoint statistics record the matched route as this enum type, so a route that is
 -- not registered here is rejected when its statistics are written.

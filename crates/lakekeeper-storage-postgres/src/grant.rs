@@ -116,6 +116,11 @@ impl StoredResourceType {
 /// with another feature's lock on the same hash space. (`grantapl` in ASCII.)
 const GRANT_APPLY_LOCK_SEED: i64 = 0x6772_616E_7461_706C;
 
+/// Row count above which [`list_grants_for_principals`] logs a warning. The fetch is
+/// unpaginated on the expectation that a principal set holds tens of grants; a
+/// principal set holding thousands breaks that expectation and should be visible.
+const PRINCIPAL_GRANTS_WARN_THRESHOLD: usize = 1_000;
+
 /// Foreign keys guard the principal and every resource column, so a violation
 /// means the grant named something that does not exist.
 ///
@@ -1222,6 +1227,17 @@ where
     .await
     .map_err(DBErrorHandler::into_catalog_backend_error)
     .map_err(ListGrantsStoreError::from)?;
+
+    // The affordability argument above is an expectation, not a bound. Make the
+    // exception attributable before it surfaces as unexplained latency.
+    if rows.len() >= PRINCIPAL_GRANTS_WARN_THRESHOLD {
+        tracing::warn!(
+            "list_grants_for_principals fetched {} grants for {} principals in project \
+             {project_id}; this fetch is unpaginated and scales with grants held",
+            rows.len(),
+            principals.len(),
+        );
+    }
 
     Ok(rows
         .into_iter()

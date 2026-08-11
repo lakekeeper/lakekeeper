@@ -34,6 +34,13 @@
 //! allowed) from "does not exist" (404). Accepted: ids are UUIDs, the request is already
 //! confined to the caller's own project, and no privilege, principal or name is
 //! revealed — only that the id resolves.
+//!
+//! ## One explicit body per level
+//!
+//! The per-level duplication is deliberate, matching `lakekeeper_actions.rs`: the
+//! bodies differ in exactly what a shared abstraction would have to parameterize
+//! (resolution, can-see action, event context). A ninth level is the trigger to
+//! revisit.
 
 use std::sync::Arc;
 
@@ -380,6 +387,13 @@ impl axum::response::IntoResponse for ResourceGrantablePrivilegesResponse {
 ///
 /// Two separate parameters rather than one encoded principal, matching the
 /// `principalUser`/`principalRole` pair the action-introspection endpoints already use.
+///
+/// Unlike [`GetGrantAccessQuery`] this cannot carry `deny_unknown_fields`: every listing
+/// extracts this and [`PaginationQuery`](crate::api::iceberg::v1::PaginationQuery) from
+/// the same query string, so rejecting unknown keys here would reject `pageSize`. The
+/// misspelling that attribute guards against — `?principal_user=…` deserializing to
+/// `None` — therefore answers unnarrowed here, gated by `ReadGrants` rather than by the
+/// self-read rule, so it fails closed on authority.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase")]
@@ -1492,14 +1506,18 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .into(),
                 );
             }
-            authorizer
-                .require_tag_action(
-                    event_ctx.request_metadata(),
-                    tag_definition_id,
-                    Ok(Some(definition)),
-                    required,
-                )
-                .await?;
+            // On the self path `required` is the `Read` just decided above, so asking
+            // again would repeat the identical check.
+            if !is_self {
+                authorizer
+                    .require_tag_action(
+                        event_ctx.request_metadata(),
+                        tag_definition_id,
+                        Ok(Some(definition)),
+                        required,
+                    )
+                    .await?;
+            }
             Ok::<(), AuthZError>(())
         }
         .await;

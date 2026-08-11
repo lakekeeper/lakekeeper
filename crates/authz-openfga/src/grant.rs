@@ -659,6 +659,33 @@ mod tests {
         }
     }
 
+    /// The vocabulary and the parser are two derivations of the same enum —
+    /// `IntoStaticStr` for the published names, `EnumString` for recognition — and
+    /// nothing else ties them together. Membership pins published ⊆ recognized; the
+    /// count pins recognized ⊆ published, so a variant cannot be writable while
+    /// absent from `grantable-privileges`.
+    #[test]
+    fn the_vocabulary_and_the_parser_agree() {
+        for resource_type in every_level() {
+            let published = vocabulary(resource_type);
+            for privilege in published {
+                assert!(
+                    is_known_privilege(resource_type, &privilege.name),
+                    "{resource_type:?} publishes `{}` but does not recognize it",
+                    privilege.name
+                );
+            }
+            let declared = for_level!(resource_type, |R| R::iter().count());
+            assert_eq!(
+                published.len(),
+                declared,
+                "{resource_type:?} publishes {} privileges but declares {declared} \
+                 assignable relations",
+                published.len(),
+            );
+        }
+    }
+
     #[test]
     fn the_warehouse_vocabulary_is_the_assignable_relations() {
         let names: Vec<String> = vocabulary(ResourceType::Warehouse)

@@ -301,9 +301,10 @@ impl From<InvalidGrantPrivilege> for ErrorModel {
 
 /// The caller may not grant or revoke this privilege on this resource.
 ///
-/// Only for callers who may *see* the resource; a caller with no visibility must
-/// get the resource's masked "not found or access denied" error instead, so that a
-/// forbidden response never confirms existence.
+/// Returned without a visibility check: grant authority is independent of visibility,
+/// so this `403` can reach a caller who cannot otherwise see the resource and thereby
+/// confirm the id resolves. That disclosure is a recorded decision — see "What the
+/// write and vocabulary paths disclose" in `api::management::v1::grant`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZGrantActionForbidden {
     resource_type: ResourceType,
