@@ -3459,6 +3459,8 @@ mod tests {
                 .await
                 .unwrap();
 
+            let tag_creator =
+                ProjectAssignment::TagCreator(UserOrRole::User(user_id_assignee.clone()));
             checked_write(
                 authorizer.clone(),
                 &Actor::Principal(user_id_owner.clone()),
@@ -3466,6 +3468,7 @@ mod tests {
                     ProjectAssignment::Describe(UserOrRole::Role(role_id.into_api_assignee())),
                     ProjectAssignment::DataAdmin(UserOrRole::Role(role_id.into_api_assignee())),
                     ProjectAssignment::DataAdmin(UserOrRole::User(user_id_assignee.clone())),
+                    tag_creator.clone(),
                 ],
                 vec![],
                 &project_id.to_openfga(),
@@ -3477,7 +3480,9 @@ mod tests {
                 get_relations(authorizer.clone(), None, &project_id.to_openfga())
                     .await
                     .unwrap();
-            assert_eq!(relations.len(), 4);
+            // project_admin (seeded) + describe + 2x data_admin + tag_creator
+            assert_eq!(relations.len(), 5);
+            assert!(relations.contains(&tag_creator));
         }
 
         #[tokio::test]
