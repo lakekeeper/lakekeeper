@@ -12,6 +12,7 @@ use tower_http::{
     compression::CompressionLayer,
     cors::AllowOrigin,
     sensitive_headers::SetSensitiveHeadersLayer,
+    set_header::SetResponseHeaderLayer,
     timeout::TimeoutLayer,
     trace::{self, TraceLayer},
 };
@@ -44,6 +45,42 @@ use crate::{
 };
 
 pub const X_USER_AGENT_HEADER_NAME: HeaderName = HeaderName::from_static("x-user-agent");
+
+/// Every API response is specific to the authenticated principal: bodies are
+/// filtered by the caller's permissions and `loadTable` may embed storage
+/// credentials vended for them alone. `private` keeps such a response out of
+/// shared caches while still allowing the client-side storage that
+/// `ETag` / `If-None-Match` revalidation depends on — `no-store` would defeat
+/// the conditional-request support the catalog implements.
+static CACHE_CONTROL_PRIVATE: HeaderValue = HeaderValue::from_static("private");
+
+/// Request headers that select between different bodies for the same URL, so
+/// that a cache does not serve one variant in place of another. The
+/// credentials in `authorization` decide both the principal and the vended
+/// storage credentials, `x-project-id` selects the project a warehouse is
+/// resolved in, and `x-iceberg-access-delegation` picks the form of storage
+/// access returned by `loadTable`.
+static VARY_ON_REQUEST_IDENTITY: HeaderValue =
+    HeaderValue::from_static("authorization, x-project-id, x-iceberg-access-delegation");
+
+/// Attaches the cache directives above to every route already mounted on
+/// `router`. Set `if_not_present` so that routes with stricter needs — the S3
+/// signer sets `private, no-cache` — keep their own directive. Call this
+/// before mounting `/health`, which is not principal-specific.
+fn set_cache_directives<S>(router: Router<S>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            CACHE_CONTROL_PRIVATE.clone(),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::VARY,
+            VARY_ON_REQUEST_IDENTITY.clone(),
+        ))
+}
 
 #[cfg(feature = "open-api")]
 static ICEBERG_OPENAPI_SPEC_YAML: std::sync::LazyLock<serde_json::Value> =
@@ -147,18 +184,20 @@ pub async fn new_full_router<
         option_layer(None)
     };
 
-    let mut router = Router::new()
-        .nest("/catalog/v1", v1_routes)
-        .nest("/management/v1", management_routes)
-        .nest("/lakekeeper/v1", generic_table_routes)
-        // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
-        // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
-        // before `/health` is added so liveness/readiness probes are
-        // unaffected.
-        .layer(axum::middleware::from_fn(
-            crate::api::maintenance::maintenance_middleware_fn,
-        ))
-        .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
+    let mut router = set_cache_directives(
+        Router::new()
+            .nest("/catalog/v1", v1_routes)
+            .nest("/management/v1", management_routes)
+            .nest("/lakekeeper/v1", generic_table_routes)
+            // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
+            // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
+            // before `/health` is added so liveness/readiness probes are
+            // unaffected.
+            .layer(axum::middleware::from_fn(
+                crate::api::maintenance::maintenance_middleware_fn,
+            )),
+    )
+    .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body
     if CONFIG.debug.log_request_bodies {
@@ -443,7 +482,7 @@ mod test {
     use std::collections::HashMap;
 
     use axum::{Router, body::Body, http::Request, routing::get};
-    use http::StatusCode;
+    use http::{HeaderMap, HeaderValue, StatusCode, header};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
@@ -483,6 +522,67 @@ mod test {
         let body: HealthState = serde_json::from_slice(&body).unwrap();
 
         (status, body)
+    }
+
+    /// Routes a `GET /t` through the cache directives and returns the response
+    /// headers. `preset` is applied by the inner handler, standing in for a
+    /// route that sets its own directives.
+    async fn cache_directive_headers(preset: &[(http::HeaderName, &'static str)]) -> HeaderMap {
+        let preset = preset.to_vec();
+        let app = super::set_cache_directives(Router::new().route(
+            "/t",
+            get(move || {
+                let preset = preset.clone();
+                async move {
+                    let mut headers = HeaderMap::new();
+                    for (name, value) in preset {
+                        headers.insert(name, HeaderValue::from_static(value));
+                    }
+                    (headers, "ok")
+                }
+            }),
+        ));
+
+        app.oneshot(Request::builder().uri("/t").body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .headers()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn responses_are_private_and_vary_on_the_request_identity() {
+        let headers = cache_directive_headers(&[]).await;
+
+        assert_eq!(headers[header::CACHE_CONTROL], "private");
+        let vary = headers[header::VARY].to_str().unwrap();
+        for varied_on in [
+            header::AUTHORIZATION.as_str(),
+            crate::request_metadata::X_PROJECT_ID_HEADER,
+            crate::api::iceberg::v1::tables::DATA_ACCESS_HEADER,
+        ] {
+            assert!(vary.contains(varied_on), "{varied_on} missing from {vary}");
+        }
+    }
+
+    /// `private` permits client-side storage — without it the `ETag` /
+    /// `If-None-Match` revalidation the catalog implements would never be
+    /// exercised.
+    #[tokio::test]
+    async fn responses_are_not_marked_no_store() {
+        let headers = cache_directive_headers(&[]).await;
+
+        let cache_control = headers[header::CACHE_CONTROL].to_str().unwrap();
+        assert!(!cache_control.contains("no-store"), "{cache_control}");
+    }
+
+    /// The S3 signer relies on this: it sets `private, no-cache` itself.
+    #[tokio::test]
+    async fn a_route_keeps_its_own_cache_directives() {
+        let headers =
+            cache_directive_headers(&[(header::CACHE_CONTROL, "private, no-cache")]).await;
+
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-cache");
     }
 
     #[tokio::test]
