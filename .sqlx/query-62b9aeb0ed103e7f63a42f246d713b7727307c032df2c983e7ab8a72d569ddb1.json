@@ -181,7 +181,6 @@
                       "management-v1-validate-storage-profile",
                       "management-v1-validate-storage-credential",
                       "management-v1-validate-storage-access",
-                      "management-v1-move-namespace",
                       "management-v1-list-grants",
                       "management-v1-get-grantable-privileges",
                       "management-v1-list-warehouse-grants",
@@ -208,7 +207,8 @@
                       "management-v1-get-table-grantable-privileges",
                       "management-v1-get-view-grantable-privileges",
                       "management-v1-get-generic-table-grantable-privileges",
-                      "management-v1-get-tag-grantable-privileges"
+                      "management-v1-get-tag-grantable-privileges",
+                      "management-v1-move-namespace"
                     ]
                   }
                 }
