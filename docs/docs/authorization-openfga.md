@@ -121,7 +121,7 @@ Moving a namespace requires `manage_grants` at **both** ends: on the namespace b
 
 Two consequences are worth knowing:
 
-* Because managed access removes `manage_grants` from owners, an owner **cannot** move a namespace out of a managed subtree — which is the point, since moving it out would restore their own ability to grant on it.
+* Managed access removes `manage_grants` from *owners*, so ownership alone does not let someone move a namespace out of a managed subtree — which is the point, since moving it out would restore their ability to grant on it. A principal **directly assigned** `manage_grants` on that namespace still holds it, and can move it: the direct assignment is unaffected by managed access, exactly as it is for every other operation `manage_grants` gates.
 * `manage_grants` is independent of `modify`, so being able to move a namespace neither implies nor is implied by being able to delete it. A `security_admin` can restructure the hierarchy without holding write access; a principal granted only `modify` cannot move namespaces.
 
 ## Best Practices
