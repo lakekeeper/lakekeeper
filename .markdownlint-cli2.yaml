@@ -61,7 +61,8 @@ config:
   MD036: false
 
   # Anchor validity is already checked authoritatively by lychee in CI
-  # (`just linkcheck`). markdownlint's slugger disagrees with MkDocs on
+  # (`cd site && just linkcheck` -- the recipe lives in site/justfile, not the
+  # root one). markdownlint's slugger disagrees with MkDocs on
   # headings containing emoji or inline HTML -- e.g. `## <img ...> Spark`,
   # where MkDocs strips the tag and markdownlint does not -- so this rule
   # produces only false positives here.
