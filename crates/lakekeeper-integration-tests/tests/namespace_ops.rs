@@ -6,7 +6,10 @@ use lakekeeper::{
     api::{
         RequestMetadata,
         iceberg::v1::{NamespaceParameters, namespace::NamespaceService},
-        management::v1::{ApiServer, namespace::NamespaceManagementService as _},
+        management::v1::{
+            ApiServer,
+            namespace::{MoveNamespaceRequest, NamespaceManagementService as _},
+        },
     },
     server::CatalogServer,
     service::{
@@ -1341,4 +1344,760 @@ async fn test_root_namespace_null_parent(pool: PgPool) {
 
     assert_eq!(hierarchy.depth(), 0, "Root should have depth 0");
     assert!(hierarchy.parent().is_none(), "Root should have no parent");
+}
+
+// =========================== move_namespace ===========================
+//
+// End-to-end through `ApiServer::move_namespace`, so validation, both authorization
+// gates, the storage-layout guard, the commit and the post-commit event all run.
+// The storage-layer branch coverage lives in `lakekeeper-storage-postgres`.
+
+/// Set up one warehouse and return `(ctx, warehouse_id)`.
+async fn move_test_ctx(
+    pool: PgPool,
+    authorizer: AllowAllAuthorizer,
+) -> (
+    lakekeeper::api::ApiContext<
+        lakekeeper::service::State<
+            AllowAllAuthorizer,
+            PostgresBackend,
+            lakekeeper_storage_postgres::SecretsState,
+        >,
+    >,
+    lakekeeper::WarehouseId,
+) {
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool)
+        .storage_profile(memory_io_profile())
+        .authorizer(authorizer)
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    (ctx, warehouse_resp.warehouse_id)
+}
+
+async fn create_ns<A: lakekeeper::service::authz::Authorizer>(
+    ctx: &lakekeeper::api::ApiContext<
+        lakekeeper::service::State<A, PostgresBackend, lakekeeper_storage_postgres::SecretsState>,
+    >,
+    warehouse_id: lakekeeper::WarehouseId,
+    parts: &[&str],
+) -> NamespaceId {
+    let mut transaction =
+        <PostgresBackend as CatalogStore>::Transaction::begin_write(ctx.v1_state.catalog.clone())
+            .await
+            .unwrap();
+    let ns = PostgresBackend::create_namespace(
+        warehouse_id,
+        NamespaceId::new_random(),
+        CreateNamespaceRequest {
+            namespace: NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect())
+                .unwrap(),
+            properties: None,
+        },
+        transaction.transaction(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    ns.namespace_id()
+}
+
+fn ns_ident(parts: &[&str]) -> NamespaceIdent {
+    NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
+}
+
+#[sqlx::test]
+async fn test_move_namespace_reparents(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    create_ns(&ctx, warehouse_id, &["old"]).await;
+    let new_parent = create_ns(&ctx, warehouse_id, &["new"]).await;
+    let child = create_ns(&ctx, warehouse_id, &["old", "child"]).await;
+
+    let response = ApiServer::move_namespace(
+        child,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["new", "child"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.namespace, ns_ident(&["new", "child"]));
+    assert_eq!(response.namespace_id, child);
+    assert_eq!(response.parent_namespace_id, Some(new_parent));
+
+    // And the catalog agrees, read authoritatively.
+    let reloaded = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        child,
+        CachePolicy::Skip,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(reloaded.namespace_ident(), &ns_ident(&["new", "child"]));
+}
+
+#[sqlx::test]
+async fn test_move_namespace_renames_in_place(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let parent = create_ns(&ctx, warehouse_id, &["parent"]).await;
+    let child = create_ns(&ctx, warehouse_id, &["parent", "before"]).await;
+
+    let response = ApiServer::move_namespace(
+        child,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["parent", "after"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.namespace, ns_ident(&["parent", "after"]));
+    assert_eq!(
+        response.parent_namespace_id,
+        Some(parent),
+        "a rename must keep the parent"
+    );
+}
+
+#[sqlx::test]
+async fn test_move_namespace_to_warehouse_root(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    create_ns(&ctx, warehouse_id, &["parent"]).await;
+    let child = create_ns(&ctx, warehouse_id, &["parent", "child"]).await;
+
+    let response = ApiServer::move_namespace(
+        child,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["child"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.namespace, ns_ident(&["child"]));
+    assert_eq!(
+        response.parent_namespace_id, None,
+        "moving to the root clears the parent"
+    );
+}
+
+/// End-to-end: after a move, this replica resolves the new path and no longer the old one.
+///
+/// Covers the common case, where a primary `NAMESPACE_CACHE` entry exists and moka's
+/// `Replaced` eviction cascade retires the stale ident on its own. It therefore does *not*
+/// pin `namespace_cache_invalidate_ident` — the case that needs it is a secondary-index
+/// entry outliving its primary entry, which the two caches' independent jittered TTLs allow
+/// and which `test_namespace_moved_retires_old_ident_without_primary_entry` covers directly.
+#[sqlx::test]
+async fn test_move_namespace_invalidates_cached_old_path(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    create_ns(&ctx, warehouse_id, &["src_parent"]).await;
+    create_ns(&ctx, warehouse_id, &["dst_parent"]).await;
+    let child = create_ns(&ctx, warehouse_id, &["src_parent", "movable"]).await;
+
+    let old_path = ns_ident(&["src_parent", "movable"]);
+    let new_path = ns_ident(&["dst_parent", "movable"]);
+
+    // Warm both caches on the pre-move path.
+    let warmed = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        old_path.clone(),
+        CachePolicy::Use,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(warmed.is_some(), "precondition: old path resolves");
+    assert!(NAMESPACE_CACHE.get(&child).await.is_some());
+
+    ApiServer::move_namespace(
+        child,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: new_path.clone(),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // The event listener runs on a spawned task.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // `CachePolicy::Use` deliberately: a stale entry would be served here, so this asserts
+    // the cache itself was corrected rather than that the DB is right.
+    let by_old_path = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        old_path,
+        CachePolicy::Use,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        by_old_path.is_none(),
+        "the pre-move path must not resolve after the move, got {by_old_path:?}"
+    );
+
+    let by_new_path = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        new_path.clone(),
+        CachePolicy::Use,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .expect("the post-move path must resolve");
+    assert_eq!(by_new_path.namespace_id(), child);
+    assert_eq!(by_new_path.namespace_ident(), &new_path);
+}
+
+#[sqlx::test]
+async fn test_move_namespace_protected_requires_force(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let ns = create_ns(&ctx, warehouse_id, &["protected_ns"]).await;
+
+    ApiServer::set_namespace_protection(
+        ns,
+        warehouse_id,
+        true,
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let err = ApiServer::move_namespace(
+        ns,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["moved_ns"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 409, "expected conflict, got {err:?}");
+    assert_eq!(err.error.r#type, "NamespaceProtected");
+
+    // Same request with force succeeds, and protection survives the move.
+    let response = ApiServer::move_namespace(
+        ns,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["moved_ns"]),
+            force: true,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.namespace, ns_ident(&["moved_ns"]));
+
+    let reloaded = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        ns,
+        CachePolicy::Skip,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        reloaded.is_protected(),
+        "force moves the namespace but must not clear protection"
+    );
+}
+
+#[sqlx::test]
+async fn test_move_namespace_rejects_namespace_with_children(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let parent = create_ns(&ctx, warehouse_id, &["with_children"]).await;
+    create_ns(&ctx, warehouse_id, &["with_children", "kid"]).await;
+
+    let err = ApiServer::move_namespace(
+        parent,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["relocated"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 409, "expected conflict, got {err:?}");
+    assert_eq!(err.error.r#type, "NamespaceHasChildren");
+}
+
+#[sqlx::test]
+async fn test_move_namespace_rejects_existing_destination(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let source = create_ns(&ctx, warehouse_id, &["source"]).await;
+    create_ns(&ctx, warehouse_id, &["occupied"]).await;
+
+    let err = ApiServer::move_namespace(
+        source,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["occupied"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 409, "expected conflict, got {err:?}");
+}
+
+#[sqlx::test]
+async fn test_move_namespace_rejects_reserved_destination(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let ns = create_ns(&ctx, warehouse_id, &["ordinary"]).await;
+
+    // `system` is reserved; `create_namespace` refuses it and so must a move, otherwise a
+    // move produces a namespace that could not have been created and cannot be dropped.
+    let err = ApiServer::move_namespace(
+        ns,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["system"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 400, "expected bad request, got {err:?}");
+    assert_eq!(err.error.r#type, "ReservedNamespace");
+}
+
+/// A destination equal to the current path must succeed, so retrying a request that already
+/// went through does not fail with a spurious conflict against the namespace itself.
+#[sqlx::test]
+async fn test_move_namespace_is_retryable(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    create_ns(&ctx, warehouse_id, &["a"]).await;
+    create_ns(&ctx, warehouse_id, &["b"]).await;
+    let movable = create_ns(&ctx, warehouse_id, &["a", "movable"]).await;
+
+    let request = || MoveNamespaceRequest {
+        destination: ns_ident(&["b", "movable"]),
+        force: false,
+    };
+
+    let first = ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        request(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let replay = ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        request(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("replaying an identical move must succeed");
+
+    assert_eq!(first.namespace, replay.namespace);
+    assert_eq!(first.parent_namespace_id, replay.parent_namespace_id);
+}
+
+/// Denying `Move` on the namespace itself must block the request, even though the caller can
+/// create at the destination. This is the gate that makes re-parenting require grant-level
+/// authority rather than plain write access.
+#[sqlx::test]
+async fn test_move_namespace_denied_without_move_permission(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let authz = HidingAuthorizer::new();
+    let (ctx, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        lakekeeper::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+
+    let source = create_ns(&ctx, warehouse_id, &["src"]).await;
+    create_ns(&ctx, warehouse_id, &["dst"]).await;
+
+    // Prefix match: the recorded action carries its fields.
+    authz.block_action("namespace:Move");
+
+    let err = ApiServer::move_namespace(
+        source,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["dst", "src"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403, "expected forbidden, got {err:?}");
+
+    // The namespace did not move.
+    let reloaded = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        source,
+        CachePolicy::Skip,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(reloaded.namespace_ident(), &ns_ident(&["src"]));
+}
+
+/// Denying `CreateNamespace` at the destination must block the request even when `Move` on
+/// the namespace is allowed — otherwise a caller could push a namespace into a subtree they
+/// have no right to add to.
+#[sqlx::test]
+async fn test_move_namespace_denied_without_create_at_destination(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let authz = HidingAuthorizer::new();
+    let (ctx, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        lakekeeper::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+
+    let source = create_ns(&ctx, warehouse_id, &["src2"]).await;
+    create_ns(&ctx, warehouse_id, &["dst2"]).await;
+
+    authz.block_action("namespace:CreateNamespace");
+
+    let err = ApiServer::move_namespace(
+        source,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["dst2", "src2"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403, "expected forbidden, got {err:?}");
+}
+
+/// Under a layout that renders one directory per namespace level, re-parenting would leave
+/// later-created children physically outside the moved namespace, so the move is refused.
+#[sqlx::test]
+async fn test_move_namespace_refused_for_hierarchy_deriving_storage_layout(pool: PgPool) {
+    use lakekeeper::service::storage::{
+        MemoryProfile, StorageProfile, storage_layout::StorageLayout,
+    };
+
+    let mut profile = MemoryProfile::default();
+    profile.storage_layout = Some(
+        StorageLayout::try_new_full("{name}-{uuid}".to_string(), "{uuid}".to_string()).unwrap(),
+    );
+    let storage_profile: StorageProfile = profile.into();
+
+    let (ctx, warehouse_resp) = SetupTestCatalog::builder()
+        .pool(pool.clone())
+        .storage_profile(storage_profile)
+        .authorizer(AllowAllAuthorizer::default())
+        .number_of_warehouses(1)
+        .build()
+        .setup()
+        .await;
+    let warehouse_id = warehouse_resp.warehouse_id;
+
+    create_ns(&ctx, warehouse_id, &["p1"]).await;
+    create_ns(&ctx, warehouse_id, &["p2"]).await;
+    let movable = create_ns(&ctx, warehouse_id, &["p1", "movable"]).await;
+
+    let err = ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["p2", "movable"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 400, "expected bad request, got {err:?}");
+    assert_eq!(err.error.r#type, "StorageLayoutForbidsNamespaceMove");
+}
+
+/// The default layout emits no namespace directories at all, so the restriction above must
+/// not fire for it — otherwise the feature would be unusable on ordinary warehouses.
+#[sqlx::test]
+async fn test_move_namespace_allowed_for_default_storage_layout(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    create_ns(&ctx, warehouse_id, &["q1"]).await;
+    create_ns(&ctx, warehouse_id, &["q2"]).await;
+    let movable = create_ns(&ctx, warehouse_id, &["q1", "movable"]).await;
+
+    ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["q2", "movable"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .expect("the default (flat) layout must not block moves");
+}
+
+/// Tables belong to their namespace by id, so a move must not disturb them: the table stays
+/// loadable and is listed under the namespace's new path, and the old path stops resolving.
+/// This is what makes the single `UPDATE` in the storage layer sufficient.
+#[sqlx::test]
+async fn test_move_namespace_keeps_contained_tables_reachable(pool: PgPool) {
+    use iceberg::TableIdent;
+    use lakekeeper::api::iceberg::{
+        types::PageToken,
+        v1::{
+            ListTablesQuery, Prefix, TableParameters,
+            tables::{LoadTableRequest, LoadTableResultOrNotModified, TablesService as _},
+        },
+    };
+
+    let (ctx, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        AllowAllAuthorizer::default(),
+        lakekeeper::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+    let prefix = warehouse_id.to_string();
+
+    // A top-level namespace holding one table, plus a destination parent.
+    lakekeeper_integration_tests::create_ns(ctx.clone(), prefix.clone(), "movable".to_string())
+        .await;
+    lakekeeper_integration_tests::create_ns(ctx.clone(), prefix.clone(), "newroot".to_string())
+        .await;
+    lakekeeper_integration_tests::create_table(ctx.clone(), &prefix, "movable", "tbl", false)
+        .await
+        .unwrap();
+
+    let movable_id = PostgresBackend::get_namespace_cache_aware(
+        warehouse_id,
+        ns_ident(&["movable"]),
+        CachePolicy::Skip,
+        ctx.v1_state.catalog.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .namespace_id();
+
+    ApiServer::move_namespace(
+        movable_id,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["newroot", "movable"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let new_ns = ns_ident(&["newroot", "movable"]);
+
+    // Loadable under the new path.
+    let loaded = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            table: TableIdent {
+                namespace: new_ns.clone(),
+                name: "tbl".to_string(),
+            },
+        },
+        LoadTableRequest::builder().build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("table must remain loadable at the namespace's new path");
+    assert!(matches!(
+        loaded,
+        LoadTableResultOrNotModified::LoadTableResult(_)
+    ));
+
+    // Listed under the new path.
+    let listed = CatalogServer::list_tables(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix.clone())),
+            namespace: new_ns,
+        },
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: None,
+            return_uuids: false,
+            return_protection_status: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed.identifiers.len(),
+        1,
+        "expected exactly the moved table, got {:?}",
+        listed.identifiers
+    );
+    assert_eq!(listed.identifiers[0].name, "tbl");
+
+    // And the pre-move namespace path is gone.
+    let stale = CatalogServer::list_tables(
+        NamespaceParameters {
+            prefix: Some(Prefix(prefix)),
+            namespace: ns_ident(&["movable"]),
+        },
+        ListTablesQuery {
+            page_token: PageToken::NotSpecified,
+            page_size: None,
+            return_uuids: false,
+            return_protection_status: false,
+        },
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await;
+    assert!(
+        stale.is_err(),
+        "listing under the pre-move namespace path must fail, got {stale:?}"
+    );
+}
+
+/// The destination needs grant authority, not just `create`. Blocking only
+/// `AcceptMovedNamespace` — leaving `CreateNamespace` allowed — must still refuse the move.
+///
+/// This is the gate that stops a namespace being populated and granted under a permissive
+/// parent and then moved into a subtree where the actor could not have issued those grants.
+#[sqlx::test]
+async fn test_move_namespace_denied_without_grant_authority_at_destination(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let authz = HidingAuthorizer::new();
+    let (ctx, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        lakekeeper::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+
+    let source = create_ns(&ctx, warehouse_id, &["src3"]).await;
+    create_ns(&ctx, warehouse_id, &["dst3"]).await;
+
+    authz.block_action("namespace:AcceptMovedNamespace");
+
+    let err = ApiServer::move_namespace(
+        source,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["dst3", "src3"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403, "expected forbidden, got {err:?}");
+}
+
+/// Same rule at the warehouse root: a `managed_access` warehouse is equally a destination
+/// whose grants are centrally controlled, so moving to the root needs grant authority there.
+#[sqlx::test]
+async fn test_move_namespace_to_root_denied_without_grant_authority(pool: PgPool) {
+    use lakekeeper::service::authz::tests::HidingAuthorizer;
+
+    let authz = HidingAuthorizer::new();
+    let (ctx, test_warehouse) = lakekeeper_integration_tests::setup_simple(
+        pool.clone(),
+        memory_io_profile(),
+        None,
+        authz.clone(),
+        lakekeeper::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+        None,
+    )
+    .await;
+    let warehouse_id = test_warehouse.warehouse_id;
+
+    create_ns(&ctx, warehouse_id, &["p4"]).await;
+    let movable = create_ns(&ctx, warehouse_id, &["p4", "movable"]).await;
+
+    authz.block_action("warehouse:AcceptMovedNamespace");
+
+    let err = ApiServer::move_namespace(
+        movable,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: ns_ident(&["movable"]),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.error.code, 403, "expected forbidden, got {err:?}");
 }

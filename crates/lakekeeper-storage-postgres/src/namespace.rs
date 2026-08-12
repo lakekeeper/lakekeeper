@@ -8,11 +8,12 @@ use lakekeeper::{
     server::namespace::MAX_NAMESPACE_DEPTH,
     service::{
         CatalogCreateNamespaceError, CatalogGetNamespaceError, CatalogListNamespaceError,
-        CatalogListNamespacesResponse, CatalogNamespaceDropError,
+        CatalogListNamespacesResponse, CatalogMoveNamespaceError, CatalogNamespaceDropError,
         CatalogSetNamespaceProtectedError, CatalogUpdateNamespacePropertiesError,
         ChildNamespaceProtected, ChildTabularProtected, CreateNamespaceRequest,
-        InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery, Namespace,
-        NamespaceAlreadyExists, NamespaceDropInfo, NamespaceHasRunningTabularExpirations,
+        InternalParseLocationError, InvalidNamespaceIdentifier, ListNamespacesQuery,
+        MovedNamespace, Namespace, NamespaceAlreadyExists, NamespaceCannotMoveIntoSelf,
+        NamespaceDropInfo, NamespaceHasChildren, NamespaceHasRunningTabularExpirations,
         NamespaceId, NamespaceIdent, NamespaceNotEmpty, NamespaceNotFound,
         NamespacePropertiesSerializationError, NamespaceProtected, NamespaceWithParent, Result,
         SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
@@ -552,6 +553,38 @@ pub(crate) async fn create_namespace(
     let parent = namespace.parent();
     let has_parent = parent.is_some();
 
+    // The parent is resolved with a share lock so that a concurrent `move_namespace`
+    // cannot re-parent or rename it between this lookup and the commit — which would
+    // otherwise leave the inserted child stranded under a path that no longer resolves.
+    // Taken in a separate statement because Postgres does not allow a locking clause in
+    // a CTE that is combined with a data-modifying CTE.
+    let locked_parent_id = if let Some(ref parent) = parent {
+        sqlx::query_scalar!(
+            r#"
+            SELECT namespace_id
+            FROM namespace
+            WHERE warehouse_id = $1 AND namespace_name = $2
+            FOR SHARE
+            "#,
+            *warehouse_id,
+            &**parent,
+        )
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?
+    } else {
+        None
+    };
+
+    if let Some(parent) = &parent
+        && locked_parent_id.is_none()
+    {
+        return Err(CatalogCreateNamespaceError::from(NamespaceNotFound::new(
+            warehouse_id,
+            parent.clone(),
+        )));
+    }
+
     let row = sqlx::query_as!(
         NamespaceWithParentVersionRow,
         r#"
@@ -645,6 +678,224 @@ pub(crate) async fn create_namespace(
 
     row.into_namespace_with_parent_version(warehouse_id)
         .map_err(Into::into)
+}
+
+pub(crate) async fn move_namespace(
+    warehouse_id: WarehouseId,
+    namespace_id: NamespaceId,
+    destination: &NamespaceIdent,
+    force: bool,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
+    // Lock the row we are about to move for the remainder of the transaction, so that a
+    // concurrent move/drop/create cannot invalidate the checks below. `FOR UPDATE OF n`
+    // locks the namespace row only — the warehouse row is merely inspected, and the
+    // LEFT JOINed parent must not be locked (Postgres rejects locking the nullable side
+    // of an outer join).
+    //
+    // Selects the full row, not just what the guards need, so that the no-op path below
+    // can answer from it without a second read.
+    let source = sqlx::query_as!(
+        NamespaceWithParentVersionRow,
+        r#"
+        SELECT
+            n.namespace_id as "namespace_id!",
+            n.namespace_name as "namespace_name!",
+            -- Addressed by id, so there is no user-requested case to preserve.
+            n.namespace_name as "requested_name!",
+            n.warehouse_id as "warehouse_id!",
+            n.protected as "protected!",
+            n.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
+            n.created_at as "created_at!",
+            n.updated_at,
+            n.version as "version!",
+            p.namespace_id as "parent_namespace_id?",
+            p.version as "parent_version?"
+        FROM namespace n
+            INNER JOIN warehouse w
+                ON n.warehouse_id = w.warehouse_id AND w.status = 'active'
+            LEFT JOIN namespace p
+                ON p.warehouse_id = n.warehouse_id
+                AND array_length(n.namespace_name, 1) > 1
+                AND p.namespace_name = n.namespace_name[1:array_length(n.namespace_name, 1) - 1]
+        WHERE n.warehouse_id = $1 AND n.namespace_id = $2
+        FOR UPDATE OF n
+        "#,
+        *warehouse_id,
+        *namespace_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?
+    .ok_or_else(|| NamespaceNotFound::new(warehouse_id, namespace_id))?;
+
+    // A destination identical to the current path changes nothing, so answer with the row
+    // just read. Returned before any guard, so that retrying a completed move succeeds
+    // rather than colliding with itself or tripping a guard that no longer matters.
+    // Compared byte-exactly: a case-only difference is a real rename and falls through to
+    // the UPDATE below.
+    if source.namespace_name == destination.as_ref()[..] {
+        let previous_parent: Option<NamespaceId> = source.parent_namespace_id.map(Into::into);
+        let namespace = source.into_namespace_with_parent_version(warehouse_id)?;
+        let previous_ident = namespace.canonical_ident().clone();
+        return Ok(MovedNamespace {
+            namespace,
+            previous_ident,
+            previous_parent,
+        });
+    }
+
+    // Captured before the UPDATE: the cache must evict the old ident and the authorizer
+    // must delete the tuples pointing at the old parent.
+    let previous_ident = parse_namespace_identifier_from_vec(
+        &source.namespace_name,
+        warehouse_id,
+        Some(namespace_id),
+    )?;
+    let previous_parent: Option<NamespaceId> = source.parent_namespace_id.map(Into::into);
+
+    if source.protected && !force {
+        return Err(NamespaceProtected::new(warehouse_id, namespace_id).into());
+    }
+
+    // If it doesn't fit in an i32 it is way too large; validation would have rejected it
+    // in the catalog layer already. Matches `list_namespaces`.
+    let source_depth: i32 = source
+        .namespace_name
+        .len()
+        .try_into()
+        .unwrap_or(MAX_NAMESPACE_DEPTH + 1);
+
+    // Moving a namespace that has descendants would require rewriting the stored path of
+    // every one of them. Deliberately unsupported for now — reject rather than corrupt.
+    // Any descendant counts, not just direct children.
+    let has_children = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM namespace
+            WHERE warehouse_id = $1
+                AND depth > $2
+                AND namespace_name[1:$2] = $3
+        ) AS "has_children!"
+        "#,
+        *warehouse_id,
+        source_depth,
+        &source.namespace_name,
+    )
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+
+    if has_children {
+        return Err(NamespaceHasChildren::new(warehouse_id, namespace_id).into());
+    }
+
+    // Resolve the destination's parent and hold a share lock on it, so it cannot be
+    // dropped between here and the commit. `namespace_name` is matched under the
+    // case-insensitive collation, consistent with `create_namespace`.
+    let destination_parent = destination.parent();
+    let destination_parent_id = if let Some(ref parent) = destination_parent {
+        let parent_id = sqlx::query_scalar!(
+            r#"
+            SELECT namespace_id
+            FROM namespace
+            WHERE warehouse_id = $1 AND namespace_name = $2
+            FOR SHARE
+            "#,
+            *warehouse_id,
+            &**parent,
+        )
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?
+        .ok_or_else(|| NamespaceNotFound::new(warehouse_id, parent.clone()))?;
+
+        // The destination's parent cannot be the namespace itself. A *deeper* descendant
+        // is impossible to reach here: it would have to exist as the parent, and we
+        // already rejected any namespace with descendants above.
+        if NamespaceId::from(parent_id) == namespace_id {
+            return Err(NamespaceCannotMoveIntoSelf::new(warehouse_id, namespace_id).into());
+        }
+        Some(parent_id)
+    } else {
+        None
+    };
+    let has_destination_parent = destination_parent_id.is_some();
+
+    // Collisions are caught by the `unique_namespace_per_warehouse` constraint rather
+    // than by a probe, so there is no window between checking and writing. Renaming a row
+    // to a name only it holds — e.g. a case-only rename — does not violate it.
+    let row = sqlx::query_as!(
+        NamespaceWithParentVersionRow,
+        r#"
+        WITH updated_ns AS (
+            UPDATE namespace
+            SET namespace_name = $3
+            WHERE warehouse_id = $1 AND namespace_id = $2
+            RETURNING
+                namespace_id,
+                namespace_name,
+                warehouse_id,
+                protected,
+                namespace_properties,
+                created_at,
+                updated_at,
+                version
+        ),
+        parent_ns AS (
+            SELECT namespace_id, version
+            FROM namespace
+            WHERE warehouse_id = $1
+                AND $5
+                AND namespace_name = $4
+        )
+        SELECT
+            u.namespace_id as "namespace_id!",
+            u.namespace_name as "namespace_name!",
+            -- The caller supplied the destination path, so requested == canonical.
+            u.namespace_name as "requested_name!",
+            u.warehouse_id as "warehouse_id!",
+            u.protected as "protected!",
+            u.namespace_properties as "properties!: Json<Option<HashMap<String, String>>>",
+            u.created_at as "created_at!",
+            u.updated_at,
+            u.version as "version!",
+            p.namespace_id as "parent_namespace_id?",
+            p.version as "parent_version?"
+        FROM updated_ns u
+        LEFT JOIN parent_ns p ON $5
+        "#,
+        *warehouse_id,
+        *namespace_id,
+        &destination.as_ref()[..],
+        destination_parent.as_deref(),
+        has_destination_parent,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref db_error) if db_error.is_unique_violation() => {
+            tracing::debug!("Move destination already exists: {db_error:?}");
+            CatalogMoveNamespaceError::from(NamespaceAlreadyExists::new(
+                warehouse_id,
+                destination.clone(),
+            ))
+        }
+        _ => {
+            tracing::error!("Internal error moving namespace {namespace_id}: {e:?}");
+            e.into_catalog_backend_error().into()
+        }
+    })?
+    // The row was locked above, so this only fires if the warehouse or namespace was
+    // removed by this same transaction between the lock and here.
+    .ok_or_else(|| NamespaceNotFound::new(warehouse_id, namespace_id))?;
+
+    Ok(MovedNamespace {
+        namespace: row.into_namespace_with_parent_version(warehouse_id)?,
+        previous_ident,
+        previous_parent,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2806,6 +3057,591 @@ pub mod tests {
         assert!(
             NAMESPACE_CACHE.get(&namespace_id).await.is_some(),
             "State-path get_namespace must warm the shared NAMESPACE_CACHE"
+        );
+    }
+
+    // ------------------------------ move_namespace ------------------------------
+
+    fn ident(parts: &[&str]) -> NamespaceIdent {
+        NamespaceIdent::from_vec(parts.iter().map(ToString::to_string).collect()).unwrap()
+    }
+
+    /// Run `move_namespace` in its own committed transaction.
+    async fn move_ns(
+        state: &CatalogState,
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        let result = move_namespace(
+            warehouse_id,
+            namespace_id,
+            destination,
+            force,
+            transaction.transaction(),
+        )
+        .await;
+        if result.is_ok() {
+            transaction.commit().await.unwrap();
+        }
+        result
+    }
+
+    /// Read a namespace's canonical stored path straight from the table, bypassing
+    /// every cache — the assertions must observe the DB, not a memoised view.
+    async fn stored_path(pool: &sqlx::PgPool, namespace_id: NamespaceId) -> Vec<String> {
+        sqlx::query_scalar!(
+            r#"SELECT namespace_name FROM namespace WHERE namespace_id = $1"#,
+            *namespace_id
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_to_warehouse_root(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        let child = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["parent", "child"]),
+            None,
+        )
+        .await;
+
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            child.namespace_id(),
+            &ident(&["child"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(moved.namespace.canonical_ident(), &ident(&["child"]));
+        assert_eq!(
+            moved.namespace.parent, None,
+            "moving to root clears the parent"
+        );
+        assert_eq!(
+            stored_path(&pool, child.namespace_id()).await,
+            vec!["child".to_string()]
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_under_new_parent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let old_parent =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["old"]), None).await;
+        let new_parent =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["new"]), None).await;
+        let child =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["old", "child"]), None)
+                .await;
+        assert_eq!(
+            child.parent_namespaces_id(),
+            Some(old_parent.namespace_id())
+        );
+
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            child.namespace_id(),
+            &ident(&["new", "child"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(moved.namespace.canonical_ident(), &ident(&["new", "child"]));
+        assert_eq!(
+            moved.namespace.parent_namespaces_id(),
+            Some(new_parent.namespace_id()),
+            "the returned parent must be the destination parent"
+        );
+
+        // The pre-move identity drives cache eviction and the authorizer's tuple deletion.
+        assert_eq!(moved.previous_ident, ident(&["old", "child"]));
+        assert_eq!(moved.previous_parent, Some(old_parent.namespace_id()));
+        assert!(!moved.is_noop());
+        assert!(moved.changed_parent());
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_renames_in_place(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let parent =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        let child = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["parent", "before"]),
+            None,
+        )
+        .await;
+
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            child.namespace_id(),
+            &ident(&["parent", "after"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            moved.namespace.canonical_ident(),
+            &ident(&["parent", "after"])
+        );
+        assert_eq!(
+            moved.namespace.parent_namespaces_id(),
+            Some(parent.namespace_id()),
+            "a rename keeps the parent"
+        );
+        assert_eq!(moved.previous_ident, ident(&["parent", "before"]));
+        assert!(
+            !moved.changed_parent(),
+            "a rename must not report a parent change — the authorizer would rewrite tuples for nothing"
+        );
+        assert!(
+            *moved.namespace.version() > *child.version(),
+            "renaming must bump the version (got {} -> {})",
+            *child.version(),
+            *moved.namespace.version()
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_case_only_rename(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["casing"]), None).await;
+
+        // The unique index collates case-insensitively, so this must NOT be reported as a
+        // collision with the row being renamed.
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            ns.namespace_id(),
+            &ident(&["CaSiNg"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(moved.namespace.canonical_ident(), &ident(&["CaSiNg"]));
+        assert_eq!(
+            stored_path(&pool, ns.namespace_id()).await,
+            vec!["CaSiNg".to_string()],
+            "the stored path must carry the new casing"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_to_current_path_is_noop(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        let child = initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["parent", "child"]),
+            None,
+        )
+        .await;
+
+        // Retrying a completed move must succeed rather than collide with itself.
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            child.namespace_id(),
+            &ident(&["parent", "child"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            moved.namespace.canonical_ident(),
+            &ident(&["parent", "child"])
+        );
+        assert_eq!(
+            *moved.namespace.version(),
+            *child.version(),
+            "a no-op must not bump the version"
+        );
+        assert!(
+            moved.is_noop(),
+            "callers rely on is_noop() to skip event emission and tuple rewrites"
+        );
+        assert!(!moved.changed_parent());
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_noop_succeeds_even_with_children(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let parent =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["parent", "child"]),
+            None,
+        )
+        .await;
+
+        // The no-op is answered before the has-children guard: nothing moves, so the
+        // guard is irrelevant and a retry must still succeed.
+        move_ns(
+            &state,
+            warehouse_id,
+            parent.namespace_id(),
+            &ident(&["parent"]),
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_existing_destination(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let source = initialize_namespace(state.clone(), warehouse_id, &ident(&["a"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["b"]), None).await;
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            source.namespace_id(),
+            &ident(&["b"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceAlreadyExists(_)),
+            "expected NamespaceAlreadyExists, got {err:?}"
+        );
+        assert_eq!(
+            stored_path(&pool, source.namespace_id()).await,
+            vec!["a".to_string()],
+            "a rejected move must not have changed the source"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_existing_destination_different_case(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let source = initialize_namespace(state.clone(), warehouse_id, &ident(&["a"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["taken"]), None).await;
+
+        // Distinct rows collate equal, so this is a genuine collision.
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            source.namespace_id(),
+            &ident(&["TAKEN"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceAlreadyExists(_)),
+            "expected NamespaceAlreadyExists, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_namespace_with_children(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let parent =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["parent"]), None).await;
+        initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["parent", "child"]),
+            None,
+        )
+        .await;
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            parent.namespace_id(),
+            &ident(&["moved"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceHasChildren(_)),
+            "expected NamespaceHasChildren, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_namespace_with_grandchildren_only(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let root = initialize_namespace(state.clone(), warehouse_id, &ident(&["root"]), None).await;
+        let mid =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["root", "mid"]), None).await;
+        initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["root", "mid", "leaf"]),
+            None,
+        )
+        .await;
+
+        // Remove the intermediate namespace at the DB level to construct a state the
+        // public API cannot produce (a non-recursive `drop_namespace` refuses while a
+        // child exists). This is exactly why the guard tests for *any* descendant
+        // (`depth > source_depth`) rather than direct children only: with a
+        // direct-children-only predicate, `root` would move here and silently strand
+        // `root.mid.leaf` under a path that no longer resolves.
+        sqlx::query!(
+            r#"DELETE FROM namespace WHERE namespace_id = $1"#,
+            *mid.namespace_id()
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            root.namespace_id(),
+            &ident(&["moved"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceHasChildren(_)),
+            "expected NamespaceHasChildren for a grandchild-only descendant, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_protected_without_force(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["prot"]), None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::set_namespace_protected(
+            warehouse_id,
+            ns.namespace_id(),
+            true,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            ns.namespace_id(),
+            &ident(&["moved"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceProtected(_)),
+            "expected NamespaceProtected, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_force_moves_protected(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["prot"]), None).await;
+
+        let mut transaction = PostgresTransaction::begin_write(state.clone())
+            .await
+            .unwrap();
+        PostgresBackend::set_namespace_protected(
+            warehouse_id,
+            ns.namespace_id(),
+            true,
+            transaction.transaction(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let moved = move_ns(
+            &state,
+            warehouse_id,
+            ns.namespace_id(),
+            &ident(&["moved"]),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(moved.namespace.canonical_ident(), &ident(&["moved"]));
+        assert!(
+            moved.namespace.is_protected(),
+            "force moves the namespace but must not clear protection"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_missing_destination_parent(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["a"]), None).await;
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            ns.namespace_id(),
+            &ident(&["nonexistent", "a"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceNotFound(_)),
+            "expected NamespaceNotFound for the destination parent, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_rejects_move_into_self(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let ns = initialize_namespace(state.clone(), warehouse_id, &ident(&["a"]), None).await;
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            ns.namespace_id(),
+            &ident(&["a", "a"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                CatalogMoveNamespaceError::NamespaceCannotMoveIntoSelf(_)
+            ),
+            "expected NamespaceCannotMoveIntoSelf, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_unknown_namespace(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            NamespaceId::new_random(),
+            &ident(&["a"]),
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceNotFound(_)),
+            "expected NamespaceNotFound, got {err:?}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_cascades_tabular_namespace_name(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["old"]), None).await;
+        initialize_namespace(state.clone(), warehouse_id, &ident(&["new"]), None).await;
+        let source =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["old", "child"]), None)
+                .await;
+
+        let table = initialize_table(
+            warehouse_id,
+            state.clone(),
+            false,
+            Some(source.namespace_ident().clone()),
+            None,
+            Some("tbl".to_string()),
+        )
+        .await;
+
+        move_ns(
+            &state,
+            warehouse_id,
+            source.namespace_id(),
+            &ident(&["new", "child"]),
+            false,
+        )
+        .await
+        .unwrap();
+
+        // `tabular.tabular_namespace_name` is a denormalised copy of the namespace path
+        // with an ON UPDATE CASCADE foreign key, so the single UPDATE above must have
+        // repaired every contained tabular.
+        let cascaded = sqlx::query_scalar!(
+            r#"SELECT tabular_namespace_name FROM tabular WHERE tabular_id = $1"#,
+            *table.table_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            cascaded,
+            vec!["new".to_string(), "child".to_string()],
+            "the contained table's denormalised namespace path must follow the move"
         );
     }
 }

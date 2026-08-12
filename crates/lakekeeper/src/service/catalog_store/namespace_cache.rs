@@ -128,6 +128,27 @@ async fn namespace_cache_invalidate(namespace_id: NamespaceId) {
     }
 }
 
+/// Drop a single `(warehouse_id, ident)` → id mapping.
+///
+/// Needed after a move: the namespace keeps its id but its path changes, so the entry for
+/// the *old* path would otherwise keep resolving until TTL. Relying on the `Replaced`
+/// eviction cascade is not enough — it only fires when a `NAMESPACE_CACHE` entry actually
+/// exists to be replaced, while `IDENT_TO_ID_CACHE` entries can outlive it (see the
+/// residual note in `namespace_cache_invalidate`).
+#[allow(dead_code)] // Only required for listeners which are behind a feature flag
+pub(super) async fn namespace_cache_invalidate_ident(
+    warehouse_id: WarehouseId,
+    ident: &NamespaceIdent,
+) {
+    if CONFIG.cache.namespace.enabled {
+        tracing::debug!("Invalidating namespace ident {ident:?} from ident cache");
+        IDENT_TO_ID_CACHE
+            .invalidate(&(warehouse_id, namespace_ident_to_cache_key(ident)))
+            .await;
+        update_cache_size_metric();
+    }
+}
+
 #[allow(dead_code)] // Only required for listeners which are behind a feature flag
 pub(super) async fn namespace_cache_insert(namespace: NamespaceWithParent) {
     if CONFIG.cache.namespace.enabled {
@@ -505,6 +526,26 @@ impl EventListener for NamespaceCacheEventListener {
         namespace_cache_insert(updated_namespace).await;
         Ok(())
     }
+
+    async fn namespace_moved(&self, event: events::MoveNamespaceEvent) -> anyhow::Result<()> {
+        let events::MoveNamespaceEvent {
+            warehouse_id,
+            namespace,
+            previous_ident,
+            previous_parent: _previous_parent,
+            request_metadata: _request_metadata,
+        } = event;
+
+        // Order matters. Retire the old path first: until it is gone the namespace is
+        // reachable under a name it no longer has, and on this replica that is a stale
+        // *hit*, not a miss. Only then publish the new state.
+        //
+        // Moves are leaf-only, so no descendant entries can be holding a stale prefix —
+        // that assumption has to be revisited if recursive moves are added.
+        namespace_cache_invalidate_ident(warehouse_id, &previous_ident).await;
+        namespace_cache_insert(namespace).await;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -829,6 +870,147 @@ mod tests {
         // Verify ident-to-id cache is also invalidated
         let cached_by_ident = namespace_cache_get_by_ident(&namespace_ident, warehouse_id).await;
         assert!(cached_by_ident.is_none());
+    }
+
+    /// A move keeps the namespace id but changes its path. The old path must stop
+    /// resolving and the new one must start — otherwise this replica serves a stale *hit*
+    /// (not a miss) for a name the namespace no longer has, until TTL.
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn test_namespace_moved_retires_old_ident_and_publishes_new() {
+        use crate::{api::RequestMetadata, service::events::EventListener as _};
+
+        let namespace_id = NamespaceId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let old_ident = NamespaceIdent::from_vec(vec!["move_src".to_string()]).unwrap();
+        let new_ident = NamespaceIdent::from_vec(vec!["move_dst".to_string()]).unwrap();
+
+        let before = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                old_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                0,
+            ),
+            None,
+        );
+        namespace_cache_insert(before).await;
+        assert!(
+            namespace_cache_get_by_ident(&old_ident, warehouse_id)
+                .await
+                .is_some(),
+            "precondition: the old path resolves before the move"
+        );
+
+        // Version bumps on a rename (the DB trigger fires on namespace_name changes), so
+        // the insert is not rejected by the version gate.
+        let after = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                new_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                1,
+            ),
+            None,
+        );
+
+        NamespaceCacheEventListener
+            .namespace_moved(events::MoveNamespaceEvent {
+                warehouse_id,
+                namespace: after,
+                previous_ident: old_ident.clone(),
+                previous_parent: None,
+                request_metadata: Arc::new(RequestMetadata::new_unauthenticated()),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            namespace_cache_get_by_ident(&old_ident, warehouse_id)
+                .await
+                .is_none(),
+            "the pre-move path must no longer resolve"
+        );
+        let by_new = namespace_cache_get_by_ident(&new_ident, warehouse_id).await;
+        assert_eq!(
+            by_new.map(|h| h.namespace_id()),
+            Some(namespace_id),
+            "the post-move path must resolve to the same namespace id"
+        );
+        assert_eq!(
+            namespace_cache_get_by_id(namespace_id)
+                .await
+                .map(|h| h.namespace_ident().clone()),
+            Some(new_ident),
+            "the by-id entry must carry the new canonical path"
+        );
+    }
+
+    /// The two caches have independent jittered TTLs, so an `IDENT_TO_ID_CACHE` entry can
+    /// outlive its `NAMESPACE_CACHE` entry. With no entry to replace, the `Replaced`
+    /// eviction cascade never fires, so a move must retire the old ident explicitly.
+    ///
+    /// Without that, looking up the pre-move path is a stale *hit* rather than a miss:
+    /// `namespace_cache_get_by_ident` resolves ident → id → loads by id and never checks
+    /// that the loaded namespace still answers to the requested name.
+    #[cfg(feature = "router")]
+    #[tokio::test]
+    async fn test_namespace_moved_retires_old_ident_without_primary_entry() {
+        use crate::{api::RequestMetadata, service::events::EventListener as _};
+
+        let namespace_id = NamespaceId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let old_ident = NamespaceIdent::from_vec(vec!["residual_src".to_string()]).unwrap();
+        let new_ident = NamespaceIdent::from_vec(vec!["residual_dst".to_string()]).unwrap();
+
+        // Residual secondary-index entry with no primary entry behind it.
+        IDENT_TO_ID_CACHE
+            .insert(
+                (warehouse_id, namespace_ident_to_cache_key(&old_ident)),
+                namespace_id,
+            )
+            .await;
+        assert!(
+            NAMESPACE_CACHE.get(&namespace_id).await.is_none(),
+            "precondition: no primary entry, so no Replaced eviction can fire"
+        );
+
+        let after = test_namespace_with_parent(
+            test_namespace(
+                namespace_id,
+                new_ident.clone(),
+                warehouse_id,
+                Some(Utc::now()),
+                1,
+            ),
+            None,
+        );
+
+        NamespaceCacheEventListener
+            .namespace_moved(events::MoveNamespaceEvent {
+                warehouse_id,
+                namespace: after,
+                previous_ident: old_ident.clone(),
+                previous_parent: None,
+                request_metadata: Arc::new(RequestMetadata::new_unauthenticated()),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            namespace_cache_get_by_ident(&old_ident, warehouse_id)
+                .await
+                .is_none(),
+            "the pre-move path must not resolve to the moved namespace"
+        );
+        assert_eq!(
+            namespace_cache_get_by_ident(&new_ident, warehouse_id)
+                .await
+                .map(|h| h.namespace_id()),
+            Some(namespace_id),
+        );
     }
 
     #[tokio::test]

@@ -27,21 +27,22 @@ use lakekeeper::{
         CatalogCreateWarehouseError, CatalogCreateWarehouseRequest, CatalogDeleteWarehouseError,
         CatalogGetNamespaceError, CatalogGetWarehouseByIdError, CatalogGetWarehouseByNameError,
         CatalogListNamespaceError, CatalogListNamespacesResponse, CatalogListRolesByIdFilter,
-        CatalogListWarehousesError, CatalogNamespaceDropError, CatalogRenameWarehouseError,
-        CatalogRoleForAssignment, CatalogSearchTabularResponse, CatalogSetNamespaceProtectedError,
-        CatalogStore, CatalogUpdateNamespacePropertiesError, CatalogUserRoleAssignmentUser,
-        CatalogView, ClearTabularDeletedAtError, CommitTableTransactionError, CommitViewError,
-        CreateGenericTableError, CreateNamespaceRequest, CreateOrUpdateUserResponse,
-        CreateRoleError, CreateTableError, CreateTagDefinitionError, CreateViewError,
-        DeleteTagDefinitionError, DropGenericTableError, DropTabularError, EffectiveTagCandidate,
-        EnsureWarehouseSpecMutableError, GenericTableCreation, GenericTableId, GenericTableInfo,
-        GenericTableListEntry, GetProjectResponse, GetTabularInfoByLocationError,
-        GetTabularInfoError, GetTaskDetailsError, ListCatalogRoleMembersPage,
-        ListGenericTablesError, ListNamespacesQuery, ListRoleMembersResult, ListRolesError,
-        ListRolesPage, ListRolesResponse, ListTabularsError, ListTagAttachmentsError,
-        ListTagAttachmentsResponse, ListTagDefinitionsError, ListTagDefinitionsResponse,
-        ListUserRoleAssignmentsResult, LoadGenericTableError, LoadTableError, LoadTableResponse,
-        LoadViewError, ManagedBy, MarkTabularAsDeletedError, NamespaceDropInfo, NamespaceId,
+        CatalogListWarehousesError, CatalogMoveNamespaceError, CatalogNamespaceDropError,
+        CatalogRenameWarehouseError, CatalogRoleForAssignment, CatalogSearchTabularResponse,
+        CatalogSetNamespaceProtectedError, CatalogStore, CatalogUpdateNamespacePropertiesError,
+        CatalogUserRoleAssignmentUser, CatalogView, ClearTabularDeletedAtError,
+        CommitTableTransactionError, CommitViewError, CreateGenericTableError,
+        CreateNamespaceRequest, CreateOrUpdateUserResponse, CreateRoleError, CreateTableError,
+        CreateTagDefinitionError, CreateViewError, DeleteTagDefinitionError, DropGenericTableError,
+        DropTabularError, EffectiveTagCandidate, EnsureWarehouseSpecMutableError,
+        GenericTableCreation, GenericTableId, GenericTableInfo, GenericTableListEntry,
+        GetProjectResponse, GetTabularInfoByLocationError, GetTabularInfoError,
+        GetTaskDetailsError, ListCatalogRoleMembersPage, ListGenericTablesError,
+        ListNamespacesQuery, ListRoleMembersResult, ListRolesError, ListRolesPage,
+        ListRolesResponse, ListTabularsError, ListTagAttachmentsError, ListTagAttachmentsResponse,
+        ListTagDefinitionsError, ListTagDefinitionsResponse, ListUserRoleAssignmentsResult,
+        LoadGenericTableError, LoadTableError, LoadTableResponse, LoadViewError, ManagedBy,
+        MarkTabularAsDeletedError, MovedNamespace, NamespaceDropInfo, NamespaceId,
         NamespaceWithParent, ProjectId, RemoveRoleMembersError, RemoveRoleMembersResult,
         RemoveTagError, RemoveUserRoleAssignmentsError, RemoveUserRoleAssignmentsResult,
         RenameTabularError, ResolveTasksError, ResolvedTask, ResolvedWarehouse, Result, Role,
@@ -73,7 +74,10 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
+    namespace::{
+        create_namespace, drop_namespace, list_namespaces, move_namespace,
+        update_namespace_properties,
+    },
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
     tag::{
@@ -1048,6 +1052,16 @@ impl CatalogStore for super::PostgresBackend {
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> std::result::Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
         set_namespace_protected(warehouse_id, namespace_id, protect, transaction).await
+    }
+
+    async fn move_namespace_impl(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> std::result::Result<MovedNamespace, CatalogMoveNamespaceError> {
+        move_namespace(warehouse_id, namespace_id, destination, force, transaction).await
     }
 
     async fn set_warehouse_protected_impl(

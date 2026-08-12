@@ -265,6 +265,41 @@ impl StorageLayout {
         self.tabular_template().render(context)
     }
 
+    /// Whether moving a namespace would desynchronise physical layout from logical path.
+    ///
+    /// A namespace's `location` is computed once at creation from its ancestor chain and
+    /// then frozen (see `namespace_location_may_not_change`). Nothing breaks when a
+    /// namespace moves — existing data keeps working, because tabulars resolve against the
+    /// stored location — but a *newly created* child computes its location from the new
+    /// chain, so siblings end up in unrelated physical places. Whether that can happen
+    /// depends on the layout and on which part of the path changed:
+    ///
+    /// | Layout | template has `{name}` | rename | re-parent |
+    /// |---|---|---|---|
+    /// | `Default` / `Flat` | n/a — emits no namespace directories | safe | safe |
+    /// | `Parent` — one directory, from the namespace itself | yes | **desyncs** | safe |
+    /// | `Parent` | `{uuid}` only | safe | safe |
+    /// | `Full` — one directory per level | yes | **desyncs** | **desyncs** |
+    /// | `Full` | `{uuid}` only | safe | **desyncs** — the chain itself changes |
+    ///
+    /// `renamed` means the namespace's own leaf name changed; `reparented` means its
+    /// parent changed. Both may be true at once.
+    #[must_use]
+    pub fn move_desyncs_location(&self, renamed: bool, reparented: bool) -> bool {
+        match self {
+            // No namespace directories are emitted at all, so nothing can diverge.
+            StorageLayout::Flat(_) | StorageLayout::Default => false,
+            // A single directory rendered from the namespace itself: re-parenting does not
+            // change it, renaming does — but only if the name is part of the template.
+            StorageLayout::Parent(layout) => renamed && layout.namespace.contains_name(),
+            // One directory per ancestor level, so re-parenting always changes the
+            // rendered path, regardless of placeholders.
+            StorageLayout::Full(layout) => {
+                reparented || (renamed && layout.namespace.contains_name())
+            }
+        }
+    }
+
     #[must_use]
     pub fn render_namespace_path(&self, path_context: &NamespacePath) -> Vec<String> {
         match self {
@@ -345,6 +380,17 @@ impl PathSegmentContext for NamespaceNameContext {
     example = json!("{uuid}")
 ))]
 pub struct StorageLayoutNamespaceTemplate(pub(super) String);
+
+impl StorageLayoutNamespaceTemplate {
+    /// Whether the rendered segment depends on the namespace's name.
+    ///
+    /// If it does not (a `{uuid}`-only template), renaming a namespace cannot change where
+    /// it would be placed.
+    #[must_use]
+    pub fn contains_name(&self) -> bool {
+        self.0.contains("{name}")
+    }
+}
 
 impl TemplatedPathSegmentRenderer for StorageLayoutNamespaceTemplate {
     type Context = NamespaceNameContext;
@@ -1129,5 +1175,75 @@ mod tests {
             result.is_err(),
             "Expected deserialization to fail for full-hierarchy layout without at least one template parameter in namespace template"
         );
+    }
+
+    /// Exhaustive over (layout × template × operation) — the whole decision table for
+    /// whether a namespace move would desynchronise physical layout from logical path.
+    #[test]
+    fn test_move_desyncs_location_matrix() {
+        let flat = StorageLayout::try_new_flat("{uuid}".to_string()).unwrap();
+        let parent_named =
+            StorageLayout::try_new_parent("{name}-{uuid}".to_string(), "{uuid}".to_string())
+                .unwrap();
+        let parent_uuid =
+            StorageLayout::try_new_parent("{uuid}".to_string(), "{uuid}".to_string()).unwrap();
+        let full_named =
+            StorageLayout::try_new_full("{name}-{uuid}".to_string(), "{uuid}".to_string()).unwrap();
+        let full_uuid =
+            StorageLayout::try_new_full("{uuid}".to_string(), "{uuid}".to_string()).unwrap();
+
+        // (layout, renamed, reparented, expected)
+        let cases: &[(&str, &StorageLayout, bool, bool, bool)] = &[
+            // No namespace directories are emitted, so nothing can diverge.
+            (
+                "default/rename",
+                &StorageLayout::Default,
+                true,
+                false,
+                false,
+            ),
+            (
+                "default/reparent",
+                &StorageLayout::Default,
+                false,
+                true,
+                false,
+            ),
+            ("flat/rename", &flat, true, false, false),
+            ("flat/reparent", &flat, false, true, false),
+            // One directory rendered from the namespace itself: only a rename can move it,
+            // and only when the name is part of the template.
+            ("parent{name}/rename", &parent_named, true, false, true),
+            ("parent{name}/reparent", &parent_named, false, true, false),
+            ("parent{uuid}/rename", &parent_uuid, true, false, false),
+            ("parent{uuid}/reparent", &parent_uuid, false, true, false),
+            // One directory per ancestor level: re-parenting always changes the rendered
+            // chain, whatever the placeholders.
+            ("full{name}/rename", &full_named, true, false, true),
+            ("full{name}/reparent", &full_named, false, true, true),
+            ("full{uuid}/rename", &full_uuid, true, false, false),
+            ("full{uuid}/reparent", &full_uuid, false, true, true),
+            // A no-op move never desyncs, under any layout.
+            ("full{name}/noop", &full_named, false, false, false),
+            ("parent{name}/noop", &parent_named, false, false, false),
+        ];
+
+        for (label, layout, renamed, reparented, expected) in cases {
+            assert_eq!(
+                layout.move_desyncs_location(*renamed, *reparented),
+                *expected,
+                "{label}: expected move_desyncs_location({renamed}, {reparented}) == {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_namespace_template_contains_name() {
+        assert!(StorageLayoutNamespaceTemplate("{name}".to_string()).contains_name());
+        assert!(StorageLayoutNamespaceTemplate("{name}-{uuid}".to_string()).contains_name());
+        assert!(!StorageLayoutNamespaceTemplate("{uuid}".to_string()).contains_name());
+        // The default template is uuid-only, which is why the restriction bites only
+        // explicitly configured warehouses.
+        assert!(!StorageLayoutNamespaceTemplate::default().contains_name());
     }
 }

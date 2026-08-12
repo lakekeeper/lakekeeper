@@ -927,6 +927,65 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&namespace_id).await
     }
 
+    async fn move_namespace(
+        &self,
+        _metadata: &RequestMetadata,
+        namespace_id: NamespaceId,
+        new_parent: NamespaceParent,
+        old_parent: NamespaceParent,
+    ) -> AuthorizerResult<()> {
+        // Two phases, additive first, each its own OpenFGA transaction.
+        //
+        // A single combined write would be atomic, which sounds better but is worse here:
+        // the whole write fails if either half is already applied, so a partially-applied
+        // retry can never converge. Splitting keeps each half independently idempotent.
+        //
+        // Ordering: add the new edge before dropping the old one, so the namespace is
+        // never transiently parentless. Callers invoke this after the catalog commit, so
+        // the worst outcome of a failure is authorization lagging the catalog — stale
+        // inherited access at the old parent — rather than access granted at the new
+        // parent for a move that did not happen.
+        let writes = crate::tuples::hierarchy_tuples_for_namespace(&new_parent, namespace_id);
+        self.write(Some(writes), None)
+            .await
+            // Already present: a previous attempt got this far. Not an error.
+            .or_else(|e| match e {
+                OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
+                    tracing::debug!(
+                        "Hierarchy tuples for namespace {namespace_id} under its new parent already exist; treating as applied"
+                    );
+                    Ok(())
+                }
+                e => Err(e),
+            })
+            .map_err(authz_to_error_no_audit)?;
+
+        // Derived from the same helper that writes them, so the delete cannot drift from
+        // the write. A condition cannot participate in a delete, hence the reshape.
+        let deletes = crate::tuples::hierarchy_tuples_for_namespace(&old_parent, namespace_id)
+            .into_iter()
+            .map(|t| TupleKeyWithoutCondition {
+                user: t.user,
+                relation: t.relation,
+                object: t.object,
+            })
+            .collect::<Vec<_>>();
+        self.write(None, Some(deletes))
+            .await
+            // Already gone: either a previous attempt removed it, or the reconciler did.
+            .or_else(|e| match e {
+                OpenFGAError::CannotDeleteTupleNotFound(_) => {
+                    tracing::debug!(
+                        "Hierarchy tuples for namespace {namespace_id} under its old parent are already gone; treating as applied"
+                    );
+                    Ok(())
+                }
+                e => Err(e),
+            })
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
     async fn create_table(
         &self,
         metadata: &RequestMetadata,
@@ -2007,6 +2066,179 @@ pub(crate) mod tests {
             authorizer.require_no_relations(&user).await.unwrap_err();
             authorizer.delete_user_relations(&user).await.unwrap();
             authorizer.require_no_relations(&user).await.unwrap();
+        }
+
+        /// Read every tuple in the store as `(user, relation, object)` triples,
+        /// dropping the model-version bookkeeping tuples.
+        async fn all_tuples(
+            authorizer: &OpenFGAAuthorizer,
+        ) -> std::collections::HashSet<(String, String, String)> {
+            authorizer
+                .client
+                .read_all_pages(None::<ReadRequestTupleKey>, 100, 1000)
+                .await
+                .expect("read_all_pages")
+                .into_iter()
+                .filter_map(|t| t.key)
+                .filter(|k| k.relation != "exists" && k.relation != "openfga_id")
+                .map(|k| (k.user, k.relation, k.object))
+                .collect()
+        }
+
+        /// The hook re-points a namespace's hierarchy against a real store: the destination's
+        /// edges appear, the source's disappear, and everything else is untouched.
+        ///
+        /// The unit tests in `crate::tuples::tests` pin the tuple *shapes*; this pins that
+        /// writing and deleting them actually lands, which is the part a model-only test
+        /// (`store.fga.yaml`) and a fake authorizer both miss.
+        #[tokio::test]
+        async fn test_move_namespace_repoints_hierarchy_tuples() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let old_parent = NamespaceId::new_random();
+            let moved = NamespaceId::new_random();
+            // A sibling that must be left alone by the move.
+            let bystander = NamespaceId::new_random();
+
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    old_parent,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(&metadata, moved, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(&metadata, bystander, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+
+            let old_forward = (
+                format!("namespace:{old_parent}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            let old_inverse = (
+                format!("namespace:{moved}"),
+                "child".to_string(),
+                format!("namespace:{old_parent}"),
+            );
+            let new_forward = (
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            let new_inverse = (
+                format!("namespace:{moved}"),
+                "namespace".to_string(),
+                format!("warehouse:{warehouse_id}"),
+            );
+            let bystander_edge = (
+                format!("namespace:{old_parent}"),
+                "parent".to_string(),
+                format!("namespace:{bystander}"),
+            );
+
+            let before = all_tuples(&authorizer).await;
+            assert!(
+                before.contains(&old_forward),
+                "precondition: {old_forward:?}"
+            );
+            assert!(
+                before.contains(&old_inverse),
+                "precondition: {old_inverse:?}"
+            );
+            assert!(!before.contains(&new_forward));
+
+            // Re-parent from the namespace to the warehouse root — the case where the
+            // inverse relation changes kind (`child` → `namespace`).
+            authorizer
+                .move_namespace(
+                    &metadata,
+                    moved,
+                    NamespaceParent::Warehouse(warehouse_id),
+                    NamespaceParent::Namespace(old_parent),
+                )
+                .await
+                .unwrap();
+
+            let after = all_tuples(&authorizer).await;
+            assert!(after.contains(&new_forward), "missing {new_forward:?}");
+            assert!(after.contains(&new_inverse), "missing {new_inverse:?}");
+            assert!(
+                !after.contains(&old_forward),
+                "stale edge survived: {old_forward:?}"
+            );
+            assert!(
+                !after.contains(&old_inverse),
+                "stale edge survived: {old_inverse:?}"
+            );
+            assert!(
+                after.contains(&bystander_edge),
+                "the move must not disturb sibling namespaces"
+            );
+
+            // Ownership is unrelated to hierarchy and must survive the move.
+            assert!(after.contains(&(
+                "user:oidc~mover".to_string(),
+                "ownership".to_string(),
+                format!("namespace:{moved}"),
+            )));
+        }
+
+        /// Replaying the hook must converge rather than fail.
+        ///
+        /// This is why the implementation is two writes instead of one: OpenFGA rejects a
+        /// write whose tuple already exists and a delete whose tuple is already gone, so a
+        /// single combined transaction could never be retried after partial application.
+        #[tokio::test]
+        async fn test_move_namespace_is_idempotent() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let old_parent = NamespaceId::new_random();
+            let moved = NamespaceId::new_random();
+
+            authorizer
+                .create_namespace(
+                    &metadata,
+                    old_parent,
+                    NamespaceParent::Warehouse(warehouse_id),
+                )
+                .await
+                .unwrap();
+            authorizer
+                .create_namespace(&metadata, moved, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+
+            let move_once = || {
+                authorizer.move_namespace(
+                    &metadata,
+                    moved,
+                    NamespaceParent::Warehouse(warehouse_id),
+                    NamespaceParent::Namespace(old_parent),
+                )
+            };
+
+            move_once().await.expect("first move");
+            let after_first = all_tuples(&authorizer).await;
+
+            move_once().await.expect("replaying the move must succeed");
+            move_once().await.expect("and again");
+
+            assert_eq!(
+                all_tuples(&authorizer).await,
+                after_first,
+                "replays must not change the tuple set"
+            );
         }
 
         #[tokio::test]

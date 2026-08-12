@@ -123,6 +123,7 @@ use crate::{
         super::list_view_tags,
         super::list_warehouse_tags,
         super::list_warehouses,
+        super::move_namespace,
         super::rename_project_by_id_deprecated,
         super::rename_project,
         super::rename_warehouse,

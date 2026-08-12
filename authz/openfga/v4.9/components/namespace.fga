@@ -1,0 +1,63 @@
+module lakekeeper-namespace
+
+type namespace
+  relations
+    # ------------------ Relation Hierarchies ------------------
+    define parent: [namespace, warehouse]
+    define child: [namespace, lakekeeper_table, lakekeeper_view, lakekeeper_generic_table]
+
+    # ------------------ Special roles ------------------
+    define ownership: [user, role#assignee]
+    define managed_access: [user:*, role:*]
+    define managed_access_inheritance: managed_access or managed_access_inheritance from parent
+
+    # ------------------ Assignable Privileges ------------------
+    define pass_grants: [user, role#assignee]
+    define manage_grants: [user, role#assignee] or (ownership but not managed_access_inheritance from parent) or manage_grants from parent
+    define describe: [user, role#assignee] or ownership or select or create or describe from parent
+    define select: [user, role#assignee] or ownership or modify or select from parent
+    define create: [user, role#assignee] or ownership or create from parent
+    define modify: [user, role#assignee] or ownership or modify from parent
+    # Governance tag attachment. Independent of `modify` (separation of duties);
+    # inherits down the resource tree, so warehouse/project grants flow in.
+    define manage_tags: [user, role#assignee] or manage_tags from parent
+
+    # ------------------ Actions ------------------
+    define can_create_table: create
+    define can_create_view: create
+    define can_create_generic_table: create
+    define can_create_namespace: create
+    # Accepting an inbound moved namespace is gated on grant authority, not `create`:
+    # `create` adds an empty child (exposing nothing), whereas a move arrives carrying
+    # contents and their direct grants. Without this, a namespace could be populated and
+    # granted under a permissive parent and then moved in here, smuggling those grants past
+    # the managed_access control this subtree relies on.
+    define can_accept_moved_namespace: manage_grants
+    define can_delete: modify
+    # Moving a namespace re-issues every privilege the destination subtree confers onto
+    # this namespace's contents, leaving no assignment record. Gated on manage_grants, not
+    # modify: if you can already grant here, the move confers nothing you could not have
+    # granted directly. Under managed_access ownership does not confer manage_grants, so
+    # this also blocks moving out of a managed subtree to escape that control.
+    define can_move: manage_grants
+    define can_update_properties: modify
+    define can_get_metadata: describe or can_get_metadata from child
+    define can_list_tables: can_get_metadata
+    define can_list_views: can_get_metadata
+    define can_list_generic_tables: can_get_metadata
+    define can_list_namespaces: can_get_metadata
+    define can_list_everything: describe
+    define can_include_in_list: can_get_metadata
+    define can_read_assignments: can_grant_create or can_grant_describe or can_grant_modify or can_grant_select or can_grant_pass_grants or can_grant_manage_grants or can_grant_manage_tags or can_change_ownership
+    define can_set_protection: modify
+    define can_manage_tags: manage_tags
+    # GRANT Permissions
+    define can_grant_create: manage_grants or (create and pass_grants)
+    define can_grant_describe: manage_grants or (describe and pass_grants)
+    define can_grant_modify: manage_grants or (modify and pass_grants)
+    define can_grant_select: manage_grants or (select and pass_grants)
+    define can_grant_pass_grants: manage_grants
+    define can_grant_manage_grants: manage_grants
+    define can_grant_manage_tags: manage_grants
+    define can_change_ownership: manage_grants
+    define can_set_managed_access: manage_grants

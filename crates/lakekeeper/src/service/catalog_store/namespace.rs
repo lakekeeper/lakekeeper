@@ -563,7 +563,7 @@ define_transparent_error! {
 
 define_simple_namespace_err!(
     NamespaceProtected,
-    "Namespace with {namespace} is protected and force flag not set. Cannot delete protected namespace."
+    "Namespace with {namespace} is protected and force flag not set."
 );
 
 impl From<NamespaceProtected> for ErrorModel {
@@ -662,6 +662,86 @@ define_transparent_error! {
         NamespaceNotFound,
         InvalidNamespaceIdentifier,
     ]
+}
+
+/// Outcome of a [`CatalogStore::move_namespace_impl`] call.
+///
+/// Carries the pre-move identity alongside the new state: the namespace cache has to evict
+/// the *old* ident (it stays resolvable otherwise), and the authorizer has to delete the
+/// hierarchy tuples pointing at the *old* parent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovedNamespace {
+    /// The namespace as it is after the move.
+    pub namespace: NamespaceWithParent,
+    /// Canonical path the namespace had before the move.
+    pub previous_ident: NamespaceIdent,
+    /// Parent before the move. `None` if the namespace was top-level.
+    pub previous_parent: Option<NamespaceId>,
+}
+
+impl MovedNamespace {
+    /// Whether the request did not change anything.
+    ///
+    /// Callers may use this to skip emitting events and rewriting authorization tuples:
+    /// there is nothing to announce and nothing to re-parent.
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.previous_ident == *self.namespace.canonical_ident()
+    }
+
+    /// Whether the namespace changed parent, as opposed to being renamed in place.
+    #[must_use]
+    pub fn changed_parent(&self) -> bool {
+        self.previous_parent != self.namespace.parent_namespaces_id()
+    }
+}
+
+// --------------------------- Move Error ---------------------------
+define_transparent_error! {
+    pub enum CatalogMoveNamespaceError,
+    stack_message: "Error moving Namespace in catalog",
+    variants: [
+        CatalogBackendError,
+        // Either the namespace being moved, or the parent of the destination.
+        NamespaceNotFound,
+        InvalidNamespaceIdentifier,
+        NamespaceProtected,
+        NamespaceHasChildren,
+        NamespaceAlreadyExists,
+        NamespaceCannotMoveIntoSelf,
+    ]
+}
+
+define_simple_namespace_err!(
+    NamespaceHasChildren,
+    "Namespace {namespace} has child namespaces. Moving a namespace with children is not supported."
+);
+
+impl From<NamespaceHasChildren> for ErrorModel {
+    fn from(err: NamespaceHasChildren) -> Self {
+        ErrorModel::builder()
+            .r#type("NamespaceHasChildren")
+            .code(StatusCode::CONFLICT.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+define_simple_namespace_err!(
+    NamespaceCannotMoveIntoSelf,
+    "Namespace {namespace} cannot be moved into itself."
+);
+
+impl From<NamespaceCannotMoveIntoSelf> for ErrorModel {
+    fn from(err: NamespaceCannotMoveIntoSelf) -> Self {
+        ErrorModel::builder()
+            .r#type("NamespaceCannotMoveIntoSelf")
+            .code(StatusCode::BAD_REQUEST.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
 }
 
 /// Input must contain full parent chain up to root namespace.
@@ -1215,6 +1295,22 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
     ) -> Result<NamespaceWithParent, CatalogSetNamespaceProtectedError> {
         Self::set_namespace_protected_impl(warehouse_id, namespace_id, protect, transaction).await
+    }
+
+    /// Move a namespace to `destination`. See [`CatalogStore::move_namespace_impl`].
+    ///
+    /// Cache maintenance is *not* done here: it is driven by the `namespace_moved` event,
+    /// which callers emit after committing, the same way `namespace_protection_set` and
+    /// `namespace_created` work. Invalidating before the commit would publish a move that
+    /// may still roll back.
+    async fn move_namespace(
+        warehouse_id: WarehouseId,
+        namespace_id: NamespaceId,
+        destination: &NamespaceIdent,
+        force: bool,
+        transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'_>,
+    ) -> Result<MovedNamespace, CatalogMoveNamespaceError> {
+        Self::move_namespace_impl(warehouse_id, namespace_id, destination, force, transaction).await
     }
 }
 

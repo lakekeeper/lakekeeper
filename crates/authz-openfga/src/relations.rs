@@ -884,6 +884,7 @@ pub enum WarehouseRelation {
     CanRename,
     CanListDeletedTabulars,
     CanManageTags,
+    CanAcceptMovedNamespace,
     CanReadAssignments,
     CanGrantCreate,
     CanGrantDescribe,
@@ -1133,6 +1134,9 @@ impl ReducedRelation for CatalogWarehouseAction {
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
             CatalogWarehouseAction::CreateNamespace { .. } => WarehouseRelation::CanCreateNamespace,
+            CatalogWarehouseAction::AcceptMovedNamespace { .. } => {
+                WarehouseRelation::CanAcceptMovedNamespace
+            }
             CatalogWarehouseAction::Delete => WarehouseRelation::CanDelete,
             CatalogWarehouseAction::UpdateStorage => WarehouseRelation::CanUpdateStorage,
             CatalogWarehouseAction::ManageTags => WarehouseRelation::CanManageTags,
@@ -1227,6 +1231,8 @@ pub enum NamespaceRelation {
     CanChangeOwnership,
     CanSetManagedAccess,
     CanSetProtection,
+    CanMove,
+    CanAcceptMovedNamespace,
 }
 
 impl OpenFgaRelation for NamespaceRelation {}
@@ -1441,6 +1447,10 @@ impl ReducedRelation for CatalogNamespaceAction {
             CatalogNamespaceAction::CreateView { .. } => NamespaceRelation::CanCreateView,
             CatalogNamespaceAction::CreateNamespace { .. } => NamespaceRelation::CanCreateNamespace,
             CatalogNamespaceAction::Delete { .. } => NamespaceRelation::CanDelete,
+            CatalogNamespaceAction::Move { .. } => NamespaceRelation::CanMove,
+            CatalogNamespaceAction::AcceptMovedNamespace { .. } => {
+                NamespaceRelation::CanAcceptMovedNamespace
+            }
             CatalogNamespaceAction::UpdateProperties { .. } => {
                 NamespaceRelation::CanUpdateProperties
             }

@@ -170,7 +170,8 @@
                       "management-v1-validate-warehouse",
                       "management-v1-validate-storage-profile",
                       "management-v1-validate-storage-credential",
-                      "management-v1-validate-storage-access"
+                      "management-v1-validate-storage-access",
+                      "management-v1-move-namespace"
                     ]
                   }
                 }

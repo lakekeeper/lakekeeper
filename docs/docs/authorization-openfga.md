@@ -89,6 +89,15 @@ Managed access combines elements of Role-Based Access Control (RBAC) and Discret
 
 Managed access can be enabled or disabled for warehouses and namespaces using the UI or the `../managed-access` Endpoints. Managed access settings are inherited down the object hierarchy, meaning if managed access is enabled on a higher-level entity, it applies to all child entities within it.
 
+### Moving namespaces under managed access
+
+Moving a namespace requires `manage_grants` at **both** ends: on the namespace being moved, and on the destination parent (or on the warehouse, when moving to the root). Re-parenting is a grant-shaped operation rather than an ordinary write — every principal holding `select`, `modify`, or `describe` at the destination immediately gains it on the moved namespace and everything inside it, through inheritance and without an assignment being recorded. Requiring grant authority at the source means the move confers nothing you could not already have granted directly; requiring it at the destination stops a namespace being populated and granted somewhere permissive and then moved in, issuing grants in a managed subtree that you could never have issued there.
+
+Two consequences are worth knowing:
+
+* Because managed access removes `manage_grants` from owners, an owner **cannot** move a namespace out of a managed subtree — which is the point, since moving it out would restore their own ability to grant on it.
+* `manage_grants` is independent of `modify`, so being able to move a namespace neither implies nor is implied by being able to delete it. A `security_admin` can restructure the hierarchy without holding write access; a principal granted only `modify` cannot move namespaces.
+
 ## Best Practices
 We recommend separating access to data from the ability to grant privileges. To achieve this, the `security_admin` and `data_admin` roles divide the responsibilities of the initial `project_admin`, who has the authority to perform tasks in both areas.
 
