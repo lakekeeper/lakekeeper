@@ -943,18 +943,20 @@ impl Authorizer for OpenFGAAuthorizer {
                 object: t.object,
             })
             .collect::<Vec<_>>();
-        self.write(None, Some(deletes))
+        // Idempotent, and deliberately *not* a strict write whose `CannotDeleteTupleNotFound`
+        // we swallow. A hierarchy edge is two tuples (forward `parent` plus the inverse), and
+        // a strict write is atomic: if only one of them is already gone the whole delete
+        // fails, so treating that error as "already applied" would leave the surviving tuple
+        // in place — a stale parent edge, which is the exact silent-inheritance failure this
+        // ordering exists to prevent. `on_missing: Ignore` applies per tuple, so a
+        // half-removed edge converges instead.
+        self.client
+            .write_with_options(None, Some(deletes), WriteOptions::new_idempotent())
             .await
-            // Already gone: either a previous attempt removed it, or the reconciler did.
-            .or_else(|e| match e {
-                OpenFGAError::CannotDeleteTupleNotFound(_) => {
-                    tracing::debug!(
-                        "Hierarchy tuples for namespace {namespace_id} under parent are already gone; treating as applied"
-                    );
-                    Ok(())
-                }
-                e => Err(e),
+            .inspect_err(|e| {
+                tracing::error!("Failed to detach namespace {namespace_id} from parent: {e}");
             })
+            .map_err(crate::error::OpenFGAError::from)
             .map_err(authz_to_error_no_audit)
             .map_err(Into::into)
     }
@@ -965,23 +967,20 @@ impl Authorizer for OpenFGAAuthorizer {
         namespace_id: NamespaceId,
         parent: NamespaceParent,
     ) -> AuthorizerResult<()> {
-        // Its own OpenFGA transaction, separate from the detach. Combining the two into one
-        // atomic write sounds better but is worse: the whole write fails if either half is
-        // already applied, so a partially-applied retry could never converge. Split, each
-        // half is independently idempotent.
+        // Its own OpenFGA transaction, separate from the detach, so the two halves of a move
+        // converge independently on replay.
+        //
+        // Idempotent for the same reason as the detach: the edge is two tuples and a strict
+        // write is atomic, so if only the forward tuple already exists the whole write fails
+        // and the inverse would never be written. `on_duplicate: Ignore` applies per tuple.
         let writes = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id);
-        self.write(Some(writes), None)
+        self.client
+            .write_with_options(Some(writes), None, WriteOptions::new_idempotent())
             .await
-            // Already present: a previous attempt got this far. Not an error.
-            .or_else(|e| match e {
-                OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
-                    tracing::debug!(
-                        "Hierarchy tuples for namespace {namespace_id} under parent already exist; treating as applied"
-                    );
-                    Ok(())
-                }
-                e => Err(e),
+            .inspect_err(|e| {
+                tracing::error!("Failed to attach namespace {namespace_id} to parent: {e}");
             })
+            .map_err(crate::error::OpenFGAError::from)
             .map_err(authz_to_error_no_audit)
             .map_err(Into::into)
     }
@@ -2285,6 +2284,122 @@ pub(crate) mod tests {
                     ),
                 }
             }
+        }
+
+        /// A hierarchy edge is *two* tuples, and a strict OpenFGA write is atomic. So a
+        /// half-present edge — one direction there, the other not — must still converge.
+        ///
+        /// This is the state a strict write plus "treat already-applied as success" gets
+        /// wrong: the write fails because of the one tuple that conflicts, the error is
+        /// swallowed, and the sibling tuple is silently never applied. For a detach that
+        /// leaves a live parent edge behind.
+        #[tokio::test]
+        async fn test_detach_namespace_parent_converges_from_half_removed_edge() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let moved = NamespaceId::new_random();
+            authorizer
+                .create_namespace(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .unwrap();
+
+            // Remove only the inverse tuple, leaving the forward `parent` edge in place.
+            let inverse = (
+                format!("namespace:{moved}"),
+                "namespace".to_string(),
+                format!("warehouse:{warehouse_id}"),
+            );
+            authorizer
+                .client
+                .write_with_options(
+                    None,
+                    Some(vec![TupleKeyWithoutCondition {
+                        user: inverse.0.clone(),
+                        relation: inverse.1.clone(),
+                        object: inverse.2.clone(),
+                    }]),
+                    WriteOptions::new_idempotent(),
+                )
+                .await
+                .unwrap();
+
+            let forward = (
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            let half = all_tuples(&authorizer).await;
+            assert!(
+                half.contains(&forward),
+                "precondition: forward edge remains"
+            );
+            assert!(
+                !half.contains(&inverse),
+                "precondition: inverse edge is gone"
+            );
+
+            authorizer
+                .detach_namespace_parent(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .expect("detach must tolerate a half-removed edge");
+
+            let after = all_tuples(&authorizer).await;
+            assert!(
+                !after.contains(&forward),
+                "the surviving forward edge must be removed, not skipped: {forward:?}"
+            );
+            assert!(!after.contains(&inverse));
+        }
+
+        /// The attach mirror image: one direction already present must not stop the other
+        /// from being written, or the namespace ends up with a half-built parent edge.
+        #[tokio::test]
+        async fn test_attach_namespace_parent_converges_from_half_present_edge() {
+            let authorizer = new_authorizer_in_empty_store().await;
+            let metadata = RequestMetadata::test_user(UserId::new_unchecked("oidc", "mover"));
+
+            let warehouse_id = WarehouseId::new_random();
+            let moved = NamespaceId::new_random();
+
+            // Only the forward tuple, as if a previous attempt applied half an edge.
+            let forward = (
+                format!("warehouse:{warehouse_id}"),
+                "parent".to_string(),
+                format!("namespace:{moved}"),
+            );
+            authorizer
+                .client
+                .write_with_options(
+                    Some(vec![TupleKey {
+                        user: forward.0.clone(),
+                        relation: forward.1.clone(),
+                        object: forward.2.clone(),
+                        condition: None,
+                    }]),
+                    None,
+                    WriteOptions::new_idempotent(),
+                )
+                .await
+                .unwrap();
+
+            authorizer
+                .attach_namespace_parent(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
+                .await
+                .expect("attach must tolerate a half-present edge");
+
+            let inverse = (
+                format!("namespace:{moved}"),
+                "namespace".to_string(),
+                format!("warehouse:{warehouse_id}"),
+            );
+            let after = all_tuples(&authorizer).await;
+            assert!(after.contains(&forward));
+            assert!(
+                after.contains(&inverse),
+                "the missing inverse edge must be written, not skipped: {inverse:?}"
+            );
         }
 
         #[tokio::test]

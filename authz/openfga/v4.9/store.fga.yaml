@@ -77,6 +77,12 @@ tuples:
   - user: namespace:namespace_2_2
     relation: parent
     object: lakekeeper_table:warehouse_2/table_2_2
+  # A direct manage_grants assignment inside the managed subtree. managed_access strips
+  # manage_grants from *owners*, but not from an explicit assignment — so this principal
+  # may move namespace_2_1, while its owner may not.
+  - user: user:namespace_2_1_grant_admin
+    relation: manage_grants
+    object: namespace:namespace_2_1
   # warehouse_2 has managed access
   - user: role:*
     relation: managed_access
@@ -1143,6 +1149,14 @@ tests:
           can_change_ownership: false
           can_get_task_queue_config: true
           can_modify_task_queue_config: false
+      - user: user:namespace_2_1_grant_admin
+        object: namespace:namespace_2_1
+        assertions:
+          # Ownership-derived manage_grants is stripped under managed access; a direct
+          # assignment is not, so this principal may move the namespace out.
+          can_move: true
+          can_accept_moved_namespace: true
+          can_grant_select: true
       - user: user:namespace_2_1_owner
         object: namespace:namespace_2_1
         assertions:
