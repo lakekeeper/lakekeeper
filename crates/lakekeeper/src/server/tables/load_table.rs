@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use http::StatusCode;
-use iceberg_ext::catalog::rest::{ETag, TableETag};
+use iceberg_ext::catalog::rest::ETag;
 
 use crate::{
     WarehouseId,
@@ -13,7 +13,11 @@ use crate::{
     request_metadata::RequestMetadata,
     server::{
         maybe_get_secret, require_warehouse_id,
-        tables::{authorize_load_table, parse_location, validate_table_or_view_ident},
+        tables::{
+            authorize_load_table,
+            etag::{StorageAccess, TableETag, TableResponseShape},
+            parse_location, validate_table_or_view_ident,
+        },
     },
     service::{
         AuthZTableInfo as _, CachePolicy, CatalogStore, CatalogTableOps, CatalogWarehouseOps,
@@ -104,6 +108,25 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             .warehouse
             .storage_profile
             .vends_expiring_credentials(data_access);
+    // Built once and reused for the response below: the tag we would hand out
+    // must be the one we match against here, or the next conditional request
+    // never hits.
+    let shape = TableResponseShape::for_load(
+        &filters,
+        // Both per-request inputs to `generate_table_config`. Without storage
+        // access there is no `config` at all — a load made before access was
+        // granted must not answer one made after; and credentials are
+        // policy-scoped per permission level, so a read-scoped body must not
+        // answer a request from a caller who can now write.
+        match storage_permissions {
+            None => StorageAccess::NoConfig,
+            Some(permissions) => StorageAccess::Config {
+                delegation: data_access,
+                permissions,
+                warehouse_version: event_ctx.resolved().warehouse.version,
+            },
+        },
+    );
     if let Some(etag) = match_not_modified(
         &etags,
         event_ctx
@@ -112,6 +135,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             .metadata_location
             .as_ref()
             .map(lakekeeper_io::Location::as_str),
+        shape,
         now_epoch_ms(),
         vends_credentials,
     ) {
@@ -195,7 +219,11 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
-        credentials_revalidate_after_ms,
+        // Same `shape` the 304 check above used, so the tag we hand out is the
+        // one the next equivalent request recomputes.
+        etag: metadata_location_ref.as_ref().map(|loc| {
+            TableETag::new(loc.as_str(), shape, credentials_revalidate_after_ms).into_etag()
+        }),
     };
 
     Ok(LoadTableResultOrNotModified::LoadTableResult(
@@ -268,14 +296,21 @@ fn require_not_staged<T>(
 /// load also vends no expiring credentials (`!vends_credentials`). Anything we
 /// can't parse isn't matched, so the client reloads — never a 304 with stale
 /// credentials.
+///
+/// `shape` describes the body *this* request would produce. It is folded into
+/// the comparison tag, so a client that cached one shape and revalidates for
+/// another — a different `snapshots` filter, or different access delegation —
+/// misses and gets a full response instead of a 304 for content it never
+/// received.
 fn match_not_modified(
     client_etags: &[ETag],
     metadata_location: Option<&str>,
+    shape: TableResponseShape,
     now_ms: i64,
     vends_credentials: bool,
 ) -> Option<ETag> {
     let metadata_location = metadata_location?;
-    let current = TableETag::new(metadata_location, None);
+    let current = TableETag::new(metadata_location, shape, None);
 
     for client in client_etags {
         let value = client.as_str();
@@ -292,7 +327,7 @@ fn match_not_modified(
         let Some(parsed) = TableETag::parse(value) else {
             continue;
         };
-        if parsed.metadata_hash() != current.metadata_hash() {
+        if parsed.hash() != current.hash() {
             continue;
         }
         match parsed.revalidate_after_ms() {
@@ -316,18 +351,87 @@ fn match_not_modified(
 #[cfg(test)]
 mod etag_tests {
     use super::*;
+    use crate::{
+        api::iceberg::v1::tables::{DataAccess, DataAccessMode, SnapshotsQuery},
+        service::{WarehouseVersion, storage::StoragePermissions},
+    };
 
     const LOC: &str = "s3://bucket/table/metadata.json";
     const NOW: i64 = 1_750_000_000_000;
-    /// Build a client-supplied `ETag` (quotes stripped, as `parse_etags` yields).
-    /// `revalidate_after` = `None` for a metadata-only cached response.
+    /// Default shape: all snapshots, default (unspecified) delegation.
+    fn wv() -> WarehouseVersion {
+        WarehouseVersion::new(7)
+    }
+
+    fn delegated(vended_credentials: bool, remote_signing: bool) -> DataAccessMode {
+        DataAccessMode::ServerDelegated(DataAccess {
+            vended_credentials,
+            remote_signing,
+        })
+    }
+
+    /// A config-bearing shape with the given snapshot filter.
+    fn shape_of(
+        snapshots: SnapshotsQuery,
+        delegation: DataAccessMode,
+        permissions: StoragePermissions,
+    ) -> TableResponseShape {
+        TableResponseShape::new(
+            snapshots,
+            StorageAccess::Config {
+                delegation,
+                permissions,
+                warehouse_version: wv(),
+            },
+        )
+    }
+
+    /// A default delegated load: all snapshots, unspecified delegation, writer.
+    fn all() -> TableResponseShape {
+        shape_of(
+            SnapshotsQuery::All,
+            delegated(false, false),
+            StoragePermissions::ReadWriteDelete,
+        )
+    }
+
+    /// The same, refs-filtered.
+    fn refs() -> TableResponseShape {
+        shape_of(
+            SnapshotsQuery::Refs,
+            delegated(false, false),
+            StoragePermissions::ReadWriteDelete,
+        )
+    }
+
+    /// Build a client-supplied `ETag` for a given shape, in the form
+    /// `parse_etags` yields. `revalidate_after` = `None` for a metadata-only
+    /// cached response.
+    fn client_etag_for(
+        loc: &str,
+        shape: TableResponseShape,
+        revalidate_after: Option<i64>,
+    ) -> ETag {
+        as_client_etag(&TableETag::new(loc, shape, revalidate_after).into_etag())
+    }
+
+    /// The shape a client echoes back: the wire value with the weak marker and
+    /// quotes stripped, exactly as the HTTP layer's `parse_etags` produces.
+    fn as_client_etag(etag: &ETag) -> ETag {
+        ETag::from(etag.as_str().trim_start_matches("W/").trim_matches('"'))
+    }
+
+    /// Default-shape client [`ETag`].
     fn client_etag(loc: &str, revalidate_after: Option<i64>) -> ETag {
-        let quoted = TableETag::new(loc, revalidate_after).into_etag();
-        ETag::from(quoted.as_str().trim_matches('"'))
+        client_etag_for(loc, all(), revalidate_after)
+    }
+
+    fn matches_repr(etags: &[ETag], shape: TableResponseShape, vends_credentials: bool) -> bool {
+        match_not_modified(etags, Some(LOC), shape, NOW, vends_credentials).is_some()
     }
 
     fn matches(etags: &[ETag], vends_credentials: bool) -> bool {
-        match_not_modified(etags, Some(LOC), NOW, vends_credentials).is_some()
+        matches_repr(etags, all(), vends_credentials)
     }
 
     #[test]
@@ -341,7 +445,7 @@ mod etag_tests {
     fn unparseable_etag_triggers_reload() {
         // A pre-upgrade bare-hash ETag (or any non-`lk1` value) can't be parsed,
         // so it never yields a 304. The client reloads once and re-primes.
-        let legacy = ETag::from(TableETag::new(LOC, None).metadata_hash());
+        let legacy = ETag::from(TableETag::new(LOC, all(), None).hash());
         assert!(!matches(&[legacy], false));
         assert!(!matches(&[ETag::from("not-our-etag")], false));
     }
@@ -355,7 +459,7 @@ mod etag_tests {
 
     #[test]
     fn no_match_when_metadata_location_absent() {
-        assert!(match_not_modified(&[ETag::from("*")], None, NOW, false).is_none());
+        assert!(match_not_modified(&[ETag::from("*")], None, all(), NOW, false).is_none());
     }
 
     #[test]
@@ -374,8 +478,14 @@ mod etag_tests {
             let etag = client_etag(LOC, Some(revalidate_after_at(expiry, vend_now)));
             for check_now in [expiry, expiry + 1, expiry + 60_000] {
                 assert!(
-                    match_not_modified(std::slice::from_ref(&etag), Some(LOC), check_now, true)
-                        .is_none(),
+                    match_not_modified(
+                        std::slice::from_ref(&etag),
+                        Some(LOC),
+                        all(),
+                        check_now,
+                        true
+                    )
+                    .is_none(),
                     "served a 304 at/after expiry (expiry={expiry}, check_now={check_now})"
                 );
             }
@@ -403,9 +513,171 @@ mod etag_tests {
     #[test]
     fn credential_load_rejects_unparseable_and_wildcard() {
         // Unparseable ETag and wildcard carry no revalidation point → reload.
-        let legacy = ETag::from(TableETag::new(LOC, None).metadata_hash());
+        let legacy = ETag::from(TableETag::new(LOC, all(), None).hash());
         assert!(!matches(&[legacy], true));
         assert!(!matches(&[ETag::from("*")], true));
+    }
+
+    #[test]
+    fn no_304_across_snapshot_representations() {
+        // A client caches `snapshots=refs` (a truncated snapshot list), then
+        // revalidates asking for `snapshots=all`. When both sides hashed only the
+        // metadata location this matched, and the client kept using the truncated
+        // body as if it were complete.
+        let cached_refs = client_etag_for(LOC, refs(), None);
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached_refs), all(), false),
+            "304'd an `all` request from a `refs` ETag: client would reuse a truncated snapshot list"
+        );
+
+        // And the reverse: a full body cached, then a `refs` request.
+        let cached_all = client_etag_for(LOC, all(), None);
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached_all), refs(), false),
+            "304'd a `refs` request from an `all` ETag"
+        );
+
+        // Each still 304s against its own representation — the fix must not
+        // disable conditional requests, only stop them crossing representations.
+        assert!(matches_repr(&[cached_refs], refs(), false));
+        assert!(matches_repr(&[cached_all], all(), false));
+    }
+
+    #[test]
+    fn no_304_across_delegation_modes() {
+        // Storage config depends on the delegation the client asked for, so a
+        // tag minted under one mode must not satisfy a request under another.
+        // These cases cover the revalidate-less branch, reachable when the load
+        // vends no expiring credentials — client-managed access, or the in-memory
+        // test profile. See `credential_load_rejects_cross_delegation_304` for
+        // the branch that real S3/GCS/ADLS traffic takes.
+        let signing = shape_of(
+            SnapshotsQuery::All,
+            delegated(false, true),
+            StoragePermissions::ReadWriteDelete,
+        );
+        let client_managed = shape_of(
+            SnapshotsQuery::All,
+            DataAccessMode::ClientManaged,
+            StoragePermissions::ReadWriteDelete,
+        );
+
+        let cached_signing = client_etag_for(LOC, signing, None);
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached_signing), all(), false),
+            "304'd an unspecified-delegation request from a remote-signing ETag"
+        );
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached_signing), client_managed, false),
+            "304'd a client-managed request from a remote-signing ETag"
+        );
+        // Still 304s its own shape.
+        assert!(matches_repr(&[cached_signing], signing, false));
+
+        // And the reverse direction: a plain cached body must not satisfy a
+        // request that asks for signing.
+        let cached_default = client_etag_for(LOC, all(), None);
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached_default), signing, false),
+            "304'd a remote-signing request from an unspecified-delegation ETag: \
+             the client would get no signer config"
+        );
+    }
+
+    #[test]
+    fn credential_load_rejects_cross_delegation_304() {
+        // The branch real traffic takes. On S3/GCS/ADLS `vends_expiring_credentials`
+        // is true for *any* server-delegated request — it never inspects
+        // `remote_signing` — so a delegated load always carries a revalidation
+        // point and the `vends_credentials` gate cannot distinguish modes. Inside
+        // that window only the shape stops the 304.
+        let vended = shape_of(
+            SnapshotsQuery::All,
+            delegated(true, false),
+            StoragePermissions::ReadWriteDelete,
+        );
+        let signing = shape_of(
+            SnapshotsQuery::All,
+            delegated(false, true),
+            StoragePermissions::ReadWriteDelete,
+        );
+        // Cached a credential-bearing response, still well inside its window.
+        let cached = client_etag_for(LOC, vended, Some(NOW + 60_000));
+
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached), signing, true),
+            "304'd a remote-signing request from a vended-credentials ETag while \
+             the credential window was still open"
+        );
+        // Its own shape still 304s inside the window — the gate is unchanged.
+        assert!(matches_repr(&[cached], vended, true));
+    }
+
+    #[test]
+    fn no_storage_access_is_its_own_shape() {
+        // A load the caller has no storage access for returns `config: null`.
+        // That body must not satisfy a later load made after access is granted.
+        let no_config = TableResponseShape::no_storage_config();
+        let cached = client_etag_for(LOC, no_config, None);
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached), all(), false),
+            "304'd a config-bearing load from a config-less ETag"
+        );
+        assert!(matches_repr(&[cached], no_config, false));
+    }
+
+    #[test]
+    fn no_304_across_storage_permission_levels() {
+        // Vended credentials are policy-scoped per level, so a body built for a
+        // read-only caller must not answer a request from one who can now write.
+        // `create_table`/`register_table` always scope to ReadWriteDelete, so
+        // without this a read-only caller's load could match a create tag.
+        let read = shape_of(
+            SnapshotsQuery::All,
+            delegated(false, false),
+            StoragePermissions::Read,
+        );
+        let cached_read = client_etag_for(LOC, read, Some(NOW + 60_000));
+        assert!(
+            !matches_repr(std::slice::from_ref(&cached_read), all(), true),
+            "304'd a read-write-delete load from a read-scoped ETag: the client \
+             would keep credentials that cannot write"
+        );
+        assert!(matches_repr(&[cached_read], read, true));
+    }
+
+    #[test]
+    fn commit_etag_does_not_satisfy_a_delegated_load() {
+        // A commit response carries `config: None`, which no load reproduces, so
+        // its tag must not 304 a load that expects storage config.
+        let commit = as_client_etag(&super::super::etag::commit_etag(LOC));
+        assert!(!matches(std::slice::from_ref(&commit), false));
+        assert!(!matches_repr(&[commit], refs(), false));
+    }
+
+    #[test]
+    fn wildcard_echoes_the_requested_representation() {
+        // `If-None-Match: *` carries no representation, so the tag we echo must be
+        // the one for the body this request would have produced. Echoing the
+        // default here would hand the client an `all` tag for a `refs` body.
+        let echoed = match_not_modified(&[ETag::from("*")], Some(LOC), refs(), NOW, false)
+            .expect("wildcard should 304 when no credentials are vended");
+        // Compare against the quoted wire form — `client_etag_for` yields the
+        // unquoted shape a client echoes back, which is not what we emit.
+        assert_eq!(echoed, TableETag::new(LOC, refs(), None).into_etag());
+        assert_ne!(
+            echoed,
+            TableETag::new(LOC, all(), None).into_etag(),
+            "wildcard echoed the default representation instead of the requested one"
+        );
+        // That echoed tag must then be accepted for `refs` and rejected for `all`.
+        let echoed_bare = as_client_etag(&echoed);
+        assert!(matches_repr(
+            std::slice::from_ref(&echoed_bare),
+            refs(),
+            false
+        ));
+        assert!(!matches_repr(&[echoed_bare], all(), false));
     }
 
     #[test]
