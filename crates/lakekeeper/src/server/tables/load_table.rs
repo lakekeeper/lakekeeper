@@ -108,25 +108,29 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             .warehouse
             .storage_profile
             .vends_expiring_credentials(data_access);
-    // Built once and reused for the response below: the tag we would hand out
-    // must be the one we match against here, or the next conditional request
-    // never hits.
-    let shape = TableResponseShape::for_load(
-        &filters,
-        // Both per-request inputs to `generate_table_config`. Without storage
-        // access there is no `config` at all — a load made before access was
-        // granted must not answer one made after; and credentials are
-        // policy-scoped per permission level, so a read-scoped body must not
-        // answer a request from a caller who can now write.
-        match storage_permissions {
-            None => StorageAccess::NoConfig,
-            Some(permissions) => StorageAccess::Config {
-                delegation: data_access,
-                permissions,
-                warehouse_version: event_ctx.resolved().warehouse.version,
+    // The warehouse version is a parameter rather than read from `event_ctx`,
+    // because the two call sites see different versions: the 304 check below
+    // runs before the table is loaded, while the response tag must name the
+    // version the body was actually generated from — which the refetch further
+    // down may have advanced.
+    let shape_at = |warehouse_version| {
+        TableResponseShape::for_load(
+            &filters,
+            // Both per-request inputs to `generate_table_config`. Without storage
+            // access there is no `config` at all — a load made before access was
+            // granted must not answer one made after; and credentials are
+            // policy-scoped per permission level, so a read-scoped body must not
+            // answer a request from a caller who can now write.
+            match storage_permissions {
+                None => StorageAccess::NoConfig,
+                Some(permissions) => StorageAccess::Config {
+                    delegation: data_access,
+                    permissions,
+                    warehouse_version,
+                },
             },
-        },
-    );
+        )
+    };
     if let Some(etag) = match_not_modified(
         &etags,
         event_ctx
@@ -135,7 +139,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             .metadata_location
             .as_ref()
             .map(lakekeeper_io::Location::as_str),
-        shape,
+        shape_at(event_ctx.resolved().warehouse.version),
         now_epoch_ms(),
         vends_credentials,
     ) {
@@ -176,6 +180,10 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         event_ctx.resolved_mut().warehouse = fresh_warehouse;
     }
     let warehouse = &event_ctx.resolved().warehouse;
+    // Bound to the version `generate_table_config` below reads the profile from,
+    // which the refetch above may have advanced past the one the 304 check used.
+    // Reusing that earlier shape would let one tag stand for two different bodies.
+    let response_shape = shape_at(warehouse.version);
 
     let table_location =
         parse_location(table_metadata.location(), StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -219,10 +227,13 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         metadata: metadata_ref,
         config: storage_config.map(|c| c.config.into()),
         storage_credentials,
-        // Same `shape` the 304 check above used, so the tag we hand out is the
-        // one the next equivalent request recomputes.
         etag: metadata_location_ref.as_ref().map(|loc| {
-            TableETag::new(loc.as_str(), shape, credentials_revalidate_after_ms).into_etag()
+            TableETag::new(
+                loc.as_str(),
+                response_shape,
+                credentials_revalidate_after_ms,
+            )
+            .into_etag()
         }),
     };
 

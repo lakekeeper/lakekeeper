@@ -316,6 +316,52 @@ mod tests {
         assert_eq!(shapes.len(), 32);
     }
 
+    /// Pins the wire format against literals rather than against another
+    /// generated tag, so a change to the framing, the field order, the axis
+    /// strings or the little-endian version encoding fails here even when it
+    /// keeps every shape distinct. Updating these values invalidates every
+    /// `ETag` in every client cache — bump [`ETAG_PREFIX`] when you do.
+    #[test]
+    fn etag_wire_format_is_pinned() {
+        let delegated_shape = TableResponseShape::new(
+            SnapshotsQuery::Refs,
+            StorageAccess::Config {
+                delegation: delegated(true, false),
+                permissions: StoragePermissions::Read,
+                warehouse_version: WarehouseVersion::new(1),
+            },
+        );
+
+        assert_eq!(
+            TableETag::new(LOC, delegated_shape, None)
+                .into_etag()
+                .as_str(),
+            "W/\"lk1.d6f45486df4c5bc3\""
+        );
+        // Same shape, next warehouse version: differs only in the trailing
+        // little-endian bytes, so a big-endian slip changes this value.
+        let next_version = TableResponseShape::new(
+            SnapshotsQuery::Refs,
+            StorageAccess::Config {
+                delegation: delegated(true, false),
+                permissions: StoragePermissions::Read,
+                warehouse_version: WarehouseVersion::new(2),
+            },
+        );
+        assert_eq!(
+            TableETag::new(LOC, next_version, None).into_etag().as_str(),
+            "W/\"lk1.ce4d3de4c470d7d0\""
+        );
+        // The `nc` branch skips the version entirely, and the revalidation
+        // point is appended as lower-case hex.
+        assert_eq!(
+            TableETag::new(LOC, TableResponseShape::no_storage_config(), Some(255))
+                .into_etag()
+                .as_str(),
+            "W/\"lk1.7ccceafed717f689.ff\""
+        );
+    }
+
     #[test]
     fn warehouse_version_is_part_of_the_tag() {
         // A storage-profile edit bumps the warehouse row's version, which changes
