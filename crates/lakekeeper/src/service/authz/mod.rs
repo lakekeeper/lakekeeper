@@ -31,6 +31,8 @@ pub use decision::*;
 mod error;
 pub mod implementations;
 pub use error::*;
+mod grant;
+pub use grant::*;
 mod instance_admin;
 pub use instance_admin::*;
 mod warehouse;
@@ -404,8 +406,10 @@ pub enum CatalogServerAction {
     ListUsers,
     /// Can provision user
     ProvisionUsers,
+    /// Can list the grants held on this server.
+    ReadGrants,
 }
-static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 5]> = LazyLock::new(|| {
+static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 6]> = LazyLock::new(|| {
     [
         CatalogServerAction::CreateProject {
             name: None,
@@ -415,11 +419,12 @@ static SERVER_ACTION_VARIANTS: LazyLock<[CatalogServerAction; 5]> = LazyLock::ne
         CatalogServerAction::DeleteUsers,
         CatalogServerAction::ListUsers,
         CatalogServerAction::ProvisionUsers,
+        CatalogServerAction::ReadGrants,
     ]
 });
 impl CatalogServerAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogServerAction; 5] {
+    pub fn variants() -> &'static [CatalogServerAction; 6] {
         &SERVER_ACTION_VARIANTS
     }
 }
@@ -484,8 +489,10 @@ pub enum CatalogProjectAction {
     },
     /// List tag definitions in this project.
     ListTags,
+    /// Can list the grants held on this project.
+    ReadGrants,
 }
-static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 16]> = LazyLock::new(|| {
+static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 17]> = LazyLock::new(|| {
     [
         CatalogProjectAction::CreateWarehouse { name: None },
         CatalogProjectAction::Delete,
@@ -503,11 +510,12 @@ static PROJECT_ACTION_VARIANTS: LazyLock<[CatalogProjectAction; 16]> = LazyLock:
         CatalogProjectAction::ControlProjectTasks,
         CatalogProjectAction::CreateTag { name: None },
         CatalogProjectAction::ListTags,
+        CatalogProjectAction::ReadGrants,
     ]
 });
 impl CatalogProjectAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogProjectAction; 16] {
+    pub fn variants() -> &'static [CatalogProjectAction; 17] {
         &PROJECT_ACTION_VARIANTS
     }
 }
@@ -692,8 +700,10 @@ pub enum CatalogWarehouseAction {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         source: Arc<Vec<String>>,
     },
+    /// Can list the grants held on this warehouse.
+    ReadGrants,
 }
-static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyLock::new(|| {
+static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 24]> = LazyLock::new(|| {
     [
         CatalogWarehouseAction::CreateNamespace {
             name: None,
@@ -723,11 +733,12 @@ static WAREHOUSE_ACTION_VARIANTS: LazyLock<[CatalogWarehouseAction; 23]> = LazyL
         CatalogWarehouseAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
         },
+        CatalogWarehouseAction::ReadGrants,
     ]
 });
 impl CatalogWarehouseAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogWarehouseAction; 23] {
+    pub fn variants() -> &'static [CatalogWarehouseAction; 24] {
         &WAREHOUSE_ACTION_VARIANTS
     }
 
@@ -770,7 +781,9 @@ impl CatalogWarehouseAction {
             | CatalogWarehouseAction::ControlAllTasks
             | CatalogWarehouseAction::GetEndpointStatistics
             // Governance tag attachment is metadata, not part of the reconciled spec.
-            | CatalogWarehouseAction::ManageTags => false,
+            | CatalogWarehouseAction::ManageTags
+            // Reading grants is a read.
+            | CatalogWarehouseAction::ReadGrants => false,
         }
     }
 }
@@ -921,8 +934,10 @@ pub enum CatalogNamespaceAction {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         source: Arc<Vec<String>>,
     },
+    /// Can list the grants held on this namespace.
+    ReadGrants,
 }
-static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 17]> = LazyLock::new(|| {
+static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 18]> = LazyLock::new(|| {
     [
         CatalogNamespaceAction::CreateTable {
             name: None,
@@ -969,11 +984,12 @@ static NAMESPACE_ACTION_VARIANTS: LazyLock<[CatalogNamespaceAction; 17]> = LazyL
         CatalogNamespaceAction::AcceptMovedNamespace {
             source: Arc::new(Vec::new()),
         },
+        CatalogNamespaceAction::ReadGrants,
     ]
 });
 impl CatalogNamespaceAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogNamespaceAction; 17] {
+    pub fn variants() -> &'static [CatalogNamespaceAction; 18] {
         &NAMESPACE_ACTION_VARIANTS
     }
 }
@@ -1129,8 +1145,10 @@ pub enum CatalogTableAction {
     SetProtection,
     /// Attach/detach governance tags on this table.
     ManageTags,
+    /// Can list the grants held on this table.
+    ReadGrants,
 }
-static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 12]> = LazyLock::new(|| {
+static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 13]> = LazyLock::new(|| {
     [
         CatalogTableAction::Drop {
             force: false,
@@ -1152,11 +1170,12 @@ static TABLE_ACTION_VARIANTS: LazyLock<[CatalogTableAction; 12]> = LazyLock::new
         CatalogTableAction::ControlTasks,
         CatalogTableAction::SetProtection,
         CatalogTableAction::ManageTags,
+        CatalogTableAction::ReadGrants,
     ]
 });
 impl CatalogTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogTableAction; 12] {
+    pub fn variants() -> &'static [CatalogTableAction; 13] {
         &TABLE_ACTION_VARIANTS
     }
 }
@@ -1249,8 +1268,10 @@ pub enum CatalogViewAction {
     SetProtection,
     /// Attach/detach governance tags on this view.
     ManageTags,
+    /// Can list the grants held on this view.
+    ReadGrants,
 }
-static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 11]> = LazyLock::new(|| {
+static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 12]> = LazyLock::new(|| {
     [
         CatalogViewAction::Drop {
             force: false,
@@ -1269,11 +1290,12 @@ static VIEW_ACTION_VARIANTS: LazyLock<[CatalogViewAction; 11]> = LazyLock::new(|
         CatalogViewAction::ControlTasks,
         CatalogViewAction::SetProtection,
         CatalogViewAction::ManageTags,
+        CatalogViewAction::ReadGrants,
     ]
 });
 impl CatalogViewAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogViewAction; 11] {
+    pub fn variants() -> &'static [CatalogViewAction; 12] {
         &VIEW_ACTION_VARIANTS
     }
 }
@@ -1334,8 +1356,10 @@ pub enum CatalogGenericTableAction {
     SetProtection,
     /// Attach/detach governance tags on this generic table.
     ManageTags,
+    /// Can list the grants held on this generic table.
+    ReadGrants,
 }
-static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 11]> =
+static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 12]> =
     LazyLock::new(|| {
         [
             CatalogGenericTableAction::Drop,
@@ -1349,11 +1373,12 @@ static GENERIC_TABLE_ACTION_VARIANTS: LazyLock<[CatalogGenericTableAction; 11]> 
             CatalogGenericTableAction::ControlTasks,
             CatalogGenericTableAction::SetProtection,
             CatalogGenericTableAction::ManageTags,
+            CatalogGenericTableAction::ReadGrants,
         ]
     });
 impl CatalogGenericTableAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogGenericTableAction; 11] {
+    pub fn variants() -> &'static [CatalogGenericTableAction; 12] {
         &GENERIC_TABLE_ACTION_VARIANTS
     }
 }
@@ -1385,8 +1410,10 @@ pub enum CatalogTagAction {
     /// than `Read`, so restricted to tag owners / project security admins. Distinct
     /// from `can_read_assignments`, which reads who holds apply/ownership (grants).
     ReadAttachments,
+    /// Can list the grants held on this tag definition.
+    ReadGrants,
 }
-static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 6]> = LazyLock::new(|| {
+static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 7]> = LazyLock::new(|| {
     [
         CatalogTagAction::Read,
         CatalogTagAction::Update,
@@ -1394,11 +1421,12 @@ static TAG_ACTION_VARIANTS: LazyLock<[CatalogTagAction; 6]> = LazyLock::new(|| {
         CatalogTagAction::Apply,
         CatalogTagAction::Remove,
         CatalogTagAction::ReadAttachments,
+        CatalogTagAction::ReadGrants,
     ]
 });
 impl CatalogTagAction {
     #[must_use]
-    pub fn variants() -> &'static [CatalogTagAction; 6] {
+    pub fn variants() -> &'static [CatalogTagAction; 7] {
         &TAG_ACTION_VARIANTS
     }
 }
@@ -1432,6 +1460,7 @@ pub enum CatalogServerActionKind {
     DeleteUsers,
     ListUsers,
     ProvisionUsers,
+    ReadGrants,
 }
 impl From<&CatalogServerAction> for CatalogServerActionKind {
     fn from(action: &CatalogServerAction) -> Self {
@@ -1441,6 +1470,7 @@ impl From<&CatalogServerAction> for CatalogServerActionKind {
             CatalogServerAction::DeleteUsers => Self::DeleteUsers,
             CatalogServerAction::ListUsers => Self::ListUsers,
             CatalogServerAction::ProvisionUsers => Self::ProvisionUsers,
+            CatalogServerAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1466,6 +1496,7 @@ pub enum CatalogProjectActionKind {
     ControlProjectTasks,
     CreateTag,
     ListTags,
+    ReadGrants,
 }
 impl From<&CatalogProjectAction> for CatalogProjectActionKind {
     fn from(action: &CatalogProjectAction) -> Self {
@@ -1486,6 +1517,7 @@ impl From<&CatalogProjectAction> for CatalogProjectActionKind {
             CatalogProjectAction::ControlProjectTasks => Self::ControlProjectTasks,
             CatalogProjectAction::CreateTag { .. } => Self::CreateTag,
             CatalogProjectAction::ListTags => Self::ListTags,
+            CatalogProjectAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1545,6 +1577,7 @@ pub enum CatalogWarehouseActionKind {
     GetEndpointStatistics,
     ManageTags,
     AcceptMovedNamespace,
+    ReadGrants,
 }
 impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
     fn from(action: &CatalogWarehouseAction) -> Self {
@@ -1572,6 +1605,7 @@ impl From<&CatalogWarehouseAction> for CatalogWarehouseActionKind {
             CatalogWarehouseAction::SetFormatVersionPolicy => Self::SetFormatVersionPolicy,
             CatalogWarehouseAction::GetEndpointStatistics => Self::GetEndpointStatistics,
             CatalogWarehouseAction::ManageTags => Self::ManageTags,
+            CatalogWarehouseAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1598,6 +1632,7 @@ pub enum CatalogNamespaceActionKind {
     ManageTags,
     Move,
     AcceptMovedNamespace,
+    ReadGrants,
 }
 impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
     fn from(action: &CatalogNamespaceAction) -> Self {
@@ -1619,6 +1654,7 @@ impl From<&CatalogNamespaceAction> for CatalogNamespaceActionKind {
             CatalogNamespaceAction::CreateGenericTable { .. } => Self::CreateGenericTable,
             CatalogNamespaceAction::ListGenericTables => Self::ListGenericTables,
             CatalogNamespaceAction::ManageTags => Self::ManageTags,
+            CatalogNamespaceAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1640,6 +1676,7 @@ pub enum CatalogTableActionKind {
     ControlTasks,
     SetProtection,
     ManageTags,
+    ReadGrants,
 }
 impl From<&CatalogTableAction> for CatalogTableActionKind {
     fn from(action: &CatalogTableAction) -> Self {
@@ -1656,6 +1693,7 @@ impl From<&CatalogTableAction> for CatalogTableActionKind {
             CatalogTableAction::ControlTasks => Self::ControlTasks,
             CatalogTableAction::SetProtection => Self::SetProtection,
             CatalogTableAction::ManageTags => Self::ManageTags,
+            CatalogTableAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1676,6 +1714,7 @@ pub enum CatalogViewActionKind {
     ControlTasks,
     SetProtection,
     ManageTags,
+    ReadGrants,
 }
 impl From<&CatalogViewAction> for CatalogViewActionKind {
     fn from(action: &CatalogViewAction) -> Self {
@@ -1691,6 +1730,7 @@ impl From<&CatalogViewAction> for CatalogViewActionKind {
             CatalogViewAction::ControlTasks => Self::ControlTasks,
             CatalogViewAction::SetProtection => Self::SetProtection,
             CatalogViewAction::ManageTags => Self::ManageTags,
+            CatalogViewAction::ReadGrants => Self::ReadGrants,
         }
     }
 }
@@ -1991,6 +2031,87 @@ where
         None
     }
 
+    /// Returns the grant management facet if this authorizer is the source of truth
+    /// for grants; `None` means grants live in the catalog's `grant_assignment`
+    /// table. Mirrors [`Self::role_assignments`].
+    fn grants(&self) -> Option<&dyn ManagesGrants> {
+        None
+    }
+
+    /// The closed set of privileges this authorizer can grant on `resource_type`.
+    ///
+    /// The vocabulary is authorizer-owned and always enumerable: clients discover it
+    /// rather than hardcoding it, which is what allows privilege sets to differ
+    /// between authorizers while the grant API stays uniform. A deployment may
+    /// publish a subset of what the authorizer supports.
+    ///
+    /// The default is empty, so an authorizer that has not opted in grants nothing.
+    ///
+    /// `'static` rather than tied to `&self`: the vocabulary is validated once at startup
+    /// and held in a `LazyLock`, so responses can borrow it instead of rebuilding it. A
+    /// borrow of `&self` could not outlive the handler, which is where the response is
+    /// built but not where it is serialized.
+    fn grantable_privileges(&self, _resource_type: ResourceType) -> &'static [PrivilegeDescriptor] {
+        &[]
+    }
+
+    /// Whether `privilege` is grantable on `resource_type`.
+    ///
+    /// Derived from [`Self::grantable_privileges`] so the two cannot disagree — an
+    /// authorizer that publishes a privilege it then refuses to accept would advertise a
+    /// name every write rejects. Override only to answer without materializing the list.
+    fn is_grantable_privilege(&self, resource_type: ResourceType, privilege: &str) -> bool {
+        self.grantable_privileges(resource_type)
+            .iter()
+            .any(|descriptor| descriptor.name == privilege)
+    }
+
+    /// Whether `privilege` is grantable on `resource_type`, checked before a write.
+    ///
+    /// Deliberately not applied to revocations: a privilege that has left the
+    /// vocabulary (or arrived from another authorizer) must stay revocable, or the
+    /// grant would be permanently stuck.
+    ///
+    /// The error carries an owned name, so callers that only need a yes/no answer —
+    /// every listed row, for instance — should ask [`Self::is_grantable_privilege`]
+    /// instead of discarding an allocated error.
+    fn validate_grant_privilege(
+        &self,
+        resource_type: ResourceType,
+        privilege: &str,
+    ) -> std::result::Result<(), InvalidGrantPrivilege> {
+        if self.is_grantable_privilege(resource_type, privilege) {
+            return Ok(());
+        }
+        Err(InvalidGrantPrivilege {
+            resource_type,
+            privilege: privilege.to_string(),
+        })
+    }
+
+    /// Answering for another principal discloses that principal's access, so the actor
+    /// must hold the resource's `ReadGrants` action. **The caller enforces that**, since
+    /// only it holds the resolved entity each family's action check needs. An
+    /// implementation may add its own equivalent when it is free — `OpenFGA` folds the
+    /// tuple into the same batch — but it is not required to, and must not rely on being
+    /// the only thing standing between a caller and someone else's access.
+    ///
+    /// Deliberately *not* required to mask an invisible resource. Authority to grant is
+    /// independent of authority to see — a security administrator may manage a
+    /// warehouse's grants without being able to read it — so there is no visibility
+    /// check to fold in here. Callers document what that discloses.
+    ///
+    /// The default denies everything.
+    async fn are_allowed_grants_impl(
+        &self,
+        _metadata: &RequestMetadata,
+        _for_user: Option<&UserOrRole>,
+        _resource: &GrantResource,
+        privileges: &[&str],
+    ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+        Ok(vec![AuthorizationDecision::deny(); privileges.len()])
+    }
+
     /// Hook that is called when a new project is created.
     /// This is used to set up the initial permissions for the project.
     async fn create_project(
@@ -2141,6 +2262,85 @@ pub mod tests {
     fn test_server_action_variant_completeness() {
         let variants = CatalogServerAction::variants();
         assert_eq!(variants.len(), CatalogServerAction::COUNT);
+    }
+
+    #[test]
+    fn read_grants_action_exists_at_every_grantable_level() {
+        // `read_grants` gates listing grants on a resource. Grant *authority* is not an
+        // action - it is resolved per privilege by `Authorizer::are_allowed_grants`.
+        assert_eq!(
+            CatalogWarehouseAction::ReadGrants
+                .action_descriptor()
+                .action_name,
+            "read_grants"
+        );
+        assert!(CatalogServerAction::variants().contains(&CatalogServerAction::ReadGrants));
+        assert!(CatalogProjectAction::variants().contains(&CatalogProjectAction::ReadGrants));
+        assert!(CatalogWarehouseAction::variants().contains(&CatalogWarehouseAction::ReadGrants));
+        assert!(CatalogNamespaceAction::variants().contains(&CatalogNamespaceAction::ReadGrants));
+        assert!(CatalogTableAction::variants().contains(&CatalogTableAction::ReadGrants));
+        assert!(CatalogViewAction::variants().contains(&CatalogViewAction::ReadGrants));
+        assert!(
+            CatalogGenericTableAction::variants().contains(&CatalogGenericTableAction::ReadGrants)
+        );
+        assert!(CatalogTagAction::variants().contains(&CatalogTagAction::ReadGrants));
+    }
+
+    #[tokio::test]
+    async fn grant_surface_defaults_are_fail_closed() {
+        // An authorizer that has not opted into grants must grant nothing: no
+        // storage facet, an empty vocabulary, every privilege rejected on write,
+        // and no grant authority. HidingAuthorizer overrides none of these.
+        let authz = HidingAuthorizer::new();
+        let md = crate::request_metadata::RequestMetadataTestBuilder::builder().build();
+
+        assert!(authz.grants().is_none());
+        assert_eq!(
+            authz.grantable_privileges(ResourceType::Warehouse),
+            Vec::new()
+        );
+        assert_eq!(
+            authz.validate_grant_privilege(ResourceType::Warehouse, "select"),
+            Err(InvalidGrantPrivilege {
+                resource_type: ResourceType::Warehouse,
+                privilege: "select".to_string(),
+            })
+        );
+        let decisions = authz
+            .are_allowed_grants(&md, None, &GrantResource::Server, &["admin", "select"])
+            .await
+            .unwrap();
+        assert_eq!(decisions, vec![false, false]);
+    }
+
+    #[test]
+    fn read_grants_maps_into_the_fieldless_action_kinds() {
+        // Only levels whose actions carry context have a `*Kind` mirror; generic-table
+        // and tag actions are fieldless and are introspected directly.
+        assert_eq!(
+            CatalogServerActionKind::from(&CatalogServerAction::ReadGrants),
+            CatalogServerActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogProjectActionKind::from(&CatalogProjectAction::ReadGrants),
+            CatalogProjectActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogWarehouseActionKind::from(&CatalogWarehouseAction::ReadGrants),
+            CatalogWarehouseActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogNamespaceActionKind::from(&CatalogNamespaceAction::ReadGrants),
+            CatalogNamespaceActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogTableActionKind::from(&CatalogTableAction::ReadGrants),
+            CatalogTableActionKind::ReadGrants
+        );
+        assert_eq!(
+            CatalogViewActionKind::from(&CatalogViewAction::ReadGrants),
+            CatalogViewActionKind::ReadGrants
+        );
     }
 
     #[test]
@@ -3066,7 +3266,15 @@ pub mod tests {
             _for_user: Option<&UserOrRole>,
             actions: &[Self::ServerAction],
         ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-            Ok(vec![AuthorizationDecision::allow(); actions.len()])
+            // The server itself is never hidden, so only `block_action` applies here.
+            Ok(actions
+                .iter()
+                .map(|action| {
+                    AuthorizationDecision::from(
+                        !self.action_is_blocked(format!("server:{action:?}").as_str()),
+                    )
+                })
+                .collect())
         }
 
         async fn are_allowed_project_actions_impl(

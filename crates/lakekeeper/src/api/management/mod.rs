@@ -3,6 +3,7 @@
 pub mod v1 {
     pub mod check;
     pub mod generic_table;
+    pub mod grant;
     pub mod lakekeeper_actions;
     pub mod namespace;
     pub mod project;
@@ -30,6 +31,10 @@ pub mod v1 {
         routing::{delete, get, post, put},
     };
     use generic_table::GenericTableManagementService as _;
+    use grant::{
+        ApplyGrantsRequest, GetGrantAccessQuery, GrantablePrivilegesResponse, ListGrantsQuery,
+        ListGrantsResponse, ResourceGrantablePrivilegesResponse, Service as _,
+    };
     use http::StatusCode;
     use iceberg_ext::catalog::rest::ErrorModel;
     #[cfg(feature = "open-api")]
@@ -38,10 +43,11 @@ pub mod v1 {
         GetLakekeeperGenericTableActionsResponse, GetLakekeeperNamespaceActionsResponse,
         GetLakekeeperProjectActionsResponse, GetLakekeeperRoleActionsResponse,
         GetLakekeeperServerActionsResponse, GetLakekeeperTableActionsResponse,
-        GetLakekeeperUserActionsResponse, GetLakekeeperViewActionsResponse,
-        GetLakekeeperWarehouseActionsResponse, get_allowed_generic_table_actions,
-        get_allowed_namespace_actions, get_allowed_project_actions, get_allowed_role_actions,
-        get_allowed_server_actions, get_allowed_table_actions, get_allowed_user_actions,
+        GetLakekeeperTagActionsResponse, GetLakekeeperUserActionsResponse,
+        GetLakekeeperViewActionsResponse, GetLakekeeperWarehouseActionsResponse,
+        get_allowed_generic_table_actions, get_allowed_namespace_actions,
+        get_allowed_project_actions, get_allowed_role_actions, get_allowed_server_actions,
+        get_allowed_table_actions, get_allowed_tag_actions, get_allowed_user_actions,
         get_allowed_view_actions, get_allowed_warehouse_actions,
     };
     use namespace::{MoveNamespaceRequest, MoveNamespaceResponse, NamespaceManagementService as _};
@@ -842,6 +848,626 @@ pub mod v1 {
         ApiServer::<C, A, S>::delete_warehouse_tag(warehouse_id, tag_name, api_context, metadata)
             .await
             .map(|()| (StatusCode::NO_CONTENT, ()))
+    }
+
+    /// Get Available Privileges [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the privileges that may be granted, per resource type. The vocabulary
+    /// belongs to the configured authorizer, so it differs between deployments and a
+    /// name this server does not know is rejected — fetch it rather than hard-coding it.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetGrantablePrivileges.path(),
+        responses(
+            (status = 200, description = "Grantable privileges per resource type", body = GrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<GrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_grantable_privileges(api_context, metadata).await
+    }
+
+    /// List Warehouse Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held directly on this warehouse. Grants do not inherit: a
+    /// grant held by a role belongs to that role, and a grant on an ancestor belongs
+    /// to the ancestor. Use the action-check endpoints to ask what a principal may
+    /// effectively do.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the warehouse; every other listing
+    /// requires the warehouse's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListWarehouseGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the warehouse", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_warehouse_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_warehouse_grants(
+            warehouse_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply Warehouse Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent: granting twice creates one grant, revoking a grant that is not
+    /// held is not an error. Which privileges are legal differs between authorizers.
+    ///
+    /// Success is `204` with no body: whether an entry was already in the requested
+    /// state is not reported. Read the grants back, or read the `grant_created` and
+    /// `grant_revoked` audit records, for what changed.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyWarehouseGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_warehouse_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_warehouse_grants(warehouse_id, api_context, metadata, request)
+            .await
+            .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists everything one principal holds across the project — "what does this
+    /// principal have here". Exactly one of `principalUser` or `principalRole` is
+    /// **required**; a request naming neither is refused with `MissingGrantPrincipal`
+    /// (400). To read every grant held on a single resource, use that resource's own
+    /// listing.
+    ///
+    /// Grants are reported at the layer they are held: a grant a role holds is listed
+    /// under that role, not under the users who have the role, and a grant on an
+    /// ancestor is listed under the ancestor. Server grants belong to no project and are
+    /// not included.
+    ///
+    /// Listing your own grants needs no extra permission; any other principal requires
+    /// the project-level grant-read permission.
+    ///
+    /// **Availability depends on the configured authorizer.** This listing crosses every
+    /// resource in the project, which an authorizer that stores permissions per resource
+    /// cannot answer without reading its whole store. Those report
+    /// `GrantListingNotImplemented` (501) — under OpenFGA, for example. Read one
+    /// resource's grants from its own endpoint instead; those listings work, and page,
+    /// under every authorizer. `GET /info` reports the configured backend.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants the principal holds in the project", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+            (status = 501, description = "Project-wide grant listing is not supported under the configured authorizer backend", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_grants(api_context, metadata, query, pagination).await
+    }
+
+    /// List Namespace Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held directly on this namespace. Grants do not inherit, in
+    /// either direction: a child namespace's grants are its own.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the namespace; every other listing
+    /// requires the namespace's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListNamespaceGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the namespace", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_namespace_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_namespace_grants(
+            warehouse_id,
+            namespace_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply Namespace Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyNamespaceGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("namespace_id" = Uuid, Path, description = "Namespace ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_namespace_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_namespace_grants(
+            warehouse_id,
+            namespace_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Tag Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held on this tag definition — who may apply it, and who may
+    /// manage it. Distinct from the grants on the objects the tag is attached to.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the tag definition; every other listing
+    /// requires the tag definition's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListTagGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the tag definition", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_tag_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_tag_grants(
+            tag_definition_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply Tag Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyTagGrants.path(),
+        params(("tag_definition_id" = Uuid, Path, description = "Tag Definition ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_tag_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_tag_grants(tag_definition_id, api_context, metadata, request)
+            .await
+            .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Server Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held on the server itself. Server grants belong to no project,
+    /// so they are the one level the project-scoped listing does not report.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself needs no permission, and is the only way to read your own server grants;
+    /// every other listing requires the server's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListServerGrants.path(),
+        params(ListGrantsQuery, PaginationQuery),
+        responses(
+            (status = 200, description = "Grants held on the server", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_server_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_server_grants(api_context, metadata, query, pagination).await
+    }
+
+    /// Apply Server Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyServerGrants.path(),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_server_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_server_grants(api_context, metadata, request)
+            .await
+            .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Project Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held on the project named by `x-project-id`, or the default
+    /// project. Grants on resources inside the project are not included — use those
+    /// resources' own endpoints, or `GET /grants` for one principal's across the whole
+    /// project.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the project; every other listing requires
+    /// the project's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListProjectGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the project", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_project_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_project_grants(api_context, metadata, query, pagination).await
+    }
+
+    /// Apply Project Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyProjectGrants.path(),
+        params(("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_project_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_project_grants(api_context, metadata, request)
+            .await
+            .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Table Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held directly on this table. Grants do not inherit — a grant on
+    /// the containing namespace or warehouse belongs to that resource, not to the table.
+    /// A table in the recycle bin still reports its grants, because an undrop restores
+    /// them.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the table; every other listing requires
+    /// the table's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListTableGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the table", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_table_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_table_grants(
+            warehouse_id,
+            table_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply Table Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyTableGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_table_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_table_grants(
+            warehouse_id,
+            table_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List View Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held directly on this view. Grants do not inherit.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the view; every other listing requires the
+    /// view's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListViewGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the view", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_view_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_view_grants(
+            warehouse_id,
+            view_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply View Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyViewGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("view_id" = Uuid, Path, description = "View ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_view_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_view_grants(
+            warehouse_id,
+            view_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
+    }
+
+    /// List Generic Table Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Lists the grants held directly on this generic table. Grants do not inherit.
+    ///
+    /// Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+    /// yourself requires only permission to see the generic table; every other listing
+    /// requires the generic table's grant-read permission.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::ListGenericTableGrants.path(),
+        params(ListGrantsQuery, PaginationQuery, ("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Grants held on the generic table", body = ListGrantsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_generic_table_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<ListGrantsQuery>,
+        Query(pagination): Query<PaginationQuery>,
+    ) -> Result<ListGrantsResponse> {
+        ApiServer::<C, A, S>::list_generic_table_grants(
+            warehouse_id,
+            generic_table_id,
+            api_context,
+            metadata,
+            query,
+            pagination,
+        )
+        .await
+    }
+
+    /// Apply Generic Table Grants [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Creates the grants in `writes` and removes those in `deletes`, atomically.
+    /// Idempotent. Success is `204` with no body: whether an entry was already in
+    /// the requested state is not reported.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        post,
+        tag = "grant",
+        path = ManagementV1Endpoint::ApplyGenericTableGrants.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("generic_table_id" = Uuid, Path, description = "Generic Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        request_body = ApplyGrantsRequest,
+        responses(
+            (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn apply_generic_table_grants<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Json(request): Json<ApplyGrantsRequest>,
+    ) -> Result<StatusCode> {
+        ApiServer::<C, A, S>::apply_generic_table_grants(
+            warehouse_id,
+            generic_table_id,
+            api_context,
+            metadata,
+            request,
+        )
+        .await
+        .map(|()| StatusCode::NO_CONTENT)
     }
 
     /// List Warehouse Tags
@@ -2692,6 +3318,301 @@ pub mod v1 {
         ))
     }
 
+    /// Get Grantable Privileges on a server [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this server publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this server's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetServerGrantablePrivileges.path(),
+        params(GetGrantAccessQuery),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_server_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_server_grantable_privileges(api_context, metadata, query).await
+    }
+
+    /// Get Grantable Privileges on a project [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this project publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this project's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetProjectGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_project_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_project_grantable_privileges(api_context, metadata, query).await
+    }
+
+    /// Get Grantable Privileges on a warehouse [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this warehouse publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this warehouse's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetWarehouseGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("warehouse_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_warehouse_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(warehouse_id): Path<WarehouseId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_warehouse_grantable_privileges(
+            warehouse_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
+    /// Get Grantable Privileges on a namespace [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this namespace publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this namespace's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetNamespaceGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("warehouse_id" = Uuid,),("namespace_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_namespace_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, namespace_id)): Path<(WarehouseId, NamespaceId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_namespace_grantable_privileges(
+            warehouse_id,
+            namespace_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
+    /// Get Grantable Privileges on a table [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this table publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this table's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetTableGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("warehouse_id" = Uuid,),("table_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_table_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_table_grantable_privileges(
+            warehouse_id,
+            table_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
+    /// Get Grantable Privileges on a view [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this view publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this view's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetViewGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("warehouse_id" = Uuid,),("view_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_view_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, view_id)): Path<(WarehouseId, ViewId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_view_grantable_privileges(
+            warehouse_id,
+            view_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
+    /// Get Grantable Privileges on a generic table [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this generic table publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this generic table's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetGenericTableGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("warehouse_id" = Uuid,),("generic_table_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_generic_table_grantable_privileges<
+        C: CatalogStore,
+        A: Authorizer,
+        S: SecretStore,
+    >(
+        Path((warehouse_id, generic_table_id)): Path<(WarehouseId, GenericTableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_generic_table_grantable_privileges(
+            warehouse_id,
+            generic_table_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
+    /// Get Grantable Privileges on a tag definition [Preview]
+    ///
+    /// This API may change in a backward-incompatible way in a future release.
+    ///
+    /// Every privilege this tag definition publishes, each marked with whether the caller may
+    /// grant and revoke it here. Not filtered: a picker needs to show the ones it
+    /// cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+    /// another principal's behalf, which requires authority to read this tag definition's
+    /// grants.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "grant",
+        path = ManagementV1Endpoint::GetTagGrantablePrivileges.path(),
+        params(GetGrantAccessQuery, ("tag_definition_id" = Uuid,), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "This resource's privileges, each marked allowed or not", body = ResourceGrantablePrivilegesResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn get_tag_grantable_privileges<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetGrantAccessQuery>,
+    ) -> Result<ResourceGrantablePrivilegesResponse> {
+        ApiServer::<C, A, S>::get_tag_grantable_privileges(
+            tag_definition_id,
+            api_context,
+            metadata,
+            query,
+        )
+        .await
+    }
+
+    /// Get allowed actions for a tag definition
+    #[cfg_attr(feature = "open-api", utoipa::path(
+    get,
+    tag = "tag",
+    path = ManagementV1Endpoint::GetTagActions.path(),
+    params(GetAccessQuery, ("tag_definition_id" = Uuid,)),
+    responses(
+        (status = 200, body = GetLakekeeperTagActionsResponse),
+        (status = "4XX", body = IcebergErrorResponse),
+    )
+    ))]
+    async fn get_tag_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+        Path(tag_definition_id): Path<TagDefinitionId>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+        Query(query): Query<GetAccessQuery>,
+    ) -> Result<(StatusCode, Json<GetLakekeeperTagActionsResponse>)> {
+        let relations =
+            get_allowed_tag_actions::<A, C, S>(api_context, metadata, query, tag_definition_id)
+                .await?;
+
+        Ok((
+            StatusCode::OK,
+            Json(GetLakekeeperTagActionsResponse {
+                allowed_actions: relations,
+            }),
+        ))
+    }
+
     /// Get Generic Table Protection
     ///
     /// Retrieves whether a generic table is protected from deletion.
@@ -3405,12 +4326,89 @@ pub mod v1 {
                     get(list_tag_attachments),
                 )
                 .route(
+                    ManagementV1Endpoint::GetTagActions.path_in_management_v1(),
+                    get(get_tag_actions),
+                )
+                .route(
                     ManagementV1Endpoint::SetWarehouseTag.path_in_management_v1(),
                     put(set_warehouse_tag).delete(delete_warehouse_tag),
                 )
                 .route(
                     ManagementV1Endpoint::ListWarehouseTags.path_in_management_v1(),
                     get(list_warehouse_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::ListWarehouseGrants.path_in_management_v1(),
+                    get(list_warehouse_grants).post(apply_warehouse_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::GetGrantablePrivileges.path_in_management_v1(),
+                    get(get_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetServerGrantablePrivileges.path_in_management_v1(),
+                    get(get_server_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetProjectGrantablePrivileges.path_in_management_v1(),
+                    get(get_project_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetWarehouseGrantablePrivileges.path_in_management_v1(),
+                    get(get_warehouse_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetNamespaceGrantablePrivileges.path_in_management_v1(),
+                    get(get_namespace_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTableGrantablePrivileges.path_in_management_v1(),
+                    get(get_table_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetViewGrantablePrivileges.path_in_management_v1(),
+                    get(get_view_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetGenericTableGrantablePrivileges
+                        .path_in_management_v1(),
+                    get(get_generic_table_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::GetTagGrantablePrivileges.path_in_management_v1(),
+                    get(get_tag_grantable_privileges),
+                )
+                .route(
+                    ManagementV1Endpoint::ListGrants.path_in_management_v1(),
+                    get(list_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListServerGrants.path_in_management_v1(),
+                    get(list_server_grants).post(apply_server_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListProjectGrants.path_in_management_v1(),
+                    get(list_project_grants).post(apply_project_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListNamespaceGrants.path_in_management_v1(),
+                    get(list_namespace_grants).post(apply_namespace_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTagGrants.path_in_management_v1(),
+                    get(list_tag_grants).post(apply_tag_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListTableGrants.path_in_management_v1(),
+                    get(list_table_grants).post(apply_table_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListViewGrants.path_in_management_v1(),
+                    get(list_view_grants).post(apply_view_grants),
+                )
+                .route(
+                    ManagementV1Endpoint::ListGenericTableGrants.path_in_management_v1(),
+                    get(list_generic_table_grants).post(apply_generic_table_grants),
                 )
                 .route(
                     ManagementV1Endpoint::SetNamespaceTag.path_in_management_v1(),

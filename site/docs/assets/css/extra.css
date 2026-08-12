@@ -116,6 +116,23 @@
 }
 
 /* Short Lakekeeper Plus Badge with auto-generated content */
+.lkp-preview::after {
+  content: "preview";
+  color: var(--md-default-fg-color--light) !important;
+  background: var(--md-code-bg-color);
+  padding: 1px 4px;
+  border-radius: 6px;
+  font-size: 0.45em;
+  font-weight: 700;
+  border: 0.5px solid var(--md-default-fg-color--lighter);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+
 .lkp::after {
   content: "★ lakekeeper +";
   color: var(--lakekeeper-warning-color) !important;

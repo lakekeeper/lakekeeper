@@ -319,6 +319,10 @@ pub trait AuthZViewOps: Authorizer {
                 is_allowed.then_some(view).ok_or_else(|| {
                     AuthZViewActionForbidden::new(warehouse_id, view_ident.clone(), &action).into()
                 })
+            } else if is_allowed && action == CatalogViewAction::ReadGrants.into() {
+                // The grant-read action doubles as visibility; see the same arm in
+                // require_warehouse_action.
+                Ok(view)
             } else {
                 return Err(cant_see_err);
             }

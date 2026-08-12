@@ -11,6 +11,7 @@ mod catalog;
 pub mod config;
 pub(crate) mod dbutils;
 pub mod endpoint_statistics;
+pub(crate) mod grant;
 pub(crate) mod idempotency;
 pub mod migrations;
 pub mod namespace;

@@ -2101,3 +2101,33 @@ async fn test_move_namespace_to_root_denied_without_grant_authority(pool: PgPool
     .unwrap_err();
     assert_eq!(err.error.code, 403, "expected forbidden, got {err:?}");
 }
+
+/// An empty `destination` must be a clean 400, not a panic.
+///
+/// `NamespaceIdent` derives `Deserialize` over a `Vec<String>`, so `{"destination": []}` is
+/// accepted by serde, and `validate_namespace_ident_creation` passes it vacuously — its depth,
+/// dot and empty-part checks all hold trivially for zero elements. Anything downstream that
+/// indexes element 0 (the reserved-namespace lookup) would then panic into a 500.
+#[sqlx::test]
+async fn test_move_namespace_rejects_empty_destination(pool: PgPool) {
+    let (ctx, warehouse_id) = move_test_ctx(pool, AllowAllAuthorizer::default()).await;
+    let ns = create_ns(&ctx, warehouse_id, &["some_ns"]).await;
+
+    let err = ApiServer::move_namespace(
+        ns,
+        warehouse_id,
+        MoveNamespaceRequest {
+            destination: NamespaceIdent::from_vec(vec![]).unwrap_or_else(|_| {
+                // If `from_vec` rejects empty, build it the way serde would.
+                serde_json::from_str::<NamespaceIdent>("[]").expect("serde accepts an empty ident")
+            }),
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, 400, "expected bad request, got {err:?}");
+}

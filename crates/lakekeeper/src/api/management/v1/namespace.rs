@@ -285,14 +285,23 @@ where
         // the caller for these, exactly as `create_namespace_impl` does.
         let MoveNamespaceRequest { destination, force } = request;
         validate_namespace_ident_creation(&destination)?;
+        // `validate_namespace_ident_creation` passes a zero-length ident vacuously — its
+        // depth, dot and empty-part checks all hold trivially for no elements — and
+        // `NamespaceIdent` derives `Deserialize` over a `Vec<String>`, so `[]` reaches us
+        // from the wire. Reject it here rather than indexing into it below.
+        let Some(first_segment) = destination.as_ref().first() else {
+            return Err(ErrorModel::bad_request(
+                "Destination namespace must not be empty.",
+                "NamespaceEmpty",
+                None,
+            )
+            .into());
+        };
         if CONFIG
             .reserved_namespaces
-            .contains(&destination.as_ref()[0].to_lowercase())
+            .contains(&first_segment.to_lowercase())
         {
-            tracing::debug!(
-                "Denying move to reserved namespace: '{}'",
-                &destination.as_ref()[0]
-            );
+            tracing::debug!("Denying move to reserved namespace: '{first_segment}'");
             return Err(ErrorModel::bad_request(
                 "Namespace is reserved for internal use.",
                 "ReservedNamespace",

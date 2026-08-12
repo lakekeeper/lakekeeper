@@ -1,3 +1,11 @@
+//! Mapping from Lakekeeper's authorizer-agnostic actions to this model's relations.
+//!
+//! One naming bridge is worth knowing up front: what the neutral API calls a
+//! **grant** this model has always called an **assignment**. They are the same
+//! concept — an edge saying a principal holds a permission on a resource — so
+//! `Catalog*Action::ReadGrants` and `API*Action::ReadAssignments` both map to
+//! `can_read_assignments`, and no new relation is needed for the grants API.
+
 use lakekeeper::{
     api::management::v1::check::{RoleAssignee, UserOrRole},
     service::{
@@ -13,7 +21,7 @@ use lakekeeper::{
 };
 use serde::{Deserialize, Serialize};
 use strum::{IntoEnumIterator, IntoStaticStr};
-use strum_macros::EnumIter;
+use strum_macros::{EnumIter, EnumString};
 
 use crate::{
     FgaType, ParseOpenFgaEntityError,
@@ -116,7 +124,8 @@ impl CatalogAction for RoleRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=RoleRelation))]
@@ -301,13 +310,17 @@ impl ReducedRelation for CatalogTagAction {
             // tag must not be possible with target rights alone.
             CatalogTagAction::Apply | CatalogTagAction::Remove => TagRelation::CanApply,
             CatalogTagAction::ReadAttachments => TagRelation::CanReadAttachments,
+            // Same permission as `APITagAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogTagAction::ReadGrants => TagRelation::CanReadAssignments,
         }
     }
 }
 
 /// The directly-assignable relations of a tag definition: the per-tag delegation
 /// points a grantor can hand out or revoke.
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=TagRelation))]
@@ -409,7 +422,10 @@ impl From<CatalogServerAction> for ServerRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Hash, Eq, PartialEq, EnumIter)]
+#[derive(
+    Debug, Clone, Deserialize, Copy, Hash, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ServerRelation))]
@@ -518,6 +534,9 @@ impl ReducedRelation for CatalogServerAction {
             CatalogServerAction::DeleteUsers => ServerRelation::CanDeleteUsers,
             CatalogServerAction::ListUsers => ServerRelation::CanListUsers,
             CatalogServerAction::ProvisionUsers => ServerRelation::CanProvisionUsers,
+            // Same permission as `APIServerAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogServerAction::ReadGrants => ServerRelation::CanReadAssignments,
         }
     }
 }
@@ -607,7 +626,8 @@ impl From<CatalogProjectAction> for ProjectRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ProjectRelation))]
@@ -841,6 +861,9 @@ impl ReducedRelation for CatalogProjectAction {
             CatalogProjectAction::GetTaskQueueConfig => ProjectRelation::CanGetTaskQueueConfig,
             CatalogProjectAction::GetProjectTasks => ProjectRelation::CanGetProjectTasks,
             CatalogProjectAction::ControlProjectTasks => ProjectRelation::CanControlProjectTasks,
+            // Same permission as `APIProjectAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogProjectAction::ReadGrants => ProjectRelation::CanReadAssignments,
         }
     }
 }
@@ -932,7 +955,8 @@ impl From<CatalogWarehouseAction> for WarehouseRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=WarehouseRelation))]
@@ -1196,6 +1220,9 @@ impl ReducedRelation for CatalogWarehouseAction {
             CatalogWarehouseAction::GetEndpointStatistics => {
                 WarehouseRelation::CanGetEndpointStatistics
             }
+            // Same permission as `APIWarehouseAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogWarehouseAction::ReadGrants => WarehouseRelation::CanReadAssignments,
         }
     }
 }
@@ -1286,7 +1313,8 @@ impl From<&CatalogNamespaceAction> for NamespaceRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=NamespaceRelation))]
@@ -1516,6 +1544,9 @@ impl ReducedRelation for CatalogNamespaceAction {
                 NamespaceRelation::CanCreateGenericTable
             }
             CatalogNamespaceAction::ListGenericTables => NamespaceRelation::CanListGenericTables,
+            // Same permission as `APINamespaceAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogNamespaceAction::ReadGrants => NamespaceRelation::CanReadAssignments,
         }
     }
 }
@@ -1597,7 +1628,8 @@ impl From<&CatalogTableAction> for TableRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=TableRelation))]
@@ -1799,6 +1831,9 @@ impl ReducedRelation for CatalogTableAction {
             CatalogTableAction::GetTasks => TableRelation::CanGetTasks,
             CatalogTableAction::ControlTasks => TableRelation::CanControlTasks,
             CatalogTableAction::SetProtection => TableRelation::CanSetProtection,
+            // Same permission as `APITableAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogTableAction::ReadGrants => TableRelation::CanReadAssignments,
         }
     }
 }
@@ -1879,7 +1914,8 @@ impl From<&CatalogViewAction> for ViewRelation {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=ViewRelation))]
@@ -2078,6 +2114,9 @@ impl ReducedRelation for CatalogViewAction {
             CatalogViewAction::GetTasks => ViewRelation::CanGetTasks,
             CatalogViewAction::ControlTasks => ViewRelation::CanControlTasks,
             CatalogViewAction::SetProtection => ViewRelation::CanSetProtection,
+            // Same permission as `APIViewAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogViewAction::ReadGrants => ViewRelation::CanReadAssignments,
         }
     }
 }
@@ -2179,11 +2218,15 @@ impl ReducedRelation for CatalogGenericTableAction {
             CatalogGenericTableAction::GetTasks => GenericTableRelation::CanGetTasks,
             CatalogGenericTableAction::ControlTasks => GenericTableRelation::CanControlTasks,
             CatalogGenericTableAction::SetProtection => GenericTableRelation::CanSetProtection,
+            // Same permission as `APIGenericTableAction::ReadAssignments`; see the
+            // grant/assignment naming note at the top of this file.
+            CatalogGenericTableAction::ReadGrants => GenericTableRelation::CanReadAssignments,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter)]
+#[derive(Debug, Clone, Deserialize, Copy, Eq, PartialEq, EnumIter, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "open-api", schema(as=GenericTableRelation))]
