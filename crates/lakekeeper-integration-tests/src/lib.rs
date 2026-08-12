@@ -189,6 +189,68 @@ pub use lakekeeper_storage_postgres::test_utils::{
     spawn_build_in_queues, tabular_test_multi_warehouse_setup,
 };
 
+/// Records the authorization outcomes a handler dispatches, so a test can assert
+/// *what* was audited and *how often*.
+///
+/// Append it to `ctx.v1_state.events` after setup so only the calls under test
+/// are captured.
+#[derive(Debug, Default)]
+pub struct CapturingAuthzListener {
+    succeeded: std::sync::Mutex<Vec<lakekeeper::service::events::AuthorizationSucceededEvent>>,
+    failed: std::sync::Mutex<Vec<lakekeeper::service::events::AuthorizationFailedEvent>>,
+}
+
+impl std::fmt::Display for CapturingAuthzListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CapturingAuthzListener")
+    }
+}
+
+#[lakekeeper::async_trait::async_trait]
+impl lakekeeper::service::events::EventListener for CapturingAuthzListener {
+    async fn authorization_succeeded(
+        &self,
+        event: lakekeeper::service::events::AuthorizationSucceededEvent,
+    ) -> anyhow::Result<()> {
+        self.succeeded.lock().unwrap().push(event);
+        Ok(())
+    }
+
+    async fn authorization_failed(
+        &self,
+        event: lakekeeper::service::events::AuthorizationFailedEvent,
+    ) -> anyhow::Result<()> {
+        self.failed.lock().unwrap().push(event);
+        Ok(())
+    }
+}
+
+impl CapturingAuthzListener {
+    #[must_use]
+    pub fn succeeded_count(&self) -> usize {
+        self.succeeded.lock().unwrap().len()
+    }
+
+    #[must_use]
+    pub fn failed_count(&self) -> usize {
+        self.failed.lock().unwrap().len()
+    }
+
+    /// Events are dispatched from a spawned task, so give it a moment to land
+    /// before asserting. Waits for `expected` success events, then waits a little
+    /// longer so surplus emits are caught rather than raced past.
+    pub async fn settled_succeeded_count(&self, expected: usize) -> usize {
+        for _ in 0..100 {
+            if self.succeeded_count() >= expected {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.succeeded_count()
+    }
+}
+
 /// Test-only public reach into [`lakekeeper::service::post_migration_hooks`]'s
 /// `pub(crate)` backfill helper. Downstream test crates
 /// drive specific spec lists through this wrapper to

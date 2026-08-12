@@ -21,7 +21,10 @@ use crate::{
             AuthZError, AuthZProjectOps, AuthZRoleOps, Authorizer, CatalogProjectAction,
             CatalogRoleAction, RoleSourceSystem, SourceSystemTarget,
         },
-        events::{APIEventContext, context::Unresolved},
+        events::{
+            APIEventContext,
+            context::{Unresolved, authz_to_error_no_audit},
+        },
         role_assignments_cache,
     },
 };
@@ -368,9 +371,25 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             }),
         );
         let catalog_state = context.v1_state.catalog;
-        let authz_result =
-            authorize_create_role::<A, C>(authorizer, catalog_state, &event_ctx, request).await;
-        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+        let authz_result = authorizer
+            .require_project_action(
+                event_ctx.request_metadata(),
+                &project_id,
+                event_ctx.action().clone(),
+            )
+            .await;
+        let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let role = apply_create_role::<A, C>(
+            &authorizer,
+            catalog_state,
+            event_ctx.request_metadata(),
+            &project_id,
+            request,
+        )
+        .await
+        .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(role);
         let result = (**event_ctx.resolved()).clone().into();
         event_ctx.emit_role_created();
@@ -491,8 +510,20 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
         let authz_result =
-            authorized_delete_role::<A, C>(authorizer, catalog_state, &event_ctx, project_id).await;
+            check_role_action::<A, C>(&authorizer, catalog_state.clone(), &event_ctx, &project_id)
+                .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        apply_delete_role::<A, C>(
+            &authorizer,
+            catalog_state,
+            event_ctx.request_metadata(),
+            &project_id,
+            &role,
+        )
+        .await
+        .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(role);
         event_ctx.emit_role_deleted();
         Ok(())
@@ -525,15 +556,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result = authorize_update_role::<A, C>(
-            authorizer,
-            catalog_state,
-            &event_ctx,
-            project_id,
-            request,
-        )
-        .await;
+        let authz_result =
+            check_role_action::<A, C>(&authorizer, catalog_state.clone(), &event_ctx, &project_id)
+                .await;
         let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let role =
+            apply_update_role::<A, C>(&authorizer, catalog_state, &project_id, &role, request)
+                .await
+                .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(role);
         let result = (**event_ctx.resolved()).clone().into();
         event_ctx.emit_role_updated();
@@ -573,15 +605,21 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         );
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let authz_result = authorize_update_role_source_system::<A, C>(
-            authorizer,
+        let authz_result =
+            check_role_action::<A, C>(&authorizer, catalog_state.clone(), &event_ctx, &project_id)
+                .await;
+        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+
+        // -------------------- Business Logic --------------------
+        let role = apply_update_role_source_system::<A, C>(
+            &authorizer,
             catalog_state,
-            &event_ctx,
-            project_id,
+            &project_id,
+            &role,
             request,
         )
-        .await;
-        let (event_ctx, role) = event_ctx.emit_authz(authz_result)?;
+        .await
+        .map_err(authz_to_error_no_audit)?;
         let event_ctx = event_ctx.resolve(role);
         let result = (**event_ctx.resolved()).clone().into();
         event_ctx.emit_role_updated();
@@ -589,27 +627,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
     }
 }
 
-async fn authorize_create_role<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+/// Create the role. The caller must have emitted the authorization event before
+/// calling this: authorization already succeeded, so a failure here is a write
+/// failure and must be mapped with `authz_to_error_no_audit` rather than logged
+/// as a second — mislabeled — authorization outcome.
+async fn apply_create_role<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
     catalog_state: C::State,
-    event_ctx: &APIEventContext<ProjectId, Unresolved, CatalogProjectAction>,
+    request_metadata: &RequestMetadata,
+    project_id: &ArcProjectId,
     request: CreateRoleRequest,
 ) -> Result<ArcRole, AuthZError> {
-    let project_id = event_ctx.user_provided_entity_arc_ref();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-    authorizer
-        .require_project_action(request_metadata, project_id, action.clone())
-        .await?;
-
-    // -------------------- Business Logic --------------------
     let description = request.description.filter(|d| !d.is_empty());
     let role_id = RoleId::new_random();
-    let mut t: <C as CatalogStore>::Transaction =
-        C::Transaction::begin_write(catalog_state.clone())
-            .await
-            .map_err(|e| CatalogBackendError::new_unexpected(e.error))
-            .map_err(CreateRoleError::from)?;
+    let mut t: <C as CatalogStore>::Transaction = C::Transaction::begin_write(catalog_state)
+        .await
+        .map_err(|e| CatalogBackendError::new_unexpected(e.error))
+        .map_err(CreateRoleError::from)?;
 
     let source_id = request
         .source_id
@@ -727,32 +761,45 @@ async fn authorize_search_role<A: Authorizer, C: CatalogStore>(
     Ok(result)
 }
 
-async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+/// Resolve the role addressed by `event_ctx` and authorize the context's action
+/// on it. Writes nothing, so the handler can emit the authorization event before
+/// applying any change.
+async fn check_role_action<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
     catalog_state: C::State,
     event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
-    project_id: ArcProjectId,
+    project_id: &ArcProjectId,
 ) -> Result<ArcRole, AuthZError> {
-    let role_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-
     let role = C::get_role_by_id_cache_aware(
-        &project_id,
-        role_id,
+        project_id,
+        *event_ctx.user_provided_entity(),
         CachePolicy::Skip,
-        catalog_state.clone(),
+        catalog_state,
     )
     .await;
-    let action = event_ctx.action();
+    Ok(authorizer
+        .require_role_action(
+            event_ctx.request_metadata(),
+            role,
+            event_ctx.action().clone(),
+        )
+        .await?)
+}
 
-    let role = authorizer
-        .require_role_action(request_metadata, role, action.clone())
-        .await?;
-
+/// Delete the role authorized by [`check_role_action`]. See [`apply_create_role`]
+/// for the ordering contract this must be called under.
+async fn apply_delete_role<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
+    catalog_state: C::State,
+    request_metadata: &RequestMetadata,
+    project_id: &ArcProjectId,
+    role: &ArcRole,
+) -> Result<(), AuthZError> {
+    let role_id = role.id;
     if role.ident.is_system() {
         return Err(DeleteRoleError::from(SystemRoleImmutable::new()).into());
     }
-    reject_managed_role::<_, DeleteRoleError>(&authorizer, &role)?;
+    reject_managed_role::<_, DeleteRoleError>(authorizer, role)?;
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
@@ -765,7 +812,7 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
         .await
         .map_err::<DeleteRoleError, _>(Into::into)?;
-    C::delete_role(&project_id, role_id, t.transaction()).await?;
+    C::delete_role(project_id, role_id, t.transaction()).await?;
     t.commit()
         .await
         .map_err::<DeleteRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
@@ -787,45 +834,31 @@ async fn authorized_delete_role<A: Authorizer, C: CatalogStore>(
     // cache-hardening notes).
     role_assignments_cache::user_assignments_cache_invalidate_many(&affected_users).await;
     role_assignments_cache::role_members_cache_invalidate(role_id).await;
-    Ok(role)
+    Ok(())
 }
 
-async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+/// Update the role authorized by [`check_role_action`]. See [`apply_create_role`]
+/// for the ordering contract this must be called under.
+async fn apply_update_role<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
     catalog_state: C::State,
-    event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
-    project_id: ArcProjectId,
+    project_id: &ArcProjectId,
+    role: &ArcRole,
     request: UpdateRoleRequest,
 ) -> Result<ArcRole, AuthZError> {
-    let role_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-
-    let role = C::get_role_by_id_cache_aware(
-        &project_id,
-        role_id,
-        CachePolicy::Skip,
-        catalog_state.clone(),
-    )
-    .await;
-
-    let role = authorizer
-        .require_role_action(request_metadata, role, action.clone())
-        .await?;
-
+    let role_id = role.id;
     if role.ident.is_system() {
         return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
     }
-    reject_managed_role::<_, UpdateRoleError>(&authorizer, &role)?;
+    reject_managed_role::<_, UpdateRoleError>(authorizer, role)?;
 
-    // -------------------- Business Logic --------------------
     let description = request.description.filter(|d| !d.is_empty());
 
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
     let role = C::update_role(
-        &project_id,
+        project_id,
         role_id,
         &request.name,
         description.as_deref(),
@@ -838,38 +871,24 @@ async fn authorize_update_role<A: Authorizer, C: CatalogStore>(
     Ok(role)
 }
 
-async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
-    authorizer: A,
+/// Rebind the source system of the role authorized by [`check_role_action`]. See
+/// [`apply_create_role`] for the ordering contract this must be called under.
+async fn apply_update_role_source_system<A: Authorizer, C: CatalogStore>(
+    authorizer: &A,
     catalog_state: C::State,
-    event_ctx: &APIEventContext<RoleId, Unresolved, CatalogRoleAction>,
-    project_id: ArcProjectId,
+    project_id: &ArcProjectId,
+    role: &ArcRole,
     request: UpdateRoleSourceSystemRequest,
 ) -> Result<ArcRole, AuthZError> {
-    let role_id = *event_ctx.user_provided_entity();
-    let request_metadata = event_ctx.request_metadata();
-    let action = event_ctx.action();
-
-    let role = C::get_role_by_id_cache_aware(
-        &project_id,
-        role_id,
-        CachePolicy::Skip,
-        catalog_state.clone(),
-    )
-    .await;
-
-    let role = authorizer
-        .require_role_action(request_metadata, role, action.clone())
-        .await?;
-
+    let role_id = role.id;
     if role.ident.is_system() {
         return Err(UpdateRoleError::from(SystemRoleImmutable::new()).into());
     }
     // Reject rebinding a role that is *currently* owned by a configured role
     // provider — its identity is the provider's to manage. (Rebinding *into* a
     // managed/`system` namespace is rejected on the request in the handler.)
-    reject_managed_role::<_, UpdateRoleError>(&authorizer, &role)?;
+    reject_managed_role::<_, UpdateRoleError>(authorizer, role)?;
 
-    // -------------------- Business Logic --------------------
     let mut t = C::Transaction::begin_write(catalog_state)
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
@@ -877,7 +896,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     // which is cached per row in every assignee's USER_ASSIGNMENTS closure
     // (`AssignedRole.role_ident`) and in this role's ROLE_MEMBERS entry. External
     // authorizers key on the ident, so without eviction those closures evaluate the
-    // stale binding until TTL. Mirror `authorized_delete_role`: read the affected-user
+    // stale binding until TTL. Mirror `apply_delete_role`: read the affected-user
     // closure pre-commit on the txn (so a failed read rolls the rebind back), evict
     // post-commit. Unlike delete, the assignment/membership rows are updated (not
     // cascade-deleted), so the set is identical pre- and post-commit. ROLE_CACHE is
@@ -885,7 +904,7 @@ async fn authorize_update_role_source_system<A: Authorizer, C: CatalogStore>(
     let affected_users = C::affected_users_for_membership_edges_impl(&[role_id], t.transaction())
         .await
         .map_err::<UpdateRoleError, _>(Into::into)?;
-    let role = C::set_role_source_system(&project_id, role_id, &request, t.transaction()).await?;
+    let role = C::set_role_source_system(project_id, role_id, &request, t.transaction()).await?;
     t.commit()
         .await
         .map_err::<UpdateRoleError, _>(|e| CatalogBackendError::new_unexpected(e.error).into())?;
