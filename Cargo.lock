@@ -3349,7 +3349,6 @@ dependencies = [
  "utoipa",
  "uuid",
  "valuable",
- "xxhash-rust",
 ]
 
 [[package]]
