@@ -12,9 +12,7 @@ use crate::{
     api::iceberg::v1::PaginationQuery,
     service::{
         CatalogBackendError, DatabaseIntegrityError, InvalidPaginationToken,
-        authz::{
-            AppliedGrants, GrantFilter, GrantSpec, ListGrantsResultPage,
-        },
+        authz::{AppliedGrants, GrantFilter, GrantSpec, ListGrantsResultPage},
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
     },
 };

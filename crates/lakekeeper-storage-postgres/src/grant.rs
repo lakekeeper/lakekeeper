@@ -535,13 +535,10 @@ async fn require_users_exist(
     }
     user_ids.sort_unstable();
     user_ids.dedup();
-    let found = sqlx::query_scalar!(
-        r#"SELECT id FROM users WHERE id = ANY($1)"#,
-        &user_ids
-    )
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    let found = sqlx::query_scalar!(r#"SELECT id FROM users WHERE id = ANY($1)"#, &user_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
     if let Some(missing) = user_ids.iter().find(|id| !found.contains(id)) {
         return Err(GrantUserNotFound::new(missing.as_str()).into());
     }
@@ -1233,10 +1230,15 @@ where
         }
     }
 
-    // One arm per level, columns split per arm so each probes its own index. The
-    // lookup maps echo the caller's resource onto each row; ids are unique across
-    // warehouses, so a bare id key cannot collide even though the SQL matches the
-    // (warehouse, id) arrays as an over-approximating cross product.
+    // One arm per level, columns split per arm so each probes its own index. The SQL
+    // matches the warehouse-scoped arrays as an over-approximating cross product —
+    // the cheaper probe — and the lookup maps tighten it: they key on the full
+    // (warehouse, id) pair, because `tabular`'s primary key is composite, so the same
+    // tabular id can legitimately exist in two warehouses and a bare id would echo a
+    // grant from one onto the other. A row whose pair was not requested is dropped.
+    // The kind a tabular echoes is taken from the caller's entry on trust; naming one
+    // tabular twice with different kinds is a caller bug this path cannot detect
+    // without the join it exists to avoid (the write path checks it instead).
     let mut include_server = false;
     let mut project_ids: Vec<String> = Vec::new();
     let mut warehouse_ids: Vec<Uuid> = Vec::new();
@@ -1247,8 +1249,8 @@ where
     let mut tag_ids: Vec<Uuid> = Vec::new();
     let mut projects: HashMap<String, &GrantResource> = HashMap::new();
     let mut warehouses: HashMap<Uuid, &GrantResource> = HashMap::new();
-    let mut namespaces: HashMap<Uuid, &GrantResource> = HashMap::new();
-    let mut tabulars: HashMap<Uuid, &GrantResource> = HashMap::new();
+    let mut namespaces: HashMap<(Uuid, Uuid), &GrantResource> = HashMap::new();
+    let mut tabulars: HashMap<(Uuid, Uuid), &GrantResource> = HashMap::new();
     let mut tags: HashMap<Uuid, &GrantResource> = HashMap::new();
     for resource in resources {
         match resource {
@@ -1267,7 +1269,7 @@ where
             } => {
                 namespace_warehouses.push(**warehouse_id);
                 namespace_ids.push(**namespace_id);
-                namespaces.insert(**namespace_id, resource);
+                namespaces.insert((**warehouse_id, **namespace_id), resource);
             }
             GrantResource::Table {
                 warehouse_id,
@@ -1275,7 +1277,7 @@ where
             } => {
                 tabular_warehouses.push(**warehouse_id);
                 tabular_ids.push(**table_id);
-                tabulars.insert(**table_id, resource);
+                tabulars.insert((**warehouse_id, **table_id), resource);
             }
             GrantResource::View {
                 warehouse_id,
@@ -1283,7 +1285,7 @@ where
             } => {
                 tabular_warehouses.push(**warehouse_id);
                 tabular_ids.push(**view_id);
-                tabulars.insert(**view_id, resource);
+                tabulars.insert((**warehouse_id, **view_id), resource);
             }
             GrantResource::GenericTable {
                 warehouse_id,
@@ -1291,7 +1293,7 @@ where
             } => {
                 tabular_warehouses.push(**warehouse_id);
                 tabular_ids.push(**generic_table_id);
-                tabulars.insert(**generic_table_id, resource);
+                tabulars.insert((**warehouse_id, **generic_table_id), resource);
             }
             GrantResource::Tag(tag_definition_id) => {
                 tag_ids.push(**tag_definition_id);
@@ -1346,7 +1348,7 @@ where
     .map_err(ListGrantsStoreError::from)?;
 
     rows.into_iter()
-        .map(|row| {
+        .filter_map(|row| {
             let resource: Option<GrantResource> = match row.resource_type {
                 StoredResourceType::Server => Some(GrantResource::Server),
                 StoredResourceType::Project => row
@@ -1359,23 +1361,27 @@ where
                     .and_then(|id| warehouses.get(&id))
                     .map(|r| (*r).clone()),
                 StoredResourceType::Namespace => row
-                    .namespace_id
-                    .and_then(|id| namespaces.get(&id))
+                    .warehouse_id
+                    .zip(row.namespace_id)
+                    .and_then(|pair| namespaces.get(&pair))
                     .map(|r| (*r).clone()),
                 StoredResourceType::Tabular => row
-                    .tabular_id
-                    .and_then(|id| tabulars.get(&id))
+                    .warehouse_id
+                    .zip(row.tabular_id)
+                    .and_then(|pair| tabulars.get(&pair))
                     .map(|r| (*r).clone()),
                 StoredResourceType::Tag => row
                     .tag_definition_id
                     .and_then(|id| tags.get(&id))
                     .map(|r| (*r).clone()),
             };
-            // Unreachable: the statement can only match ids taken from the maps.
-            let resource = resource.ok_or_else(|| {
-                DatabaseIntegrityError::new("A grant matched no requested resource")
-            })?;
-            Ok::<_, ListGrantsStoreError>(row.into_spec_on(resource)?)
+            // A miss is the SQL's cross-product over-approximation being tightened
+            // to the requested (warehouse, id) pairs — drop the row.
+            let resource = resource?;
+            Some(
+                row.into_spec_on(resource)
+                    .map_err(ListGrantsStoreError::from),
+            )
         })
         .collect()
 }
@@ -2154,6 +2160,59 @@ mod tests {
         );
         assert_eq!(
             list_grants_on_resources(&principals, &[], &pool)
+                .await
+                .unwrap(),
+            Vec::new()
+        );
+    }
+
+    /// The statement matches the warehouse-scoped arrays as a cross product, so a grant
+    /// on `(warehouse B, table X)` also matches a request naming `(A, X)` and `(B, Y)`.
+    /// `tabular`'s primary key is composite — the same id can exist in two warehouses —
+    /// so the echo must key on the full pair and drop the cross-match; a bare-id echo
+    /// would report the grant on a resource nobody holds it on.
+    #[sqlx::test]
+    async fn a_cross_warehouse_id_match_is_dropped_not_echoed(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let other_project = ProjectId::new_random();
+        let (_, warehouse_b) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+        let user = seed_user(&pool, "oidc~alice").await;
+        let (table_x, _) =
+            create_table_with_schema(state.clone(), warehouse_b, simple_schema()).await;
+
+        let mut txn = pool.begin().await.unwrap();
+        insert_grants(
+            &[user_spec(
+                &user,
+                GrantResource::Table {
+                    warehouse_id: warehouse_b,
+                    table_id: table_x,
+                },
+                "select",
+            )],
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        // Neither requested resource carries the grant: `(A, X)` shares only the id,
+        // `(B, Y)` only the warehouse — yet together they cross-match `(B, X)`.
+        let principals = [UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap())];
+        let resources = [
+            GrantResource::Table {
+                warehouse_id: warehouse_a,
+                table_id: table_x,
+            },
+            GrantResource::Table {
+                warehouse_id: warehouse_b,
+                table_id: TableId::from(Uuid::now_v7()),
+            },
+        ];
+        assert_eq!(
+            list_grants_on_resources(&principals, &resources, &pool)
                 .await
                 .unwrap(),
             Vec::new()

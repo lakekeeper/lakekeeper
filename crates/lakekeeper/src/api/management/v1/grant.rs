@@ -66,10 +66,9 @@ use crate::{
         authn::UserId,
         authz::{
             ActionDescriptor, AuthZCannotSeeTag, AuthZCannotUseWarehouseId, AuthZError,
-            AuthZTagActionForbidden,
             AuthZGenericTableOps, AuthZGrantActionForbidden, AuthZGrantOps, AuthZProjectOps,
-            AuthZServerOps, AuthZTableOps, AuthZTagOps, AuthZViewOps, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
+            AuthZServerOps, AuthZTableOps, AuthZTagActionForbidden, AuthZTagOps, AuthZViewOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
             CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
             CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantFilter,
             GrantResource, GrantRow, GrantSpec, PrivilegeDescriptor, RequireTagActionError,
@@ -1528,10 +1527,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .into());
             }
             Err(
-                RequireTagActionError::from(AuthZCannotSeeTag::new_forbidden(
-                    tag_definition_id,
-                ))
-                .into(),
+                RequireTagActionError::from(AuthZCannotSeeTag::new_forbidden(tag_definition_id))
+                    .into(),
             )
         }
         .await;
