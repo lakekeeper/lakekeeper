@@ -28,7 +28,7 @@ Some Lakekeeper endpoints return links pointing at Lakekeeper itself. By default
 
 Lakekeeper has default values for `default` and `max` page sizes of paginated queries. These are safeguards against malicious requests and the problems related to large page sizes described below.
 
-The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe204f2c7cc61114c128fbf759/open-api/rest-catalog-open-api.yaml#L2030-L2032) requires servers to return *all* results if `pageToken` is not set in the request. To obtain that behavior, set `LAKEKEEPER__PAGINATION_SIZE_MAX` to 4294967295, which corresponds to `u32::MAX`. Larger page sizes would lead to practical problems. Things to keep in mind:
+The REST catalog [spec](https://github.com/apache/iceberg/blob/404c8057275c9cfe204f2c7cc61114c128fbf759/open-api/rest-catalog-open-api.yaml#L2030-L2032) requires servers to return _all_ results if `pageToken` is not set in the request. To obtain that behavior, set `LAKEKEEPER__PAGINATION_SIZE_MAX` to 4294967295, which corresponds to `u32::MAX`. Larger page sizes would lead to practical problems. Things to keep in mind:
 
 - Retrieving huge numbers of rows is expensive, which might be exploited by malicious requests.
 - Requests may time out or responses may exceed size limits for huge numbers of results.
@@ -200,7 +200,7 @@ Authentication is enabled if:
 - `LAKEKEEPER__OPENID_PROVIDERS` has at least one configured provider OR
 - `LAKEKEEPER__ENABLE_KUBERNETES_AUTHENTICATION` is set to true
 
-Lakekeeper Plus<span class="lkp"></span> refuses to start when no Authenticator is configured, so that a forgotten IdP configuration cannot silently expose the catalog to anonymous access. To run without Authentication — for example in local development — set `LAKEKEEPER__INSECURE_ALLOW_UNAUTHENTICATED=true`. *Since Lakekeeper 0.14: deployments that previously ran Plus without Authentication must now set this variable to keep starting.*
+Lakekeeper Plus<span class="lkp"></span> refuses to start when no Authenticator is configured, so that a forgotten IdP configuration cannot silently expose the catalog to anonymous access. To run without Authentication — for example in local development — set `LAKEKEEPER__INSECURE_ALLOW_UNAUTHENTICATED=true`. _Since Lakekeeper 0.14: deployments that previously ran Plus without Authentication must now set this variable to keep starting._
 
 In Lakekeeper multiple Authentication mechanisms can be enabled together, for example OpenID + Kubernetes. Lakekeeper builds an internal Authenticator chain of up to three identity providers. Incoming tokens need to be JWT tokens - Opaque tokens are not yet supported. Incoming tokens are introspected, and each Authentication provider checks if the given token can be handled by this provider. If it can be handled, the token is authenticated against this provider, otherwise the next Authenticator in the chain is checked.
 
@@ -375,9 +375,9 @@ When Lakekeeper vends short-term credentials for cloud storage access (S3 STS, A
 | <nobr>`LAKEKEEPER__CACHE__STC__ENABLED`</nobr>  | `true`  | Enable or disable the short-term credentials cache. Default: `true` |
 | <nobr>`LAKEKEEPER__CACHE__STC__CAPACITY`</nobr> | `10000` | Maximum number of credential entries to cache, **per cloud provider** — S3, Azure, and GCP each maintain a separate cache. A single-cloud deployment caches at most this many entries; a server vending for multiple clouds can hold up to this many per provider in use. Default: `10000` |
 
-*Expiry Mechanism*: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
+_Expiry Mechanism_: Cached credentials automatically expire based on the validity period of the underlying cloud credentials. Lakekeeper caches credentials for half their lifetime (e.g., if GCP STS returns credentials valid for 1 hour, they're cached for 30 minutes) with a maximum cache duration of 1 hour. This ensures credentials remain fresh while reducing unnecessary identity service calls.
 
-*Metrics*: The STC cache exposes Prometheus metrics for monitoring:
+_Metrics_: The STC cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="stc"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="stc"}`: Total number of cache hits
@@ -395,7 +395,7 @@ Caches warehouse metadata to reduce database queries for warehouse lookups.
 
 If the cache is enabled, changes to Storage Profile may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. Warehouse metadata is guaranteed to be fresh for load table & view operations also for multi-worker deployments.
 
-*Metrics*: The Warehouse cache exposes Prometheus metrics for monitoring:
+_Metrics_: The Warehouse cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="warehouse"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="warehouse"}`: Total number of cache hits
@@ -413,7 +413,7 @@ Caches namespace metadata and hierarchies to reduce database queries for namespa
 
 If the cache is enabled, changes to namespace properties may take up to the configured TTL (default: 60 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the Cache is always up to date. The namespace cache stores both individual namespaces and their parent hierarchies for efficient lookups.
 
-*Metrics*: The Namespace cache exposes Prometheus metrics for monitoring:
+_Metrics_: The Namespace cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="namespace"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="namespace"}`: Total number of cache hits
@@ -429,7 +429,7 @@ Caches storage secrets to reduce load on the secret store. Since Lakekeeper neve
 | <nobr>`LAKEKEEPER__CACHE__SECRETS__CAPACITY`<nobr>          | integer | `500`   | Maximum number of secrets to cache. Default: `500` |
 | <nobr>`LAKEKEEPER__CACHE__SECRETS__TIME_TO_LIVE_SECS`<nobr> | integer | `600`   | Time-to-live for cache entries in seconds. Default: `600` (10 minutes) |
 
-*Metrics*: The Secrets cache exposes Prometheus metrics for monitoring:
+_Metrics_: The Secrets cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="secrets"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="secrets"}`: Total number of cache hits
@@ -447,7 +447,7 @@ Caches role metadata to reduce database queries for role lookups. The role cache
 
 If the cache is enabled, changes to role metadata may take up to the configured TTL (default: 120 seconds) to be reflected in all Lakekeeper workers. If a single worker is used, the cache is always up to date. The cache is automatically invalidated when roles are updated or deleted.
 
-*Metrics*: The Role cache exposes Prometheus metrics for monitoring:
+_Metrics_: The Role cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="role"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="role"}`: Total number of cache hits
@@ -463,7 +463,7 @@ Caches the set of roles assigned to each user (`UserId → role assignments`). T
 | <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__CAPACITY`<nobr>          | integer | `50000` | Maximum number of users whose assignments are held in memory. Default: `50000` |
 | <nobr>`LAKEKEEPER__CACHE__USER_ASSIGNMENTS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Must not exceed `LAKEKEEPER__CACHE__ROLE__TIME_TO_LIVE_SECS`. Default: `120` (2 minutes) |
 
-*Metrics*: The User Assignments cache exposes Prometheus metrics for monitoring:
+_Metrics_: The User Assignments cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="user_assignments"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="user_assignments"}`: Total number of cache hits
@@ -479,7 +479,7 @@ Caches the members of each role (`RoleId → role members`). This is a cold-path
 | <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__CAPACITY`<nobr>          | integer | `1000`  | Maximum number of roles whose member lists are held in memory. Default: `1000` |
 | <nobr>`LAKEKEEPER__CACHE__ROLE_MEMBERS__TIME_TO_LIVE_SECS`<nobr> | integer | `120`   | Time-to-live for cache entries in seconds. Default: `120` (2 minutes) |
 
-*Metrics*: The Role Members cache exposes Prometheus metrics for monitoring:
+_Metrics_: The Role Members cache exposes Prometheus metrics for monitoring:
 
 - `lakekeeper_cache_size{cache_type="role_members"}`: Current number of entries in the cache
 - `lakekeeper_cache_hits_total{cache_type="role_members"}`: Total number of cache hits
@@ -502,7 +502,7 @@ Lakekeeper validates outbound TLS connections against two root stores combined:
 
 The certificate presented by an endpoint cannot itself be a CA — it must be an end-entity certificate, otherwise TLS handshakes fail with `CaUsedAsEndEntity`.
 
-Two code paths do *not* use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
+Two code paths do _not_ use the bundled webpki roots and therefore require a system CA bundle at `/etc/ssl/certs/ca-certificates.crt` (or one of the other standard locations):
 
 - **Vault** integration (via `vaultrs` → `rustls-platform-verifier`). You can also pass a PEM bundle explicitly through the Vault client configuration.
 - **Kafka** integration (via `librdkafka` / OpenSSL).
@@ -665,9 +665,9 @@ The LDAP role provider supports three resolution modes, selected via `__GROUP_RE
 
 | Mode | When to use |
 |------|-------------|
-| `attribute` *(default)* | Read group DNs directly from a `memberOf`-style attribute on the user entry. Correct for Active Directory / ADFS, OpenLDAP with the `memberof` overlay, and most setups where every user-of-interest has a populated `memberOf`. |
+| `attribute` _(default)_ | Read group DNs directly from a `memberOf`-style attribute on the user entry. Correct for Active Directory / ADFS, OpenLDAP with the `memberof` overlay, and most setups where every user-of-interest has a populated `memberOf`. |
 | `search` | Run a paged subtree LDAP search to find groups whose member attribute references the user. Useful for directories without `memberOf`, for filtering to a specific group name prefix (e.g. `ACME-*`) at the directory level instead of post-filtering, and for AD transitive resolution via `LDAP_MATCHING_RULE_IN_CHAIN`. |
-| `branching` *(since 0.12.2)* | Per-user-DN branching: a regex tested against the user's DN selects between a Search-style filter (with named captures available as `${name}` placeholders) and an explicit `else` branch. |
+| `branching` _(since 0.12.2)_ | Per-user-DN branching: a regex tested against the user's DN selects between a Search-style filter (with named captures available as `${name}` placeholders) and an explicit `else` branch. |
 
 The selector and shared fields:
 
@@ -684,7 +684,7 @@ The selector and shared fields:
 | <nobr>`…__USER_MEMBER_OF_ATTRIBUTE`</nobr> | `memberOf` | Multi-valued attribute on the user entry that lists the groups the user belongs to. |
 | <nobr>`…__GROUP_NAME_SOURCE`</nobr>        | `dn_cn`    | How to derive the role name from a group entry. `dn_cn` extracts the `CN=` component from the group's distinguished name (recommended for AD/ADFS). |
 
-**Search mode (`group_resolution_mode = "search"`)** — *available since 0.12.2 with `${USER}` / `${DOMAIN}` placeholder support and the composed default filter*:
+**Search mode (`group_resolution_mode = "search"`)** — _available since 0.12.2 with `${USER}` / `${DOMAIN}` placeholder support and the composed default filter_:
 
 | Variable                                | Default                       | Description                                                                                            |
 |-----------------------------------------|-------------------------------|--------------------------------------------------------------------------------------------------------|
@@ -692,7 +692,7 @@ The selector and shared fields:
 | <nobr>`…__GROUP_MEMBER_ATTRIBUTE`</nobr>  | `member`                      | Attribute on the group entry that references members; drives the default filter when `…__GROUP_SEARCH_FILTER` is unset. Use `uniqueMember` for `groupOfUniqueNames` directories. |
 | <nobr>`…__GROUP_NAME_ATTRIBUTE`</nobr>    | `cn`                          | Attribute on each returned group entry used as the role name. Use `sAMAccountName` for AD if you want the short name instead of the CN. |
 
-**Branching mode (`group_resolution_mode = "branching"`)** — *available since 0.12.2* — per-user-DN dispatch between a Search-style `then` branch and an explicit `else` branch:
+**Branching mode (`group_resolution_mode = "branching"`)** — _available since 0.12.2_ — per-user-DN dispatch between a Search-style `then` branch and an explicit `else` branch:
 
 | Variable                                                 | Description |
 |----------------------------------------------------------|-------------|
@@ -779,7 +779,7 @@ If the database record is older than `SYNC_INTERVAL_SECS`, Lakekeeper contacts L
 
 | Variable                  | Default      | Description                       |
 |---------------------------|--------------|-----------------------------------|
-| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
+| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | JSON array of identity provider IDs. When set, only users from these IDPs are resolved via this provider. Omit to allow all IDPs. |
 
 **Example — minimal LDAP provider (env vars):**
 
@@ -794,7 +794,7 @@ LAKEKEEPER__ROLE_PROVIDER__MY_LDAP__BIND_PASSWORD_FILE=/run/secrets/ldap-passwor
 
 ##### Microsoft Graph (Entra ID) role provider
 
-*Available since Lakekeeper Plus 0.13.0*
+_Available since Lakekeeper Plus 0.13.0_
 
 Resolves a user's **transitive** Microsoft Entra ID group memberships via the Microsoft Graph API and maps each group to a role — keyed by the group's object id, with the group `displayName` as the role name. Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
 
@@ -821,8 +821,8 @@ The app registration this provider authenticates as needs the Microsoft Graph **
 | Variable | Default | Description |
 |----------|---------|-------------|
 | <nobr>`…__CLOUD`</nobr>          | `public`       | Sovereign cloud: `public`, `us_government`, `china`, or `custom`. Drives the default Graph endpoint and the token authority. |
-| <nobr>`…__GRAPH_BASE`</nobr>     | *(per cloud)*  | Microsoft Graph endpoint base. Overrides the cloud default; **required** for `custom`. |
-| <nobr>`…__AUTHORITY_HOST`</nobr> | *(per cloud)*  | Entra ID token authority. Overrides the cloud default (e.g. a national-cloud proxy); **required** for `custom`. |
+| <nobr>`…__GRAPH_BASE`</nobr>     | _(per cloud)_  | Microsoft Graph endpoint base. Overrides the cloud default; **required** for `custom`. |
+| <nobr>`…__AUTHORITY_HOST`</nobr> | _(per cloud)_  | Entra ID token authority. Overrides the cloud default (e.g. a national-cloud proxy); **required** for `custom`. |
 
 Built-in cloud endpoints:
 
@@ -831,7 +831,7 @@ Built-in cloud endpoints:
 | <nobr>`public`</nobr>        | `https://graph.microsoft.com`              | `https://login.microsoftonline.com` |
 | <nobr>`us_government`</nobr> | `https://graph.microsoft.us`               | `https://login.microsoftonline.us`  |
 | <nobr>`china`</nobr>         | `https://microsoftgraph.chinacloudapi.cn`  | `https://login.chinacloudapi.cn`    |
-| <nobr>`custom`</nobr>        | *(none — set `…__GRAPH_BASE`)*             | *(none — set `…__AUTHORITY_HOST`)*  |
+| <nobr>`custom`</nobr>        | _(none — set `…__GRAPH_BASE`)_             | _(none — set `…__AUTHORITY_HOST`)_  |
 
 **HTTP timeouts:**
 
@@ -858,7 +858,7 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
+| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Entra subjects are object ids and carry no domain to filter on. |
 
 **Example — client-secret credential (env vars):**
 
@@ -875,7 +875,7 @@ LAKEKEEPER__ROLE_PROVIDER__ENTRA__IDP_IDS=["oidc"]
 
 ##### Okta role provider
 
-*Available since Lakekeeper Plus 0.13.1*
+_Available since Lakekeeper Plus 0.13.1_
 
 Resolves a user's Okta group memberships via the Okta management API and maps each group to a role — keyed by the group's immutable `id`, with the group `profile.name` as the role name and `profile.description` as the description. Okta groups are flat, so a single call returns the user's effective membership (direct plus group-rule assignments). Each provider is configured under a unique `<ID>` of your choosing; all variables use the prefix `LAKEKEEPER__ROLE_PROVIDER__<ID>__`.
 
@@ -930,13 +930,13 @@ Transient failures (`429` honoring `Retry-After`, transient `5xx`, and connectio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__DPOP`</nobr> | `true` | Sender-constrain the access token with [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) (RFC 9449): each token and API request carries an ES256 proof signed by an ephemeral in-memory key, so a leaked token is useless without it. Okta accepts DPoP whether or not the app has *Require DPoP* set, so leave it on. Set `false` only if an org rejects DPoP. |
+| <nobr>`…__DPOP`</nobr> | `true` | Sender-constrain the access token with [DPoP](https://datatracker.ietf.org/doc/html/rfc9449) (RFC 9449): each token and API request carries an ES256 proof signed by an ephemeral in-memory key, so a leaked token is useless without it. Okta accepts DPoP whether or not the app has _Require DPoP_ set, so leave it on. Set `false` only if an org rejects DPoP. |
 
 **IDP filtering (optional):**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| <nobr>`…__IDP_IDS`</nobr> | *(all IDPs)* | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
+| <nobr>`…__IDP_IDS`</nobr> | _(all IDPs)_ | JSON array of **OIDC provider** IDs — the IdP a user logged in through, i.e. the default provider's reserved id `oidc`, or a [multi-OIDC](./authentication.md#multiple-oidc-providers) provider's configured id. When set, only users who authenticated via those providers are resolved here. Omit to handle all — Okta subjects are user ids and carry no domain to filter on. |
 
 **Example — inline JWK key (env vars):**
 

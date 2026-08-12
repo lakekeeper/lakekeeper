@@ -117,8 +117,8 @@ Attaching a tag to a resource requires **both** `apply` on the tag definition **
 
 ## Inheritance
 
-* **Top-Down-Inheritance**: Permissions in higher up entities are inherited to their children. For example if the `modify` privilege is granted on a `warehouse` for a principal, this principal is also able to `modify` any namespaces, including nesting ones, tables and views within it.
-* **Bottom-Up-Inheritance**: Permissions on lower entities, for example tables, inherit basic navigational privileges to all higher layer principals. For example, if a user is granted the `select` privilege on table `ns1.ns2.table_1`, that user is implicitly granted limited list privileges on `ns1` and `ns2`. Only items in the direct path are presented to users. If `ns1.ns3` would exist as well, a list on `ns1` would only show `ns1.ns2`.
+- **Top-Down-Inheritance**: Permissions in higher up entities are inherited to their children. For example if the `modify` privilege is granted on a `warehouse` for a principal, this principal is also able to `modify` any namespaces, including nesting ones, tables and views within it.
+- **Bottom-Up-Inheritance**: Permissions on lower entities, for example tables, inherit basic navigational privileges to all higher layer principals. For example, if a user is granted the `select` privilege on table `ns1.ns2.table_1`, that user is implicitly granted limited list privileges on `ns1` and `ns2`. Only items in the direct path are presented to users. If `ns1.ns3` would exist as well, a list on `ns1` would only show `ns1.ns2`.
 
 ## Managed Access
 
@@ -176,9 +176,9 @@ Reconcile only operates on the **structural** parts of the OpenFGA store: the pa
 
 ### Operational notes
 
-* Run during a low-traffic window. Reconcile does **not** stop API writes; concurrent renames/creates/deletes can produce transient inconsistencies that self-heal on the next run.
-* A Postgres advisory lock prevents two reconciles from running at once. The second invocation fails fast with the lock key in the error message; you can confirm a held lock with `SELECT * FROM pg_locks WHERE locktype = 'advisory'`.
-* Use `--dry-run` first when you intend to delete drift.
+- Run during a low-traffic window. Reconcile does **not** stop API writes; concurrent renames/creates/deletes can produce transient inconsistencies that self-heal on the next run.
+- A Postgres advisory lock prevents two reconciles from running at once. The second invocation fails fast with the lock key in the error message; you can confirm a held lock with `SELECT * FROM pg_locks WHERE locktype = 'advisory'`.
+- Use `--dry-run` first when you intend to delete drift.
 
 ## Switching to OpenFGA or replacing the store
 
@@ -204,4 +204,3 @@ OpenFGA can be enabled, or its store replaced, on an already-bootstrapped Lakeke
 Switching *away* from OpenFGA (for example to Cedar) is not covered by reconcile and generally requires a new Lakekeeper instance.
 
 > Instance admins are useful as a parallel safety net while the OpenFGA store has no admin tuples: they can still manage projects, warehouses, namespaces, and tables. They do **not** confer data-plane access (`ReadData`, `WriteData`, view `Select`) and they **cannot** write to the OpenFGA permission-management endpoints — see [Instance Admins](./instance-admins.md).
-
