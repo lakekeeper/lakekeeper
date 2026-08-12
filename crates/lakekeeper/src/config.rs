@@ -1269,7 +1269,9 @@ mod test {
             let config = get_config();
             assert_eq!(
                 config.default_project_id,
-                Some(ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap())
+                Some(
+                    ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap()
+                )
             );
             Ok(())
         });
