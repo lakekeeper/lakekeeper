@@ -2305,7 +2305,9 @@ mod tests {
         };
         let spec = user_spec(&user, resource.clone(), "select");
         let mut txn = pool.begin().await.unwrap();
-        insert_grants(&[spec.clone()], &mut txn).await.unwrap();
+        insert_grants(std::slice::from_ref(&spec), &mut txn)
+            .await
+            .unwrap();
         txn.commit().await.unwrap();
 
         sqlx::query("UPDATE tabular SET deleted_at = now() WHERE tabular_id = $1")
