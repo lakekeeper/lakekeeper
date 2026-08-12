@@ -821,8 +821,10 @@ where
     ///
     /// Each returned grant echoes the matching entry of `resources`, so tables, views
     /// and generic tables keep the kind the caller asked with — nothing is re-fetched
-    /// to reconstruct it. Like the resource-scoped listing (and unlike the project
-    /// roll-ups), grants on soft-deleted tabulars are included.
+    /// to reconstruct it. Entries must therefore be distinct per resource: naming the
+    /// same tabular twice with different kinds gets an unspecified one of them echoed.
+    /// Like the resource-scoped listing (and unlike the project roll-ups), grants on
+    /// soft-deleted tabulars are included.
     async fn list_grants_on_resources_impl(
         principals: &[UserOrRoleId],
         resources: &[GrantResource],

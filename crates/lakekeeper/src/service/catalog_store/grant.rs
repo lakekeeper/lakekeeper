@@ -51,8 +51,9 @@ impl From<GrantTargetNotFound> for ErrorModel {
 /// Checked before the insert so the error can name the id — the foreign key behind it
 /// reports only that *something* was missing. Names the first missing id, not all of
 /// them, exactly as the role validation names its first missing role. Deletes stay
-/// unvalidated so a grant held by a user row that has since been hard-deleted remains
-/// revocable.
+/// unvalidated: every existing grant's user row exists by foreign key, so a check
+/// could never save a revoke — only turn the harmless no-op of revoking from a user
+/// that never existed into an error.
 #[derive(thiserror::Error, PartialEq, Eq, Debug)]
 #[error("User `{user}` does not exist")]
 pub struct GrantUserNotFound {

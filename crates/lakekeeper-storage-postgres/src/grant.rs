@@ -1087,11 +1087,16 @@ where
                OR EXISTS (SELECT 1 FROM tabular tab
                           WHERE tab.warehouse_id = $3 AND tab.tabular_id = $5
                             AND tab.typ = $7))
-          -- Optional narrowing to one principal; both null lists every principal.
+          -- Optional narrowing to one principal; both null lists every principal. The
+          -- unused principal column is held null — as in the delete arms — so a
+          -- grant_unique probe can descend past it instead of stopping at the gap;
+          -- PG 18's skip scan recovers this on its own, PG 17's does not.
           AND ($8::text IS NULL
-               OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $8))
+               OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $8
+                   AND ga.role_id IS NULL))
           AND ($9::uuid IS NULL
-               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $9))
+               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $9
+                   AND ga.user_id IS NULL))
           -- Keyset. Written as an unconditional row comparison against a floor rather
           -- than as `$10 is null or …`: any null test on the parameters leaves the whole
           -- term unindexable, and it then plans as a filter that re-reads every row
@@ -1157,10 +1162,13 @@ where
         LEFT JOIN tag_definition td ON ga.tag_definition_id = td.tag_definition_id
         LEFT JOIN tabular t
                ON ga.warehouse_id = t.warehouse_id AND ga.tabular_id = t.tabular_id
+        -- The unused principal column is held null; see select_grants_on_resource.
         WHERE ($1::text IS NULL
-               OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $1))
+               OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $1
+                   AND ga.role_id IS NULL))
           AND ($2::uuid IS NULL
-               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $2))
+               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $2
+                   AND ga.user_id IS NULL))
           AND (ga.tabular_id IS NULL OR t.deleted_at IS NULL)
           AND (
               w.project_id = $3
@@ -1189,9 +1197,9 @@ where
 
 /// Every grant held by any of `principals` on any of `resources`.
 ///
-/// The evaluation-path fetch, narrowed on both axes: the principal predicate probes
-/// `grant_user_idx` / `grant_role_idx`, the resource arms probe each level's own
-/// index, and the planner picks whichever side is smaller. Neither a coarse resource
+/// The evaluation-path fetch, narrowed on both axes: the principal arms and the
+/// resource arms each probe their own indexes, and the planner combines the two
+/// sides with a bitmap AND. Neither a coarse resource
 /// holding one grant per principal in the deployment nor a principal holding one
 /// grant per table can make the answer large — the result is bounded by chain size
 /// times privileges per level, so it needs no cap and no warning.
@@ -1317,8 +1325,11 @@ where
             NULL::tabular_type AS "tabular_typ?: TabularType",
             ga.created_at AS "created_at!"
         FROM grant_assignment ga
-        WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1))
-               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)))
+        -- The unused principal column is held null; see select_grants_on_resource.
+        WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1)
+                AND ga.role_id IS NULL)
+               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)
+                   AND ga.user_id IS NULL))
           AND (($3 AND ga.resource_type = 'server'::grant_resource_type)
                OR (ga.resource_type = 'project'::grant_resource_type
                    AND ga.project_id = ANY($4))
@@ -2216,6 +2227,99 @@ mod tests {
                 .await
                 .unwrap(),
             Vec::new()
+        );
+    }
+
+    /// The namespace arm cross-matches the same way, and its echo map is separately
+    /// keyed code. `namespace_id` is globally unique today, so the cross-request can
+    /// only name a pair that does not exist — but the contract accepts arbitrary
+    /// resource lists, and the map keying is the only thing enforcing the tightening.
+    #[sqlx::test]
+    async fn a_cross_warehouse_namespace_match_is_dropped_not_echoed(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_a) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let other_project = ProjectId::new_random();
+        let (_, warehouse_b) =
+            initialize_warehouse(state.clone(), None, Some(&other_project), None, true).await;
+        let user = seed_user(&pool, "oidc~alice").await;
+        let (table_in_b, _) =
+            create_table_with_schema(state.clone(), warehouse_b, simple_schema()).await;
+        let namespace_n: Uuid =
+            sqlx::query_scalar("SELECT namespace_id FROM tabular WHERE tabular_id = $1")
+                .bind(*table_in_b)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let mut txn = pool.begin().await.unwrap();
+        insert_grants(
+            &[user_spec(
+                &user,
+                GrantResource::Namespace {
+                    warehouse_id: warehouse_b,
+                    namespace_id: namespace_n.into(),
+                },
+                "select",
+            )],
+            &mut txn,
+        )
+        .await
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        // `(A, N)` shares only the id with the granted `(B, N)`, `(B, M)` only the
+        // warehouse — yet together they cross-match it.
+        let principals = [UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap())];
+        let resources = [
+            GrantResource::Namespace {
+                warehouse_id: warehouse_a,
+                namespace_id: namespace_n.into(),
+            },
+            GrantResource::Namespace {
+                warehouse_id: warehouse_b,
+                namespace_id: Uuid::now_v7().into(),
+            },
+        ];
+        assert_eq!(
+            list_grants_on_resources(&principals, &resources, &pool)
+                .await
+                .unwrap(),
+            Vec::new()
+        );
+    }
+
+    /// The evaluation fetch includes grants on soft-deleted tabulars — undrop needs its
+    /// authorization intact. A hygiene `deleted_at` filter added here would break that
+    /// silently, so the documented contract is pinned.
+    #[sqlx::test]
+    async fn the_evaluation_fetch_includes_grants_on_soft_deleted_tabulars(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let user = seed_user(&pool, "oidc~alice").await;
+        let (table_id, _) =
+            create_table_with_schema(state.clone(), warehouse_id, simple_schema()).await;
+
+        let resource = GrantResource::Table {
+            warehouse_id,
+            table_id,
+        };
+        let spec = user_spec(&user, resource.clone(), "select");
+        let mut txn = pool.begin().await.unwrap();
+        insert_grants(&[spec.clone()], &mut txn).await.unwrap();
+        txn.commit().await.unwrap();
+
+        sqlx::query("UPDATE tabular SET deleted_at = now() WHERE tabular_id = $1")
+            .bind(*table_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let principals = [UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap())];
+        assert_eq!(
+            list_grants_on_resources(&principals, &[resource], &pool)
+                .await
+                .unwrap(),
+            vec![spec]
         );
     }
 

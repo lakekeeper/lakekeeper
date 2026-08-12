@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            ga.grant_id,\n            ga.principal_type AS \"principal_type: PrincipalType\", ga.user_id, ga.role_id,\n            ga.privilege, ga.resource_type AS \"resource_type: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            -- Deliberately not joined per row: every returned grant is on the one\n            -- resource asked for, so joining would probe the same tabular repeatedly.\n            -- The kind is instead checked once, below.\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at\n        FROM grant_assignment ga\n        WHERE ga.resource_type = $1::grant_resource_type\n          -- Only the columns this resource kind populates; see the module docs.\n          AND ($2::text IS NULL OR ga.project_id = $2)\n          AND ($3::uuid IS NULL OR ga.warehouse_id = $3)\n          AND ($4::uuid IS NULL OR ga.namespace_id = $4)\n          AND ($5::uuid IS NULL OR ga.tabular_id = $5)\n          AND ($6::uuid IS NULL OR ga.tag_definition_id = $6)\n          -- A tabular resource names a kind; the tabular must really be of that kind,\n          -- or this is a listing of some other resource's grants. Correlated on the\n          -- parameters only, so it is evaluated once per statement, not per row.\n          AND ($7::tabular_type IS NULL\n               OR EXISTS (SELECT 1 FROM tabular tab\n                          WHERE tab.warehouse_id = $3 AND tab.tabular_id = $5\n                            AND tab.typ = $7))\n          -- Optional narrowing to one principal; both null lists every principal.\n          AND ($8::text IS NULL\n               OR (ga.principal_type = 'user'::grant_principal_type AND ga.user_id = $8))\n          AND ($9::uuid IS NULL\n               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = $9))\n          -- Keyset. Written as an unconditional row comparison against a floor rather\n          -- than as `$10 is null or …`: any null test on the parameters leaves the whole\n          -- term unindexable, and it then plans as a filter that re-reads every row\n          -- before the requested page.\n          AND (ga.created_at, ga.grant_id)\n              > (COALESCE($10, '-infinity'::timestamptz),\n                 COALESCE($11, '00000000-0000-0000-0000-000000000000'::uuid))\n        ORDER BY ga.created_at, ga.grant_id ASC\n        LIMIT $12\n        ",
+  "query": "\n        -- `!` on the columns declared NOT NULL: this statement has no ORDER BY, and\n        -- without one sqlx's nullability inference reports every output as nullable.\n        SELECT\n            ga.grant_id AS \"grant_id!\",\n            ga.principal_type AS \"principal_type!: PrincipalType\", ga.user_id, ga.role_id,\n            ga.privilege AS \"privilege!\",\n            ga.resource_type AS \"resource_type!: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            -- Not joined: the caller's resource list already carries every kind.\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at AS \"created_at!\"\n        FROM grant_assignment ga\n        -- The unused principal column is held null; see select_grants_on_resource.\n        WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1)\n                AND ga.role_id IS NULL)\n               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)\n                   AND ga.user_id IS NULL))\n          AND (($3 AND ga.resource_type = 'server'::grant_resource_type)\n               OR (ga.resource_type = 'project'::grant_resource_type\n                   AND ga.project_id = ANY($4))\n               OR (ga.resource_type = 'warehouse'::grant_resource_type\n                   AND ga.warehouse_id = ANY($5))\n               OR (ga.resource_type = 'namespace'::grant_resource_type\n                   AND ga.warehouse_id = ANY($6) AND ga.namespace_id = ANY($7))\n               OR (ga.resource_type = 'tabular'::grant_resource_type\n                   AND ga.warehouse_id = ANY($8) AND ga.tabular_id = ANY($9))\n               OR (ga.resource_type = 'tag'::grant_resource_type\n                   AND ga.tag_definition_id = ANY($10)))\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "grant_id",
+        "name": "grant_id!",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "principal_type: PrincipalType",
+        "name": "principal_type!: PrincipalType",
         "type_info": {
           "Custom": {
             "name": "grant_principal_type",
@@ -59,7 +59,7 @@
       },
       {
         "ordinal": 4,
-        "name": "privilege",
+        "name": "privilege!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -70,7 +70,7 @@
       },
       {
         "ordinal": 5,
-        "name": "resource_type: StoredResourceType",
+        "name": "resource_type!: StoredResourceType",
         "type_info": {
           "Custom": {
             "name": "grant_resource_type",
@@ -167,7 +167,7 @@
       },
       {
         "ordinal": 12,
-        "name": "created_at",
+        "name": "created_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -179,43 +179,16 @@
     ],
     "parameters": {
       "Left": [
-        {
-          "Custom": {
-            "name": "grant_resource_type",
-            "kind": {
-              "Enum": [
-                "server",
-                "project",
-                "warehouse",
-                "namespace",
-                "tabular",
-                "tag"
-              ]
-            }
-          }
-        },
-        "Text",
-        "Uuid",
-        "Uuid",
-        "Uuid",
-        "Uuid",
-        {
-          "Custom": {
-            "name": "tabular_type",
-            "kind": {
-              "Enum": [
-                "table",
-                "view",
-                "generic-table"
-              ]
-            }
-          }
-        },
-        "Text",
-        "Uuid",
-        "Timestamptz",
-        "Uuid",
-        "Int8"
+        "TextArray",
+        "UuidArray",
+        "Bool",
+        "TextArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -234,5 +207,5 @@
       false
     ]
   },
-  "hash": "3bffa92ebeffd39b5b40aaef7ce052bfc5d3a1937f0f86e71c8ef4f86956d014"
+  "hash": "1a187ba0484424be4109a3587c9381a527299ee88d502884606b30f27ff43104"
 }
