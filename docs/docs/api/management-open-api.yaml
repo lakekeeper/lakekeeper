@@ -6931,6 +6931,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -7003,6 +7004,17 @@ components:
                   enum:
                     - modify
           title: GenericTableAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: GenericTableAssignmentManageTags
     GenericTableRelation:
       type: string
       enum:
@@ -7012,6 +7024,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     GetEndpointStatisticsRequest:
       type: object
       required:
@@ -9735,6 +9748,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - set_protection
     NamespaceAssignment:
       oneOf:
@@ -9815,6 +9829,17 @@ components:
                   enum:
                     - modify
           title: NamespaceAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: NamespaceAssignmentManageTags
     NamespaceIdentOrUuid:
       oneOf:
         - type: object
@@ -9851,6 +9876,7 @@ components:
         - select
         - create
         - modify
+        - manage_tags
     OneLakeProfile:
       type: object
       description: |-
@@ -9914,6 +9940,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9928,11 +9955,13 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
     OpenFGAProjectAction:
       type: string
       enum:
         - read_assignments
         - grant_role_creator
+        - grant_tag_creator
         - grant_create
         - grant_describe
         - grant_modify
@@ -9958,6 +9987,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9968,6 +9998,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9982,6 +10013,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - change_ownership
     ProjectAction:
       type: string
@@ -9995,6 +10027,7 @@ components:
         - search_roles
         - read_assignments
         - grant_role_creator
+        - grant_tag_creator
         - grant_create
         - grant_describe
         - grant_modify
@@ -10058,6 +10091,17 @@ components:
                 type:
                   type: string
                   enum:
+                    - tag_creator
+          title: ProjectAssignmentTagCreator
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
                     - describe
           title: ProjectAssignmentDescribe
         - allOf:
@@ -10100,6 +10144,7 @@ components:
         - security_admin
         - data_admin
         - role_creator
+        - tag_creator
         - describe
         - select
         - create
@@ -11368,6 +11413,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -11443,6 +11489,17 @@ components:
                   enum:
                     - modify
           title: TableAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: TableAssignmentManageTags
     TableRelation:
       type: string
       enum:
@@ -11452,6 +11509,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     TableUpdateKind:
       type: string
       description: |-
@@ -12482,6 +12540,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -12557,6 +12616,17 @@ components:
                   enum:
                     - modify
           title: ViewAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: ViewAssignmentManageTags
     ViewRelation:
       type: string
       enum:
@@ -12566,6 +12636,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     WarehouseAction:
       type: string
       enum:
@@ -12588,6 +12659,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - change_ownership
         - get_all_tasks
         - control_all_tasks
@@ -12673,6 +12745,17 @@ components:
                   enum:
                     - modify
           title: WarehouseAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: WarehouseAssignmentManageTags
     WarehouseFilter:
       oneOf:
         - type: object
@@ -12716,6 +12799,7 @@ components:
         - select
         - create
         - modify
+        - manage_tags
     WarehouseStatistics:
       type: object
       required:
