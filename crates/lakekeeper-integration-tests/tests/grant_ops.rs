@@ -482,10 +482,12 @@ async fn apply_and_list_project_grants(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(page.grants.len(), 1);
-    assert!(matches!(
+    assert_eq!(
         page.grants[0].resource,
-        GrantResourceResponse::Project { .. }
-    ));
+        GrantResourceResponse::Project {
+            project_id: f.project_id.clone()
+        }
+    );
 }
 
 /// The project-wide listing resolves each grant's project through a different join per
@@ -1193,8 +1195,9 @@ async fn granting_to_an_unprovisioned_user_is_refused(pool: PgPool) {
     )
     .await
     .unwrap_err();
-    assert_eq!(err.error.code, 404);
-    assert_eq!(err.error.r#type, "GrantTargetNotFound");
+    assert_eq!(err.error.code, 400);
+    assert_eq!(err.error.r#type, "GrantUserNotFound");
+    assert_eq!(err.error.message, "User `oidc~ghost` does not exist");
 }
 
 /// A warehouse id from another project must read as absent — never as a denial that
@@ -2143,14 +2146,14 @@ fn no_principal() -> GetGrantAccessQuery {
 }
 
 /// The seam between writing a grant through the API and reading it back at decision
-/// time. `list_grants_for_principals` is what an authorizer that resolves inheritance
+/// time. `list_grants_on_resources` is what an authorizer that resolves inheritance
 /// itself calls, and it is the only grant operation with no other caller in tree — so
 /// nothing else proves that a committed grant is visible to the next decision, at every
 /// level of a hierarchy built the way a real one is.
 ///
-/// Also pins the two properties the fetch's contract turns on: server grants come back
-/// even though they belong to no project, and a role's grants come back only when the
-/// caller includes that role in the effective set.
+/// Also pins the two properties the fetch's contract turns on: nothing is implied —
+/// server grants come back because the chain names the server root — and a role's
+/// grants come back only when the caller includes that role in the effective set.
 #[sqlx::test]
 async fn a_committed_grant_is_visible_to_the_evaluation_fetch(pool: PgPool) {
     let f = setup(pool).await;
@@ -2217,17 +2220,31 @@ async fn a_committed_grant_is_visible_to_the_evaluation_fetch(pool: PgPool) {
         rows.sort_by_key(|row| format!("{row:?}"));
         rows
     };
+    // The chain a decision about the table would resolve, root to leaf.
+    let chain = vec![
+        GrantResource::Server,
+        GrantResource::Project(f.project_id.clone()),
+        GrantResource::Warehouse(f.warehouse_id),
+        GrantResource::Namespace {
+            warehouse_id: f.warehouse_id,
+            namespace_id,
+        },
+        GrantResource::Table {
+            warehouse_id: f.warehouse_id,
+            table_id,
+        },
+    ];
     let fetch = async |principals: Vec<UserOrRoleId>| {
-        let rows = PostgresBackend::list_grants_for_principals(
+        let rows = PostgresBackend::list_grants_on_resources_impl(
             &principals,
-            &f.project_id,
+            &chain,
             f.ctx.v1_state.catalog.clone(),
         )
         .await
         .unwrap();
         sorted(
             rows.into_iter()
-                .map(|row| (row.principal, row.resource, row.privilege))
+                .map(|spec| (spec.principal, spec.resource, spec.privilege))
                 .collect(),
         )
     };
@@ -2271,17 +2288,41 @@ async fn a_committed_grant_is_visible_to_the_evaluation_fetch(pool: PgPool) {
     let role = UserOrRoleId::Role(role_id);
     let with_role = fetch(vec![alice.clone(), role.clone()]).await;
     assert_eq!(
-        with_role.len(),
-        5,
-        "the effective set is the union of the user's grants and their roles': {with_role:?}"
-    );
-    assert!(
-        with_role.contains(&(
-            role,
-            GrantResource::Warehouse(f.warehouse_id),
-            "list_namespaces".to_string()
-        )),
-        "the role's own grant must be in the union: {with_role:?}"
+        with_role,
+        sorted(vec![
+            (
+                alice.clone(),
+                GrantResource::Server,
+                "create_project".to_string()
+            ),
+            (
+                alice.clone(),
+                GrantResource::Warehouse(f.warehouse_id),
+                "get_metadata".to_string()
+            ),
+            (
+                alice.clone(),
+                GrantResource::Namespace {
+                    warehouse_id: f.warehouse_id,
+                    namespace_id
+                },
+                "get_metadata".to_string()
+            ),
+            (
+                alice.clone(),
+                GrantResource::Table {
+                    warehouse_id: f.warehouse_id,
+                    table_id
+                },
+                "get_metadata".to_string()
+            ),
+            (
+                role,
+                GrantResource::Warehouse(f.warehouse_id),
+                "list_namespaces".to_string()
+            ),
+        ]),
+        "the effective set is the union of the user's grants and their roles'"
     );
 
     // Revoking through the API is visible to the fetch just as immediately.

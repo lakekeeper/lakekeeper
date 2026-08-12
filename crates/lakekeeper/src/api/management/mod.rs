@@ -931,6 +931,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1042,6 +1043,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1114,6 +1116,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1171,6 +1174,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1230,6 +1234,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1298,6 +1303,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1370,6 +1376,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]
@@ -1442,6 +1449,7 @@ pub mod v1 {
         request_body = ApplyGrantsRequest,
         responses(
             (status = 204, description = "Grants applied"),
+            (status = 409, body = IcebergErrorResponse, description = "Conflict — the request was not applied and can be retried."),
             (status = "4XX", body = IcebergErrorResponse),
         )
     ))]

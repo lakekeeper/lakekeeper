@@ -33,14 +33,16 @@
 //! a row lock is the tuple's `xmax`, held to transaction end and taken as rows are
 //! processed, so the same wait-for cycle forms across the statement boundary.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use lakekeeper::{
     CONFIG,
     api::iceberg::v1::PaginationQuery,
     service::{
         ApplyGrantsStoreError, DatabaseIntegrityError, GenericTableId, GrantLockTimeout,
-        GrantTargetNotFound, ListGrantsStoreError, NamespaceId, ProjectId, TableId,
-        TagDefinitionId, ViewId, WarehouseId,
+        GrantTargetNotFound, GrantUserNotFound, ListGrantsStoreError, NamespaceId, ProjectId,
+        TableId, TagDefinitionId, ViewId, WarehouseId,
         authn::UserId,
         authz::{
             AppliedGrants, GrantFilter, GrantResource, GrantRow, GrantSpec, ListGrantsResultPage,
@@ -115,11 +117,6 @@ impl StoredResourceType {
 /// Distinct seed for the grant-apply advisory lock so a grant lock can never collide
 /// with another feature's lock on the same hash space. (`grantapl` in ASCII.)
 const GRANT_APPLY_LOCK_SEED: i64 = 0x6772_616E_7461_706C;
-
-/// Row count above which [`list_grants_for_principals`] logs a warning. The fetch is
-/// unpaginated on the expectation that a principal set holds tens of grants; a
-/// principal set holding thousands breaks that expectation and should be visible.
-const PRINCIPAL_GRANTS_WARN_THRESHOLD: usize = 1_000;
 
 /// Foreign keys guard the principal and every resource column, so a violation
 /// means the grant named something that does not exist.
@@ -517,6 +514,40 @@ impl GrantColumns {
 /// `on conflict do nothing` an unmatched guard is indistinguishable from a grant that
 /// already existed, so a wrong kind would insert nothing and be reported as "already
 /// granted" rather than refused. Hence an explicit check, once per resource written.
+/// A write naming an unknown user would otherwise surface as the foreign key's
+/// "principal or resource of a grant does not exist", which names nothing. Roles are
+/// validated in the management layer, where their project scope lives; users have no
+/// scope, so their existence check lives with the store that enforces it. Mirrors the
+/// foreign key exactly — soft-deleted users keep their row and stay grantable.
+async fn require_users_exist(
+    specs: &[GrantSpec],
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), ApplyGrantsStoreError> {
+    let mut user_ids: Vec<String> = specs
+        .iter()
+        .filter_map(|spec| match &spec.principal {
+            UserOrRoleId::User(user_id) => Some(user_id.to_string()),
+            UserOrRoleId::Role(_) => None,
+        })
+        .collect();
+    if user_ids.is_empty() {
+        return Ok(());
+    }
+    user_ids.sort_unstable();
+    user_ids.dedup();
+    let found = sqlx::query_scalar!(
+        r#"SELECT id FROM users WHERE id = ANY($1)"#,
+        &user_ids
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    if let Some(missing) = user_ids.iter().find(|id| !found.contains(id)) {
+        return Err(GrantUserNotFound::new(missing.as_str()).into());
+    }
+    Ok(())
+}
+
 async fn require_tabular_kind(
     resource: &GrantResource,
     transaction: &mut Transaction<'_, Postgres>,
@@ -589,6 +620,7 @@ pub(crate) async fn insert_grants(
     for (resource, _) in group_by_resource(specs) {
         require_tabular_kind(resource, transaction).await?;
     }
+    require_users_exist(specs, transaction).await?;
 
     // Insert in a canonical order. Rows are processed in array order, so two concurrent
     // inserts of overlapping keys take their unique-index locks in the same sequence and
@@ -685,12 +717,12 @@ pub(crate) async fn delete_grants(
 /// filter over every grant on the resource: it compared half a million rows to delete a
 /// hundred on a warehouse holding five thousand grants, and the cost grows with the
 /// resource's grant count times the diff's size. Splitting lets each arm compare its one
-/// populated principal column with `=` and hold the other `NULL` as a constant, so each
-/// entry probes an index on its principal instead of scanning the resource. The planner
-/// takes `grant_user_idx`/`grant_role_idx` on the principal alone and filters the rest,
-/// so the cost is per entry times that principal's grant count — bounded in practice by
-/// the 100-entry diff cap, not the single probe an exact `grant_unique` match would give.
-/// It is also the shape the read path already uses.
+/// populated principal column with `=` and hold the other `NULL` as a constant. The
+/// planner then chooses by estimate: a hash join over the resource's grants, or — via
+/// the redundant `= ANY` predicate each arm carries — index probes on
+/// `grant_user_idx`/`grant_role_idx` per principal. Whichever side is smaller bounds
+/// the cost; without the redundant predicate the principal probe is not available and
+/// a large resource is scanned however few principals the diff names.
 async fn delete_grants_on_resource(
     resource: &GrantResource,
     specs: Vec<&GrantSpec>,
@@ -746,6 +778,11 @@ async fn delete_user_grants_on_resource(
           -- Constant, so it joins `grant_unique`'s third column to the entry's own two.
           AND ga.role_id IS NULL
           AND ga.user_id = t.user_id
+          -- Redundant with the join, deliberately: an array predicate on the base
+          -- table is an index condition on grant_user_idx, where the join condition
+          -- alone is not, so the planner can probe by principal instead of scanning
+          -- the resource when the resource side is the large one.
+          AND ga.user_id = ANY($1)
           AND ga.privilege = t.privilege
           AND ga.resource_type = $3::grant_resource_type
           -- Only the columns this resource kind populates; see the module docs.
@@ -806,6 +843,8 @@ async fn delete_role_grants_on_resource(
         WHERE ga.principal_type = 'role'::grant_principal_type
           AND ga.user_id IS NULL
           AND ga.role_id = t.role_id
+          -- Redundant with the join; see the user arm.
+          AND ga.role_id = ANY($1::uuid[])
           AND ga.privilege = t.privilege
           AND ga.resource_type = $3::grant_resource_type
           AND ($4::text IS NULL OR ga.project_id = $4)
@@ -1091,6 +1130,11 @@ where
 /// soft-deleted tabulars so a trashed table's grants do not surface in a principal's
 /// access list; `select_grants_on_resource` deliberately does not. Server grants have
 /// no project and are excluded.
+///
+/// Without a principal the project predicate lives on joined columns, so no index
+/// narrows it and each page reads in proportion to every grant in the project. That
+/// arm has no endpoint and exists for tests and a possible future export — do not put
+/// it on a request path.
 async fn select_grants_in_project<'e, 'c: 'e, E>(
     user_id: Option<&str>,
     role_id: Option<Uuid>,
@@ -1146,38 +1190,37 @@ where
     .map_err(Into::into)
 }
 
-/// Every grant held by any of `principals`, on the server or on a resource in
-/// `project_id`.
+/// Every grant held by any of `principals` on any of `resources`.
 ///
-/// The evaluation-path fetch. Narrowing by principal rather than by resource is what
-/// makes it affordable: a principal and their roles hold tens of grants, where one
-/// coarse resource holds one grant per principal in the deployment. So this probes
-/// `grant_user_idx` / `grant_role_idx` for a handful of rows instead of matching a
-/// double-digit percentage of the table and falling back to a sequential scan. The
-/// caller already holds the resource chain it is deciding about and filters to it.
+/// The evaluation-path fetch, narrowed on both axes: the principal predicate probes
+/// `grant_user_idx` / `grant_role_idx`, the resource arms probe each level's own
+/// index, and the planner picks whichever side is smaller. Neither a coarse resource
+/// holding one grant per principal in the deployment nor a principal holding one
+/// grant per table can make the answer large — the result is bounded by chain size
+/// times privileges per level, so it needs no cap and no warning.
 ///
 /// `principals` must be the **effective** set — the acting principal plus every role
-/// they hold, transitively. Resolving that is the caller's job; this returns exactly
-/// what it is asked for, so a missing role silently costs access.
-///
-/// Server grants are always included. They belong to no project yet apply inside every
-/// one, so a decision in any project needs them.
+/// they hold, transitively — and `resources` the full resolved chain, including
+/// [`GrantResource::Server`] if server grants should count. Resolving either is the
+/// caller's job; this returns exactly what it is asked for, so an omitted role or
+/// ancestor silently costs access.
 ///
 /// Unpaginated and unordered — a set, so no `ORDER BY`: sorting a result the caller
-/// will filter anyway is pure cost.
+/// will bucket anyway is pure cost.
 ///
-/// Soft-deleted tabulars are not filtered, matching the resource-scoped listing. A
-/// tabular's kind is recovered from `tabular` rather than assumed, so a row always
-/// reports what its id really is.
-pub(crate) async fn list_grants_for_principals<'e, 'c: 'e, E>(
+/// No joins. Every row's resource is echoed from the matching entry of `resources`,
+/// so tables, views and generic tables keep the kind the caller asked with instead of
+/// re-reading `tabular` per call, and grants on soft-deleted tabulars are included,
+/// matching the resource-scoped listing.
+pub(crate) async fn list_grants_on_resources<'e, 'c: 'e, E>(
     principals: &[UserOrRoleId],
-    project_id: &ProjectId,
+    resources: &[GrantResource],
     connection: E,
-) -> Result<Vec<GrantRow>, ListGrantsStoreError>
+) -> Result<Vec<GrantSpec>, ListGrantsStoreError>
 where
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
-    if principals.is_empty() {
+    if principals.is_empty() || resources.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -1190,59 +1233,151 @@ where
         }
     }
 
+    // One arm per level, columns split per arm so each probes its own index. The
+    // lookup maps echo the caller's resource onto each row; ids are unique across
+    // warehouses, so a bare id key cannot collide even though the SQL matches the
+    // (warehouse, id) arrays as an over-approximating cross product.
+    let mut include_server = false;
+    let mut project_ids: Vec<String> = Vec::new();
+    let mut warehouse_ids: Vec<Uuid> = Vec::new();
+    let mut namespace_warehouses: Vec<Uuid> = Vec::new();
+    let mut namespace_ids: Vec<Uuid> = Vec::new();
+    let mut tabular_warehouses: Vec<Uuid> = Vec::new();
+    let mut tabular_ids: Vec<Uuid> = Vec::new();
+    let mut tag_ids: Vec<Uuid> = Vec::new();
+    let mut projects: HashMap<String, &GrantResource> = HashMap::new();
+    let mut warehouses: HashMap<Uuid, &GrantResource> = HashMap::new();
+    let mut namespaces: HashMap<Uuid, &GrantResource> = HashMap::new();
+    let mut tabulars: HashMap<Uuid, &GrantResource> = HashMap::new();
+    let mut tags: HashMap<Uuid, &GrantResource> = HashMap::new();
+    for resource in resources {
+        match resource {
+            GrantResource::Server => include_server = true,
+            GrantResource::Project(project_id) => {
+                project_ids.push(project_id.to_string());
+                projects.insert(project_id.to_string(), resource);
+            }
+            GrantResource::Warehouse(warehouse_id) => {
+                warehouse_ids.push(**warehouse_id);
+                warehouses.insert(**warehouse_id, resource);
+            }
+            GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            } => {
+                namespace_warehouses.push(**warehouse_id);
+                namespace_ids.push(**namespace_id);
+                namespaces.insert(**namespace_id, resource);
+            }
+            GrantResource::Table {
+                warehouse_id,
+                table_id,
+            } => {
+                tabular_warehouses.push(**warehouse_id);
+                tabular_ids.push(**table_id);
+                tabulars.insert(**table_id, resource);
+            }
+            GrantResource::View {
+                warehouse_id,
+                view_id,
+            } => {
+                tabular_warehouses.push(**warehouse_id);
+                tabular_ids.push(**view_id);
+                tabulars.insert(**view_id, resource);
+            }
+            GrantResource::GenericTable {
+                warehouse_id,
+                generic_table_id,
+            } => {
+                tabular_warehouses.push(**warehouse_id);
+                tabular_ids.push(**generic_table_id);
+                tabulars.insert(**generic_table_id, resource);
+            }
+            GrantResource::Tag(tag_definition_id) => {
+                tag_ids.push(**tag_definition_id);
+                tags.insert(**tag_definition_id, resource);
+            }
+        }
+    }
+
     let rows = sqlx::query_as!(
         GrantAssignmentRow,
         r#"
         -- `!` on the columns declared NOT NULL: this statement has no ORDER BY, and
-        -- without one sqlx's nullability inference stops seeing through the LEFT JOINs
-        -- and reports every output as nullable.
+        -- without one sqlx's nullability inference reports every output as nullable.
         SELECT
             ga.grant_id AS "grant_id!",
             ga.principal_type AS "principal_type!: PrincipalType", ga.user_id, ga.role_id,
             ga.privilege AS "privilege!",
             ga.resource_type AS "resource_type!: StoredResourceType",
             ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,
-            t.typ AS "tabular_typ?: TabularType",
+            -- Not joined: the caller's resource list already carries every kind.
+            NULL::tabular_type AS "tabular_typ?: TabularType",
             ga.created_at AS "created_at!"
         FROM grant_assignment ga
-        LEFT JOIN warehouse w ON ga.warehouse_id = w.warehouse_id
-        LEFT JOIN tag_definition td ON ga.tag_definition_id = td.tag_definition_id
-        LEFT JOIN tabular t
-               ON ga.warehouse_id = t.warehouse_id AND ga.tabular_id = t.tabular_id
-          -- Leading predicate, and the selective one: it is what keeps this an index
-          -- probe. The two arms are split by discriminator so each uses its own
-          -- partial index.
         WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1))
                OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)))
-          AND (ga.resource_type = 'server'::grant_resource_type
-               OR w.project_id = $3
-               OR (ga.resource_type = 'project'::grant_resource_type AND ga.project_id = $3)
-               OR (ga.resource_type = 'tag'::grant_resource_type AND td.project_id = $3))
+          AND (($3 AND ga.resource_type = 'server'::grant_resource_type)
+               OR (ga.resource_type = 'project'::grant_resource_type
+                   AND ga.project_id = ANY($4))
+               OR (ga.resource_type = 'warehouse'::grant_resource_type
+                   AND ga.warehouse_id = ANY($5))
+               OR (ga.resource_type = 'namespace'::grant_resource_type
+                   AND ga.warehouse_id = ANY($6) AND ga.namespace_id = ANY($7))
+               OR (ga.resource_type = 'tabular'::grant_resource_type
+                   AND ga.warehouse_id = ANY($8) AND ga.tabular_id = ANY($9))
+               OR (ga.resource_type = 'tag'::grant_resource_type
+                   AND ga.tag_definition_id = ANY($10)))
         "#,
         &user_ids,
         &role_ids,
-        project_id.to_string(),
+        include_server,
+        &project_ids,
+        &warehouse_ids,
+        &namespace_warehouses,
+        &namespace_ids,
+        &tabular_warehouses,
+        &tabular_ids,
+        &tag_ids,
     )
     .fetch_all(connection)
     .await
     .map_err(DBErrorHandler::into_catalog_backend_error)
     .map_err(ListGrantsStoreError::from)?;
 
-    // The affordability argument above is an expectation, not a bound. Make the
-    // exception attributable before it surfaces as unexplained latency.
-    if rows.len() >= PRINCIPAL_GRANTS_WARN_THRESHOLD {
-        tracing::warn!(
-            "list_grants_for_principals fetched {} grants for {} principals in project \
-             {project_id}; this fetch is unpaginated and scales with grants held",
-            rows.len(),
-            principals.len(),
-        );
-    }
-
-    Ok(rows
-        .into_iter()
-        .map(GrantAssignmentRow::into_row)
-        .collect::<Result<Vec<_>, _>>()?)
+    rows.into_iter()
+        .map(|row| {
+            let resource: Option<GrantResource> = match row.resource_type {
+                StoredResourceType::Server => Some(GrantResource::Server),
+                StoredResourceType::Project => row
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| projects.get(id))
+                    .map(|r| (*r).clone()),
+                StoredResourceType::Warehouse => row
+                    .warehouse_id
+                    .and_then(|id| warehouses.get(&id))
+                    .map(|r| (*r).clone()),
+                StoredResourceType::Namespace => row
+                    .namespace_id
+                    .and_then(|id| namespaces.get(&id))
+                    .map(|r| (*r).clone()),
+                StoredResourceType::Tabular => row
+                    .tabular_id
+                    .and_then(|id| tabulars.get(&id))
+                    .map(|r| (*r).clone()),
+                StoredResourceType::Tag => row
+                    .tag_definition_id
+                    .and_then(|id| tags.get(&id))
+                    .map(|r| (*r).clone()),
+            };
+            // Unreachable: the statement can only match ids taken from the maps.
+            let resource = resource.ok_or_else(|| {
+                DatabaseIntegrityError::new("A grant matched no requested resource")
+            })?;
+            Ok::<_, ListGrantsStoreError>(row.into_spec_on(resource)?)
+        })
+        .collect()
 }
 
 /// Apply a grant diff in one transaction: deletes first, then inserts, so a diff
@@ -1580,16 +1715,16 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn missing_principal_is_reported_as_a_missing_target(pool: PgPool) {
+    async fn a_missing_user_is_named(pool: PgPool) {
         let spec = user_spec("oidc~ghost", GrantResource::Server, "admin");
         let mut txn = pool.begin().await.unwrap();
         let err = insert_grants(std::slice::from_ref(&spec), &mut txn)
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, ApplyGrantsStoreError::GrantTargetNotFound(_)),
-            "expected a missing-target error, got {err:?}"
-        );
+        let ApplyGrantsStoreError::GrantUserNotFound(err) = err else {
+            panic!("expected a missing-user error, got {err:?}");
+        };
+        assert_eq!(err.to_string(), "User `oidc~ghost` does not exist");
     }
 
     /// A grant row records only that its resource is *a* tabular; which kind it is
@@ -1894,13 +2029,14 @@ mod tests {
         holder.rollback().await.unwrap();
     }
 
-    /// The evaluation-path fetch returns every grant the named principals hold at every
-    /// level of the project, plus their server grants, and nothing else. Each level
-    /// reaches the project through a different join, so a decoy per level is what proves
-    /// none of them leaks: a mis-bound parameter surfaces as a neighbour's grant rather
-    /// than as an error. A second user and an ungranted role pin the principal filter.
+    /// The evaluation-path fetch returns every grant the named principals hold on the
+    /// requested chain — one resource per level, server included explicitly — and
+    /// nothing else. Each level matches through its own OR-arm, so a decoy per level
+    /// is what proves none of them leaks: a mis-bound parameter surfaces as a
+    /// neighbour's grant rather than as an error. A second user and an ungranted role
+    /// pin the principal narrowing; the decoy resources pin the chain narrowing.
     #[sqlx::test]
-    async fn the_evaluation_fetch_returns_a_principals_grants_across_the_project(pool: PgPool) {
+    async fn the_evaluation_fetch_returns_exactly_the_requested_chain(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
         let (project_id, warehouse_id) =
             initialize_warehouse(state.clone(), None, None, None, true).await;
@@ -1959,8 +2095,8 @@ mod tests {
             },
             GrantResource::Tag(tag),
         ];
-        // The same shapes in another project: reachable only by a join that ignores the
-        // project parameter.
+        // The same shapes elsewhere: reachable only by an arm that ignores the
+        // requested resource list.
         let out_of_scope = [
             GrantResource::Project((*decoy_project).clone()),
             GrantResource::Warehouse(decoy_warehouse),
@@ -1990,28 +2126,34 @@ mod tests {
         txn.commit().await.unwrap();
 
         let principals = [UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap())];
-        let mut fetched = list_grants_for_principals(&principals, &project_id, &pool)
+        let mut fetched = list_grants_on_resources(&principals, &in_scope, &pool)
             .await
             .unwrap()
             .into_iter()
-            .map(|row| row.resource)
+            .map(|spec| spec.resource)
             .collect::<Vec<_>>();
         fetched.sort_by_key(|resource| format!("{resource:?}"));
         let mut expected = in_scope.clone();
         expected.sort_by_key(|resource| format!("{resource:?}"));
         assert_eq!(fetched, expected);
 
-        // A role the user does not hold contributes nothing, and asking about no
-        // principal at all asks about nothing.
+        // A role the user does not hold contributes nothing; no principals or no
+        // resources ask about nothing.
         let unheld = [UserOrRoleId::Role(RoleId::new_random())];
         assert_eq!(
-            list_grants_for_principals(&unheld, &project_id, &pool)
+            list_grants_on_resources(&unheld, &in_scope, &pool)
                 .await
                 .unwrap(),
             Vec::new()
         );
         assert_eq!(
-            list_grants_for_principals(&[], &project_id, &pool)
+            list_grants_on_resources(&[], &in_scope, &pool)
+                .await
+                .unwrap(),
+            Vec::new()
+        );
+        assert_eq!(
+            list_grants_on_resources(&principals, &[], &pool)
                 .await
                 .unwrap(),
             Vec::new()
@@ -2050,11 +2192,18 @@ mod tests {
             UserOrRoleId::User(UserId::try_from(user.as_str()).unwrap()),
             UserOrRoleId::Role(role_id),
         ];
-        let mut fetched = list_grants_for_principals(&principals, &project_id, &pool)
+        // Server is requested, so the exclusion of the unheld role's server grant is
+        // attributable to the principal narrowing alone.
+        let resources = [
+            GrantResource::Server,
+            user_grant.clone(),
+            role_grant.clone(),
+        ];
+        let mut fetched = list_grants_on_resources(&principals, &resources, &pool)
             .await
             .unwrap()
             .into_iter()
-            .map(|row| row.resource)
+            .map(|spec| spec.resource)
             .collect::<Vec<_>>();
         fetched.sort_by_key(|resource| format!("{resource:?}"));
         let mut expected = vec![user_grant, role_grant];

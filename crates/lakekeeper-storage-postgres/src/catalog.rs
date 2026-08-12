@@ -61,7 +61,8 @@ use lakekeeper::{
         WarehouseFormatVersionPolicy, WarehouseId, WarehouseStatus,
         authn::UserId,
         authz::{
-            AppliedGrants, GrantFilter, GrantRow, GrantSpec, ListGrantsResultPage, UserOrRoleId,
+            AppliedGrants, GrantFilter, GrantResource, GrantSpec, ListGrantsResultPage,
+            UserOrRoleId,
         },
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
         storage::StorageProfile,
@@ -77,7 +78,7 @@ use lakekeeper_io::Location;
 use super::{
     CatalogState, PostgresTransaction,
     bootstrap::{bootstrap, get_validation_data, reopen_for_bootstrap},
-    grant::{apply_grants, delete_grants_for_user, list_grants, list_grants_for_principals},
+    grant::{apply_grants, delete_grants_for_user, list_grants, list_grants_on_resources},
     namespace::{create_namespace, drop_namespace, list_namespaces, update_namespace_properties},
     role::{create_roles, delete_roles, list_roles, list_roles_by_idents, update_role},
     tabular::table::load_tables,
@@ -428,12 +429,12 @@ impl CatalogStore for super::PostgresBackend {
         list_grants(filter, pagination, &catalog_state.read_pool()).await
     }
 
-    async fn list_grants_for_principals_impl(
+    async fn list_grants_on_resources_impl(
         principals: &[UserOrRoleId],
-        project_id: &ProjectId,
+        resources: &[GrantResource],
         catalog_state: Self::State,
-    ) -> Result<Vec<GrantRow>, ListGrantsStoreError> {
-        list_grants_for_principals(principals, project_id, &catalog_state.read_pool()).await
+    ) -> Result<Vec<GrantSpec>, ListGrantsStoreError> {
+        list_grants_on_resources(principals, resources, &catalog_state.read_pool()).await
     }
 
     // ---------------- Tag Management ----------------

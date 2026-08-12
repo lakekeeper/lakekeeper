@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        DELETE FROM grant_assignment ga\n        USING UNNEST($1::uuid[], $2::text[]) AS t(role_id, privilege)\n        WHERE ga.principal_type = 'role'::grant_principal_type\n          AND ga.user_id IS NULL\n          AND ga.role_id = t.role_id\n          AND ga.privilege = t.privilege\n          AND ga.resource_type = $3::grant_resource_type\n          AND ($4::text IS NULL OR ga.project_id = $4)\n          AND ($5::uuid IS NULL OR ga.warehouse_id = $5)\n          AND ($6::uuid IS NULL OR ga.namespace_id = $6)\n          AND ($7::uuid IS NULL OR ga.tabular_id = $7)\n          AND ($8::uuid IS NULL OR ga.tag_definition_id = $8)\n          AND ($9::tabular_type IS NULL\n               OR EXISTS (SELECT 1 FROM tabular tab\n                          WHERE tab.warehouse_id = $5 AND tab.tabular_id = $7\n                            AND tab.typ = $9))\n        RETURNING\n            ga.grant_id, ga.principal_type AS \"principal_type: PrincipalType\", ga.user_id,\n            ga.role_id, ga.privilege, ga.resource_type AS \"resource_type: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at\n        ",
+  "query": "\n        DELETE FROM grant_assignment ga\n        USING UNNEST($1::text[], $2::text[]) AS t(user_id, privilege)\n        WHERE ga.principal_type = 'user'::grant_principal_type\n          -- Constant, so it joins `grant_unique`'s third column to the entry's own two.\n          AND ga.role_id IS NULL\n          AND ga.user_id = t.user_id\n          -- Redundant with the join, deliberately: an array predicate on the base\n          -- table is an index condition on grant_user_idx, where the join condition\n          -- alone is not, so the planner can probe by principal instead of scanning\n          -- the resource when the resource side is the large one.\n          AND ga.user_id = ANY($1)\n          AND ga.privilege = t.privilege\n          AND ga.resource_type = $3::grant_resource_type\n          -- Only the columns this resource kind populates; see the module docs.\n          AND ($4::text IS NULL OR ga.project_id = $4)\n          AND ($5::uuid IS NULL OR ga.warehouse_id = $5)\n          AND ($6::uuid IS NULL OR ga.namespace_id = $6)\n          AND ($7::uuid IS NULL OR ga.tabular_id = $7)\n          AND ($8::uuid IS NULL OR ga.tag_definition_id = $8)\n          -- Revoking on one kind of tabular must not remove another kind's grants, so\n          -- the tabular has to really be of the kind named. Correlated on the\n          -- parameters only, hence evaluated once rather than per row.\n          AND ($9::tabular_type IS NULL\n               OR EXISTS (SELECT 1 FROM tabular tab\n                          WHERE tab.warehouse_id = $5 AND tab.tabular_id = $7\n                            AND tab.typ = $9))\n        RETURNING\n            ga.grant_id, ga.principal_type AS \"principal_type: PrincipalType\", ga.user_id,\n            ga.role_id, ga.privilege, ga.resource_type AS \"resource_type: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            -- Not joined: the statement above already proved the caller's kind, which\n            -- is echoed onto each returned grant.\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at\n        ",
   "describe": {
     "columns": [
       {
@@ -179,7 +179,7 @@
     ],
     "parameters": {
       "Left": [
-        "UuidArray",
+        "TextArray",
         "TextArray",
         {
           "Custom": {
@@ -231,5 +231,5 @@
       false
     ]
   },
-  "hash": "31d7726f3c5b19361f36cfe55cf12363b01ba61dcedf914a24a10c55141b5071"
+  "hash": "8208bded7ef92e355d39a8bb343255701790e5eb5e5014f0a63903f80abbb7ef"
 }

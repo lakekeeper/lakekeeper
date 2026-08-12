@@ -305,6 +305,115 @@ mod grant {
             assert_eq!(unknown, vec![false]);
         }
 
+        /// A principal holding only direct `manage_grants` on a warehouse can read
+        /// back what it applies. In the model `manage_grants` reaches
+        /// `can_read_assignments` but not `describe`, so before the grant-read action
+        /// doubled as visibility (see `require_warehouse_action`) the listing and the
+        /// delegated grantable-privileges view answered the masked not-found — grants
+        /// could be written but never read back. A principal without grant-read stays
+        /// masked.
+        #[sqlx::test]
+        async fn a_grant_admin_without_describe_reads_what_it_applies(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let grant_admin = UserId::new_unchecked("oidc", "grant-admin");
+            let bob = UserId::new_unchecked("oidc", "bob");
+
+            Server::apply_warehouse_grants(
+                warehouse_id,
+                ctx.clone(),
+                metadata(&admin, &project_id),
+                writes(vec![entry("manage_grants", &grant_admin)]),
+            )
+            .await
+            .unwrap();
+
+            let as_grant_admin = metadata(&grant_admin, &project_id);
+            Server::apply_warehouse_grants(
+                warehouse_id,
+                ctx.clone(),
+                as_grant_admin.clone(),
+                writes(vec![entry("select", &bob)]),
+            )
+            .await
+            .unwrap();
+
+            let page = Server::list_warehouse_grants(
+                warehouse_id,
+                ctx.clone(),
+                as_grant_admin.clone(),
+                ListGrantsQuery::default(),
+                no_pagination(),
+            )
+            .await
+            .unwrap();
+            let mut held: Vec<(String, UserOrRole)> = page
+                .grants
+                .iter()
+                .map(|g| (g.privilege.clone(), g.principal.clone()))
+                .collect();
+            held.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                held,
+                vec![
+                    (
+                        "manage_grants".to_string(),
+                        UserOrRole::User(grant_admin.clone())
+                    ),
+                    // The creator's ownership arrives as a tuple like any grant.
+                    ("ownership".to_string(), UserOrRole::User(admin.clone())),
+                    ("select".to_string(), UserOrRole::User(bob.clone())),
+                ]
+            );
+
+            // The delegated grantable-privileges view gates on the same grant-read
+            // action and is unmasked the same way. Bob holds nothing, so every
+            // privilege of the pinned vocabulary comes back disallowed.
+            let asked = Server::get_warehouse_grantable_privileges(
+                warehouse_id,
+                ctx.clone(),
+                as_grant_admin,
+                lakekeeper::api::management::v1::grant::GetGrantAccessQuery {
+                    principal_user: Some(bob.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let names: Vec<&str> = asked
+                .privileges
+                .iter()
+                .map(|p| p.privilege.name.as_str())
+                .collect();
+            assert_eq!(
+                names,
+                vec![
+                    "ownership",
+                    "pass_grants",
+                    "manage_grants",
+                    "describe",
+                    "select",
+                    "create",
+                    "modify",
+                    "manage_tags"
+                ]
+            );
+            assert!(asked.privileges.iter().all(|p| !p.allowed));
+
+            // No grant-read, no visibility: the masking is unchanged for everyone else.
+            let nobody = UserId::new_unchecked("oidc", "nobody");
+            let err = Server::list_warehouse_grants(
+                warehouse_id,
+                ctx.clone(),
+                metadata(&nobody, &project_id),
+                ListGrantsQuery::default(),
+                no_pagination(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.error.code, 404);
+            assert_eq!(err.error.r#type, "NoSuchWarehouseException");
+        }
+
         /// The instance-admin bypass splits at the grant surface: reads pass, writes do
         /// not. It is a static config credential, so if it could write grants a leaked one
         /// would escalate any principal to admin — here, by writing the very tuples the

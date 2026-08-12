@@ -1836,6 +1836,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -3064,6 +3070,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -3587,6 +3599,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -4556,6 +4574,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -4984,6 +5008,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -5270,6 +5300,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -6268,6 +6304,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -7111,6 +7153,12 @@ paths:
       responses:
         '204':
           description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
         4XX:
           description: ''
           content:
@@ -7569,11 +7617,13 @@ components:
           items:
             $ref: '#/components/schemas/GrantEntry'
           description: Grants to remove. Counts against the shared 100-entry limit with `writes`.
+          maxItems: 100
         writes:
           type: array
           items:
             $ref: '#/components/schemas/GrantEntry'
           description: Grants to create. Counts against the shared 100-entry limit with `deletes`.
+          maxItems: 100
       additionalProperties: false
     AzCredential:
       oneOf:
@@ -9391,9 +9441,11 @@ components:
         recognized:
           type: boolean
           description: |-
-            Whether `privilege` is still in the authorizer's vocabulary. A `false` value
-            is surfaced rather than hidden: it means the grant enforces nothing today but
-            is still there, and can still be revoked.
+            Whether `privilege` is still in the authorizer's vocabulary. Where grants live
+            in the catalog, a `false` value is surfaced rather than hidden: the grant
+            enforces nothing today but is still there, and can still be revoked. An
+            authorizer that owns its grants may instead omit unrecognized grants from
+            listings entirely, so `false` never appears there — see its documentation.
         resource:
           $ref: '#/components/schemas/GrantResourceResponse'
     GrantablePrivilege:
@@ -11385,9 +11437,9 @@ components:
             - string
             - 'null'
           description: |-
-            Present when another page may follow. A page that happens to be the last one
-            can still carry a token, so follow it until a request returns no grants —
-            do not treat a full page as the only signal to continue.
+            Present when another page may follow. Follow the token until it is **absent**:
+            depending on the authorizer, a page can come back short or even empty while
+            more grants remain, so neither a short page nor an empty one signals the end.
 
             The project-scoped listing pages like the rest, but only where grants live in
             the catalog. An authorizer that owns its grants may not implement that listing

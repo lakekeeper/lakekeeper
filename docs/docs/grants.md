@@ -68,6 +68,7 @@ Put the same entry under `deletes`:
 - **Applying is idempotent.** Granting twice creates one grant; revoking a grant nobody holds is not an error. The whole request lands atomically.
 - Success is `204`: every entry now holds, and every revoked entry no longer does.
 - At most **100 entries** per request, `writes` and `deletes` combined.
+- Concurrent changes to the same resource's grants can answer `409`. The request applied nothing — retry it.
 
 ## Where you can grant
 
@@ -139,7 +140,7 @@ Grants say what a principal *may* do. They cannot express deny rules, conditions
 
 **Lifecycle.**
 
-- Deleting a resource revokes its grants with it.
+- Deleting a resource revokes its grants with it. Under OpenFGA this covers the deleted resource itself but not everything inside a deleted warehouse — see [grants outlive the resources they name](./authorization-openfga.md#managing-grants-through-the-grants-api).
 - Deleting a user revokes their grants, so a re-created user id never inherits access.
 - Soft-deleted tables and views keep their grants until expiration, so an undrop restores the access that was there before. They stay visible on the resource's own listing and are left out of the project-scoped listing until the table is restored.
 - Deactivating a warehouse hides its children's grants but not its own, so an administrator can still audit and revoke at the warehouse level.

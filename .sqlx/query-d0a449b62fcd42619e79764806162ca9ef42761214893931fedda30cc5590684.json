@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        -- `!` on the columns declared NOT NULL: this statement has no ORDER BY, and\n        -- without one sqlx's nullability inference stops seeing through the LEFT JOINs\n        -- and reports every output as nullable.\n        SELECT\n            ga.grant_id AS \"grant_id!\",\n            ga.principal_type AS \"principal_type!: PrincipalType\", ga.user_id, ga.role_id,\n            ga.privilege AS \"privilege!\",\n            ga.resource_type AS \"resource_type!: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            t.typ AS \"tabular_typ?: TabularType\",\n            ga.created_at AS \"created_at!\"\n        FROM grant_assignment ga\n        LEFT JOIN warehouse w ON ga.warehouse_id = w.warehouse_id\n        LEFT JOIN tag_definition td ON ga.tag_definition_id = td.tag_definition_id\n        LEFT JOIN tabular t\n               ON ga.warehouse_id = t.warehouse_id AND ga.tabular_id = t.tabular_id\n          -- Leading predicate, and the selective one: it is what keeps this an index\n          -- probe. The two arms are split by discriminator so each uses its own\n          -- partial index.\n        WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1))\n               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)))\n          AND (ga.resource_type = 'server'::grant_resource_type\n               OR w.project_id = $3\n               OR (ga.resource_type = 'project'::grant_resource_type AND ga.project_id = $3)\n               OR (ga.resource_type = 'tag'::grant_resource_type AND td.project_id = $3))\n        ",
+  "query": "\n        -- `!` on the columns declared NOT NULL: this statement has no ORDER BY, and\n        -- without one sqlx's nullability inference reports every output as nullable.\n        SELECT\n            ga.grant_id AS \"grant_id!\",\n            ga.principal_type AS \"principal_type!: PrincipalType\", ga.user_id, ga.role_id,\n            ga.privilege AS \"privilege!\",\n            ga.resource_type AS \"resource_type!: StoredResourceType\",\n            ga.project_id, ga.warehouse_id, ga.namespace_id, ga.tabular_id, ga.tag_definition_id,\n            -- Not joined: the caller's resource list already carries every kind.\n            NULL::tabular_type AS \"tabular_typ?: TabularType\",\n            ga.created_at AS \"created_at!\"\n        FROM grant_assignment ga\n        WHERE ((ga.principal_type = 'user'::grant_principal_type AND ga.user_id = ANY($1))\n               OR (ga.principal_type = 'role'::grant_principal_type AND ga.role_id = ANY($2)))\n          AND (($3 AND ga.resource_type = 'server'::grant_resource_type)\n               OR (ga.resource_type = 'project'::grant_resource_type\n                   AND ga.project_id = ANY($4))\n               OR (ga.resource_type = 'warehouse'::grant_resource_type\n                   AND ga.warehouse_id = ANY($5))\n               OR (ga.resource_type = 'namespace'::grant_resource_type\n                   AND ga.warehouse_id = ANY($6) AND ga.namespace_id = ANY($7))\n               OR (ga.resource_type = 'tabular'::grant_resource_type\n                   AND ga.warehouse_id = ANY($8) AND ga.tabular_id = ANY($9))\n               OR (ga.resource_type = 'tag'::grant_resource_type\n                   AND ga.tag_definition_id = ANY($10)))\n        ",
   "describe": {
     "columns": [
       {
@@ -163,12 +163,7 @@
             }
           }
         },
-        "origin": {
-          "Table": {
-            "table": "tabular",
-            "name": "typ"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 12,
@@ -186,7 +181,14 @@
       "Left": [
         "TextArray",
         "UuidArray",
-        "Text"
+        "Bool",
+        "TextArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -201,9 +203,9 @@
       true,
       true,
       true,
-      true,
+      null,
       false
     ]
   },
-  "hash": "dbbf478ba7afc78dfdc74d595c4e0ff7361113891993b01367c0fcf03c094786"
+  "hash": "d0a449b62fcd42619e79764806162ca9ef42761214893931fedda30cc5590684"
 }

@@ -39,7 +39,8 @@ use crate::{
         ArcProjectId, RoleProviderId, RoleSourceId, ServerId, TabularId, TabularIdentBorrowed,
         authn::UserId,
         authz::{
-            AppliedGrants, GrantFilter, GrantRow, GrantSpec, ListGrantsResultPage, UserOrRoleId,
+            AppliedGrants, GrantFilter, GrantResource, GrantSpec, ListGrantsResultPage,
+            UserOrRoleId,
         },
         health::HealthExt,
         task_configs::TaskQueueConfigFilter,
@@ -800,30 +801,33 @@ where
         catalog_state: Self::State,
     ) -> Result<ListGrantsResultPage, ListGrantsStoreError>;
 
-    /// Every grant held by any of `principals`, on the server or in `project_id`.
+    /// Every grant held by any of `principals` on any of `resources`.
     ///
-    /// For authorization evaluation: an authorizer that resolves inherited permissions
-    /// itself needs the grants that could bear on this request, then filters them
-    /// against the resource chain it has already resolved.
-    ///
-    /// Narrowed by principal, not by resource, and that is deliberate. A coarse resource
-    /// routinely holds one grant per principal in the deployment — a `USE`-style
-    /// privilege granted to each user individually — so a resource-keyed fetch matches a
-    /// large fraction of the table and costs the whole table per decision. A principal
-    /// and their roles hold tens of grants, which is an index probe.
+    /// The authorization-evaluation fetch: an authorizer that resolves inherited
+    /// permissions itself asks for the request's resolved chain — server, project,
+    /// warehouse, the target's ancestor namespaces, and the targets — for the
+    /// principals the decision runs as. Narrowed on **both** axes, so neither a coarse
+    /// resource holding one grant per principal in the deployment nor a principal
+    /// holding one grant per table can make the answer large: the result is bounded by
+    /// chain size times privileges per level. Unpaginated and unordered.
     ///
     /// `principals` must be the **effective** set: the acting principal plus every role
-    /// they hold, transitively. This resolves nothing itself, so an omitted role costs
-    /// access rather than granting it.
+    /// they hold, transitively. `resources` must name everything that should count,
+    /// including [`GrantResource::Server`](crate::service::authz::GrantResource) —
+    /// nothing is implied. This resolves nothing itself, so an omitted role or ancestor
+    /// costs access rather than granting it. Tag definitions are not part of any
+    /// chain: a grant on a tag never bears on a decision about the objects it is
+    /// attached to unless the caller asks for that tag explicitly.
     ///
-    /// Server grants are always included — they belong to no project yet apply in every
-    /// one. Unpaginated and unordered. Like the resource-scoped listing (and unlike the
-    /// project roll-ups), grants on soft-deleted tabulars are included.
-    async fn list_grants_for_principals_impl(
+    /// Each returned grant echoes the matching entry of `resources`, so tables, views
+    /// and generic tables keep the kind the caller asked with — nothing is re-fetched
+    /// to reconstruct it. Like the resource-scoped listing (and unlike the project
+    /// roll-ups), grants on soft-deleted tabulars are included.
+    async fn list_grants_on_resources_impl(
         principals: &[UserOrRoleId],
-        project_id: &ProjectId,
+        resources: &[GrantResource],
         catalog_state: Self::State,
-    ) -> Result<Vec<GrantRow>, ListGrantsStoreError>;
+    ) -> Result<Vec<GrantSpec>, ListGrantsStoreError>;
 
     // ---------------- Tag Management ----------------
     async fn create_tag_definition_impl<'a>(

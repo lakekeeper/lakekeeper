@@ -11,9 +11,9 @@ use super::{CatalogStore, Transaction};
 use crate::{
     api::iceberg::v1::PaginationQuery,
     service::{
-        CatalogBackendError, DatabaseIntegrityError, InvalidPaginationToken, ProjectId,
+        CatalogBackendError, DatabaseIntegrityError, InvalidPaginationToken,
         authz::{
-            AppliedGrants, GrantFilter, GrantRow, GrantSpec, ListGrantsResultPage, UserOrRoleId,
+            AppliedGrants, GrantFilter, GrantSpec, ListGrantsResultPage,
         },
         define_transparent_error, impl_error_stack_methods, impl_from_with_detail,
     },
@@ -42,6 +42,40 @@ impl From<GrantTargetNotFound> for ErrorModel {
         ErrorModel::builder()
             .r#type("GrantTargetNotFound")
             .code(StatusCode::NOT_FOUND.as_u16())
+            .message(err.to_string())
+            .stack(err.stack)
+            .build()
+    }
+}
+
+/// A grant in `writes` named a user that does not exist.
+///
+/// Checked before the insert so the error can name the id — the foreign key behind it
+/// reports only that *something* was missing. Names the first missing id, not all of
+/// them, exactly as the role validation names its first missing role. Deletes stay
+/// unvalidated so a grant held by a user row that has since been hard-deleted remains
+/// revocable.
+#[derive(thiserror::Error, PartialEq, Eq, Debug)]
+#[error("User `{user}` does not exist")]
+pub struct GrantUserNotFound {
+    user: String,
+    stack: Vec<String>,
+}
+impl_error_stack_methods!(GrantUserNotFound);
+impl GrantUserNotFound {
+    #[must_use]
+    pub fn new(user: impl Into<String>) -> Self {
+        Self {
+            user: user.into(),
+            stack: Vec::new(),
+        }
+    }
+}
+impl From<GrantUserNotFound> for ErrorModel {
+    fn from(err: GrantUserNotFound) -> Self {
+        ErrorModel::builder()
+            .r#type("GrantUserNotFound")
+            .code(StatusCode::BAD_REQUEST.as_u16())
             .message(err.to_string())
             .stack(err.stack)
             .build()
@@ -96,6 +130,7 @@ define_transparent_error! {
     variants: [
         CatalogBackendError,
         GrantTargetNotFound,
+        GrantUserNotFound,
         GrantLockTimeout,
         DatabaseIntegrityError
     ]
@@ -140,16 +175,9 @@ where
         Ok(Self::list_grants_impl(filter, pagination, catalog_state).await?)
     }
 
-    /// The evaluation-path fetch. See
-    /// [`CatalogStore::list_grants_for_principals_impl`] for the semantics, including
-    /// the requirement that `principals` already be the transitive set.
-    async fn list_grants_for_principals(
-        principals: &[UserOrRoleId],
-        project_id: &ProjectId,
-        catalog_state: Self::State,
-    ) -> crate::api::Result<Vec<GrantRow>> {
-        Ok(Self::list_grants_for_principals_impl(principals, project_id, catalog_state).await?)
-    }
+    // Deliberately no wrapper for `list_grants_on_resources_impl`: the
+    // evaluation-path fetch gets its ergonomic surface with its first caller,
+    // shaped by what that caller needs.
 }
 
 impl<T> CatalogGrantOps for T where T: CatalogStore {}

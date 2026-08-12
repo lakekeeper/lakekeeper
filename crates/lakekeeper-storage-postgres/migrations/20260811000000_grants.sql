@@ -104,7 +104,9 @@ create table grant_assignment (
 --
 -- Every index carries (created_at, grant_id) last. A single level routinely holds one
 -- grant per principal, so without it each page sorts the whole level and paginating
--- costs the level's size squared.
+-- costs the level's size squared. Necessary, not sufficient: the planner estimates a
+-- keyset bound from the global created_at histogram, so a deep page into a level whose
+-- grants are time-clustered can still flip to a sorted bitmap scan.
 --
 -- Each index that keys off a resource column also proves resource_type — as a column
 -- before the keyset, or as its partial predicate — even though the column already

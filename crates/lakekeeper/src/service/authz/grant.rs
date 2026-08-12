@@ -308,15 +308,23 @@ impl From<InvalidGrantPrivilege> for ErrorModel {
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZGrantActionForbidden {
     resource_type: ResourceType,
-    privilege: String,
+    privileges: Vec<String>,
 }
 
 impl AuthZGrantActionForbidden {
+    /// How many refused privileges the message names before it stops counting,
+    /// mirroring the request-validation errors: every offender is reported so one
+    /// round trip fixes them all, but bounded so the message stays readable.
+    const MAX_NAMED: usize = 5;
+
     #[must_use]
-    pub fn new(resource: &GrantResource, privilege: impl Into<String>) -> Self {
+    pub fn new(
+        resource: &GrantResource,
+        privileges: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Self {
             resource_type: resource.resource_type(),
-            privilege: privilege.into(),
+            privileges: privileges.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -325,11 +333,22 @@ impl AuthorizationFailureSource for AuthZGrantActionForbidden {
     fn into_error_model(self) -> ErrorModel {
         let AuthZGrantActionForbidden {
             resource_type,
-            privilege,
+            privileges,
         } = self;
+        let named = privileges
+            .iter()
+            .take(Self::MAX_NAMED)
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let listed = if privileges.len() > Self::MAX_NAMED {
+            format!("{named} and {} more", privileges.len() - Self::MAX_NAMED)
+        } else {
+            named
+        };
         ErrorModel::forbidden(
             format!(
-                "Granting or revoking `{privilege}` on this {} is forbidden",
+                "Granting or revoking {listed} on this {} is forbidden",
                 resource_type.as_str()
             ),
             "GrantActionForbidden",
@@ -632,12 +651,29 @@ mod tests {
     #[test]
     fn forbidden_grant_is_a_403_that_does_not_name_the_resource() {
         let resource = GrantResource::Warehouse(WarehouseId::new_random());
-        let err = AuthZGrantActionForbidden::new(&resource, "select").into_error_model();
+        let err = AuthZGrantActionForbidden::new(&resource, ["select"]).into_error_model();
         assert_eq!(err.code, 403);
         assert_eq!(err.r#type, "GrantActionForbidden");
         assert_eq!(
             err.message,
             "Granting or revoking `select` on this warehouse is forbidden"
+        );
+    }
+
+    #[test]
+    fn forbidden_grant_names_every_refused_privilege_bounded() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let err =
+            AuthZGrantActionForbidden::new(&resource, ["select", "modify"]).into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting or revoking `select`, `modify` on this warehouse is forbidden"
+        );
+        let err = AuthZGrantActionForbidden::new(&resource, ["a", "b", "c", "d", "e", "f", "g"])
+            .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting or revoking `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
         );
     }
 }

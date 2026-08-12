@@ -23,11 +23,12 @@
 //! ## What the write and vocabulary paths disclose
 //!
 //! Listings resolve the resource with the level's can-see action, so one the caller
-//! cannot see reads as absent. The apply and grantable-privileges paths deliberately do
-//! not: grant authority is independent of visibility. `security_admin` holds
-//! `manage_grants` on every warehouse in its project without holding `describe`, so
-//! gating those paths on a can-see action would lock the role designed to manage grants
-//! out of managing them.
+//! cannot see reads as absent — with one deliberate exception: the grant-read action
+//! doubles as visibility (see `require_warehouse_action`), because a principal holding
+//! only direct `manage_grants` has grant-read without can-see, and masking it would
+//! let them apply grants they can never read back. The apply and grantable-privileges
+//! paths check no can-see at all: grant authority is independent of visibility, and a
+//! principal can hold `manage_grants` directly on a resource it cannot otherwise see.
 //!
 //! The consequence is that, for a caller who already knows a resource's id, those two
 //! paths distinguish "exists but you may not" (403, or a vocabulary with nothing
@@ -65,6 +66,7 @@ use crate::{
         authn::UserId,
         authz::{
             ActionDescriptor, AuthZCannotSeeTag, AuthZCannotUseWarehouseId, AuthZError,
+            AuthZTagActionForbidden,
             AuthZGenericTableOps, AuthZGrantActionForbidden, AuthZGrantOps, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthZTagOps, AuthZViewOps, Authorizer,
             AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
@@ -144,10 +146,14 @@ pub struct GrantEntry {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct ApplyGrantsRequest {
     /// Grants to create. Counts against the shared 100-entry limit with `deletes`.
+    // max_items is sound but not tight: the 100-entry cap is shared across both
+    // arrays, which a per-array bound cannot express.
     #[serde(default)]
+    #[cfg_attr(feature = "open-api", schema(max_items = 100))]
     pub writes: Vec<GrantEntry>,
     /// Grants to remove. Counts against the shared 100-entry limit with `writes`.
     #[serde(default)]
+    #[cfg_attr(feature = "open-api", schema(max_items = 100))]
     pub deletes: Vec<GrantEntry>,
 }
 
@@ -278,9 +284,11 @@ pub struct GrantResponse {
     pub principal: UserOrRole,
     pub resource: GrantResourceResponse,
     pub privilege: String,
-    /// Whether `privilege` is still in the authorizer's vocabulary. A `false` value
-    /// is surfaced rather than hidden: it means the grant enforces nothing today but
-    /// is still there, and can still be revoked.
+    /// Whether `privilege` is still in the authorizer's vocabulary. Where grants live
+    /// in the catalog, a `false` value is surfaced rather than hidden: the grant
+    /// enforces nothing today but is still there, and can still be revoked. An
+    /// authorizer that owns its grants may instead omit unrecognized grants from
+    /// listings entirely, so `false` never appears there — see its documentation.
     pub recognized: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     // No grantor. Who granted a privilege is a question about a past event, not about
@@ -298,9 +306,9 @@ pub struct GrantResponse {
 #[serde(rename_all = "kebab-case")]
 pub struct ListGrantsResponse {
     pub grants: Vec<GrantResponse>,
-    /// Present when another page may follow. A page that happens to be the last one
-    /// can still carry a token, so follow it until a request returns no grants —
-    /// do not treat a full page as the only signal to continue.
+    /// Present when another page may follow. Follow the token until it is **absent**:
+    /// depending on the authorizer, a page can come back short or even empty while
+    /// more grants remain, so neither a short page nor an empty one signals the end.
     ///
     /// The project-scoped listing pages like the rest, but only where grants live in
     /// the catalog. An authorizer that owns its grants may not implement that listing
@@ -731,8 +739,8 @@ async fn require_grant_authority<A: Authorizer>(
     resource: &GrantResource,
     request: &ApplyGrantsRequest,
 ) -> std::result::Result<(), AuthZError> {
-    // Deduplicated in first-seen order, not sorted: the error below names the first
-    // refused privilege, and "first" should mean first in the caller's request.
+    // Deduplicated in first-seen order, not sorted: the error below lists the refused
+    // privileges in the order the caller's request names them.
     let mut seen = std::collections::HashSet::new();
     let privileges: Vec<&str> = privileges_of(request)
         .into_iter()
@@ -741,10 +749,16 @@ async fn require_grant_authority<A: Authorizer>(
     let decisions = authorizer
         .are_allowed_grants(metadata, None, resource, &privileges)
         .await?;
-    for (privilege, decision) in privileges.iter().zip(&decisions) {
-        if !decision.allowed {
-            return Err(AuthZGrantActionForbidden::new(resource, *privilege).into());
-        }
+    // Every refused privilege is named, matching the validation errors above: one
+    // round trip should surface everything the caller must remove.
+    let refused: Vec<&str> = privileges
+        .iter()
+        .zip(&decisions)
+        .filter(|(_, decision)| !decision.allowed)
+        .map(|(privilege, _)| *privilege)
+        .collect();
+    if !refused.is_empty() {
+        return Err(AuthZGrantActionForbidden::new(resource, refused).into());
     }
     Ok(())
 }
@@ -1487,38 +1501,38 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             let definition = authorizer.require_tag_presence(tag_definition_id, definition)?;
             // Unlike the other levels, tag resolution has no can-see action folded into
             // it, so a definition the caller cannot see would answer `403` naming the id
-            // while an id that does not exist answers `404` — an existence oracle. Check
-            // it explicitly and mask, matching what `require_*_action` does elsewhere.
-            let can_see = authorizer
-                .is_allowed_tag_action(
+            // while an id that does not exist answers `404` — an existence oracle. Mask
+            // explicitly, matching `require_*_action` elsewhere — including its rule
+            // that the grant-read action doubles as visibility. One batched call: on
+            // the self path `required` is `Read`, so the pair decides everything.
+            let [can_see, required_ok, read_grants] = authorizer
+                .are_allowed_tag_actions_arr(
                     event_ctx.request_metadata(),
                     None,
-                    &definition,
-                    CatalogTagAction::Read,
+                    &[
+                        (&definition, CatalogTagAction::Read),
+                        (&definition, required.clone()),
+                        (&definition, CatalogTagAction::ReadGrants),
+                    ],
                 )
                 .await?
                 .into_inner();
-            if !can_see {
-                return Err(
-                    RequireTagActionError::from(AuthZCannotSeeTag::new_forbidden(
-                        tag_definition_id,
-                    ))
-                    .into(),
-                );
+            if read_grants || (can_see && required_ok) {
+                return Ok::<(), AuthZError>(());
             }
-            // On the self path `required` is the `Read` just decided above, so asking
-            // again would repeat the identical check.
-            if !is_self {
-                authorizer
-                    .require_tag_action(
-                        event_ctx.request_metadata(),
-                        tag_definition_id,
-                        Ok(Some(definition)),
-                        required,
-                    )
-                    .await?;
+            if can_see {
+                return Err(RequireTagActionError::from(AuthZTagActionForbidden::new(
+                    tag_definition_id,
+                    &required,
+                ))
+                .into());
             }
-            Ok::<(), AuthZError>(())
+            Err(
+                RequireTagActionError::from(AuthZCannotSeeTag::new_forbidden(
+                    tag_definition_id,
+                ))
+                .into(),
+            )
         }
         .await;
         let (event_ctx, ()) = event_ctx.emit_authz(authz_result)?;
@@ -2671,9 +2685,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_write_gate_names_the_first_denied_privilege() {
-        // One decision per privilege, in order: the error must name the privilege that
-        // was actually refused, not whichever one happens to be first in the request.
+    async fn the_write_gate_names_every_denied_privilege() {
+        // One decision per privilege, in order: the error must name each privilege
+        // that was actually refused, in request order, so one round trip surfaces
+        // everything the caller must remove — matching the validation errors.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
         let resource = GrantResource::Server;
@@ -2690,7 +2705,7 @@ mod tests {
 
         assert_eq!(
             err.message,
-            "Granting or revoking `provision_users` on this server is forbidden"
+            "Granting or revoking `provision_users`, `list_users` on this server is forbidden"
         );
     }
 
