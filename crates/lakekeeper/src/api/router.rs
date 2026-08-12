@@ -64,9 +64,15 @@ static VARY_ON_REQUEST_IDENTITY: HeaderValue =
     HeaderValue::from_static("authorization, x-project-id, x-iceberg-access-delegation");
 
 /// Attaches the cache directives above to every route already mounted on
-/// `router`. Set `if_not_present` so that routes with stricter needs — the S3
-/// signer sets `private, no-cache` — keep their own directive. Call this
-/// before mounting `/health`, which is not principal-specific.
+/// `router`, and to every response short-circuited by a layer already applied
+/// to it. Call this before mounting `/health`, which is not
+/// principal-specific.
+///
+/// `Cache-Control` is set `if_not_present` so that routes with stricter needs
+/// — the S3 signer sets `private, no-cache` — keep their own directive.
+/// `Vary` is *appended*: it is a list-valued header, so a route that names a
+/// further request header must not lose the fields below. Caches combine the
+/// field lines, which is also how `CompressionLayer` adds `accept-encoding`.
 fn set_cache_directives<S>(router: Router<S>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -76,7 +82,7 @@ where
             header::CACHE_CONTROL,
             CACHE_CONTROL_PRIVATE.clone(),
         ))
-        .layer(SetResponseHeaderLayer::if_not_present(
+        .layer(SetResponseHeaderLayer::appending(
             header::VARY,
             VARY_ON_REQUEST_IDENTITY.clone(),
         ))
@@ -184,40 +190,42 @@ pub async fn new_full_router<
         option_layer(None)
     };
 
-    let mut router = set_cache_directives(
-        Router::new()
-            .nest("/catalog/v1", v1_routes)
-            .nest("/management/v1", management_routes)
-            .nest("/lakekeeper/v1", generic_table_routes)
-            // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
-            // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
-            // before `/health` is added so liveness/readiness probes are
-            // unaffected.
-            .layer(axum::middleware::from_fn(
-                crate::api::maintenance::maintenance_middleware_fn,
-            )),
-    )
-    .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
+    let mut router = Router::new()
+        .nest("/catalog/v1", v1_routes)
+        .nest("/management/v1", management_routes)
+        .nest("/lakekeeper/v1", generic_table_routes)
+        // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
+        // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
+        // before `/health` is added so liveness/readiness probes are
+        // unaffected.
+        .layer(axum::middleware::from_fn(
+            crate::api::maintenance::maintenance_middleware_fn,
+        ))
+        .layer(DefaultBodyLimit::max(CONFIG.max_request_body_size));
 
     // Apply request body logging middleware FIRST, before any other middleware that might consume the body
     if CONFIG.debug.log_request_bodies {
         router = router.layer(axum::middleware::from_fn(print_request_body));
     }
 
-    let router = router
-        .layer(axum::middleware::from_fn_with_state(
-            endpoint_statistics_tracker_tx,
-            crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
-        ))
-        .layer(maybe_auth_layer)
-        // Add health later so that it is not authenticated
-        .route(
-            "/health",
-            get(|| async move {
-                let health = service_health_provider.collect_health().await;
-                health_response(health)
-            }),
-        );
+    // Wraps the authentication layer, so that a request rejected there carries
+    // the cache directives too. `/health` is mounted below, outside the wrap.
+    let router = set_cache_directives(
+        router
+            .layer(axum::middleware::from_fn_with_state(
+                endpoint_statistics_tracker_tx,
+                crate::service::endpoint_statistics::endpoint_statistics_middleware_fn,
+            ))
+            .layer(maybe_auth_layer),
+    )
+    // Add health later so that it is not authenticated
+    .route(
+        "/health",
+        get(|| async move {
+            let health = service_health_provider.collect_health().await;
+            health_response(health)
+        }),
+    );
 
     let registered_api_configs = state.v1_state.registered_task_queues.api_config().await;
     let (warehouse_task_api_configs, project_task_api_configs) = registered_api_configs
@@ -481,7 +489,7 @@ pub async fn serve(
 mod test {
     use std::collections::HashMap;
 
-    use axum::{Router, body::Body, http::Request, routing::get};
+    use axum::{Router, body::Body, http::Request, response::IntoResponse as _, routing::get};
     use http::{HeaderMap, HeaderValue, StatusCode, header};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
@@ -550,12 +558,19 @@ mod test {
             .clone()
     }
 
-    #[tokio::test]
-    async fn responses_are_private_and_vary_on_the_request_identity() {
-        let headers = cache_directive_headers(&[]).await;
+    /// A cache combines every `Vary` field line, so collect them all rather
+    /// than reading only the first.
+    fn vary_fields(headers: &HeaderMap) -> String {
+        headers
+            .get_all(header::VARY)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 
-        assert_eq!(headers[header::CACHE_CONTROL], "private");
-        let vary = headers[header::VARY].to_str().unwrap();
+    fn assert_varies_on_the_request_identity(headers: &HeaderMap) {
+        let vary = vary_fields(headers);
         for varied_on in [
             header::AUTHORIZATION.as_str(),
             crate::request_metadata::X_PROJECT_ID_HEADER,
@@ -563,6 +578,25 @@ mod test {
         ] {
             assert!(vary.contains(varied_on), "{varied_on} missing from {vary}");
         }
+    }
+
+    #[tokio::test]
+    async fn responses_are_private_and_vary_on_the_request_identity() {
+        let headers = cache_directive_headers(&[]).await;
+
+        assert_eq!(headers[header::CACHE_CONTROL], "private");
+        assert_varies_on_the_request_identity(&headers);
+    }
+
+    /// `Vary` is list-valued: a route naming a further request header must
+    /// keep it *and* the identity fields, or a cache loses one of the two.
+    #[tokio::test]
+    async fn a_route_vary_is_merged_with_the_identity_fields() {
+        let headers = cache_directive_headers(&[(header::VARY, "accept")]).await;
+
+        let vary = vary_fields(&headers);
+        assert!(vary.contains("accept"), "route's own field lost: {vary}");
+        assert_varies_on_the_request_identity(&headers);
     }
 
     /// `private` permits client-side storage — without it the `ETag` /
@@ -583,6 +617,50 @@ mod test {
             cache_directive_headers(&[(header::CACHE_CONTROL, "private, no-cache")]).await;
 
         assert_eq!(headers[header::CACHE_CONTROL], "private, no-cache");
+    }
+
+    /// Mirrors `new_full_router`: authentication is wrapped by the cache
+    /// directives, `/health` is mounted outside them. A request rejected
+    /// before it reaches a handler never produces a body, so the directives
+    /// have to come from the wrap rather than from the route.
+    fn app_with_rejecting_auth() -> Router {
+        super::set_cache_directives(Router::new().route("/t", get(|| async { "ok" })).layer(
+            axum::middleware::from_fn(
+                async |_req: Request<Body>, _next: axum::middleware::Next| {
+                    StatusCode::UNAUTHORIZED.into_response()
+                },
+            ),
+        ))
+        .route("/health", get(|| async { "ok" }))
+    }
+
+    #[tokio::test]
+    async fn a_rejected_request_still_gets_the_cache_directives() {
+        let response = app_with_rejecting_auth()
+            .oneshot(Request::builder().uri("/t").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "private");
+        assert_varies_on_the_request_identity(response.headers());
+    }
+
+    #[tokio::test]
+    async fn health_is_outside_the_cache_directives() {
+        let response = app_with_rejecting_auth()
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::CACHE_CONTROL));
+        assert!(!response.headers().contains_key(header::VARY));
     }
 
     #[tokio::test]
