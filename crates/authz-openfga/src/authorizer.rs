@@ -927,42 +927,15 @@ impl Authorizer for OpenFGAAuthorizer {
         self.delete_all_relations(&namespace_id).await
     }
 
-    async fn move_namespace(
+    async fn detach_namespace_parent(
         &self,
         _metadata: &RequestMetadata,
         namespace_id: NamespaceId,
-        new_parent: NamespaceParent,
-        old_parent: NamespaceParent,
+        parent: NamespaceParent,
     ) -> AuthorizerResult<()> {
-        // Two phases, additive first, each its own OpenFGA transaction.
-        //
-        // A single combined write would be atomic, which sounds better but is worse here:
-        // the whole write fails if either half is already applied, so a partially-applied
-        // retry can never converge. Splitting keeps each half independently idempotent.
-        //
-        // Ordering: add the new edge before dropping the old one, so the namespace is
-        // never transiently parentless. Callers invoke this after the catalog commit, so
-        // the worst outcome of a failure is authorization lagging the catalog — stale
-        // inherited access at the old parent — rather than access granted at the new
-        // parent for a move that did not happen.
-        let writes = crate::tuples::hierarchy_tuples_for_namespace(&new_parent, namespace_id);
-        self.write(Some(writes), None)
-            .await
-            // Already present: a previous attempt got this far. Not an error.
-            .or_else(|e| match e {
-                OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
-                    tracing::debug!(
-                        "Hierarchy tuples for namespace {namespace_id} under its new parent already exist; treating as applied"
-                    );
-                    Ok(())
-                }
-                e => Err(e),
-            })
-            .map_err(authz_to_error_no_audit)?;
-
         // Derived from the same helper that writes them, so the delete cannot drift from
         // the write. A condition cannot participate in a delete, hence the reshape.
-        let deletes = crate::tuples::hierarchy_tuples_for_namespace(&old_parent, namespace_id)
+        let deletes = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id)
             .into_iter()
             .map(|t| TupleKeyWithoutCondition {
                 user: t.user,
@@ -976,7 +949,34 @@ impl Authorizer for OpenFGAAuthorizer {
             .or_else(|e| match e {
                 OpenFGAError::CannotDeleteTupleNotFound(_) => {
                     tracing::debug!(
-                        "Hierarchy tuples for namespace {namespace_id} under its old parent are already gone; treating as applied"
+                        "Hierarchy tuples for namespace {namespace_id} under parent are already gone; treating as applied"
+                    );
+                    Ok(())
+                }
+                e => Err(e),
+            })
+            .map_err(authz_to_error_no_audit)
+            .map_err(Into::into)
+    }
+
+    async fn attach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        namespace_id: NamespaceId,
+        parent: NamespaceParent,
+    ) -> AuthorizerResult<()> {
+        // Its own OpenFGA transaction, separate from the detach. Combining the two into one
+        // atomic write sounds better but is worse: the whole write fails if either half is
+        // already applied, so a partially-applied retry could never converge. Split, each
+        // half is independently idempotent.
+        let writes = crate::tuples::hierarchy_tuples_for_namespace(&parent, namespace_id);
+        self.write(Some(writes), None)
+            .await
+            // Already present: a previous attempt got this far. Not an error.
+            .or_else(|e| match e {
+                OpenFGAError::CannotWriteTupleAlreadyExists(_) => {
+                    tracing::debug!(
+                        "Hierarchy tuples for namespace {namespace_id} under parent already exist; treating as applied"
                     );
                     Ok(())
                 }
@@ -2193,14 +2193,14 @@ pub(crate) mod tests {
             assert!(!before.contains(&new_forward));
 
             // Re-parent from the namespace to the warehouse root — the case where the
-            // inverse relation changes kind (`child` → `namespace`).
+            // inverse relation changes kind (`child` → `namespace`). Detach first, then
+            // attach, the order the API layer uses around its commit.
             authorizer
-                .move_namespace(
-                    &metadata,
-                    moved,
-                    NamespaceParent::Warehouse(warehouse_id),
-                    NamespaceParent::Namespace(old_parent),
-                )
+                .detach_namespace_parent(&metadata, moved, NamespaceParent::Namespace(old_parent))
+                .await
+                .unwrap();
+            authorizer
+                .attach_namespace_parent(&metadata, moved, NamespaceParent::Warehouse(warehouse_id))
                 .await
                 .unwrap();
 
@@ -2255,26 +2255,36 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
 
-            let move_once = || {
-                authorizer.move_namespace(
-                    &metadata,
-                    moved,
-                    NamespaceParent::Warehouse(warehouse_id),
-                    NamespaceParent::Namespace(old_parent),
-                )
-            };
+            // Replay the detach/attach pair three times. Both halves must tolerate their
+            // own "already applied" error, or the second round fails.
+            let mut after_first = None;
+            for attempt in 1..=3 {
+                authorizer
+                    .detach_namespace_parent(
+                        &metadata,
+                        moved,
+                        NamespaceParent::Namespace(old_parent),
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("detach on attempt {attempt} failed: {e:?}"));
+                authorizer
+                    .attach_namespace_parent(
+                        &metadata,
+                        moved,
+                        NamespaceParent::Warehouse(warehouse_id),
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("attach on attempt {attempt} failed: {e:?}"));
 
-            move_once().await.expect("first move");
-            let after_first = all_tuples(&authorizer).await;
-
-            move_once().await.expect("replaying the move must succeed");
-            move_once().await.expect("and again");
-
-            assert_eq!(
-                all_tuples(&authorizer).await,
-                after_first,
-                "replays must not change the tuple set"
-            );
+                let tuples = all_tuples(&authorizer).await;
+                match &after_first {
+                    None => after_first = Some(tuples),
+                    Some(first) => assert_eq!(
+                        &tuples, first,
+                        "replay {attempt} must not change the tuple set"
+                    ),
+                }
+            }
         }
 
         #[tokio::test]

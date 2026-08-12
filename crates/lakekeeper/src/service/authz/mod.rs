@@ -2162,29 +2162,56 @@ where
         namespace_id: NamespaceId,
     ) -> Result<()>;
 
-    /// Hook that is called when a namespace is moved to a new parent.
+    /// Hook that removes a namespace's hierarchy relation to `parent`, so it stops
+    /// inheriting permissions from it.
     ///
-    /// Re-points the hierarchy so inherited permissions follow the namespace: add the
-    /// relation to `new_parent`, drop the one to `old_parent`. Not called for a rename in
-    /// place — the hierarchy is unchanged there — nor for a no-op.
+    /// Paired with [`Self::attach_namespace_parent`] to re-point a namespace during a move.
+    /// Not called for a rename in place — the hierarchy is unchanged there — nor for a
+    /// no-op.
     ///
     /// # Ordering contract
     ///
-    /// Called **after** the catalog transaction commits, and split so that the additive
-    /// half runs first. Writing the new relation before the commit would grant the
-    /// destination's principals access to a namespace that may still roll back. The
-    /// consequence is that a failure here leaves authorization *behind* the catalog rather
-    /// than ahead of it: stale inherited access at the old parent, never premature access
-    /// at the new one. Implementations should therefore be idempotent — tolerating a
-    /// relation that is already present or already gone — so a retry can converge.
+    /// Called **before** the catalog transaction commits, and its failure fails the
+    /// request: nothing is committed yet, so catalog and authorizer are both unchanged.
+    /// Detaching first is what guarantees the namespace is never reachable from two
+    /// parents at once — see [`Self::attach_namespace_parent`] for why that direction was
+    /// chosen. Should be idempotent, tolerating a relation that is already gone.
     ///
     /// Defaults to a no-op for implementations that do not model hierarchy.
-    async fn move_namespace(
+    async fn detach_namespace_parent(
         &self,
         _metadata: &RequestMetadata,
         _namespace_id: NamespaceId,
-        _new_parent: NamespaceParent,
-        _old_parent: NamespaceParent,
+        _parent: NamespaceParent,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hook that adds a namespace's hierarchy relation to `parent`, so it begins
+    /// inheriting permissions from it.
+    ///
+    /// # Ordering contract
+    ///
+    /// Called **after** the catalog transaction commits, so no principal gains access
+    /// through a parent the catalog has not accepted. Also used to compensate a failed
+    /// commit by re-attaching the *old* parent that
+    /// [`Self::detach_namespace_parent`] removed.
+    ///
+    /// Its failure cannot be reported to the caller — the move already happened — so it is
+    /// logged and left to reconciliation. That is the trade this ordering buys: every
+    /// failure mode leaves the authorizer *missing* an edge, never holding an extra one, so
+    /// a namespace can lose inherited access but never silently keep or gain it. Missing
+    /// edges are also what `lakekeeper openfga reconcile` repairs in its **default**
+    /// additive mode; removing a surplus edge would need `--mode add-and-delete-drift`.
+    ///
+    /// Should be idempotent, tolerating a relation that is already present.
+    ///
+    /// Defaults to a no-op for implementations that do not model hierarchy.
+    async fn attach_namespace_parent(
+        &self,
+        _metadata: &RequestMetadata,
+        _namespace_id: NamespaceId,
+        _parent: NamespaceParent,
     ) -> Result<()> {
         Ok(())
     }

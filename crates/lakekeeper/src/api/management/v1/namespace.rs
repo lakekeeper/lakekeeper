@@ -159,6 +159,69 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
     Ok((warehouse, namespace, new_parent))
 }
 
+/// Input validation for a move destination, matching what creating a namespace at that path
+/// would require. The storage layer trusts the caller for these, as `create_namespace_impl`
+/// does.
+fn validate_move_destination(destination: &NamespaceIdent) -> Result<()> {
+    validate_namespace_ident_creation(destination)?;
+    // `validate_namespace_ident_creation` passes a zero-length ident vacuously — its depth,
+    // dot and empty-part checks all hold trivially for no elements — and `NamespaceIdent`
+    // derives `Deserialize` over a `Vec<String>`, so `[]` reaches us from the wire. Reject it
+    // here rather than letting a caller index into it.
+    let Some(first_segment) = destination.as_ref().first() else {
+        return Err(ErrorModel::bad_request(
+            "Destination namespace must not be empty.",
+            "NamespaceEmpty",
+            None,
+        )
+        .into());
+    };
+    if CONFIG
+        .reserved_namespaces
+        .contains(&first_segment.to_lowercase())
+    {
+        tracing::debug!("Denying move to reserved namespace: '{first_segment}'");
+        return Err(ErrorModel::bad_request(
+            "Namespace is reserved for internal use.",
+            "ReservedNamespace",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Refuse the move when the warehouse's storage layout would end up disagreeing with the
+/// namespace hierarchy.
+///
+/// A namespace's physical location is frozen at creation, so a move never relocates existing
+/// data. But under a layout that derives locations from the ancestor chain or from namespace
+/// names, a *later-created* child would compute its path from the new chain and land outside
+/// the moved namespace — fragmenting the layout silently. See
+/// [`StorageLayout::move_desyncs_location`](crate::service::storage::storage_layout::StorageLayout::move_desyncs_location).
+fn ensure_storage_layout_permits_move(
+    warehouse: &ResolvedWarehouse,
+    previous_ident: &NamespaceIdent,
+    destination: &NamespaceIdent,
+) -> Result<()> {
+    let renamed = previous_ident.as_ref().last() != destination.as_ref().last();
+    let reparented = previous_ident.parent() != destination.parent();
+    if let Some(layout) = warehouse.storage_profile.layout()
+        && layout.move_desyncs_location(renamed, reparented)
+    {
+        return Err(ErrorModel::bad_request(
+            "Namespaces cannot be moved in this warehouse: its storage layout derives \
+             physical locations from namespace names or from the namespace hierarchy, so \
+             moving would place newly created child namespaces outside the moved \
+             namespace's location.",
+            "StorageLayoutForbidsNamespaceMove",
+            None,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Request to move a namespace to a new location in the hierarchy.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -273,6 +336,40 @@ where
     /// Requires `move` on the namespace itself, plus both `create_namespace` and
     /// `accept_moved_namespace` on the destination parent (or on the warehouse, when moving
     /// to the root) — grant authority at both ends. See [`authorize_namespace_move`].
+    ///
+    /// # Authorization-hierarchy ordering
+    ///
+    /// The hierarchy is re-pointed *around* the commit: detach the old parent before it,
+    /// attach the new one after.
+    ///
+    /// The alternative — attach first, detach second, both after the commit — has failure
+    /// modes that leave the namespace reachable from *two* parents at once, so its contents
+    /// silently keep inheriting permissions from where they used to live. That is invisible:
+    /// no error reaches the caller, the catalog looks correct, and the surplus grant appears
+    /// in no assignment listing.
+    ///
+    /// Detaching first trades that for a brief window in which the namespace inherits from
+    /// *neither* parent — principals whose access arrives through the parent get 403s for one
+    /// authorizer round-trip plus the commit. Direct grants and ownership on the namespace
+    /// itself are separate relations and unaffected.
+    ///
+    /// The window is worth it because every failure mode then leaves the authorizer
+    /// *missing* an edge rather than holding a surplus one:
+    ///
+    /// | Failure | Resulting state |
+    /// |---|---|
+    /// | detach (pre-commit) | nothing committed; both systems unchanged; request fails |
+    /// | commit | old edge re-attached to compensate; request fails |
+    /// | attach-new (post-commit) | namespace has no parent: access lost, never leaked |
+    ///
+    /// Missing edges are also the repairable kind: `lakekeeper openfga reconcile` fixes them
+    /// in its **default** additive mode, whereas removing a surplus edge needs
+    /// `--mode add-and-delete-drift`. So the surviving failure is both fail-closed and
+    /// repairable by the command an operator reaches for first.
+    ///
+    /// Retrying the request does *not* repair a failed post-commit attach: the catalog has
+    /// already moved, so the storage layer reports a no-op and the hooks are skipped.
+    /// Reconciliation is the repair path, not retry.
     async fn move_namespace(
         namespace_id: NamespaceId,
         warehouse_id: WarehouseId,
@@ -281,34 +378,8 @@ where
         request_metadata: RequestMetadata,
     ) -> Result<MoveNamespaceResponse> {
         // ------------------- VALIDATIONS -------------------
-        // Same input rules as creating a namespace at this path: the storage layer trusts
-        // the caller for these, exactly as `create_namespace_impl` does.
         let MoveNamespaceRequest { destination, force } = request;
-        validate_namespace_ident_creation(&destination)?;
-        // `validate_namespace_ident_creation` passes a zero-length ident vacuously — its
-        // depth, dot and empty-part checks all hold trivially for no elements — and
-        // `NamespaceIdent` derives `Deserialize` over a `Vec<String>`, so `[]` reaches us
-        // from the wire. Reject it here rather than indexing into it below.
-        let Some(first_segment) = destination.as_ref().first() else {
-            return Err(ErrorModel::bad_request(
-                "Destination namespace must not be empty.",
-                "NamespaceEmpty",
-                None,
-            )
-            .into());
-        };
-        if CONFIG
-            .reserved_namespaces
-            .contains(&first_segment.to_lowercase())
-        {
-            tracing::debug!("Denying move to reserved namespace: '{first_segment}'");
-            return Err(ErrorModel::bad_request(
-                "Namespace is reserved for internal use.",
-                "ReservedNamespace",
-                None,
-            )
-            .into());
-        }
+        validate_move_destination(&destination)?;
 
         // ------------------- AUTHZ -------------------
         // Before opening the write transaction: the authorizer may read the catalog on a
@@ -340,25 +411,7 @@ where
         let (event_ctx, (warehouse, namespace, new_parent)) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- STORAGE LAYOUT -------------------
-        // A namespace's physical location is frozen at creation. Under layouts that derive
-        // it from the ancestor chain or the name, moving would leave later-created children
-        // in unrelated places, so refuse rather than silently fragment the layout.
-        let previous_ident = namespace.namespace_ident().clone();
-        let renamed = previous_ident.as_ref().last() != destination.as_ref().last();
-        let reparented = previous_ident.parent() != destination.parent();
-        if let Some(layout) = warehouse.storage_profile.layout()
-            && layout.move_desyncs_location(renamed, reparented)
-        {
-            return Err(ErrorModel::bad_request(
-                "Namespaces cannot be moved in this warehouse: its storage layout derives \
-                 physical locations from namespace names or from the namespace hierarchy, so \
-                 moving would place newly created child namespaces outside the moved \
-                 namespace's location.",
-                "StorageLayoutForbidsNamespaceMove",
-                None,
-            )
-            .into());
-        }
+        ensure_storage_layout_permits_move(&warehouse, namespace.namespace_ident(), &destination)?;
 
         let event_ctx = event_ctx.resolve(ResolvedNamespace {
             warehouse,
@@ -366,6 +419,7 @@ where
         });
 
         // ------------------- BUSINESS LOGIC -------------------
+        // Detach-then-commit-then-attach; see this method's docs for why that order.
         let mut t = C::Transaction::begin_write(state_catalog).await?;
         let moved = C::move_namespace(
             warehouse_id,
@@ -375,7 +429,47 @@ where
             t.transaction(),
         )
         .await?;
-        t.commit().await?;
+
+        let reparented = moved.changed_parent();
+        let old_parent = moved
+            .previous_parent
+            .map_or(NamespaceParent::Warehouse(warehouse_id), |parent| {
+                NamespaceParent::Namespace(parent)
+            });
+
+        // Pre-commit: retire the old edge. Hard error — nothing is committed yet, so
+        // failing here leaves both systems as they were. Mirrors `create_namespace`, which
+        // likewise writes to the authorizer inside the open transaction.
+        if reparented {
+            authorizer
+                .detach_namespace_parent(
+                    event_ctx.request_metadata(),
+                    namespace_id,
+                    old_parent.clone(),
+                )
+                .await?;
+        }
+
+        if let Err(err) = t.commit().await {
+            // The move did not happen, so put the old edge back. Best effort: if this also
+            // fails the namespace is left parentless, which is fail-closed and repairable
+            // by an additive reconcile.
+            if reparented {
+                authorizer
+                    .attach_namespace_parent(event_ctx.request_metadata(), namespace_id, old_parent)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::error!(
+                            ?e,
+                            "Failed to restore namespace parent in authorizer after a failed \
+                             commit: {}",
+                            e.error
+                        );
+                    })
+                    .ok();
+            }
+            return Err(err);
+        }
 
         let response = MoveNamespaceResponse {
             namespace: moved.namespace.canonical_ident().clone(),
@@ -383,35 +477,12 @@ where
             parent_namespace_id: moved.namespace.parent_namespaces_id(),
         };
 
-        // ------------------- POST-COMMIT -------------------
-        // Only now that the catalog has committed. Re-pointing the authorization hierarchy
-        // beforehand would grant the destination's principals access to a namespace that may
-        // still roll back.
-        //
-        // The trade-off is that a failure here cannot be surfaced to the caller — the move
-        // did happen — so authorization is left lagging the catalog: the namespace's
-        // contents keep inheriting from the *old* parent, and only gain the new parent's
-        // grants once the write succeeds. Permissive in the stale direction, which is why
-        // this ordering is still the safer one.
-        //
-        // Nothing repairs that automatically. `lakekeeper openfga reconcile` is an operator
-        // CLI command, not a background task, and its default `add-missing` mode is purely
-        // additive — removing the contradicted old-parent edge needs
-        // `--mode add-and-delete-drift`. The same exposure exists at the `delete_namespace`
-        // / `delete_table` / `delete_view` hooks, which drop their failures the same way.
-        if moved.changed_parent() {
-            let old_parent = moved
-                .previous_parent
-                .map_or(NamespaceParent::Warehouse(warehouse_id), |parent| {
-                    NamespaceParent::Namespace(parent)
-                });
+        // Post-commit: publish the new edge, now that the catalog has accepted the move.
+        // Its failure cannot be reported — the move happened — so it is logged and left to
+        // reconciliation, per the contract on `attach_namespace_parent`.
+        if reparented {
             authorizer
-                .move_namespace(
-                    event_ctx.request_metadata(),
-                    namespace_id,
-                    new_parent,
-                    old_parent,
-                )
+                .attach_namespace_parent(event_ctx.request_metadata(), namespace_id, new_parent)
                 .await
                 .inspect_err(|e| {
                     tracing::error!(?e, "Failed to move namespace in authorizer: {}", e.error);
