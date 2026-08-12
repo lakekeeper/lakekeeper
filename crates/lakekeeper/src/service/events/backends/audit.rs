@@ -2,12 +2,15 @@ use std::fmt::Display;
 
 use valuable::{Listable, Mappable, Valuable, Value, Visit};
 
-use crate::service::{
-    authn::{Actor, InternalActor},
-    authz::{ActionDescriptor, ContextValue, DeterminingFactor, UserOrRoleId},
-    events::{
-        Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
-        context::EntityDescriptor,
+use crate::{
+    audit_operation,
+    service::{
+        authn::{Actor, InternalActor},
+        authz::{ActionDescriptor, ContextValue, DeterminingFactor, GrantResource, UserOrRoleId},
+        events::{
+            Authorization, AuthorizationFailedEvent, AuthorizationSucceededEvent, EventListener,
+            GrantsChangedEvent, context::EntityDescriptor,
+        },
     },
 };
 
@@ -122,6 +125,66 @@ impl Mappable for UserOrRoleIdValue<'_> {
     }
 }
 
+/// A grant's full `(principal, privilege, resource)` triple, as audit context.
+///
+/// Grants are hard-deleted and carry no history, so a revocation's triple exists
+/// nowhere else once the row is gone — the event has to be self-contained.
+struct GrantContextValue<'a> {
+    principal: &'a UserOrRoleId,
+    privilege: &'a str,
+    resource: &'a GrantResource,
+}
+
+impl Valuable for GrantContextValue<'_> {
+    fn as_value(&self) -> Value<'_> {
+        Value::Mappable(self)
+    }
+
+    fn visit(&self, visit: &mut dyn Visit) {
+        visit.visit_entry(
+            Value::String("principal"),
+            UserOrRoleIdValue(self.principal).as_value(),
+        );
+        visit.visit_entry(Value::String("privilege"), Value::String(self.privilege));
+        visit.visit_entry(
+            Value::String("resource_type"),
+            Value::String(self.resource.resource_type().as_str()),
+        );
+        // Identifies the exact resource. Server grants name no id — the resource type
+        // is the whole identity — so the key is omitted rather than emitted empty.
+        let resource_id = grant_resource_id(self.resource);
+        if let Some(id) = resource_id.as_deref() {
+            visit.visit_entry(Value::String("resource_id"), Value::String(id));
+        }
+        let warehouse_id = self.resource.warehouse_id().map(|id| id.to_string());
+        if let Some(id) = warehouse_id.as_deref() {
+            visit.visit_entry(Value::String("warehouse_id"), Value::String(id));
+        }
+    }
+}
+
+impl Mappable for GrantContextValue<'_> {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (3, Some(5))
+    }
+}
+
+/// The id identifying the exact resource, or `None` for a server grant.
+fn grant_resource_id(resource: &GrantResource) -> Option<String> {
+    match resource {
+        GrantResource::Server => None,
+        GrantResource::Project(project_id) => Some(project_id.to_string()),
+        GrantResource::Warehouse(warehouse_id) => Some(warehouse_id.to_string()),
+        GrantResource::Namespace { namespace_id, .. } => Some(namespace_id.to_string()),
+        GrantResource::Table { table_id, .. } => Some(table_id.to_string()),
+        GrantResource::View { view_id, .. } => Some(view_id.to_string()),
+        GrantResource::GenericTable {
+            generic_table_id, ..
+        } => Some(generic_table_id.to_string()),
+        GrantResource::Tag(tag_definition_id) => Some(tag_definition_id.to_string()),
+    }
+}
+
 /// Emits an audit `tracing::info!` event, using singular field names (`action`/`entity`)
 /// when only one item is present, and plural (`actions`/`entities`) otherwise.
 macro_rules! audit_log {
@@ -202,6 +265,46 @@ impl EventListener for AuditEventListener {
                     decision = "denied",
                 },
                 "Authorization failed event"
+            );
+        }
+        Ok(())
+    }
+
+    /// The grants that actually landed.
+    ///
+    /// The authorization event records the *attempt*, and deduplicates principals and
+    /// privileges into separate lists — so it cannot say which principal received which
+    /// privilege. This records the confirmed triples, which is what attribution and
+    /// reconstruction of current access need. A revoked grant is hard-deleted, so its
+    /// record here is the only remaining evidence the access ever existed.
+    async fn grants_changed(&self, event: GrantsChangedEvent) -> anyhow::Result<()> {
+        let actor = event.request_metadata.internal_actor();
+        // One record per triple, not one per request: the batch is a dispatch
+        // optimisation, while the audit trail is answered per grant.
+        for spec in &event.removed {
+            audit_operation!(
+                operation = "grant_revoked",
+                actor = actor,
+                outcome = "success",
+                context = GrantContextValue {
+                    principal: &spec.principal,
+                    privilege: &spec.privilege,
+                    resource: &spec.resource,
+                },
+                "Grant revoked"
+            );
+        }
+        for spec in &event.created {
+            audit_operation!(
+                operation = "grant_created",
+                actor = actor,
+                outcome = "success",
+                context = GrantContextValue {
+                    principal: &spec.principal,
+                    privilege: &spec.privilege,
+                    resource: &spec.resource,
+                },
+                "Grant created"
             );
         }
         Ok(())
@@ -523,6 +626,100 @@ mod tests {
 
     use super::*;
     use crate::service::authz::{ActionDescriptor, DeterminingFactor, PolicyEffect};
+
+    /// Records key/value pairs, flattening a nested map into `key=value` pairs joined
+    /// by `,` so a whole context can be asserted with one exact comparison.
+    #[derive(Default)]
+    struct EntryCollector {
+        entries: Vec<(String, String)>,
+    }
+
+    impl Visit for EntryCollector {
+        fn visit_value(&mut self, _value: Value<'_>) {}
+        fn visit_entry(&mut self, key: Value<'_>, value: Value<'_>) {
+            let Value::String(key) = key else { return };
+            let rendered = match value {
+                Value::String(s) => s.to_string(),
+                Value::Mappable(m) => {
+                    let mut inner = EntryCollector::default();
+                    m.visit(&mut inner);
+                    inner
+                        .entries
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                }
+                other => format!("{other:?}"),
+            };
+            self.entries.push((key.to_string(), rendered));
+        }
+    }
+
+    fn grant_context(
+        principal: &UserOrRoleId,
+        privilege: &str,
+        resource: &GrantResource,
+    ) -> Vec<(String, String)> {
+        let mut collector = EntryCollector::default();
+        GrantContextValue {
+            principal,
+            privilege,
+            resource,
+        }
+        .visit(&mut collector);
+        collector.entries
+    }
+
+    /// A revoked grant is hard-deleted, so this context is the only surviving record of
+    /// it — every part of the triple has to be present and correctly labelled.
+    #[test]
+    fn a_grant_context_carries_the_full_triple() {
+        let warehouse_id = crate::service::WarehouseId::new_random();
+        let table_id = crate::service::TableId::new_random();
+        let principal = UserOrRoleId::User(
+            crate::service::authn::UserId::try_from("oidc~alice").expect("valid test user id"),
+        );
+
+        let entries = grant_context(
+            &principal,
+            "select",
+            &GrantResource::Table {
+                warehouse_id,
+                table_id,
+            },
+        );
+
+        assert_eq!(
+            entries,
+            vec![
+                ("principal".to_string(), "user=oidc~alice".to_string()),
+                ("privilege".to_string(), "select".to_string()),
+                ("resource_type".to_string(), "table".to_string()),
+                ("resource_id".to_string(), table_id.to_string()),
+                ("warehouse_id".to_string(), warehouse_id.to_string()),
+            ]
+        );
+    }
+
+    /// A server grant has no id and no warehouse: the resource type is its whole
+    /// identity. Those keys are omitted rather than emitted empty, so a consumer can
+    /// tell "server-wide" from "an id we failed to record".
+    #[test]
+    fn a_server_grant_context_omits_the_id_and_warehouse() {
+        let principal = UserOrRoleId::Role(crate::service::RoleId::new_random());
+        let entries = grant_context(&principal, "admin", &GrantResource::Server);
+
+        let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["principal", "privilege", "resource_type"]);
+        assert_eq!(entries[2].1, "server");
+        // A role principal is labelled as one, so it cannot be read as a user id.
+        assert!(
+            entries[0].1.starts_with("role="),
+            "expected a role-labelled principal, got {}",
+            entries[0].1
+        );
+    }
 
     /// Records the top-level map keys an `Authorization` emits when visited.
     #[derive(Default)]

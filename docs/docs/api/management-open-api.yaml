@@ -149,6 +149,125 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/grants:
+    get:
+      tags:
+        - grant
+      summary: List Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists everything one principal holds across the project — "what does this
+        principal have here". Exactly one of `principalUser` or `principalRole` is
+        **required**; a request naming neither is refused with `MissingGrantPrincipal`
+        (400). To read every grant held on a single resource, use that resource's own
+        listing.
+
+        Grants are reported at the layer they are held: a grant a role holds is listed
+        under that role, not under the users who have the role, and a grant on an
+        ancestor is listed under the ancestor. Server grants belong to no project and are
+        not included.
+
+        Listing your own grants needs no extra permission; any other principal requires
+        the project-level grant-read permission.
+
+        **Availability depends on the configured authorizer.** This listing crosses every
+        resource in the project, which an authorizer that stores permissions per resource
+        cannot answer without reading its whole store. Those report
+        `GrantListingNotImplemented` (501) — under OpenFGA, for example. Read one
+        resource's grants from its own endpoint instead; those listings work, and page,
+        under every authorizer. `GET /info` reports the configured backend.
+      operationId: list_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants the principal holds in the project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        '501':
+          description: Project-wide grant listing is not supported under the configured authorizer backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Available Privileges [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the privileges that may be granted, per resource type. The vocabulary
+        belongs to the configured authorizer, so it differs between deployments and a
+        name this server does not know is rejected — fetch it rather than hard-coding it.
+      operationId: get_grantable_privileges
+      responses:
+        '200':
+          description: Grantable privileges per resource type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/info:
     get:
       tags:
@@ -1612,6 +1731,181 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/grants:
+    get:
+      tags:
+        - grant
+      summary: List Project Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held on the project named by `x-project-id`, or the default
+        project. Grants on resources inside the project are not included — use those
+        resources' own endpoints, or `GET /grants` for one principal's across the whole
+        project.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the project; every other listing requires
+        the project's grant-read permission.
+      operationId: list_project_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Project Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_project_grants
+      parameters:
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/project/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a project [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this project publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this project's
+        grants.
+      operationId: get_project_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/project/rename:
     post:
       tags:
@@ -2690,6 +2984,154 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/server/grants:
+    get:
+      tags:
+        - grant
+      summary: List Server Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held on the server itself. Server grants belong to no project,
+        so they are the one level the project-scoped listing does not report.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself needs no permission, and is the only way to read your own server grants;
+        every other listing requires the server's grant-read permission.
+      operationId: list_server_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: Grants held on the server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Server Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_server_grants
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/server/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a server [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this server publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this server's
+        grants.
+      operationId: get_server_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/tag-definition:
     get:
       tags:
@@ -2894,6 +3336,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition/{tag_definition_id}/actions:
+    get:
+      tags:
+        - tag
+      summary: Get allowed actions for a tag definition
+      operationId: get_tag_actions
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            The user to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+        - name: principalRole
+          in: query
+          description: |-
+            The role to show actions for.
+            If neither user nor role is specified, shows actions for the current user.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: tag_definition_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetLakekeeperTagActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/tag-definition/{tag_definition_id}/attachments:
     get:
       tags:
@@ -2991,6 +3476,199 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListTagAttachmentsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition/{tag_definition_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List Tag Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held on this tag definition — who may apply it, and who may
+        manage it. Distinct from the grants on the objects the tag is attached to.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the tag definition; every other listing
+        requires the tag definition's grant-read permission.
+      operationId: list_tag_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the tag definition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Tag Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_tag_grants
+      parameters:
+        - name: tag_definition_id
+          in: path
+          description: Tag Definition ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/tag-definition/{tag_definition_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a tag definition [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this tag definition publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this tag definition's
+        grants.
+      operationId: get_tag_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: tag_definition_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
         4XX:
           description: ''
           content:
@@ -3766,6 +4444,218 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List Generic Table Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held directly on this generic table. Grants do not inherit.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the generic table; every other listing
+        requires the generic table's grant-read permission.
+      operationId: list_generic_table_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the generic table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Generic Table Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_generic_table_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          description: Generic Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a generic table [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this generic table publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this generic table's
+        grants.
+      operationId: get_generic_table_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: generic_table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/generic-table/{generic_table_id}/protection:
     get:
       tags:
@@ -3995,6 +4885,205 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List Warehouse Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held directly on this warehouse. Grants do not inherit: a
+        grant held by a role belongs to that role, and a grant on an ancestor belongs
+        to the ancestor. Use the action-check endpoints to ask what a principal may
+        effectively do.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the warehouse; every other listing
+        requires the warehouse's grant-read permission.
+      operationId: list_warehouse_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the warehouse
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Warehouse Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent: granting twice creates one grant, revoking a grant that is not
+        held is not an error. Which privileges are legal differs between authorizers.
+
+        Success is `204` with no body: whether an entry was already in the requested
+        state is not reported. Read the grants back, or read the `grant_created` and
+        `grant_revoked` audit records, for what changed.
+      operationId: apply_warehouse_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a warehouse [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this warehouse publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this warehouse's
+        grants.
+      operationId: get_warehouse_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/managed-by:
     post:
       tags:
@@ -4074,6 +5163,219 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GetLakekeeperNamespaceActionsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List Namespace Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held directly on this namespace. Grants do not inherit, in
+        either direction: a child namespace's grants are its own.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the namespace; every other listing
+        requires the namespace's grant-read permission.
+      operationId: list_namespace_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the namespace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Namespace Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_namespace_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          description: Namespace ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/namespace/{namespace_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a namespace [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this namespace publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this namespace's
+        grants.
+      operationId: get_namespace_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: namespace_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
         4XX:
           description: ''
           content:
@@ -4869,6 +6171,221 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List Table Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held directly on this table. Grants do not inherit — a grant on
+        the containing namespace or warehouse belongs to that resource, not to the table.
+        A table in the recycle bin still reports its grants, because an undrop restores
+        them.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the table; every other listing requires
+        the table's grant-read permission.
+      operationId: list_table_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply Table Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_table_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a table [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this table publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this table's
+        grants.
+      operationId: get_table_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/protection:
     get:
       tags:
@@ -5506,6 +7023,218 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/grants:
+    get:
+      tags:
+        - grant
+      summary: List View Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Lists the grants held directly on this view. Grants do not inherit.
+
+        Supply `principalUser` or `principalRole` to narrow to one principal. Narrowing to
+        yourself requires only permission to see the view; every other listing requires the
+        view's grant-read permission.
+      operationId: list_view_grants
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            List only the grants held by this user. Mutually exclusive with `principalRole`.
+            A resource's own listing accepts neither and then lists every principal's; the
+            project-wide listing requires one of the two.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            List only the grants held by this role. Mutually exclusive with `principalUser`,
+            and subject to the same requirement on the project-wide listing.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: pageToken
+          in: query
+          description: Next page token
+          required: false
+          schema:
+            type: string
+        - name: pageSize
+          in: query
+          description: Signals an upper bound of the number of results that a client will receive.
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Grants held on the view
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGrantsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - grant
+      summary: Apply View Grants [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Creates the grants in `writes` and removes those in `deletes`, atomically.
+        Idempotent. Success is `204` with no body: whether an entry was already in
+        the requested state is not reported.
+      operationId: apply_view_grants
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          description: View ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyGrantsRequest'
+        required: true
+      responses:
+        '204':
+          description: Grants applied
+        '409':
+          description: Conflict — the request was not applied and can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/view/{view_id}/grants/grantable-privileges:
+    get:
+      tags:
+        - grant
+      summary: Get Grantable Privileges on a view [Preview]
+      description: |-
+        This API may change in a backward-incompatible way in a future release.
+
+        Every privilege this view publishes, each marked with whether the caller may
+        grant and revoke it here. Not filtered: a picker needs to show the ones it
+        cannot offer, not omit them. Pass `principalUser` or `principalRole` to ask on
+        another principal's behalf, which requires authority to read this view's
+        grants.
+      operationId: get_view_grantable_privileges
+      parameters:
+        - name: principalUser
+          in: query
+          description: |-
+            Report which privileges this user may grant, instead of the caller. Requires
+            authority to read the resource's grants, since it discloses another principal's
+            access. Mutually exclusive with `principalRole`.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: principalRole
+          in: query
+          description: |-
+            Report which privileges this role may grant, instead of the caller. Same
+            authority requirement as `principalUser`, and mutually exclusive with it.
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+            format: uuid
+        - name: warehouse_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: view_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: This resource's privileges, each marked allowed or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceGrantablePrivilegesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/view/{view_id}/protection:
     get:
       tags:
@@ -5866,6 +7595,36 @@ components:
             - string
             - 'null'
           description: Value the tag carries on this target
+    ApplyGrantsRequest:
+      type: object
+      description: |-
+        A grant diff: create `writes`, remove `deletes`.
+
+        Applied atomically, and safe to retry: applying the same diff twice has the same
+        effect as applying it once. The same entry may not appear in both lists — that is
+        rejected rather than resolved, because either reading of it would be a guess.
+
+        Unknown fields are rejected: a misspelled `deletes` would otherwise silently apply
+        the writes and drop the revocations.
+
+        At least one entry is required, and `writes` and `deletes` together may not exceed
+        100. Neither rule is expressible as a per-field schema constraint — a `maxItems` on
+        each array would say 200 are acceptable — so both are stated here and enforced by
+        the server.
+      properties:
+        deletes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantEntry'
+          description: Grants to remove. Counts against the shared 100-entry limit with `writes`.
+          maxItems: 100
+        writes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantEntry'
+          description: Grants to create. Counts against the shared 100-entry limit with `deletes`.
+          maxItems: 100
+      additionalProperties: false
     AzCredential:
       oneOf:
         - type: object
@@ -6874,6 +8633,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -6946,6 +8706,17 @@ components:
                   enum:
                     - modify
           title: GenericTableAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: GenericTableAssignmentManageTags
     GenericTableRelation:
       type: string
       enum:
@@ -6955,6 +8726,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     GetEndpointStatisticsRequest:
       type: object
       required:
@@ -7051,6 +8823,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LakekeeperTableActionKind'
+    GetLakekeeperTagActionsResponse:
+      type: object
+      required:
+        - allowed-actions
+      properties:
+        allowed-actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/LakekeeperTagAction'
     GetLakekeeperUserActionsResponse:
       type: object
       required:
@@ -7491,6 +9272,222 @@ components:
           type: string
           format: uuid
           description: ID of the warehouse.
+    GrantEntry:
+      type: object
+      description: |-
+        One entry of a grant diff.
+
+        Unknown fields are rejected so that feeding a `GrantResponse` from a listing
+        straight back into an apply fails loudly instead of silently dropping its
+        `resource` — which would apply the grant to whatever resource the endpoint names.
+      required:
+        - privilege
+        - principal
+      properties:
+        principal:
+          $ref: '#/components/schemas/UserOrRole'
+        privilege:
+          type: string
+          description: |-
+            A privilege from the authorizer's grantable vocabulary. Which values are legal
+            differs between authorizers and is published by the server.
+          maxLength: 256
+          minLength: 1
+      additionalProperties: false
+    GrantResourceResponse:
+      oneOf:
+        - type: object
+          title: GrantResourceServer
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - server
+        - type: object
+          title: GrantResourceProject
+          required:
+            - project-id
+            - type
+          properties:
+            project-id:
+              type: string
+            type:
+              type: string
+              enum:
+                - project
+        - type: object
+          title: GrantResourceWarehouse
+          required:
+            - warehouse-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - warehouse
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          title: GrantResourceNamespace
+          required:
+            - warehouse-id
+            - namespace-id
+            - type
+          properties:
+            namespace-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - namespace
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          title: GrantResourceTable
+          required:
+            - warehouse-id
+            - table-id
+            - type
+          properties:
+            table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          title: GrantResourceView
+          required:
+            - warehouse-id
+            - view-id
+            - type
+          properties:
+            type:
+              type: string
+              enum:
+                - view
+            view-id:
+              type: string
+              format: uuid
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          title: GrantResourceGenericTable
+          required:
+            - warehouse-id
+            - generic-table-id
+            - type
+          properties:
+            generic-table-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - generic-table
+            warehouse-id:
+              type: string
+              format: uuid
+        - type: object
+          title: GrantResourceTag
+          description: |-
+            Spelled `tag-definition`, as everywhere else. `kebab-case` alone would render it
+            `tag`, which matches neither `ResourceType` nor the URL segment.
+          required:
+            - tag-definition-id
+            - type
+          properties:
+            tag-definition-id:
+              type: string
+              format: uuid
+            type:
+              type: string
+              enum:
+                - tag-definition
+      description: |-
+        The resource a grant is held on, as it appears in a response.
+
+        `type` carries the same spelling as `ResourceType`, which is also the URL segment
+        that addresses the resource — so a client can look a listed grant up in the
+        vocabulary, or build a request path from it, without a translation table.
+    GrantResponse:
+      type: object
+      description: One grant in a listing.
+      required:
+        - principal
+        - resource
+        - privilege
+        - recognized
+      properties:
+        created-at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        principal:
+          $ref: '#/components/schemas/UserOrRole'
+        privilege:
+          type: string
+        recognized:
+          type: boolean
+          description: |-
+            Whether `privilege` is still in the authorizer's vocabulary. Where grants live
+            in the catalog, a `false` value is surfaced rather than hidden: the grant
+            enforces nothing today but is still there, and can still be revoked. An
+            authorizer that owns its grants may instead omit unrecognized grants from
+            listings entirely, so `false` never appears there — see its documentation.
+        resource:
+          $ref: '#/components/schemas/GrantResourceResponse'
+    GrantablePrivilege:
+      type: object
+      description: One privilege of a resource's vocabulary, and whether the principal may grant it.
+      required:
+        - privilege
+        - allowed
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the principal may grant and revoke this privilege on this resource.
+        privilege:
+          $ref: '#/components/schemas/PrivilegeDescriptor'
+          description: |-
+            The privilege itself: static vocabulary, identical for every caller, and the same
+            object `GET /management/v1/grants/grantable-privileges` publishes. Nested rather
+            than flattened so the cacheable description and the per-caller decision below stay
+            distinct — and so a new descriptor field can never collide with `allowed`.
+    GrantablePrivilegesResponse:
+      type: object
+      description: |-
+        The privileges this server's authorizer will accept, per resource type.
+
+        Which privileges exist is decided by the configured authorizer, not by the API, so
+        this endpoint is the only reliable way to learn them: sending a name the authorizer
+        does not know is a 400.
+      required:
+        - privileges
+      properties:
+        privileges:
+          type: object
+          description: |-
+            Keyed by resource type. Every resource type the API knows is present, so an
+            empty list distinguishes "nothing is grantable here" from "unknown type" — an
+            authorizer that manages no grants reports every list empty.
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/PrivilegeDescriptor'
+          propertyNames:
+            type: string
     IcebergErrorResponse:
       type: object
       description: JSON wrapper for all error responses (non-2xx)
@@ -7589,6 +9586,14 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperNamespaceAction:
       oneOf:
         - type: object
@@ -7806,6 +9811,15 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          description: Can list the grants held on this namespace.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperNamespaceActionKind:
       oneOf:
         - type: object
@@ -7928,6 +9942,14 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperProjectAction:
       oneOf:
         - type: object
@@ -8075,6 +10097,15 @@ components:
               type: string
               enum:
                 - list_tags
+        - type: object
+          description: Can list the grants held on this project.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperProjectActionKind:
       oneOf:
         - type: object
@@ -8205,6 +10236,14 @@ components:
               type: string
               enum:
                 - list_tags
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperRoleActionKind:
       oneOf:
         - type: object
@@ -8320,6 +10359,15 @@ components:
               type: string
               enum:
                 - provision_users
+        - type: object
+          description: Can list the grants held on this server.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperServerActionKind:
       oneOf:
         - type: object
@@ -8362,6 +10410,14 @@ components:
               type: string
               enum:
                 - provision_users
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperTableAction:
       oneOf:
         - type: object
@@ -8494,6 +10550,15 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          description: Can list the grants held on this table.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperTableActionKind:
       oneOf:
         - type: object
@@ -8592,6 +10657,72 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
+    LakekeeperTagAction:
+      oneOf:
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - update
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - delete
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - apply
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - remove
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_attachments
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperUserAction:
       oneOf:
         - type: object
@@ -8736,6 +10867,15 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          description: Can list the grants held on this view.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperViewActionKind:
       oneOf:
         - type: object
@@ -8826,6 +10966,14 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperWarehouseAction:
       oneOf:
         - type: object
@@ -9016,6 +11164,15 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          description: Can list the grants held on this warehouse.
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LakekeeperWarehouseActionKind:
       oneOf:
         - type: object
@@ -9194,6 +11351,14 @@ components:
               type: string
               enum:
                 - manage_tags
+        - type: object
+          required:
+            - action
+          properties:
+            action:
+              type: string
+              enum:
+                - read_grants
     LicenseStatus:
       type: object
       description: Status of license validation
@@ -9253,6 +11418,32 @@ components:
           items:
             $ref: '#/components/schemas/DeletedTabularResponse'
           description: List of tabulars
+    ListGrantsResponse:
+      type: object
+      description: |-
+        A page of grants.
+
+        The order is **unspecified** and differs by authorizer, so do not rely on it. Use the
+        page token to walk a listing, and sort client-side if you need a stable presentation.
+      required:
+        - grants
+      properties:
+        grants:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantResponse'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Present when another page may follow. Follow the token until it is **absent**:
+            depending on the authorizer, a page can come back short or even empty while
+            more grants remain, so neither a short page nor an empty one signals the end.
+
+            The project-scoped listing pages like the rest, but only where grants live in
+            the catalog. An authorizer that owns its grants may not implement that listing
+            at all — see its `501` response.
     ListProjectTasksRequest:
       type: object
       properties:
@@ -9538,6 +11729,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - set_protection
     NamespaceAssignment:
       oneOf:
@@ -9618,6 +11810,17 @@ components:
                   enum:
                     - modify
           title: NamespaceAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: NamespaceAssignmentManageTags
     NamespaceIdentOrUuid:
       oneOf:
         - type: object
@@ -9654,6 +11857,7 @@ components:
         - select
         - create
         - modify
+        - manage_tags
     OneLakeProfile:
       type: object
       description: |-
@@ -9717,6 +11921,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9731,11 +11936,13 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
     OpenFGAProjectAction:
       type: string
       enum:
         - read_assignments
         - grant_role_creator
+        - grant_tag_creator
         - grant_create
         - grant_describe
         - grant_modify
@@ -9761,6 +11968,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9771,6 +11979,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -9785,7 +11994,45 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - change_ownership
+    PrivilegeDescriptor:
+      type: object
+      description: One grantable privilege, as published by an authorizer for discovery.
+      required:
+        - name
+        - display-name
+        - resource-type
+      properties:
+        category:
+          type:
+            - string
+            - 'null'
+          description: |-
+            Which group of privileges this one belongs to, so a picker can lay out columns
+            instead of one long list.
+
+            Authorizer-supplied and open, because the vocabulary it groups is too. Treat an
+            unrecognized value as its own group rather than an error, and `null` as
+            ungrouped. Lakekeeper's own authorizers use `metadata`, `read`, `write`,
+            `create`, `security` and `administration`; a client that wants a fixed column
+            order should key off those and fall back for anything else.
+        description:
+          type:
+            - string
+            - 'null'
+          description: |-
+            What the privilege permits, when the authorizer supplies an explanation.
+            `null` rather than a guess: a wrong description of a permission is worse than
+            none, so an authorizer that has not written one reports nothing.
+        display-name:
+          type: string
+          description: Short human-readable label for pickers.
+        name:
+          type: string
+          description: The name to send back in a grant request.
+        resource-type:
+          $ref: '#/components/schemas/ResourceType'
     ProjectAction:
       type: string
       enum:
@@ -9798,6 +12045,7 @@ components:
         - search_roles
         - read_assignments
         - grant_role_creator
+        - grant_tag_creator
         - grant_create
         - grant_describe
         - grant_modify
@@ -9861,6 +12109,17 @@ components:
                 type:
                   type: string
                   enum:
+                    - tag_creator
+          title: ProjectAssignmentTagCreator
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
                     - describe
           title: ProjectAssignmentDescribe
         - allOf:
@@ -9903,6 +12162,7 @@ components:
         - security_admin
         - data_admin
         - role_creator
+        - tag_creator
         - describe
         - select
         - create
@@ -10014,6 +12274,54 @@ components:
         new-name:
           type: string
           description: New name for the warehouse.
+    ResourceGrantablePrivilegesResponse:
+      type: object
+      description: |-
+        This resource's whole vocabulary, each entry marked with whether the principal may
+        grant it.
+
+        The deployment-wide vocabulary answers "what does this server understand"; this
+        answers "what may I do here", which is the question a grant dialog asks. Grant
+        authority is a right of its own, invisible to action introspection, so neither
+        `.../actions` nor the vocabulary can substitute for it.
+
+        Deliberately **not** filtered to the permitted subset — unlike `allowed-actions` on
+        the action-introspection endpoints. A picker chooses from a closed, published set, so
+        a silently shortened list reads as a missing privilege rather than a withheld one;
+        the caller needs to render `ownership` greyed out, not to wonder where it went.
+        Nothing is disclosed by listing them: the same names are public at
+        `/management/v1/grants/grantable-privileges`.
+      required:
+        - privileges
+      properties:
+        privileges:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantablePrivilege'
+          description: Every privilege this resource level publishes, in the authorizer's own order.
+    ResourceType:
+      type: string
+      description: |-
+        The kinds of resource a grant can be held on.
+
+        Every value is also the URL segment that addresses that kind of resource, so a
+        client can build request paths straight from a vocabulary response. Kept link-free:
+        this doc comment is published verbatim in the `OpenAPI` description, where an
+        intra-doc link would render as a raw Rust module path.
+
+        This is the vocabulary the API speaks. A store is free to persist a coarser one —
+        tables, views and generic tables are one kind to a catalog that already records
+        which of the three an id refers to — so this deliberately carries no storage
+        mapping.
+      enum:
+        - server
+        - project
+        - warehouse
+        - namespace
+        - table
+        - view
+        - generic-table
+        - tag-definition
     Role:
       type: object
       required:
@@ -11171,6 +13479,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -11246,6 +13555,17 @@ components:
                   enum:
                     - modify
           title: TableAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: TableAssignmentManageTags
     TableRelation:
       type: string
       enum:
@@ -11255,6 +13575,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     TableUpdateKind:
       type: string
       description: |-
@@ -12176,7 +14497,13 @@ components:
               type: string
               format: uuid
               description: Id of the role
-      description: Identifies a user or a role
+      description: |-
+        Identifies a user or a role
+
+        Exactly one of `user` and `role` is present. Naming both is rejected by the schema as
+        well as by the server: it matches both `oneOf` branches, and `oneOf` admits exactly
+        one. Leave the branches open — this type is flattened into the assignment schemas, so
+        an `additionalProperties: false` on a branch would reject their own properties.
     UserType:
       type: string
       description: Type of a User
@@ -12285,6 +14612,7 @@ components:
         - read_assignments
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - grant_describe
         - grant_select
         - grant_modify
@@ -12360,6 +14688,17 @@ components:
                   enum:
                     - modify
           title: ViewAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: ViewAssignmentManageTags
     ViewRelation:
       type: string
       enum:
@@ -12369,6 +14708,7 @@ components:
         - describe
         - select
         - modify
+        - manage_tags
     WarehouseAction:
       type: string
       enum:
@@ -12391,6 +14731,7 @@ components:
         - grant_select
         - grant_pass_grants
         - grant_manage_grants
+        - grant_manage_tags
         - change_ownership
         - get_all_tasks
         - control_all_tasks
@@ -12476,6 +14817,17 @@ components:
                   enum:
                     - modify
           title: WarehouseAssignmentModify
+        - allOf:
+            - $ref: '#/components/schemas/UserOrRole'
+            - type: object
+              required:
+                - type
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - manage_tags
+          title: WarehouseAssignmentManageTags
     WarehouseFilter:
       oneOf:
         - type: object
@@ -12519,6 +14871,7 @@ components:
         - select
         - create
         - modify
+        - manage_tags
     WarehouseStatistics:
       type: object
       required:
@@ -12785,5 +15138,7 @@ tags:
     description: Manage Roles
   - name: tag
     description: '**[Preview]** Manage governance tags. This API is in preview and may change in a backward-incompatible way in a future release.'
+  - name: grant
+    description: '**[Preview]** Manage grants: which principal holds which privilege on which resource. This API is in preview and may change in a backward-incompatible way in a future release.'
   - name: permissions-openfga
     description: Authorization and permissions management using OpenFGA

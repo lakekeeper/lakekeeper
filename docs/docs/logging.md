@@ -62,7 +62,7 @@ Emitted for every authz check. Always contain `action`/`actions`, `entity`/`enti
 | `action` or `actions`  | Object or Array | Operation(s) attempted. Each action is an object with an `action_name` field (e.g., `"read_data"`, `"drop"`, `"create_namespace"`) and optional context fields (e.g., `properties`, `updated-properties`, `removed-properties`). See format below. |
 | `entity` or `entities` | Object or Array | Resource(s) accessed, containing `entity_type` and type-specific fields (e.g., `warehouse-id`, `namespace`, `table`) |
 | `actor`                | Object          | Who performed the action (see format below) |
-| `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./authorization.md#instance-admins). |
+| `privilege_source`     | String          | Request-level classification of the caller's privilege: `"authorizer"` (no special privileges — all decisions come from the configured Authorizer backend), `"instance_admin"` (caller listed in `LAKEKEEPER__INSTANCE_ADMINS` — control-plane actions are auto-approved, data-plane actions still go through the Authorizer), or `"internal"` (in-process call — full bypass). This is a property of the request, not of individual entries in the `authorizations` array. See [Instance Admins](./instance-admins.md). |
 | `decision`             | String          | `"allowed"` or `"denied"` — the rollup decision for the whole event |
 | `authorizations`       | Array           | Per-decision breakdown. Always present and non-empty. Each entry is self-contained — see [Per-decision breakdown](#per-decision-breakdown-authorizations) below |
 | `context`              | Object          | Optional. Additional operation context (e.g., `project-id`, `warehouse-name`) |
@@ -105,6 +105,36 @@ Each action is a structured object containing the operation name and optional co
 ```
 
 When only a single action is involved, it appears as the `action` field. When multiple actions are checked the `actions` field contains an array.
+
+**Grant changes (`action_name = "apply_grants"`):**
+
+Applying a grant diff is authorized once for the whole request, so a single `apply_grants` action describes the entire diff:
+
+| Context field | Type   | Description                                                                 |
+|---------------|--------|-----------------------------------------------------------------------------|
+| `principals`  | Array  | The distinct principals the grants were destined for, each prefixed by kind (`user:oidc~alice`, `role:<uuid>`) |
+| `privileges`  | Array  | The distinct privilege names named anywhere in the diff                     |
+| `writes`      | String | Number of entries requested as grants, before deduplication                 |
+| `deletes`     | String | Number of entries requested as revocations, before deduplication            |
+
+The resource the grants apply to is the event's `entity`, not part of the action.
+
+`principals` and `privileges` are deduplicated, so neither is a per-entry list and neither can be matched positionally against the other — a diff naming two principals and two privileges records both sets, not which pairing was requested. The counts are the request's, so `writes: "3"` with one entry in `principals` means three grants for one principal. Requests are capped at 100 entries, which bounds both lists.
+
+**This records the attempt.** What actually changed is recorded separately, one record per grant, under `operation = "grant_created"` / `"grant_revoked"`. Both are audit-log records; neither is published to the configured event stream (Kafka, NATS, CloudEvents). Read this one for what was asked and whether it was allowed, and those for what took effect.
+
+Because the event records the attempt, a *denied* apply is logged with the same detail as an allowed one: what was asked for, for whom, and on which resource. A refused privilege escalation is attributable to its intended beneficiary, not merely to the caller who attempted it.
+
+```json
+// Denied attempt to grant `modify` to two principals
+{
+  "action_name": "apply_grants",
+  "principals": ["role:1f7b…", "user:oidc~alice"],
+  "privileges": ["modify"],
+  "writes": "2",
+  "deletes": "0"
+}
+```
 
 #### Per-decision breakdown (`authorizations`)
 
@@ -307,6 +337,35 @@ Emitted for non-authz operations that touch user identity (PII) — such as LDAP
 | `context`      | Object | Optional. Operation-specific metadata (e.g., `provider_id`, `role_count`) |
 
 **Outcomes are not binary allow/deny** — they describe the result of the system operation. No `decision` field is present.
+
+**Grant changes (`operation = "grant_created"` / `"grant_revoked"`):**
+
+Emitted after the change is committed, one event per grant the backend reported as applied. `outcome` is always `success`: the event asserts the state the apply left behind, not that the grant differed from what was there before.
+
+These are the confirmed counterpart to the `apply_grants` authorization event. The authorization event records the *attempt* and deduplicates principals and privileges into separate lists, so it cannot say which principal received which privilege; these events carry the full triple, one per grant:
+
+| Context field  | Description                                                                 |
+|----------------|-----------------------------------------------------------------------------|
+| `principal`    | Who holds the grant, as `{"user": "…"}` or `{"role": "…"}`                   |
+| `privilege`    | The privilege name, verbatim from the authorizer's vocabulary                |
+| `resource_type`| `server`, `project`, `warehouse`, `namespace`, `table`, `view`, `generic-table` or `tag-definition` |
+| `resource_id`  | The exact resource. Absent for `server` grants, which have no id            |
+| `warehouse_id` | The containing warehouse, for warehouse-scoped resources only               |
+
+Grants are hard-deleted and keep no history, so a `grant_revoked` event is the only lasting trace of the revocation. It is not proof the access existed: these events report post-apply state, so revoking a grant nobody held can emit one too. Retain them if you need to answer who held what, when.
+
+**These events do not cover every way a grant disappears.** Two paths remove grants without emitting one:
+
+- **Deleting the resource.** Dropping a warehouse, namespace, table, view or tag definition removes its grants in the database directly; the removal is never seen as individual grants, so no event is emitted. The resource's own deletion event is the record.
+- **Deleting a user, under an authorizer that owns its grants.** The authorizer removes the principal's grants along with its other relations, without enumerating them. Where grants live in the catalog database, user deletion *does* emit one event per revoked grant.
+
+So a `grant_created` event with no matching `grant_revoked` does **not** imply the grant is still held. To determine current access, read `GET .../grants`; use these events for attribution and change history, not as a ledger you can replay to a current balance.
+
+**These events assert state, not transitions, and may repeat.** A `grant_created` means *this grant is now in effect as of this request* — not that it did not exist before. A `grant_revoked` means *this grant is now not in effect*. Applying the same diff twice can therefore emit the same events twice, and revoking a grant nobody held can emit a `grant_revoked`.
+
+**Delivery is best-effort, after the fact.** Listeners are invoked once the change is committed, so a listener that fails, or a process that stops between the commit and the dispatch, loses the record — the failure is logged and not retried. The grant itself still stands. Treat a missing event as possible rather than impossible, and do not use these events as the authoritative account of what changed.
+
+That is deliberate: whether a grant was *already* held is not something every authorizer can determine, while the state after a successful apply is unambiguous under all of them. Make consumers idempotent — key on the `(principal, privilege, resource)` triple rather than counting events. Where grants live in the catalog database the server can tell a real change from a no-op and will skip the event, but that is an optimisation you should not depend on.
 
 **LDAP role resolution (`operation = "ldap_resolve_roles"`):**
 
@@ -643,6 +702,12 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.aut
 
 # Permissions checked on behalf of a specific user (introspection / batch-check)
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and any((.authorizations // [])[]; .["for-principal"].user == "oidc~cfb55bf6-fcbb-4a1e-bfec-30c6649b52f8"))'
+
+# Every grant change, allowed or refused
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.action_name == "apply_grants")'
+
+# Refused attempts to grant privileges TO a specific principal (not by them)
+cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .action.action_name == "apply_grants" and any((.action.principals // [])[]; . == "user:oidc~alice") and any((.authorizations // [])[]; .allowed == false))'
 ```
 
 ## Best Practices

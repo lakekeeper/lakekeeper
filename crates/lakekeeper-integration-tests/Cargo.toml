@@ -14,7 +14,15 @@ publish = false
 [features]
 # Forwards lakekeeper's `open-api` to compile `utoipa::ToSchema` derives that
 # the `QueueConfig` trait bound requires when the upstream feature is on.
-open-api = ["lakekeeper/open-api", "dep:utoipa"]
+# Must switch every crate whose `cfg(feature = "open-api")` has to agree with
+# lakekeeper's, this one included: enabling `lakekeeper/open-api` on a
+# dependency edge instead would turn it on even in builds where this feature is
+# off, and the gates here would then compile against the wrong shape.
+open-api = [
+    "dep:utoipa",
+    "lakekeeper/open-api",
+    "lakekeeper-authz-openfga/open-api",
+]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -45,6 +53,7 @@ aws-sdk-s3 = { workspace = true }
 bytes = { workspace = true }
 http-body-util = { workspace = true }
 # Real OpenFGA authorizer for the OpenFGA+Postgres role-membership e2e harness.
+# Its `open-api` is switched by this crate's own feature, not requested here.
 lakekeeper-authz-openfga = { path = "../authz-openfga", features = ["test-utils"] }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }

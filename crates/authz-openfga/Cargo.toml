@@ -13,6 +13,13 @@ keywords = ["iceberg", "rest", "lakekeeper", "openfga"]
 [lib]
 
 [features]
+# Enable this whenever anything in the build enables `lakekeeper/open-api`, even
+# indirectly. The coupling only runs one way: turning this on turns that on, but not the
+# reverse. `Authorizer::api_doc` exists only under `lakekeeper/open-api` while the impl
+# here is gated on this feature, so a build with that feature on and this one off leaves
+# the trait unimplemented — a confusing "missing `api_doc`" error pointing at the impl
+# rather than at the dependency edge that caused it. Cargo features cannot propagate
+# upward, so this cannot be enforced here.
 open-api = ["dep:utoipa", "lakekeeper/open-api"]
 # Exposes fresh-store authorizer constructors for downstream integration tests
 # (e.g. the OpenFGA+Postgres e2e harness in lakekeeper-integration-tests).

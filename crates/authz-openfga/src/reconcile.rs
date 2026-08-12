@@ -511,13 +511,13 @@ impl CatalogIndex {
     }
 }
 
-fn split_fga(s: &str) -> Option<(FgaType, &str)> {
+pub(crate) fn split_fga(s: &str) -> Option<(FgaType, &str)> {
     use std::str::FromStr;
     let (ty, id) = s.split_once(':')?;
     Some((FgaType::from_str(ty).ok()?, id))
 }
 
-fn parse_uuid(s: &str) -> Option<uuid::Uuid> {
+pub(crate) fn parse_uuid(s: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(s).ok()
 }
 
