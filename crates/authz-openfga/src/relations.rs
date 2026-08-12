@@ -1055,6 +1055,8 @@ impl Assignment for WarehouseAssignment {
 #[cfg_attr(feature = "open-api", schema(as=WarehouseAction))]
 pub(super) enum APIWarehouseAction {
     CreateNamespace,
+    /// May accept a namespace being moved in at the warehouse root.
+    AcceptMovedNamespace,
     Delete,
     ModifyStorage,
     ModifyStorageCredential,
@@ -1120,6 +1122,7 @@ impl ReducedRelation for APIWarehouseAction {
     fn to_openfga(&self) -> Self::OpenFgaRelation {
         match self {
             APIWarehouseAction::CreateNamespace => WarehouseRelation::CanCreateNamespace,
+            APIWarehouseAction::AcceptMovedNamespace => WarehouseRelation::CanAcceptMovedNamespace,
             APIWarehouseAction::Delete => WarehouseRelation::CanDelete,
             APIWarehouseAction::ModifyStorage => WarehouseRelation::CanUpdateStorage,
             APIWarehouseAction::ModifyStorageCredential => {
@@ -1410,6 +1413,10 @@ pub(super) enum APINamespaceAction {
     CreateGenericTable,
     CreateNamespace,
     Delete,
+    /// May move this namespace elsewhere in the hierarchy.
+    Move,
+    /// May accept a namespace being moved in as a child of this namespace.
+    AcceptMovedNamespace,
     UpdateProperties,
     GetMetadata,
     ReadAssignments,
@@ -1464,6 +1471,8 @@ impl ReducedRelation for APINamespaceAction {
             APINamespaceAction::CreateGenericTable => NamespaceRelation::CanCreateGenericTable,
             APINamespaceAction::CreateNamespace => NamespaceRelation::CanCreateNamespace,
             APINamespaceAction::Delete => NamespaceRelation::CanDelete,
+            APINamespaceAction::Move => NamespaceRelation::CanMove,
+            APINamespaceAction::AcceptMovedNamespace => NamespaceRelation::CanAcceptMovedNamespace,
             APINamespaceAction::UpdateProperties => NamespaceRelation::CanUpdateProperties,
             APINamespaceAction::GetMetadata => NamespaceRelation::CanGetMetadata,
             APINamespaceAction::ReadAssignments => NamespaceRelation::CanReadAssignments,

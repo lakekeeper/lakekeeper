@@ -9739,6 +9739,8 @@ components:
         - create_generic_table
         - create_namespace
         - delete
+        - move
+        - accept_moved_namespace
         - update_properties
         - get_metadata
         - read_assignments
@@ -12641,6 +12643,7 @@ components:
       type: string
       enum:
         - create_namespace
+        - accept_moved_namespace
         - delete
         - modify_storage
         - modify_storage_credential
