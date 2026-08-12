@@ -36,7 +36,8 @@ fn move_namespace_action(destination: &NamespaceIdent, force: bool) -> CatalogNa
     }
 }
 
-/// Authorize a namespace move: `Move` on the namespace, `CreateNamespace` at the destination.
+/// Authorize a namespace move: `Move` on the namespace, plus `CreateNamespace` **and**
+/// `AcceptMovedNamespace` on the destination parent.
 ///
 /// Both checks live in one function so a single `emit_authz` covers them — the destination
 /// decision is as much a part of the audit trail as the source one.
@@ -269,8 +270,9 @@ where
 
     /// Move a namespace to `request.destination`, re-parenting and/or renaming it.
     ///
-    /// Requires `move` on the namespace itself plus `create_namespace` on the destination
-    /// parent (or on the warehouse, when moving to the root).
+    /// Requires `move` on the namespace itself, plus both `create_namespace` and
+    /// `accept_moved_namespace` on the destination parent (or on the warehouse, when moving
+    /// to the root) — grant authority at both ends. See [`authorize_namespace_move`].
     async fn move_namespace(
         namespace_id: NamespaceId,
         warehouse_id: WarehouseId,

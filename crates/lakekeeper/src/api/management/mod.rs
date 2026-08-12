@@ -2818,10 +2818,18 @@ pub mod v1 {
     /// re-parenting it and/or renaming it. The request body carries the full destination
     /// path; an empty path moves the namespace to the warehouse root.
     ///
-    /// Requires the `move` permission on the namespace itself and `create_namespace` on the
-    /// destination parent (or on the warehouse, when moving to the root). Because
-    /// re-parenting makes the namespace's contents inherit the destination subtree's
-    /// permissions, `move` is granted by `manage_grants` rather than by plain write access.
+    /// Requires grant authority at **both** ends, because re-parenting makes the namespace's
+    /// contents inherit the destination subtree's permissions without any assignment being
+    /// recorded:
+    ///
+    /// - `move` on the namespace being moved,
+    /// - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
+    ///   the warehouse, when moving to the root).
+    ///
+    /// Both `move` and `accept_moved_namespace` are granted by `manage_grants` rather than by
+    /// plain write access. `create_namespace` alone is not sufficient at the destination: it
+    /// authorizes adding an *empty* child, whereas a move arrives carrying existing contents
+    /// and their grants.
     ///
     /// Constraints:
     /// - Namespaces that contain child namespaces cannot be moved.

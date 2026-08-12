@@ -898,6 +898,9 @@ pub enum CatalogNamespaceAction {
     /// already be able to grant on the namespace being moved. Inside a `managed_access`
     /// subtree ownership does not confer that, which is precisely the case where moving
     /// out would otherwise defeat the control.
+    ///
+    /// Only the source half of a move's authorization; the destination is gated by
+    /// `CreateNamespace` plus `AcceptMovedNamespace`.
     Move {
         /// Full destination path, including the new leaf name.
         destination: Arc<Vec<String>>,
