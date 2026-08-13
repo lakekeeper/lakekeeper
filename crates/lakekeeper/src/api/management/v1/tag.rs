@@ -257,7 +257,9 @@ impl IntoResponse for ListTagsResponse {
 pub struct ColumnTags {
     /// Iceberg field-id of the column.
     pub field_id: i32,
-    /// Tags attached directly to this column.
+    /// Tags attached directly to this column. Always non-empty — a column with no tags
+    /// is omitted from the response entirely.
+    #[cfg_attr(feature = "open-api", schema(min_items = 1))]
     pub tags: Vec<TargetTag>,
 }
 
@@ -2556,11 +2558,22 @@ async fn authorize_list_column_tags<A: Authorizer, C: CatalogStore>(
 /// identified by field-id only; callers resolve names against the table metadata.
 fn group_column_tags(tags: Vec<crate::service::TagWithName>) -> ListColumnTagsResponse {
     let mut columns: Vec<ColumnTags> = Vec::new();
+    let mut prev_field_id: Option<i32> = None;
     for t in tags {
         // The store returns only column tags; skip anything else defensively.
         let TagTarget::Column { field_id, .. } = t.tag.target else {
             continue;
         };
+        // Grouping relies on the store's field-id ordering so equal field-ids are
+        // contiguous (only the last column is checked when merging). Guard it in debug
+        // builds; unordered input would silently split a column into several entries.
+        if let Some(prev) = prev_field_id {
+            debug_assert!(
+                field_id >= prev,
+                "column tags must arrive field-id-ordered for grouping"
+            );
+        }
+        prev_field_id = Some(field_id);
         let tag = TargetTag {
             tag_definition_id: t.tag.tag_definition_id,
             name: t.definition_name,

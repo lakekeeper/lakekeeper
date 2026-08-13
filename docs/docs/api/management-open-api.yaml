@@ -8047,7 +8047,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TargetTag'
-          description: Tags attached directly to this column.
+          description: |-
+            Tags attached directly to this column. Always non-empty — a column with no tags
+            is omitted from the response entirely.
+          minItems: 1
     ConsoleInfo:
       type: object
       description: Information about the UI (console) shipped with this binary.
