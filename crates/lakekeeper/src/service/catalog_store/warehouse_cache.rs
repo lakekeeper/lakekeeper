@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-use axum_prometheus::metrics;
 use moka::{
     future::Cache,
     notification::RemovalCause,
@@ -18,11 +17,7 @@ use crate::{
     CONFIG, WarehouseId,
     service::{
         ArcProjectId, ResolvedWarehouse,
-        cache_metrics::{
-            METRIC_CACHE_HITS_TOTAL as METRIC_WAREHOUSE_CACHE_HITS,
-            METRIC_CACHE_MISSES_TOTAL as METRIC_WAREHOUSE_CACHE_MISSES,
-            METRIC_CACHE_SIZE as METRIC_WAREHOUSE_CACHE_SIZE, METRICS_INITIALIZED,
-        },
+        cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
     },
 };
@@ -249,13 +244,9 @@ where
 
 /// Update the cache size metric with the current number of entries
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_cache_size_metric() {
-    let () = &*METRICS_INITIALIZED; // Ensure metrics are described
-    metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse")
-        .set(WAREHOUSE_CACHE.entry_count() as f64);
-    metrics::gauge!(METRIC_WAREHOUSE_CACHE_SIZE, "cache_type" => "warehouse_name_to_id")
-        .set(NAME_TO_ID_CACHE.entry_count() as f64);
+    set_cache_size("warehouse", WAREHOUSE_CACHE.entry_count());
+    set_cache_size("warehouse_name_to_id", NAME_TO_ID_CACHE.entry_count());
 }
 
 pub(super) async fn warehouse_cache_get_by_id(
@@ -264,10 +255,10 @@ pub(super) async fn warehouse_cache_get_by_id(
     update_cache_size_metric();
     if let Some(value) = WAREHOUSE_CACHE.get(&warehouse_id).await {
         tracing::debug!("Warehouse id {warehouse_id} found in cache");
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse").increment(1);
+        record_cache_hit("warehouse");
         Some(value.warehouse.clone())
     } else {
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
+        record_cache_miss("warehouse");
         None
     }
 }
@@ -279,24 +270,22 @@ pub(super) async fn warehouse_cache_get_by_name(
     update_cache_size_metric();
     let name_key = (project_id.clone(), UniCase::new(name.to_string()));
     let Some(warehouse_id) = NAME_TO_ID_CACHE.get(&name_key).await else {
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse_name_to_id")
-            .increment(1);
+        record_cache_miss("warehouse_name_to_id");
         return None;
     };
-    metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse_name_to_id")
-        .increment(1);
+    record_cache_hit("warehouse_name_to_id");
     tracing::debug!("Warehouse name {name} resolved in name-to-id cache to id {warehouse_id}");
 
     if let Some(value) = WAREHOUSE_CACHE.get(&(warehouse_id)).await {
         tracing::debug!("Warehouse id {warehouse_id} found in cache");
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_HITS, "cache_type" => "warehouse").increment(1);
+        record_cache_hit("warehouse");
         Some(value.warehouse.clone())
     } else {
         tracing::debug!(
             "Warehouse id {warehouse_id} not found in cache, invalidating stale name mapping for {name}"
         );
         NAME_TO_ID_CACHE.invalidate(&name_key).await;
-        metrics::counter!(METRIC_WAREHOUSE_CACHE_MISSES, "cache_type" => "warehouse").increment(1);
+        record_cache_miss("warehouse");
         None
     }
 }

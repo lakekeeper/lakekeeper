@@ -1,6 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use axum_prometheus::metrics;
 use moka::{
     future::Cache,
     ops::compute::{CompResult, Op},
@@ -62,12 +61,10 @@ pub(crate) async fn user_assignments_cache_get(
     update_ua_size_metric();
     if let Some(result) = USER_ASSIGNMENTS_CACHE.get(user_id).await {
         tracing::debug!("User assignments for {user_id} found in cache");
-        metrics::counter!(cache_metrics::METRIC_CACHE_HITS_TOTAL, "cache_type" => CACHE_TYPE_UA)
-            .increment(1);
+        cache_metrics::record_cache_hit(CACHE_TYPE_UA);
         Some(result)
     } else {
-        metrics::counter!(cache_metrics::METRIC_CACHE_MISSES_TOTAL, "cache_type" => CACHE_TYPE_UA)
-            .increment(1);
+        cache_metrics::record_cache_miss(CACHE_TYPE_UA);
         None
     }
 }
@@ -111,11 +108,8 @@ pub(crate) async fn user_assignments_cache_invalidate_many(user_ids: &[UserId]) 
 }
 
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_ua_size_metric() {
-    let () = &*cache_metrics::METRICS_INITIALIZED;
-    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_UA)
-        .set(USER_ASSIGNMENTS_CACHE.entry_count() as f64);
+    cache_metrics::set_cache_size(CACHE_TYPE_UA, USER_ASSIGNMENTS_CACHE.entry_count());
 }
 
 /// Single-flight read-through for the user-assignments cache.
@@ -277,13 +271,15 @@ pub(super) async fn share_identities(result: &mut ListUserRoleAssignmentsResult)
 /// `cache_type` labels. `entry_count()` is approximate until moka drains pending
 /// tasks (same caveat the UA/RM gauges already accept).
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_shared_identity_metrics() {
-    let () = &*cache_metrics::METRICS_INITIALIZED;
-    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_SHARED_ROLE_IDENTS)
-        .set(SHARED_ROLE_IDENTS.entry_count() as f64);
-    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_SHARED_PROJECT_IDS)
-        .set(SHARED_PROJECT_IDS.entry_count() as f64);
+    cache_metrics::set_cache_size(
+        CACHE_TYPE_SHARED_ROLE_IDENTS,
+        SHARED_ROLE_IDENTS.entry_count(),
+    );
+    cache_metrics::set_cache_size(
+        CACHE_TYPE_SHARED_PROJECT_IDS,
+        SHARED_PROJECT_IDS.entry_count(),
+    );
 }
 
 // ============================================================================
@@ -326,12 +322,10 @@ pub(crate) async fn role_members_cache_get(role_id: RoleId) -> Option<Arc<ListRo
     update_rm_size_metric();
     if let Some(result) = ROLE_MEMBERS_CACHE.get(&role_id).await {
         tracing::debug!("Role members for {role_id} found in cache");
-        metrics::counter!(cache_metrics::METRIC_CACHE_HITS_TOTAL, "cache_type" => CACHE_TYPE_RM)
-            .increment(1);
+        cache_metrics::record_cache_hit(CACHE_TYPE_RM);
         Some(result)
     } else {
-        metrics::counter!(cache_metrics::METRIC_CACHE_MISSES_TOTAL, "cache_type" => CACHE_TYPE_RM)
-            .increment(1);
+        cache_metrics::record_cache_miss(CACHE_TYPE_RM);
         None
     }
 }
@@ -352,11 +346,8 @@ pub(crate) async fn role_members_cache_invalidate(role_id: RoleId) {
 }
 
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_rm_size_metric() {
-    let () = &*cache_metrics::METRICS_INITIALIZED;
-    metrics::gauge!(cache_metrics::METRIC_CACHE_SIZE, "cache_type" => CACHE_TYPE_RM)
-        .set(ROLE_MEMBERS_CACHE.entry_count() as f64);
+    cache_metrics::set_cache_size(CACHE_TYPE_RM, ROLE_MEMBERS_CACHE.entry_count());
 }
 
 /// Single-flight read-through for the role-members cache.

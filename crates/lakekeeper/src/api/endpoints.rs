@@ -244,6 +244,7 @@ generate_endpoints! {
         SetTableColumnTag(PUT, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags/{tag_name}"),
         DeleteTableColumnTag(DELETE, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags/{tag_name}"),
         ListTableColumnTags(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags"),
+        ListColumnTags(GET, "/management/v1/warehouse/{warehouse_id}/table/{table_id}/column-tags"),
         SetViewTag(PUT, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}"),
         DeleteViewTag(DELETE, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags/{tag_name}"),
         ListViewTags(GET, "/management/v1/warehouse/{warehouse_id}/view/{view_id}/tags"),

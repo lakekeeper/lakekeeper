@@ -156,6 +156,7 @@
                 "management-v1-set-table-column-tag",
                 "management-v1-delete-table-column-tag",
                 "management-v1-list-table-column-tags",
+                "management-v1-list-column-tags",
                 "management-v1-set-view-tag",
                 "management-v1-delete-view-tag",
                 "management-v1-list-view-tags",
