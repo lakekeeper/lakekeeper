@@ -1359,9 +1359,8 @@ async fn test_update_format_version_policy(pool: PgPool) {
     );
     assert_eq!(response.default_format_version, Some(FormatVersion::V3));
 
-    // Give the async event handler time to update the cache.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // No sleep: the policy write invalidates this replica's cache before it
+    // returns, so the next read cannot observe the pre-update policy.
     let after = PostgresBackend::get_warehouse_by_id(
         warehouse_resp.warehouse_id,
         WarehouseStatus::active(),
@@ -1453,8 +1452,6 @@ async fn test_managed_by_locks_spec_via_handlers(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(resp.managed_by, ManagedBy::InstanceAdmin);
-    // Let the managed-by-set event update the warehouse cache.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Spec mutation by a non-admin is now locked, despite AllowAll passing authz.
     let err =

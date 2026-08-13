@@ -105,8 +105,17 @@ pub struct CachedWarehouse {
     pub warehouse: Arc<ResolvedWarehouse>,
 }
 
-#[allow(dead_code)] // Not required for all features
-async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
+/// Drop a warehouse from this replica's cache.
+///
+/// Call this *after* the mutating transaction commits, never before: the write
+/// methods hand back the updated warehouse while the transaction is still open,
+/// so publishing it earlier would cache a value a rollback discards.
+///
+/// Dropping rather than replacing with the updated row is deliberate. It costs
+/// one reload on the next access — warehouse mutations are rare — and in
+/// exchange it also clears the `(project, name) -> id` index via the eviction
+/// listener, which a rename would otherwise leave resolving the old name.
+pub async fn warehouse_cache_invalidate(warehouse_id: WarehouseId) {
     if CONFIG.cache.warehouse.enabled {
         tracing::debug!("Invalidating warehouse id {warehouse_id} from cache");
         // Remove via the loader's per-key compute lock (`Op::Remove`), not a bare
