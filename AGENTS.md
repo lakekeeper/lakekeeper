@@ -1,20 +1,24 @@
 # AGENTS.md
 
 ## Meta-rules for this file
+
 - Keep this file concise. For each line, ask: would removing it cause mistakes? If not, cut it.
 - Write commands and rules, not prose. Be imperative.
 - Don't repeat what's in Cargo.toml, CI configs, or code comments.
 - Update this file like code — review changes in PRs.
 
 ## Project
+
 Lakekeeper — open-source Apache Iceberg REST catalog, written in Rust.
 
-Repository: https://github.com/lakekeeper/lakekeeper
+Repository: <https://github.com/lakekeeper/lakekeeper>
 
 ## Build & Test
+
 Uses [just](https://github.com/casey/just) as task runner. See `justfile` for all available recipes.
 
 Key commands:
+
 - Build: `cargo build`
 - Test all: `just test` (includes doc tests)
 - Unit tests only: `just unit-test`
@@ -26,6 +30,7 @@ Key commands:
 Clippy runs with multiple feature flag combinations — don't just run `cargo clippy --all-features`. Use `just check-clippy`.
 
 ## Workspace Crates
+
 | Crate | Path | Purpose |
 |-------|------|---------|
 | lakekeeper | crates/lakekeeper | Core catalog logic |
@@ -36,10 +41,12 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 | catalog-error-macros | crates/catalog-error-macros | Error derive macros |
 
 ## Authz
+
 - OpenFGA model: `authz/openfga/` — validate with `just test-openfga`, update JSON with `just update-openfga`
 - OPA policies: `authz/opa-bridge/` — check with `just check-opa` (requires `opa` and `regal` CLIs)
 
 ## Code Style
+
 - Follow existing patterns in adjacent files.
 - Use `thiserror` for error types, `tracing` for logging.
 - Use `typed-builder` for struct construction.
@@ -49,6 +56,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Docs prose (`docs/docs/*.md`): one line per paragraph — no hard line wrapping. Rely on soft-wrap.
 
 ## Architecture
+
 - Before adding new code, check if existing crates already solve the problem. Reuse over reinvention.
 - Challenge duplication — if similar logic exists elsewhere, refactor to share it.
 - New features should extend existing traits/interfaces where possible rather than introducing parallel abstractions.
@@ -58,6 +66,7 @@ Clippy runs with multiple feature flag combinations — don't just run `cargo cl
 - Never rely on per-process caches for cross-replica correctness — caches have no cross-replica invalidation.
 
 ## Rules
+
 - Never skip or disable tests.
 - Do not modify generated or vendored files.
 - Release versioning is managed by release-please (`release-please/`).

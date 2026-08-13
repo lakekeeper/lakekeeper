@@ -49,7 +49,7 @@ The gate is **disabled unless an `[admission_enforce]` block is present**. Like 
 | `connect_timeout_secs`         | no       | `2`     | Connection timeout.                                               |
 | `unavailable_retry_after_secs` | no       | `5`     | `Retry-After` returned on the fail-closed `503`.                  |
 | `headers`                      | no       | `{}`    | Extra static headers sent on every call (e.g. a service API key). |
-| `auth`                         | no       | _none_  | How to authenticate (see below). Omit to send no `Authorization`. |
+| `auth`                         | no       | *none*  | How to authenticate (see below). Omit to send no `Authorization`. |
 | `checks`                       | yes      | —       | Named map of checks (at least one). See below.                   |
 
 ### `[admission_enforce.auth]`

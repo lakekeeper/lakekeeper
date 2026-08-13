@@ -362,14 +362,14 @@ Amazon Athena is a serverless query service that allows you to use SQL or PySpar
 
 **1. Create an Apache Spark workgroup in the AWS Athena console:**
 
-* Go to the Athena console > Administration > Workgroups
-* Create a workgroup with Apache Spark as the analytics engine
+- Go to the Athena console > Administration > Workgroups
+- Create a workgroup with Apache Spark as the analytics engine
 
 **2. Create a new PySpark notebook:**
 
-* Give your notebook a name
-* Select your Spark workgroup
-* Configure JSON properties with Lakekeeper catalog settings
+- Give your notebook a name
+- Select your Spark workgroup
+- Configure JSON properties with Lakekeeper catalog settings
 
     ```json
     {
@@ -393,7 +393,6 @@ spark.sql("select count(*) from lakekeeper.<namespace>.<table>").show()
 
 Amazon Athena has Iceberg pre-installed, so no additional package installations are required.
 
-
 ## <img src="/assets/starrocks.svg" width="30"> Starrocks
 
 Starrocks is improving the Iceberg REST support quickly. This guide is written for Starrocks 3.3, which does not support vended-credentials for AWS S3 with custom endpoints.
@@ -404,7 +403,6 @@ The following docker compose examples are available for starrocks:
 - [`Access-Control`](https://github.com/lakekeeper/lakekeeper/tree/main/examples/access-control): Lakekeeper secured with OAuth2, single technical user for starrocks
 
 **Note:** If you are using an IdP like Keycloak, in order for Starrocks to be able to authenticate with Lakekeeper you must ensure the client you are connecting to has "Standard Token Exchange" (or equivalent) enabled. Otherwise Starrocks will be unable to refresh access tokens and you will get authentication errors when the initial access token created by the `CREATE EXTERNAL CATALOG` command expires.
-
 
 === "S3-Compatible"
 
@@ -467,7 +465,6 @@ OLake is an open-source, quick and scalable tool for replicating Databases to Ap
         }
     }
     ```
-
 
 ## <img src="/assets/risingwave.svg" width="30"> RisingWave
 
