@@ -310,6 +310,39 @@ fn assumed_role_restriction(
     Ok(())
 }
 
+/// The tuples to check for `checks`, and the item each check takes its answer from.
+///
+/// Keeps the request dense. A privilege this level cannot grant gets no tuple at all
+/// (`None`, answered as a deny), and equal privileges share one: the relation is a
+/// function of the privilege, so two checks differing only in their grantee ask the same
+/// question of the model.
+fn plan_authority_checks(
+    resource_type: ResourceType,
+    user: &str,
+    object: &str,
+    checks: &[GrantAuthorityCheck<'_>],
+) -> (Vec<CheckRequestTupleKey>, Vec<Option<usize>>) {
+    let mut item_of_privilege: HashMap<&str, usize> = HashMap::new();
+    let mut item_of_check = Vec::with_capacity(checks.len());
+    let mut items: Vec<CheckRequestTupleKey> = Vec::with_capacity(checks.len());
+    for check in checks {
+        let Some(relation) = authority_relation(resource_type, check.privilege) else {
+            item_of_check.push(None);
+            continue;
+        };
+        let item = *item_of_privilege.entry(check.privilege).or_insert_with(|| {
+            items.push(CheckRequestTupleKey {
+                user: user.to_string(),
+                relation,
+                object: object.to_string(),
+            });
+            items.len() - 1
+        });
+        item_of_check.push(Some(item));
+    }
+    (items, item_of_check)
+}
+
 impl OpenFGAAuthorizer {
     /// Which of `checks` the actor (or `for_user`) may grant and revoke on `resource`,
     /// in order.
@@ -337,26 +370,7 @@ impl OpenFGAAuthorizer {
             |u| u.api_user_or_role().to_openfga(),
         );
 
-        // Keep the request dense: unknown privileges get no check, and repeated
-        // privileges share one. Both are filled back in from `checked_item` afterwards.
-        let mut item_of_privilege: HashMap<&str, usize> = HashMap::new();
-        let mut checked_item = Vec::with_capacity(checks.len());
-        let mut items: Vec<CheckRequestTupleKey> = Vec::with_capacity(checks.len());
-        for check in checks {
-            let Some(relation) = authority_relation(resource_type, check.privilege) else {
-                checked_item.push(None);
-                continue;
-            };
-            let item = *item_of_privilege.entry(check.privilege).or_insert_with(|| {
-                items.push(CheckRequestTupleKey {
-                    user: user.clone(),
-                    relation,
-                    object: object.clone(),
-                });
-                items.len() - 1
-            });
-            checked_item.push(Some(item));
-        }
+        let (items, item_of_check) = plan_authority_checks(resource_type, &user, &object, checks);
 
         let guard_tuples = if for_user.is_some() {
             vec![CheckRequestTupleKey {
@@ -374,7 +388,7 @@ impl OpenFGAAuthorizer {
 
         // A check with no item is an unknown privilege; a missing result would be a bug
         // in the batch, and denying is the safe reading of both.
-        Ok(checked_item
+        Ok(item_of_check
             .into_iter()
             .map(|item| {
                 item.and_then(|item| checked.get(item).cloned())
@@ -610,6 +624,8 @@ fn tuple_timestamp(seconds_and_nanos: Option<(i64, i32)>) -> Option<chrono::Date
 
 #[cfg(test)]
 mod tests {
+    use lakekeeper::service::UserId;
+
     use super::*;
     use crate::FgaType;
 
@@ -659,6 +675,44 @@ mod tests {
         <ResourceType as strum::VariantArray>::VARIANTS
             .iter()
             .copied()
+    }
+
+    /// Equal privileges are one tuple however many grantees name them, and a privilege
+    /// this level cannot grant is no tuple at all. The decisions alone cannot show either:
+    /// a plan with one tuple per check answers identically, just more expensively.
+    #[test]
+    fn equal_privileges_share_one_tuple_whatever_the_grantee() {
+        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
+        let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
+        let (items, item_of_check) = plan_authority_checks(
+            ResourceType::Warehouse,
+            "user:oidc~caller",
+            "warehouse:11111111-1111-1111-1111-111111111111",
+            &[
+                GrantAuthorityCheck::new("select", Some(&alice)),
+                GrantAuthorityCheck::new("select", Some(&bob)),
+                GrantAuthorityCheck::new("modify", Some(&alice)),
+                // A warehouse action, but not an assignable relation, so not grantable.
+                GrantAuthorityCheck::new("get_metadata", Some(&alice)),
+            ],
+        );
+
+        assert_eq!(item_of_check, vec![Some(0), Some(0), Some(1), None]);
+        assert_eq!(
+            items,
+            vec![
+                CheckRequestTupleKey {
+                    user: "user:oidc~caller".to_string(),
+                    relation: "can_grant_select".to_string(),
+                    object: "warehouse:11111111-1111-1111-1111-111111111111".to_string(),
+                },
+                CheckRequestTupleKey {
+                    user: "user:oidc~caller".to_string(),
+                    relation: "can_grant_modify".to_string(),
+                    object: "warehouse:11111111-1111-1111-1111-111111111111".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

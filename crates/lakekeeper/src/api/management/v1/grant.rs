@@ -68,11 +68,12 @@ use crate::{
             ActionDescriptor, AuthZCannotSeeTag, AuthZCannotUseWarehouseId, AuthZError,
             AuthZGenericTableOps, AuthZGrantActionForbidden, AuthZGrantOps, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthZTagActionForbidden, AuthZTagOps, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-            CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck,
-            GrantFilter, GrantResource, GrantRow, GrantSpec, PrivilegeDescriptor,
-            RequireTagActionError, ResourceType, UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            AuthorizationDecision, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
+            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantResource, GrantRow,
+            GrantSpec, PrivilegeDescriptor, RequireTagActionError, ResourceType,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -717,12 +718,11 @@ async fn validate_write_principals<C: CatalogRoleOps>(
 /// The distinct grant-authority questions a diff asks, in `writes`-then-`deletes` order:
 /// which privilege, destined for which principal.
 ///
-/// Deduplicated on the *pair*, and in first-seen order rather than sorted, so the error
-/// below lists refused privileges in the order the caller's request names them. A diff
-/// handing one privilege to a hundred principals asks a hundred questions: whether the
-/// grantee changes the answer belongs to the authorizer's model, so this layer cannot
-/// collapse them. Authorizers that resolve authority from the privilege alone collapse
-/// them internally instead, where doing so is sound.
+/// Deduplicated on the *pair*, in first-seen order. A diff handing one privilege to a
+/// hundred principals asks a hundred questions: whether the grantee changes the answer
+/// belongs to the authorizer's model, so this layer cannot collapse them. An authorizer
+/// that resolves authority from the privilege alone collapses them itself, where that is
+/// sound.
 fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str)> {
     let mut seen = std::collections::HashSet::new();
     request
@@ -734,6 +734,26 @@ fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str)
             )
         })
         .filter(|question| seen.insert(question.clone()))
+        .collect()
+}
+
+/// The privileges to name in a refusal: those `decisions` refused, named once each, in
+/// the order they were first refused.
+///
+/// `decisions` answer `questions` positionally. First-refusal order is not request order
+/// once an authorizer answers per grantee: a privilege allowed for the first principal
+/// that asks for it and refused for the second is named where the refusal is.
+fn refused_privileges<'a>(
+    questions: &[(UserOrRoleId, &'a str)],
+    decisions: &[AuthorizationDecision],
+) -> Vec<&'a str> {
+    let mut named = std::collections::HashSet::new();
+    questions
+        .iter()
+        .zip(decisions)
+        .filter(|(_, decision)| !decision.allowed)
+        .map(|((_, privilege), _)| *privilege)
+        .filter(|privilege| named.insert(*privilege))
         .collect()
 }
 
@@ -755,17 +775,9 @@ async fn require_grant_authority<A: Authorizer>(
     let decisions = authorizer
         .are_allowed_grants(metadata, None, resource, &checks)
         .await?;
-    // Every refused privilege is named, matching the validation errors above: one
-    // round trip should surface everything the caller must remove. Named once even when
-    // refused for several principals — the message speaks about privileges.
-    let mut named = std::collections::HashSet::new();
-    let refused: Vec<&str> = questions
-        .iter()
-        .zip(&decisions)
-        .filter(|(_, decision)| !decision.allowed)
-        .map(|((_, privilege), _)| *privilege)
-        .filter(|privilege| named.insert(*privilege))
-        .collect();
+    // Every refused privilege is named, matching the validation errors above: one round
+    // trip should surface everything the caller must remove.
+    let refused = refused_privileges(&questions, &decisions);
     if !refused.is_empty() {
         return Err(AuthZGrantActionForbidden::new(resource, refused).into());
     }
@@ -2750,6 +2762,46 @@ mod tests {
                 (UserOrRoleId::Role(role_id), "modify"),
                 (alice_id, "select"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_each_privilege_once_in_first_refusal_order() {
+        // Mixed decisions, which no authorizer in this workspace produces: the answers are
+        // positional, so a pairing that slipped by one would name a privilege the
+        // authorizer allowed - and stay invisible to every all-deny or all-allow test.
+        let alice = UserOrRoleId::from(&alice());
+        let role = UserOrRoleId::Role(RoleId::new_random());
+        let questions = vec![
+            (alice.clone(), "select"),
+            (role, "select"),
+            (alice, "modify"),
+        ];
+
+        // `select` allowed for alice but refused for the role: named once, and from the
+        // position of the refusal rather than of the first request for it.
+        assert_eq!(
+            refused_privileges(
+                &questions,
+                &[
+                    AuthorizationDecision::allow(),
+                    AuthorizationDecision::deny(),
+                    AuthorizationDecision::deny(),
+                ]
+            ),
+            vec!["select", "modify"]
+        );
+        // Only the first question refused, so `modify` must not be named.
+        assert_eq!(
+            refused_privileges(
+                &questions,
+                &[
+                    AuthorizationDecision::deny(),
+                    AuthorizationDecision::allow(),
+                    AuthorizationDecision::allow(),
+                ]
+            ),
+            vec!["select"]
         );
     }
 

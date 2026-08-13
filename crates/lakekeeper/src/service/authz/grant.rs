@@ -541,25 +541,25 @@ impl AppliedGrants {
 /// One grant-authority question: may the subject grant and revoke `privilege` on the
 /// resource, to `grantee`?
 ///
-/// Extensible on purpose — construct with [`new`](Self::new). A question may grow a term
-/// (whether the entry is a grant or a revoke, say) without breaking authorizers that live
-/// outside this workspace.
+/// Extensible on purpose — construct with [`new`](Self::new) and read fields rather than
+/// destructuring, so a new term costs no out-of-workspace authorizer a compile error.
+/// Compiling is not honoring: a term that changes what may be authorized (grant versus
+/// revoke, say) belongs in a change its implementors cannot silently ignore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct GrantAuthorityCheck<'a> {
-    /// A name from the authorizer's own vocabulary. An unrecognized name is a deny, not
-    /// an error: it may belong to a different authorizer's vocabulary.
+    /// A name from the authorizer's own vocabulary. An unrecognized name is answered
+    /// rather than rejected — it may belong to a different authorizer's vocabulary — and
+    /// an authorizer that enforces its own vocabulary answers it with a deny.
     pub privilege: &'a str,
-    /// Who would come to hold the privilege — or lose it, for a revoke.
+    /// Who would come to hold the privilege — or lose it, for a revoke. An authorizer
+    /// whose authority does not depend on the recipient ignores it.
     ///
     /// `None` leaves the grantee out of the question: the grantable-privileges endpoint
     /// asks whether the subject has authority over the privilege here at all. That
-    /// answer is advisory, since the apply path asks again for each grantee, so an
-    /// authorizer that does distinguish grantees may still answer this form from the
-    /// privilege alone.
-    ///
-    /// An authorizer whose grant authority never depends on who receives the privilege
-    /// ignores this field and answers the same either way.
+    /// answer is advisory, since the apply path asks again for each grantee, so even an
+    /// authorizer that does distinguish grantees may answer this form from the privilege
+    /// alone.
     pub grantee: Option<&'a UserOrRoleId>,
 }
 

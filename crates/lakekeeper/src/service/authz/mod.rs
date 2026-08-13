@@ -2020,10 +2020,8 @@ where
     /// check to fold in here. Callers document what that discloses.
     ///
     /// Each check names a privilege and, where the caller knows it, the grantee it is
-    /// destined for. Whether the answer depends on the grantee belongs to the
-    /// authorizer's model: one that resolves authority from the privilege alone should
-    /// answer equal privileges with one lookup and repeat its decision, and must still
-    /// return one decision per check, in order.
+    /// destined for. Whether the grantee changes the answer is the authorizer's business;
+    /// either way, return one decision per check, in order.
     ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(
