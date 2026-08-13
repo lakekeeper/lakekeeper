@@ -269,6 +269,7 @@ impl GcsProfile {
             defaults: HashMap::with_capacity(0),
             overrides: HashMap::with_capacity(0),
             endpoints: supported_endpoints().to_vec(),
+            idempotency_key_lifetime: None,
         }
     }
 

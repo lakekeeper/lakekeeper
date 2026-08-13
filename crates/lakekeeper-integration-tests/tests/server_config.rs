@@ -1,5 +1,5 @@
 use lakekeeper::{
-    ProjectId,
+    CONFIG, ProjectId,
     api::{
         RequestMetadata,
         iceberg::v1::{
@@ -45,6 +45,53 @@ async fn test_get_config_visible_warehouse(pool: PgPool) {
         config.overrides.get("uri"),
         Some(&RequestMetadata::new_unauthenticated().base_uri_catalog())
     );
+}
+
+/// The spec defines `idempotency-key-lifetime` as a sibling of
+/// `overrides`/`defaults`, and its presence is the *only* signal that the
+/// server supports `Idempotency-Key` at all. Advertised inside `overrides`, a
+/// conformant client concludes idempotency is unsupported and additionally
+/// applies an unrecognized property to its own configuration.
+#[sqlx::test]
+async fn test_get_config_advertises_idempotency_at_the_top_level(pool: PgPool) {
+    let (ctx, warehouse) = setup(
+        pool,
+        memory_io_profile(),
+        None,
+        HidingAuthorizer::new(),
+        TabularDeleteProfile::Hard {},
+        None,
+        1,
+        None,
+    )
+    .await;
+
+    let config = CatalogServer::get_config(
+        config_query(&warehouse.project_id, &warehouse.warehouse_name),
+        ctx,
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // Idempotency is enabled by default, so the field must be populated. Whether
+    // the *value* honours the configuration is covered by unit tests on the
+    // mapping itself; what only an end-to-end run can show is where it lands in
+    // the JSON a client actually parses.
+    assert!(CONFIG.idempotency.enabled, "test presumes the default");
+    let json = serde_json::to_value(&config).unwrap();
+
+    assert_eq!(
+        json["idempotency-key-lifetime"],
+        serde_json::json!(CONFIG.idempotency.lifetime_iso8601())
+    );
+    for map in ["overrides", "defaults"] {
+        assert!(
+            json[map].get("idempotency-key-lifetime").is_none(),
+            "leaked into {map}: {}",
+            json[map]
+        );
+    }
 }
 
 /// A warehouse the caller cannot see must produce the *same* error as a

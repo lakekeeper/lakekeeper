@@ -10,7 +10,7 @@ use crate::{
         },
         management::v1::user::{UserLastUpdatedWith, parse_create_user_request},
     },
-    config::MaintenanceMode,
+    config::{IdempotencyConfig, MaintenanceMode},
     request_metadata::RequestMetadata,
     service::{
         CatalogStore, CatalogWarehouseOps, ProjectId, SecretStore, State, Transaction,
@@ -126,15 +126,24 @@ impl<A: Authorizer + Clone, C: CatalogStore, S: SecretStore>
             .overrides
             .insert("uri".to_string(), request_metadata_arc.base_uri_catalog());
 
-        if CONFIG.idempotency.enabled {
-            config.overrides.insert(
-                "idempotency-key-lifetime".to_string(),
-                CONFIG.idempotency.lifetime_iso8601(),
-            );
-        }
+        config.idempotency_key_lifetime = advertised_idempotency_lifetime(&CONFIG.idempotency);
 
         Ok(config)
     }
+}
+
+/// The `idempotency-key-lifetime` to advertise in `GET /v1/config`.
+///
+/// A top-level field, not an override: it announces a server capability rather
+/// than a property the client should apply to itself. `None` when idempotency
+/// is disabled — absence is precisely how a client learns it is unsupported, so
+/// advertising a lifetime here while the server ignores `Idempotency-Key` would
+/// invite clients to rely on a guarantee that does not hold.
+///
+/// Split out from the handler so it is reachable without a database or the
+/// global config.
+fn advertised_idempotency_lifetime(idempotency: &IdempotencyConfig) -> Option<String> {
+    idempotency.enabled.then(|| idempotency.lifetime_iso8601())
 }
 
 fn parse_warehouse_arg(arg: &str) -> (Option<ProjectId>, String) {
@@ -234,4 +243,38 @@ async fn maybe_register_user<D: CatalogStore>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn idempotency(enabled: bool, lifetime: Duration) -> IdempotencyConfig {
+        IdempotencyConfig {
+            enabled,
+            lifetime,
+            ..IdempotencyConfig::default()
+        }
+    }
+
+    /// Absence is the "unsupported" signal, so a disabled server must advertise
+    /// nothing rather than a lifetime it will not honor.
+    #[test]
+    fn disabled_idempotency_advertises_nothing() {
+        assert_eq!(
+            advertised_idempotency_lifetime(&idempotency(false, Duration::from_mins(30))),
+            None
+        );
+    }
+
+    /// A non-default lifetime, so this cannot pass by coinciding with the default.
+    #[test]
+    fn enabled_idempotency_advertises_the_configured_lifetime() {
+        assert_eq!(
+            advertised_idempotency_lifetime(&idempotency(true, Duration::from_hours(1))),
+            Some("PT1H".to_string())
+        );
+    }
 }
