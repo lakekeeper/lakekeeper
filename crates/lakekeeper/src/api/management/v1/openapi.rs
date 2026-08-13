@@ -117,6 +117,7 @@ use crate::{
         super::list_generic_table_tags,
         super::list_namespace_tags,
         super::list_table_column_tags,
+        super::list_column_tags,
         super::list_table_tags,
         super::list_tag_attachments,
         super::list_tag_definitions,

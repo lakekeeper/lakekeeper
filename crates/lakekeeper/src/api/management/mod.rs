@@ -69,7 +69,7 @@ pub mod v1 {
     use table::TableManagementService as _;
     use tabular::TabularManagementService as _;
     use tag::{
-        AppliedTag, CreateTagDefinitionRequest, ListTagAttachmentsQuery,
+        AppliedTag, CreateTagDefinitionRequest, ListColumnTagsResponse, ListTagAttachmentsQuery,
         ListTagAttachmentsResponse, ListTagDefinitionsQuery, ListTagDefinitionsResponse,
         ListTagsQuery, ListTagsResponse, Service as _, SetTagRequest, TagDefinition,
         UpdateTagDefinitionRequest,
@@ -1772,6 +1772,29 @@ pub mod v1 {
             query,
         )
         .await
+    }
+
+    /// List All Column Tags
+    ///
+    /// Returns the governance tags on every column of the table in one call, grouped by
+    /// column (field-id). Columns without tags are omitted. Requires metadata access on
+    /// the table.
+    #[cfg_attr(feature = "open-api", utoipa::path(
+        get,
+        tag = "tag",
+        path = ManagementV1Endpoint::ListColumnTags.path(),
+        params(("warehouse_id" = Uuid, Path, description = "Warehouse ID"), ("table_id" = Uuid, Path, description = "Table ID"), ("x-project-id" = Option<String>, Header, description = PROJECT_ID_HEADER_DESCRIPTION)),
+        responses(
+            (status = 200, description = "Tags on each column of the table", body = ListColumnTagsResponse),
+            (status = "4XX", body = IcebergErrorResponse),
+        )
+    ))]
+    async fn list_column_tags<C: CatalogStore, A: Authorizer, S: SecretStore>(
+        Path((warehouse_id, table_id)): Path<(WarehouseId, TableId)>,
+        AxumState(api_context): AxumState<ApiContext<State<A, C, S>>>,
+        Extension(metadata): Extension<RequestMetadata>,
+    ) -> Result<ListColumnTagsResponse> {
+        ApiServer::<C, A, S>::list_column_tags(warehouse_id, table_id, api_context, metadata).await
     }
 
     /// Set View Tag
@@ -4378,6 +4401,10 @@ pub mod v1 {
                 .route(
                     ManagementV1Endpoint::ListTableColumnTags.path_in_management_v1(),
                     get(list_table_column_tags),
+                )
+                .route(
+                    ManagementV1Endpoint::ListColumnTags.path_in_management_v1(),
+                    get(list_column_tags),
                 )
                 .route(
                     ManagementV1Endpoint::SetViewTag.path_in_management_v1(),

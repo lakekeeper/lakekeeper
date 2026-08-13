@@ -976,6 +976,87 @@ async fn test_table_column_tag_by_name(pool: PgPool) {
     assert_eq!(listed.tags[0].tag_definition_id, def.id);
 }
 
+/// All column-tags: tag two columns (`id`, `email`) plus the table itself, then read
+/// every column's tags in one call. Returns one entry per tagged column, resolved to its
+/// name; the table-level tag is excluded (columns only).
+#[sqlx::test]
+async fn test_list_column_tags(pool: PgPool) {
+    let (ctx, wh) = setup_catalog(pool).await;
+    let pid = &wh.project_id;
+    let warehouse_id = wh.warehouse_id;
+    let table_id = create_table_with_columns(&ctx, warehouse_id).await;
+
+    let col_def = create_def(
+        &ctx,
+        pid,
+        "column-pii",
+        vec![TagScope::Column],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+    let tbl_def = create_def(
+        &ctx,
+        pid,
+        "table-owner",
+        vec![TagScope::Table],
+        TagValueKind::Marker,
+        None,
+    )
+    .await
+    .unwrap();
+
+    for col in ["id", "email"] {
+        Server::set_table_column_tag(
+            warehouse_id,
+            table_id,
+            col.to_string(),
+            "column-pii".to_string(),
+            SetTagRequest { value: None },
+            ctx.clone(),
+            request_metadata_with_project(pid),
+        )
+        .await
+        .unwrap();
+    }
+    // A table-level tag on the same table must NOT show up in the column listing.
+    Server::set_table_tag(
+        warehouse_id,
+        table_id,
+        "table-owner".to_string(),
+        SetTagRequest { value: None },
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    let resp = Server::list_column_tags(
+        warehouse_id,
+        table_id,
+        ctx.clone(),
+        request_metadata_with_project(pid),
+    )
+    .await
+    .unwrap();
+
+    // Exactly the two tagged columns, ordered by field-id (1 = id, 2 = email), each with
+    // its single column tag; the table-level tag is absent.
+    assert_eq!(resp.columns.len(), 2);
+    assert_eq!(resp.columns[0].field_id, 1);
+    assert_eq!(resp.columns[0].tags.len(), 1);
+    assert_eq!(resp.columns[0].tags[0].tag_definition_id, col_def.id);
+    assert_eq!(resp.columns[1].field_id, 2);
+    assert_eq!(resp.columns[1].tags.len(), 1);
+    assert_eq!(resp.columns[1].tags[0].tag_definition_id, col_def.id);
+    assert!(
+        resp.columns
+            .iter()
+            .all(|c| c.tags.iter().all(|t| t.tag_definition_id != tbl_def.id))
+    );
+}
+
 /// Applying a column tag to a non-existent column is rejected with `ColumnNotFound` (404).
 #[sqlx::test]
 async fn test_table_column_tag_unknown_column_not_found(pool: PgPool) {

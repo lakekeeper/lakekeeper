@@ -915,6 +915,15 @@ where
         catalog_state: Self::State,
     ) -> Result<Vec<TagWithName>, CatalogBackendError>;
 
+    /// All direct column tags on `tabular_id` (every column with a tag), each paired
+    /// with its definition's name; the column is carried as the field-id in each
+    /// `TagWithName`'s `Column` target. Ordered by field-id for per-column grouping.
+    async fn list_column_tags_for_tabular_impl(
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError>;
+
     /// Reverse lookup: the targets a definition is directly attached to, narrowed by
     /// `filter` (all criteria combined with AND), keyset-paginated. No hierarchy expansion.
     async fn list_tag_attachments_impl(
