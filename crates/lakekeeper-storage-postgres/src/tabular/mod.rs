@@ -823,7 +823,14 @@ where
             INNER JOIN warehouse w ON w.warehouse_id = $1
             INNER JOIN namespace n ON n.namespace_id = t.namespace_id AND n.warehouse_id = $1
             LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
-            WHERE t.warehouse_id = $1 AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
+            -- Deliberately NOT filtering on tt.queue_name here. The predicate used to be:
+            --     AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
+            -- It can never exclude a row: the LEFT JOIN's ON clause already restricts matches to 
+            -- those two queues, so a matched row always satisfies the IN, and an unmatched row 
+            -- is NULL-extended by the outer join and always satisfies the IS NULL.
+            -- Postgres cannot reason about the LEFT JOIN, so the planner can get confused
+            -- an decides to not use the index, degrading query performance.
+            WHERE t.warehouse_id = $1
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
                 AND (t.typ = $3 OR $3 IS NULL)
