@@ -415,6 +415,7 @@ pub(super) fn adls_catalog_config() -> CatalogConfig {
         defaults: HashMap::default(),
         overrides: HashMap::default(),
         endpoints: supported_endpoints().to_vec(),
+        idempotency_key_lifetime: None,
     }
 }
 

@@ -148,10 +148,15 @@ pub fn iso_8601_duration_to_std(
 
 /// Converts a `std::time::Duration` to an ISO 8601 duration string.
 ///
+/// A duration that is a whole number of weeks is rendered with the weeks
+/// designator (`P<n>W`). That form is valid ISO 8601 but is **not** accepted by
+/// `java.time.Duration.parse`, so use
+/// [`std_duration_to_iso_8601_string_no_weeks`] for any value handed to an
+/// Iceberg REST client.
+///
 /// `std::time::Duration` is always non-negative, so this cannot fail for that reason.
 #[must_use]
 pub fn std_duration_to_iso_8601_string(duration: &std::time::Duration) -> String {
-    use std::fmt::Write;
     let total_secs = duration.as_secs();
     let millis = duration.subsec_millis();
 
@@ -160,6 +165,23 @@ pub fn std_duration_to_iso_8601_string(duration: &std::time::Duration) -> String
         let weeks = total_secs / (7 * 24 * 3600);
         return format!("P{weeks}W");
     }
+
+    std_duration_to_iso_8601_string_no_weeks(duration)
+}
+
+/// Converts a `std::time::Duration` to an ISO 8601 duration string, never using
+/// the weeks designator.
+///
+/// `java.time.Duration.parse` — which the Iceberg Java client applies to
+/// duration-typed fields of the `GET /v1/config` response — rejects `P<n>W`
+/// outright and fails the whole response, so a seven-day value has to go out as
+/// `P7D`. Prefer this over [`std_duration_to_iso_8601_string`] whenever the
+/// result crosses the catalog API.
+#[must_use]
+pub fn std_duration_to_iso_8601_string_no_weeks(duration: &std::time::Duration) -> String {
+    use std::fmt::Write;
+    let total_secs = duration.as_secs();
+    let millis = duration.subsec_millis();
 
     let days = total_secs / 86400;
     let hours = (total_secs % 86400) / 3600;

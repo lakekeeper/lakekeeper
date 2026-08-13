@@ -833,7 +833,10 @@ impl IdempotencyConfig {
     /// Returns the lifetime as an ISO-8601 duration string for advertising in getConfig.
     #[must_use]
     pub fn lifetime_iso8601(&self) -> String {
-        crate::utils::time_conversion::std_duration_to_iso_8601_string(&self.lifetime)
+        // Never the weeks form: this value is advertised in `GET /v1/config`,
+        // and the Iceberg Java client feeds it to `java.time.Duration.parse`,
+        // which rejects `P<n>W` and fails the entire config response with it.
+        crate::utils::time_conversion::std_duration_to_iso_8601_string_no_weeks(&self.lifetime)
     }
 
     /// Total retention duration (lifetime + grace).
@@ -2254,6 +2257,28 @@ mod test {
             );
             Ok(())
         });
+    }
+
+    /// A week-multiple lifetime must not go out as `P<n>W`. That form is legal
+    /// ISO 8601, but the Iceberg Java client runs this field through
+    /// `java.time.Duration.parse`, which rejects the weeks designator and fails
+    /// the *entire* `GET /v1/config` response — so every Java/Spark/Trino client
+    /// would die at `RESTCatalog.initialize()` rather than merely lose the field.
+    #[test]
+    fn test_idempotency_lifetime_never_advertises_weeks() {
+        for (configured, expected) in [
+            ("P7D", "P7D"),
+            ("P1W", "P7D"),
+            ("P14D", "P14D"),
+            ("PT168H", "P7D"),
+        ] {
+            figment::Jail::expect_with(|jail| {
+                jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", configured);
+                let advertised = get_config().idempotency.lifetime_iso8601();
+                assert_eq!(advertised, expected, "configured as {configured}");
+                Ok(())
+            });
+        }
     }
 
     #[test]
