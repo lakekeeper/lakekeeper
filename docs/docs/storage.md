@@ -276,6 +276,7 @@ The following table describes all configuration parameters for an S3 storage pro
 |-------------------------------|---------|----------|----------------------------|-----|
 | `bucket`                      | String  | Yes      | -                          | Name of the S3 bucket. Must be between 3-63 characters, containing only lowercase letters, numbers, dots, and hyphens. Must begin and end with a letter or number. |
 | `region`                      | String  | Yes      | -                          | AWS region where the bucket is located. For S3-compatible storage, any string can be used (e.g., "local-01"). |
+| `partition`                   | String  | No       | `aws`                      | AWS partition used to build the S3 ARNs of the policy that is sent when vending credentials. Set to `aws-us-gov` for GovCloud regions and `aws-cn` for the China regions. Only relevant if `flavor` is `aws` and `sts-enabled` is true. |
 | `sts-enabled`                 | Boolean | Yes      | -                          | Whether to enable STS for vended credentials. Not all S3 compatible object stores support "AssumeRole" via STS. We strongly recommend to enable sts if the storage system supports it. |
 | `remote-signing-enabled`      | Boolean | No       | `true`                     | Whether to enable remote signing for S3 requests. When disabled, clients cannot use remote signing for this storage profile even if STS is disabled. Defaults to `true`. |
 | `key-prefix`                  | String  | No       | None                       | Subpath in the bucket to use for this warehouse. |
@@ -388,6 +389,26 @@ We are now ready to create the Warehouse via the UI or REST-API using the follow
 ```
 
 As part of the `storage-profile`, the field `assume-role-arn` can optionally be specified. If it is specified, this role is assumed for every IO Operation of Lakekeeper. It is also used as `sts-role-arn`, unless `sts-role-arn` is specified explicitly. If no `assume-role-arn` is specified, whatever authentication method / user os configured via the `storage-credential` is used directly for IO Operations, so needs to have S3 access policies attached directly (as shown in the example above).
+
+###### GovCloud and China Regions
+
+Buckets in AWS GovCloud (`us-gov-*` regions) and in the China regions (`cn-*`) live in their own AWS partition, so their ARNs are not prefixed with `arn:aws:` but with `arn:aws-us-gov:` and `arn:aws-cn:` respectively.
+Set the `partition` field of the storage profile to `aws-us-gov` or `aws-cn` accordingly. If it is left at the default `aws`, the downscoped policy that Lakekeeper sends when vending credentials references bucket ARNs of the commercial partition, and `AssumeRole` fails.
+The role ARNs (`sts-role-arn` / `assume-role-arn`) and the `aws-kms-key-arn` must use the same partition prefix:
+
+```json
+{
+    "storage-profile": {
+        "type": "s3",
+        "bucket": "<name of the bucket>",
+        "region": "us-gov-west-1",
+        "partition": "aws-us-gov",
+        "sts-enabled": true,
+        "flavor": "aws",
+        "sts-role-arn": "arn:aws-us-gov:iam::<aws account id>:role/LakekeeperWarehouseDevRole"
+    }
+}
+```
 
 ##### System Identities / Managed Identities
 

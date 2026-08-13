@@ -10444,6 +10444,12 @@ components:
           description: |-
             Legacy MD5 behavior for S3 operations requiring checksums.
             When enabled, Lakekeeper will use the legacy MD5 checksum for operations like `DeleteObjects`.
+        partition:
+          type: string
+          description: |-
+            AWS partition used when constructing S3 ARNs for vended-credential policies.
+            Defaults to the AWS commercial partition (`aws`). Use `aws-us-gov` for the
+            `us-gov-*` regions and `aws-cn` for the `cn-*` regions.
         path-style-access:
           type:
             - boolean

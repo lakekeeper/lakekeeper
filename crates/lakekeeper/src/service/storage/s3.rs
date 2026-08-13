@@ -65,7 +65,8 @@ pub struct S3Profile {
     /// Name of the S3 bucket
     pub bucket: String,
     /// AWS partition used when constructing S3 ARNs for vended-credential policies.
-    /// Defaults to the AWS commercial partition (`aws`).
+    /// Defaults to the AWS commercial partition (`aws`). Use `aws-us-gov` for the
+    /// `us-gov-*` regions and `aws-cn` for the `cn-*` regions.
     #[serde(default = "default_partition")]
     #[builder(default = default_partition())]
     pub partition: String,
@@ -338,6 +339,7 @@ impl S3Profile {
     /// - Fails if the key prefix is too long.
     /// - Fails if the region or endpoint is missing.
     /// - Fails if the endpoint is not a valid URL.
+    /// - Fails if the partition is empty or malformed.
     pub(super) fn normalize(
         &mut self,
         s3_credential: Option<&S3Credential>,
@@ -348,6 +350,7 @@ impl S3Profile {
             entity: "bucket".to_string(),
         })?;
         validate_region(&self.region)?;
+        validate_partition(&self.partition)?;
         self.validate_session_tags()?;
         self.normalize_key_prefix()?;
         self.normalize_endpoint()?;
@@ -410,6 +413,13 @@ impl S3Profile {
 
         if other.storage_layout.is_none() {
             other.storage_layout = self.storage_layout;
+        }
+
+        if self.region == other.region {
+            // The partition is a function of the (immutable) region. Carry the previous value
+            // forward so a full-replace update that omits it does not silently reset a
+            // configured `aws-us-gov` / `aws-cn` profile to the `aws` serde default.
+            other.partition = self.partition;
         }
 
         Ok(other)
@@ -1727,6 +1737,31 @@ fn validate_region(region: &str) -> Result<(), InvalidProfileError> {
         reason: e,
         entity: "region".to_string(),
     })
+}
+
+fn validate_partition(partition: &str) -> Result<(), InvalidProfileError> {
+    if partition.is_empty() {
+        return Err(InvalidProfileError {
+            source: None,
+            reason: "`partition` must not be empty.".to_string(),
+            entity: "partition".to_string(),
+        });
+    }
+
+    if !partition
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(InvalidProfileError {
+            source: None,
+            reason: format!(
+                "`partition` must consist of lowercase alphanumeric characters and hyphens, e.g. `aws`, `aws-us-gov` or `aws-cn`. Got `{partition}`."
+            ),
+            entity: "partition".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn push_fsspec_fileio_with_s3v4restsigner(config: &mut TableProperties) {
@@ -3496,6 +3531,55 @@ pub(crate) mod test {
             parsed["Statement"][1]["Resource"],
             "arn:aws-us-gov:s3:::bucket-name"
         );
+    }
+
+    #[test]
+    fn partition_defaults_to_aws_when_omitted() {
+        let profile: S3Profile = serde_json::from_value(serde_json::json!({
+            "bucket": "bucket-name",
+            "region": "us-east-1",
+            "sts-enabled": false,
+        }))
+        .unwrap();
+
+        assert_eq!(profile.partition, "aws");
+    }
+
+    #[test]
+    fn test_validate_partition() {
+        for partition in ["aws", "aws-cn", "aws-us-gov", "aws-iso-b"] {
+            validate_partition(partition).unwrap();
+        }
+
+        for partition in ["", "AWS", "aws cn", "aws_us_gov", "arn:aws"] {
+            assert!(
+                validate_partition(partition).is_err(),
+                "expected `{partition}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_update_keeps_partition_if_omitted() {
+        let profile = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .partition("aws-us-gov".to_string())
+            .region("us-gov-west-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(false)
+            .build();
+
+        // A full-replace update that does not carry the partition deserializes to the default.
+        let updated = S3Profile::builder()
+            .bucket("test-bucket".to_string())
+            .region("us-gov-west-1".to_string())
+            .flavor(S3Flavor::Aws)
+            .sts_enabled(false)
+            .build();
+        assert_eq!(updated.partition, "aws");
+
+        let result = profile.update_with(updated).unwrap();
+        assert_eq!(result.partition, "aws-us-gov");
     }
 
     #[test]
