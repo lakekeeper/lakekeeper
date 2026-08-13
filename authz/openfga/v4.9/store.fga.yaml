@@ -171,7 +171,7 @@ tuples:
   - user: user:owner_of_role_namespace_2_1_owner
     relation: ownership
     object: role:namespace_2_1_owner
-  # ---- Governance tags (v4.8) ----
+  # ---- Governance tags (v4.9) ----
   # A tag definition parented to project_1
   - user: project:project_1
     relation: project

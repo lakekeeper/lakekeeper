@@ -4,14 +4,27 @@
 
 `ADDS_TUPLES` indicates whether new tuples are added to the store during the migration.
 
-## `v4.8`
+## `v4.9`
 
 ```text
 MODIFIES_TUPLES: FALSE
 ADDS_TUPLES:     FALSE
 ```
 
-Adds governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites.
+Adds namespace moves and governance tags. Backwards-compatible: existing tuples authorize the same actions, no tuple rewrites. Supersedes `v4.8`, which was never released — the governance-tag changes below were folded into this version.
+
+### Namespace moves
+
+`namespace`:
+
+- Add `can_move` (from `manage_grants`). A move re-issues every privilege the destination subtree confers onto this namespace's contents, leaving no assignment record — so it is gated on grant authority, not `modify`: if you can already grant at the destination, the move confers nothing you could not have granted directly. Under `managed_access` ownership does not confer `manage_grants`, so this also blocks moving out of a managed subtree to escape that control. `can_move` is therefore orthogonal to `can_delete` — neither implies the other.
+- Add `can_accept_moved_namespace` (from `manage_grants`) — the destination-side check, distinct from `can_create_namespace` (from `create`): `create` adds an empty child (exposing nothing), whereas a move arrives carrying contents and their direct grants. Gating acceptance on `create` would let a namespace be populated and granted under a permissive parent and then moved in, smuggling those grants past the `managed_access` control the destination subtree relies on.
+
+`warehouse`:
+
+- Add `can_accept_moved_namespace` (from `manage_grants`) — same gate for moves targeting the warehouse root.
+
+### Governance tags
 
 New type `lakekeeper_catalog_tag` (one instance per tag definition):
 

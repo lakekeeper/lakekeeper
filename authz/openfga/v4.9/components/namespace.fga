@@ -27,18 +27,8 @@ type namespace
     define can_create_view: create
     define can_create_generic_table: create
     define can_create_namespace: create
-    # Accepting an inbound moved namespace is gated on grant authority, not `create`:
-    # `create` adds an empty child (exposing nothing), whereas a move arrives carrying
-    # contents and their direct grants. Without this, a namespace could be populated and
-    # granted under a permissive parent and then moved in here, smuggling those grants past
-    # the managed_access control this subtree relies on.
     define can_accept_moved_namespace: manage_grants
     define can_delete: modify
-    # Moving a namespace re-issues every privilege the destination subtree confers onto
-    # this namespace's contents, leaving no assignment record. Gated on manage_grants, not
-    # modify: if you can already grant here, the move confers nothing you could not have
-    # granted directly. Under managed_access ownership does not confer manage_grants, so
-    # this also blocks moving out of a managed subtree to escape that control.
     define can_move: manage_grants
     define can_update_properties: modify
     define can_get_metadata: describe or can_get_metadata from child

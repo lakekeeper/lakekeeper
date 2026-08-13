@@ -24,11 +24,6 @@ type warehouse
 
     # ------------------ Actions ------------------
     define can_create_namespace: create
-    # Accepting an inbound moved namespace is gated on grant authority, not `create`:
-    # `create` adds an empty child (exposing nothing), whereas a move arrives carrying
-    # contents and their direct grants. Without this, a namespace could be populated and
-    # granted under a permissive parent and then moved in here, smuggling those grants past
-    # the managed_access control this subtree relies on.
     define can_accept_moved_namespace: manage_grants
     # Delete this warehouse permanently
     define can_delete: modify
