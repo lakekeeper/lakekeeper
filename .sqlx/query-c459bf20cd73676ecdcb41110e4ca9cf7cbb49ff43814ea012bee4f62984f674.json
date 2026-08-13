@@ -1,0 +1,207 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH deleted AS (\n            DELETE FROM grant_assignment\n            WHERE principal_type = 'user'::grant_principal_type AND user_id = $1\n            RETURNING\n                grant_id, principal_type, user_id, role_id, privilege, resource_type,\n                project_id, warehouse_id, namespace_id, tabular_id, tag_definition_id,\n                created_at\n        )\n        SELECT\n            d.grant_id AS \"grant_id!\",\n            d.principal_type AS \"principal_type!: PrincipalType\", d.user_id,\n            d.role_id, d.privilege AS \"privilege!\",\n            d.resource_type AS \"resource_type!: StoredResourceType\",\n            d.project_id, d.warehouse_id, d.namespace_id, d.tabular_id, d.tag_definition_id,\n            tab.typ AS \"tabular_typ?: TabularType\",\n            d.created_at AS \"created_at!\"\n        FROM deleted d\n        LEFT JOIN tabular tab\n               ON d.warehouse_id = tab.warehouse_id AND d.tabular_id = tab.tabular_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "principal_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "role_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "privilege"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type!: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "c459bf20cd73676ecdcb41110e4ca9cf7cbb49ff43814ea012bee4f62984f674"
+}

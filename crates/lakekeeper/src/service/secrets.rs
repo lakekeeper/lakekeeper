@@ -4,7 +4,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use axum_prometheus::metrics;
 use http::StatusCode;
 use iceberg_ext::catalog::rest::ErrorModel;
 use moka::{
@@ -17,11 +16,7 @@ use crate::{
     CONFIG,
     api::Result,
     service::{
-        cache_metrics::{
-            METRIC_CACHE_HITS_TOTAL as METRIC_SECRETS_CACHE_HITS,
-            METRIC_CACHE_MISSES_TOTAL as METRIC_SECRETS_CACHE_MISSES,
-            METRIC_CACHE_SIZE as METRIC_SECRETS_CACHE_SIZE, METRICS_INITIALIZED,
-        },
+        cache_metrics::{record_cache_hit, record_cache_miss, set_cache_size},
         cache_ttl::JitteredTtl,
         health::HealthExt,
         storage::StorageCredential,
@@ -184,11 +179,8 @@ pub trait SecretInStorage:
 
 /// Update the cache size metric with the current number of entries
 #[inline]
-#[allow(clippy::cast_precision_loss)]
 fn update_cache_size_metric() {
-    let () = &*METRICS_INITIALIZED; // Ensure metrics are described
-    metrics::gauge!(METRIC_SECRETS_CACHE_SIZE, "cache_type" => "secrets")
-        .set(SECRETS_CACHE.entry_count() as f64);
+    set_cache_size("secrets", SECRETS_CACHE.entry_count());
 }
 
 async fn secrets_cache_invalidate(secret_id: SecretId) {
@@ -225,10 +217,10 @@ async fn secrets_cache_get(secret_id: SecretId) -> Option<CachedSecret> {
 
     if cached.is_some() {
         tracing::trace!("Secret id {secret_id} found in cache");
-        metrics::counter!(METRIC_SECRETS_CACHE_HITS, "cache_type" => "secrets").increment(1);
+        record_cache_hit("secrets");
     } else {
         tracing::debug!("Secret id {secret_id} not found in cache");
-        metrics::counter!(METRIC_SECRETS_CACHE_MISSES, "cache_type" => "secrets").increment(1);
+        record_cache_miss("secrets");
     }
 
     cached

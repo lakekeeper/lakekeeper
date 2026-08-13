@@ -10,24 +10,26 @@ use crate::{
     api::{ApiContext, RequestMetadata},
     service::{
         ArcProjectId, CachePolicy, CatalogNamespaceOps, CatalogRoleOps, CatalogStore,
-        CatalogWarehouseOps, GenericTableId, NamespaceId, Result, RoleId, SecretStore, State,
-        TableId, TabularListFlags, UserId, ViewId, WarehouseStatus,
+        CatalogTagOps, CatalogWarehouseOps, GenericTableId, NamespaceId, ProjectId, Result, RoleId,
+        SecretStore, State, TableId, TabularListFlags, TagDefinitionId, UserId, ViewId,
+        WarehouseStatus,
         authn::UserIdRef,
         authz::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AuthZCannotSeeGenericTable,
-            AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeView,
-            AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps,
+            AuthZCannotSeeNamespace, AuthZCannotSeeRole, AuthZCannotSeeTable, AuthZCannotSeeTag,
+            AuthZCannotSeeView, AuthZCannotUseWarehouseId, AuthZError, AuthZGenericTableOps,
             AuthZProjectActionForbidden, AuthZProjectOps, AuthZRoleOps, AuthZServerOps,
-            AuthZTableOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps, Authorizer,
-            AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
+            AuthZTableOps, AuthZTagOps, AuthZUserActionForbidden, AuthZUserOps, AuthZViewOps,
+            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
             CatalogNamespaceAction, CatalogNamespaceActionKind, CatalogProjectAction,
             CatalogProjectActionKind, CatalogRoleAction, CatalogRoleActionKind,
             CatalogServerAction, CatalogServerActionKind, CatalogTableAction,
-            CatalogTableActionKind, CatalogUserAction, CatalogViewAction, CatalogViewActionKind,
-            CatalogWarehouseAction, CatalogWarehouseActionKind, RequireProjectActionError,
-            RequireRoleActionError, RoleAssignee, UserOrRole, UserOrRoleId,
-            fetch_warehouse_namespace_generic_table_by_id, fetch_warehouse_namespace_table_by_id,
-            fetch_warehouse_namespace_view_by_id, refresh_warehouse_and_namespace_if_needed,
+            CatalogTableActionKind, CatalogTagAction, CatalogUserAction, CatalogViewAction,
+            CatalogViewActionKind, CatalogWarehouseAction, CatalogWarehouseActionKind,
+            RequireProjectActionError, RequireRoleActionError, RequireTagActionError, RoleAssignee,
+            UserOrRole, UserOrRoleId, fetch_warehouse_namespace_generic_table_by_id,
+            fetch_warehouse_namespace_table_by_id, fetch_warehouse_namespace_view_by_id,
+            refresh_warehouse_and_namespace_if_needed,
         },
         events::{
             APIEventContext,
@@ -102,7 +104,7 @@ macro_rules! action_response {
 /// `for_principal`. The top-level `actor` field continues to reflect the API
 /// caller, so audit consumers see both: who asked, and whose permissions
 /// were evaluated.
-fn set_for_user<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
+pub(super) fn set_for_user<P: UserProvidedEntity, R: ResolutionState, A: APIEventActions>(
     event_ctx: &mut APIEventContext<P, R, A>,
     for_user: Option<&APIUserOrRole>,
 ) {
@@ -139,6 +141,99 @@ action_response!(
     CatalogGenericTableAction
 );
 action_response!(GetLakekeeperUserActionsResponse, CatalogUserAction);
+action_response!(GetLakekeeperTagActionsResponse, CatalogTagAction);
+
+/// Which actions the caller (or `principalUser`/`principalRole`) may take on a tag
+/// definition.
+///
+/// Tag definitions are the one grantable level with no action-introspection endpoint,
+/// so `read_grants` and the rest were enforceable but invisible to a console.
+pub(super) async fn get_allowed_tag_actions<A: Authorizer, C: CatalogStore, S: SecretStore>(
+    context: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+    query: GetAccessQuery,
+    tag_definition_id: TagDefinitionId,
+) -> Result<Vec<CatalogTagAction>> {
+    let for_user_api = query.try_parse()?.principal;
+    let project_id = request_metadata.require_project_id(None)?;
+
+    let mut event_ctx = APIEventContext::for_tag(
+        Arc::new(request_metadata),
+        context.v1_state.events,
+        tag_definition_id,
+        IntrospectPermissions {},
+    );
+    set_for_user(&mut event_ctx, for_user_api.as_ref());
+
+    let authz_result = authorize_get_tag_actions::<C>(
+        event_ctx.request_metadata(),
+        context.v1_state.authz,
+        for_user_api,
+        &project_id,
+        tag_definition_id,
+        context.v1_state.catalog,
+    )
+    .await;
+    let (_event_ctx, allowed_actions) = event_ctx.emit_authz(authz_result)?;
+
+    Ok(allowed_actions)
+}
+
+async fn authorize_get_tag_actions<C: CatalogStore>(
+    request_metadata: &RequestMetadata,
+    authorizer: impl Authorizer,
+    for_user_api: Option<APIUserOrRole>,
+    project_id: &ProjectId,
+    tag_definition_id: TagDefinitionId,
+    catalog_state: C::State,
+) -> Result<Vec<CatalogTagAction>, AuthZError> {
+    let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
+    let actions = CatalogTagAction::variants();
+    // Reading the definition at all is the visibility action here; tags have no
+    // `IncludeInList`.
+    let can_see_permission = CatalogTagAction::Read;
+
+    // Fetched within the request's project, so a definition in another project is
+    // simply absent — no separate cross-project check needed.
+    let tag = C::get_tag_definition(project_id, tag_definition_id, catalog_state).await;
+    let tag = authorizer.require_tag_presence(tag_definition_id, tag)?;
+
+    let results = authorizer
+        .are_allowed_tag_actions_vec(
+            request_metadata,
+            for_user.as_ref(),
+            &actions
+                .iter()
+                .map(|action| (&tag, action.clone()))
+                .collect::<Vec<_>>(),
+        )
+        .await?
+        .into_allowed();
+
+    let mut can_see = false;
+    let allowed_actions = results
+        .iter()
+        .zip(actions)
+        .filter_map(|(allowed, action)| {
+            if *allowed {
+                if action == &can_see_permission {
+                    can_see = true;
+                }
+                Some(action.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !can_see {
+        return Err(
+            RequireTagActionError::from(AuthZCannotSeeTag::new_forbidden(tag_definition_id)).into(),
+        );
+    }
+
+    Ok(allowed_actions)
+}
 
 /// Resolve an API-level principal (which may contain only a `RoleId`) into the authz `UserOrRole`
 /// by fetching the full role from the catalog when needed.

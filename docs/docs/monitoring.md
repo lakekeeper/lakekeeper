@@ -31,7 +31,7 @@ Lakekeeper maintains in-memory caches for Short-Term Credentials, Warehouses, Na
 | <code class="selectable">lakekeeper_cache_<wbr>hits_total</code>   | Counter | `cache_type` | Total cache hits |
 | <code class="selectable">lakekeeper_cache_<wbr>misses_total</code> | Counter | `cache_type` | Total cache misses |
 
-`cache_type` values: `stc`, `warehouse`, `namespace`, `secrets`, `role`, `user_assignments`, `role_members`. A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
+`cache_type` values: `stc`, `warehouse`, `warehouse_name_to_id`, `namespace`, `namespace_ident_to_id`, `secrets`, `role`, `role_ident_to_id`, `user_assignments`, `role_members`, `shared_role_idents`, `shared_project_ids`, and — with Lakekeeper Plus — `admission_enforce` (see [Admission Gate Metrics](#admission-gate-metrics)). A persistently low hit rate signals the cache capacity should be increased. See [Configuration > Caching](./configuration.md#caching) for details.
 
 Role-membership cache invalidation emits one additional metric:
 
@@ -67,6 +67,29 @@ This contrasts with the Postgres connection: if Postgres becomes unreachable, th
 
 !!! tip "Alerting on role provider health"
     Alert on `lakekeeper_role_provider_up == 0 or absent(lakekeeper_role_provider_up{provider_id="<your-provider>"})` to detect provider outages early. The `== 0` clause alone misses a provider that never reported — the series exists only for external-backed providers (LDAP) and only after the first health-check cycle, so pin the `absent()` clause to the `provider_id`s you expect. A sustained `stale_fallback` rate in `lakekeeper_role_provider_get_roles_duration_seconds` confirms that Lakekeeper is actively falling back to cached roles. Rising `lakekeeper_role_provider_sync_errors_total` indicates failures writing roles back to Postgres — for an LDAP provider a database connectivity/permissions problem; for the OIDC token provider (`persist_token_roles`) a failure persisting token roles for definer-view reuse.
+
+### Admission Gate Metrics
+
+[Admission gates](./admission.md) run once per authenticated request, before any handler — the enforce-endpoint gate ships with Lakekeeper Plus; the gate seam itself is open for [custom builds](./customize.md). Each gate evaluation is timed:
+
+| Metric                                                                                          | Type      | Labels            | Description |
+|-------------------------------------------------------------------------------------------------|-----------|-------------------|-----|
+| <code class="selectable">lakekeeper_<wbr>admission_gate_<wbr>duration_seconds</code>             | Histogram | `gate`, `outcome` | Time one gate took to decide, including time spent in the gate's own cache — the latency the request actually paid. `outcome`: `admitted`, `forbidden` (authoritative deny → `403`), `unavailable` (the gate failed closed — its upstream was unreachable, returned an unexpected status, or a precondition it needs was unmet → `503` with `Retry-After`) |
+
+No series are reported unless at least one gate is configured. A gate that does not govern a request (e.g. one scoped to a different identity provider) still reports `admitted`, so in mixed-IdP fleets the `admitted` series includes near-zero-duration pass-throughs.
+
+The [external enforce-endpoint gate](./admission.md) <span class="lkp"></span> adds one metric per call to your enforce endpoint:
+
+| Metric                                                                                                    | Type      | Labels             | Description |
+|-----------------------------------------------------------------------------------------------------------|-----------|--------------------|-----|
+| <code class="selectable">lakekeeper_<wbr>admission_enforce_<wbr>call_duration_seconds</code>               | Histogram | `check`, `outcome` | Duration of a single `POST` to the enforce endpoint, per configured check. Recorded once per actual upstream call, so its `_count` is the request rate the gate puts on your endpoint. `outcome`: `allow` (`2xx`), `deny` (exactly `403`), `unavailable` (any other status, timeout, or network error — the gate then fails closed) |
+
+The two `outcome` vocabularies differ deliberately: a check-level `deny` forbids the request only for `gating` checks — for `role_granting` checks it merely withholds the role, so the gate can still report `admitted`.
+
+Cached allow/deny decisions are served without an upstream call; the decision cache reports into the shared [cache metrics](#cache-metrics) under `cache_type="admission_enforce"`. Coalesced concurrent misses share one upstream call, so `lakekeeper_cache_misses_total` can slightly exceed the call count.
+
+!!! tip "Alerting on admission gates"
+    In `axum_http_requests_total{status="403"}` an admission denial is indistinguishable from an authorization denial — use this histogram's `_count` series instead. Rejection rate: `sum(rate(lakekeeper_admission_gate_duration_seconds_count{outcome="forbidden"}[5m])) by (gate)`. Alert on the same query with `outcome="unavailable"` — that is an outage of the gate's upstream, not a permissions problem, and every affected caller is getting a `503`. For added request latency, `histogram_quantile(0.99, sum(rate(lakekeeper_admission_gate_duration_seconds_bucket[5m])) by (le, gate))` — a p99 near the gate's configured request timeout means callers wait on the gate's upstream on every cache miss. Watch the decision-cache hit rate: `sum(rate(lakekeeper_cache_hits_total{cache_type="admission_enforce"}[5m])) / (sum(rate(lakekeeper_cache_hits_total{cache_type="admission_enforce"}[5m])) + sum(rate(lakekeeper_cache_misses_total{cache_type="admission_enforce"}[5m])))` — aggregate hits and misses separately before dividing, so a replica that has not yet reported one of the two series does not drop out of the denominator. A falling hit rate raises load on the enforce endpoint one-for-one — increase `cache_ttl_secs`, or `cache_max_entries` if `lakekeeper_cache_size{cache_type="admission_enforce"}` sits at the configured ceiling (at capacity, entries are dropped — or fresh ones not retained — before their TTL expires). A longer TTL also lengthens how long a revoked entitlement can keep working: the cache is per replica with no cross-replica invalidation, so a cached decision is only re-checked when its TTL expires — the TTL is the upper bound on the stale window, though capacity eviction or a replica restart can clear an entry sooner.
 
 ## Prometheus Integration
 

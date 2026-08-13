@@ -349,6 +349,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let table_location = parse_location(table_metadata.location(), StatusCode::BAD_REQUEST)?;
         validate_table_properties(table_metadata.properties().keys())?;
         storage_profile.require_allowed_location(&table_location)?;
+        // Register is the only way a table enters the warehouse without going
+        // through `createTable`, so without this the format-version policy is
+        // advisory: a v3 file could be registered into a v1/v2-only warehouse
+        // and only fail later, in whichever engine cannot read it.
+        create_table::ensure_format_version_allowed(
+            table_metadata.format_version(),
+            &warehouse.allowed_format_versions,
+        )?;
 
         let action = CatalogNamespaceAction::CreateTable {
             name: Some(request.name.clone()),

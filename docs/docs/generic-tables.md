@@ -93,7 +93,7 @@ A raw dataset (CSV / JSON / Parquet drop) registered so it appears in the catalo
 
 ## Authorization model
 
-Generic tables have an OpenFGA object type (`lakekeeper_generic_table`) parallel to `lakekeeper_table` and `lakekeeper_view`. Permissions inherit from the parent Namespace and Warehouse, and can be granted to users or roles via the standard `/management/v1/permissions/generic-table/{id}` endpoints. See [Authorization](./authorization.md).
+Generic tables have an OpenFGA object type (`lakekeeper_generic_table`) parallel to `lakekeeper_table` and `lakekeeper_view`. Permissions inherit from the parent Namespace and Warehouse, and can be granted to users or roles through the [Grants API](./grants.md). See [Authorization](./authorization.md) for how the model resolves them.
 
 Because grants are per-action, you can — for example — give an ML platform service `read_data` and `get_metadata` on every generic table in a namespace without granting `drop` or `change_ownership`.
 

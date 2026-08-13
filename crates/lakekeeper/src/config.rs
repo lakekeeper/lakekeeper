@@ -22,7 +22,7 @@ use url::Url;
 use crate::{
     WarehouseId,
     service::{
-        ArcProjectId, UserId,
+        ArcProjectId, ProjectId, UserId,
         authn::{K8S_IDP_ID, OIDC_IDP_ID, OidcProviderConfig},
     },
 };
@@ -30,11 +30,19 @@ use crate::{
 const DEFAULT_RESERVED_NAMESPACES: [&str; 3] = ["system", "examples", "information_schema"];
 
 pub static CONFIG: LazyLock<DynAppConfig> = LazyLock::new(get_config);
-pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> = LazyLock::new(|| {
-    CONFIG
-        .enable_default_project
-        .then_some(Arc::new(uuid::Uuid::nil().into()))
-});
+pub static DEFAULT_PROJECT_ID: LazyLock<Option<ArcProjectId>> =
+    LazyLock::new(|| resolve_default_project_id(&CONFIG));
+
+/// Resolve the effective default project id: the configured `default_project_id` when set,
+/// otherwise the NIL uuid — both gated on `enable_default_project`. `None` disables the default.
+fn resolve_default_project_id(config: &DynAppConfig) -> Option<ArcProjectId> {
+    config.enable_default_project.then(|| {
+        config
+            .default_project_id
+            .clone()
+            .map_or_else(|| Arc::new(uuid::Uuid::nil().into()), Arc::new)
+    })
+}
 
 fn get_config() -> DynAppConfig {
     let defaults = figment::providers::Serialized::defaults(DynAppConfig::default());
@@ -345,8 +353,17 @@ pub struct DynAppConfig {
     /// If x-forwarded-x headers should be respected.
     /// Defaults to true
     pub use_x_forwarded_headers: bool,
-    /// If true (default), the NIL uuid is used as default project id.
+    /// If true (default), a default project id is used when a request does not
+    /// specify one (via the `x-project-id` header). The value is
+    /// `default_project_id` if set, otherwise the NIL uuid.
     pub enable_default_project: bool,
+    /// Project id to use as the default when a request does not specify one and
+    /// `enable_default_project` is true. When unset, the NIL uuid is used.
+    ///
+    /// Set this to serve a single non-NIL project without requiring clients to
+    /// send the `x-project-id` header (e.g. query engines addressing a warehouse
+    /// by bare name).
+    pub default_project_id: Option<ProjectId>,
     /// If true, the swagger UI is served at /swagger-ui
     pub serve_swagger_ui: bool,
     /// Template to obtain the "prefix" for a warehouse,
@@ -816,7 +833,10 @@ impl IdempotencyConfig {
     /// Returns the lifetime as an ISO-8601 duration string for advertising in getConfig.
     #[must_use]
     pub fn lifetime_iso8601(&self) -> String {
-        crate::utils::time_conversion::std_duration_to_iso_8601_string(&self.lifetime)
+        // Never the weeks form: this value is advertised in `GET /v1/config`,
+        // and the Iceberg Java client feeds it to `java.time.Duration.parse`,
+        // which rejects `P<n>W` and fails the entire config response with it.
+        crate::utils::time_conversion::std_duration_to_iso_8601_string_no_weeks(&self.lifetime)
     }
 
     /// Total retention duration (lifetime + grace).
@@ -1069,6 +1089,7 @@ impl Default for DynAppConfig {
         Self {
             base_uri: None,
             enable_default_project: true,
+            default_project_id: None,
             use_x_forwarded_headers: true,
             prefix_template: "{warehouse_id}".to_string(),
             allow_origin: None,
@@ -1234,6 +1255,67 @@ mod test {
             );
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_default_project_id_unset_is_none() {
+        assert_eq!(get_config().default_project_id, None);
+    }
+
+    #[test]
+    fn test_default_project_id_parsed_from_env() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__DEFAULT_PROJECT_ID",
+                "019fc668-050d-7491-8743-55b537c7c4af",
+            );
+            let config = get_config();
+            assert_eq!(
+                config.default_project_id,
+                Some(
+                    ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap()
+                )
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_resolve_default_project_id_falls_back_to_nil() {
+        // enable_default_project=true, no explicit id -> NIL uuid (unchanged behaviour).
+        let config = DynAppConfig {
+            enable_default_project: true,
+            default_project_id: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_default_project_id(&config).map(|p| p.to_string()),
+            Some(uuid::Uuid::nil().to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_project_id_uses_configured_value() {
+        let pid = ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap();
+        let config = DynAppConfig {
+            enable_default_project: true,
+            default_project_id: Some(pid.clone()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_default_project_id(&config), Some(Arc::new(pid)));
+    }
+
+    #[test]
+    fn test_resolve_default_project_id_disabled_is_none() {
+        // A configured id is ignored when the default project is disabled.
+        let config = DynAppConfig {
+            enable_default_project: false,
+            default_project_id: Some(
+                ProjectId::try_new("019fc668-050d-7491-8743-55b537c7c4af".to_string()).unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(resolve_default_project_id(&config), None);
     }
 
     #[test]
@@ -2175,6 +2257,28 @@ mod test {
             );
             Ok(())
         });
+    }
+
+    /// A week-multiple lifetime must not go out as `P<n>W`. That form is legal
+    /// ISO 8601, but the Iceberg Java client runs this field through
+    /// `java.time.Duration.parse`, which rejects the weeks designator and fails
+    /// the *entire* `GET /v1/config` response — so every Java/Spark/Trino client
+    /// would die at `RESTCatalog.initialize()` rather than merely lose the field.
+    #[test]
+    fn test_idempotency_lifetime_never_advertises_weeks() {
+        for (configured, expected) in [
+            ("P7D", "P7D"),
+            ("P1W", "P7D"),
+            ("P14D", "P14D"),
+            ("PT168H", "P7D"),
+        ] {
+            figment::Jail::expect_with(|jail| {
+                jail.set_env("LAKEKEEPER_TEST__IDEMPOTENCY__LIFETIME", configured);
+                let advertised = get_config().idempotency.lifetime_iso8601();
+                assert_eq!(advertised, expected, "configured as {configured}");
+                Ok(())
+            });
+        }
     }
 
     #[test]

@@ -1,0 +1,254 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH inserted AS (\n            INSERT INTO grant_assignment (\n                principal_type, user_id, role_id, privilege, resource_type,\n                project_id, warehouse_id, namespace_id, tabular_id, tag_definition_id\n            )\n            SELECT\n                t.principal_type, t.user_id, t.role_id, t.privilege, t.resource_type,\n                t.project_id, t.warehouse_id, t.namespace_id, t.tabular_id,\n                t.tag_definition_id\n            FROM UNNEST(\n                $1::grant_principal_type[], $2::text[], $3::uuid[], $4::text[],\n                $5::grant_resource_type[],\n                $6::text[], $7::uuid[], $8::uuid[], $9::uuid[], $10::uuid[]\n            ) AS t(\n                principal_type, user_id, role_id, privilege, resource_type,\n                project_id, warehouse_id, namespace_id, tabular_id, tag_definition_id\n            )\n            ON CONFLICT ON CONSTRAINT grant_unique DO NOTHING\n            RETURNING\n                grant_id, principal_type, user_id, role_id, privilege, resource_type,\n                project_id, warehouse_id, namespace_id, tabular_id, tag_definition_id,\n                created_at\n        )\n        SELECT\n            i.grant_id AS \"grant_id!\",\n            i.principal_type AS \"principal_type!: PrincipalType\", i.user_id,\n            i.role_id, i.privilege AS \"privilege!\",\n            i.resource_type AS \"resource_type!: StoredResourceType\",\n            i.project_id, i.warehouse_id, i.namespace_id, i.tabular_id, i.tag_definition_id,\n            tab.typ AS \"tabular_typ?: TabularType\",\n            i.created_at AS \"created_at!\"\n        FROM inserted i\n        LEFT JOIN tabular tab\n               ON i.warehouse_id = tab.warehouse_id AND i.tabular_id = tab.tabular_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!: PrincipalType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_principal_type",
+            "kind": {
+              "Enum": [
+                "user",
+                "role"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "principal_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "role_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "privilege!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "privilege"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_type!: StoredResourceType",
+        "type_info": {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "server",
+                "project",
+                "warehouse",
+                "namespace",
+                "tabular",
+                "tag"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "warehouse_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "warehouse_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "namespace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "namespace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "tabular_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tabular_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tag_definition_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "tag_definition_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "tabular_typ?: TabularType",
+        "type_info": {
+          "Custom": {
+            "name": "tabular_type",
+            "kind": {
+              "Enum": [
+                "table",
+                "view",
+                "generic-table"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "tabular",
+            "name": "typ"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "grant_assignment",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "grant_principal_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "grant_principal_type",
+                  "kind": {
+                    "Enum": [
+                      "user",
+                      "role"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "TextArray",
+        "UuidArray",
+        "TextArray",
+        {
+          "Custom": {
+            "name": "grant_resource_type[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "grant_resource_type",
+                  "kind": {
+                    "Enum": [
+                      "server",
+                      "project",
+                      "warehouse",
+                      "namespace",
+                      "tabular",
+                      "tag"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "TextArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "f4a8be63366b9198cdc4dee0b43d7c335868277c9acafa7eb897f5b50e5dcf44"
+}

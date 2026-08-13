@@ -1015,6 +1015,16 @@ where
         Self::list_tags_for_target_impl(target, catalog_state).await
     }
 
+    /// All direct column tags on `tabular_id`, for reading a whole table's column tags
+    /// in one call. Ordered by field-id so the caller can group per column.
+    async fn list_column_tags_for_tabular(
+        warehouse_id: WarehouseId,
+        tabular_id: TabularId,
+        catalog_state: Self::State,
+    ) -> Result<Vec<TagWithName>, CatalogBackendError> {
+        Self::list_column_tags_for_tabular_impl(warehouse_id, tabular_id, catalog_state).await
+    }
+
     /// The targets a definition is directly attached to (reverse lookup), narrowed by
     /// `filter` (all criteria combined with AND), keyset-paginated. Callers must resolve and
     /// authorize the definition first; all attachments of a project-scoped definition
