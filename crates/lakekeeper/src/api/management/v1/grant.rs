@@ -68,11 +68,12 @@ use crate::{
             ActionDescriptor, AuthZCannotSeeTag, AuthZCannotUseWarehouseId, AuthZError,
             AuthZGenericTableOps, AuthZGrantActionForbidden, AuthZGrantOps, AuthZProjectOps,
             AuthZServerOps, AuthZTableOps, AuthZTagActionForbidden, AuthZTagOps, AuthZViewOps,
-            Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, CatalogGenericTableAction,
-            CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-            CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantFilter,
-            GrantResource, GrantRow, GrantSpec, PrivilegeDescriptor, RequireTagActionError,
-            ResourceType, UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            AuthorizationDecision, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
+            CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
+            CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
+            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantResource, GrantRow,
+            GrantSpec, PrivilegeDescriptor, RequireTagActionError, ResourceType,
+            UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -714,48 +715,69 @@ async fn validate_write_principals<C: CatalogRoleOps>(
 // Shared apply / list bodies
 // ---------------------------------------------------------------------------
 
-/// The privileges of a diff, in `writes`-then-`deletes` order — the order every
-/// per-entry decision is returned in.
-fn privileges_of(request: &ApplyGrantsRequest) -> Vec<&str> {
+/// The distinct grant-authority questions a diff asks, in `writes`-then-`deletes` order:
+/// which privilege, destined for which principal.
+///
+/// Deduplicated on the *pair*, in first-seen order. A diff handing one privilege to a
+/// hundred principals asks a hundred questions: whether the grantee changes the answer
+/// belongs to the authorizer's model, so this layer cannot collapse them. An authorizer
+/// that resolves authority from the privilege alone collapses them itself, where that is
+/// sound.
+fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str)> {
+    let mut seen = std::collections::HashSet::new();
     request
         .entries()
-        .map(|entry| entry.privilege.as_str())
+        .map(|entry| {
+            (
+                UserOrRoleId::from(&entry.principal),
+                entry.privilege.as_str(),
+            )
+        })
+        .filter(|question| seen.insert(question.clone()))
+        .collect()
+}
+
+/// The privileges to name in a refusal: those `decisions` refused, named once each, in
+/// the order they were first refused.
+///
+/// `decisions` answer `questions` positionally. First-refusal order is not request order
+/// once an authorizer answers per grantee: a privilege allowed for the first principal
+/// that asks for it and refused for the second is named where the refusal is.
+fn refused_privileges<'a>(
+    questions: &[(UserOrRoleId, &'a str)],
+    decisions: &[AuthorizationDecision],
+) -> Vec<&'a str> {
+    let mut named = std::collections::HashSet::new();
+    questions
+        .iter()
+        .zip(decisions)
+        .filter(|(_, decision)| !decision.allowed)
+        .map(|((_, privilege), _)| *privilege)
+        .filter(|privilege| named.insert(*privilege))
         .collect()
 }
 
 /// Check grant authority for every entry of the diff, including the deletes:
 /// revoking a privilege requires the same authority as granting it.
-///
-/// Asked once per *distinct* privilege. The decision depends only on
-/// `(actor, resource, privilege)` — `are_allowed_grants` folds `for_user` to `None` here —
-/// so the principal each entry names cannot change the answer, and a diff handing one
-/// privilege to a hundred principals would otherwise ask the same question a hundred
-/// times. Under an authorizer that evaluates a graph per check, a bulk onboarding pass
-/// turns that into tens of thousands of evaluations where a few hundred suffice.
 async fn require_grant_authority<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
     resource: &GrantResource,
     request: &ApplyGrantsRequest,
 ) -> std::result::Result<(), AuthZError> {
-    // Deduplicated in first-seen order, not sorted: the error below lists the refused
-    // privileges in the order the caller's request names them.
-    let mut seen = std::collections::HashSet::new();
-    let privileges: Vec<&str> = privileges_of(request)
-        .into_iter()
-        .filter(|privilege| seen.insert(*privilege))
+    // Materialized first so each check can borrow its grantee: the request carries the
+    // API principal type, and converting it to an id allocates.
+    let questions = authority_questions(request);
+    let checks: Vec<GrantAuthorityCheck<'_>> = questions
+        .iter()
+        .map(|(grantee, privilege)| GrantAuthorityCheck::new(privilege, Some(grantee)))
         .collect();
     let decisions = authorizer
-        .are_allowed_grants(metadata, None, resource, &privileges)
+        .are_allowed_grants(metadata, None, resource, &checks)
         .await?;
-    // Every refused privilege is named, matching the validation errors above: one
-    // round trip should surface everything the caller must remove.
-    let refused: Vec<&str> = privileges
-        .iter()
-        .zip(&decisions)
-        .filter(|(_, decision)| !decision.allowed)
-        .map(|(privilege, _)| *privilege)
-        .collect();
+    // Every refused privilege is named, matching the validation errors above: one round
+    // trip should surface everything the caller must remove.
+    let refused = refused_privileges(&questions, &decisions);
     if !refused.is_empty() {
         return Err(AuthZGrantActionForbidden::new(resource, refused).into());
     }
@@ -777,12 +799,15 @@ async fn allowed_privileges<A: Authorizer>(
     resource: &GrantResource,
 ) -> std::result::Result<Vec<GrantablePrivilege>, AuthZError> {
     let vocabulary = authorizer.grantable_privileges(resource.resource_type());
-    let names: Vec<&str> = vocabulary
+    // No grantee: this asks whether the subject has authority over each privilege here
+    // at all. Advisory - the apply path asks again per grantee - so an authorizer that
+    // distinguishes them need not enumerate anyone to answer.
+    let checks: Vec<GrantAuthorityCheck<'_>> = vocabulary
         .iter()
-        .map(|privilege| privilege.name.as_str())
+        .map(|privilege| GrantAuthorityCheck::new(privilege.name.as_str(), None))
         .collect();
     let decisions = authorizer
-        .are_allowed_grants(request_metadata, for_user.as_ref(), resource, &names)
+        .are_allowed_grants(request_metadata, for_user.as_ref(), resource, &checks)
         .await?;
     Ok(vocabulary
         .iter()
@@ -940,8 +965,8 @@ const TABULAR_FLAGS: TabularListFlags = TabularListFlags {
     include_deleted: true,
 };
 
-/// Event-action marker for a grant write. Grant authority is resolved per privilege
-/// by the authorizer rather than modelled as a `Catalog*Action`, so the audit event
+/// Event-action marker for a grant write. Grant authority is resolved by the authorizer
+/// from the privilege name rather than modelled as a `Catalog*Action`, so the audit event
 /// carries its own marker instead of borrowing a resource action.
 ///
 /// Carries what was asked for, because a *denied* apply emits no per-grant
@@ -2599,16 +2624,22 @@ mod tests {
         },
     };
 
+    fn alice() -> UserOrRole {
+        UserOrRole::User(UserId::try_from("oidc~alice").expect("valid test user id"))
+    }
+
+    fn entry(privilege: &str, principal: UserOrRole) -> GrantEntry {
+        GrantEntry {
+            privilege: privilege.to_string(),
+            principal,
+        }
+    }
+
     fn write_request(privileges: &[&str]) -> ApplyGrantsRequest {
         ApplyGrantsRequest {
             writes: privileges
                 .iter()
-                .map(|privilege| GrantEntry {
-                    privilege: (*privilege).to_string(),
-                    principal: UserOrRole::User(
-                        UserId::try_from("oidc~alice").expect("valid test user id"),
-                    ),
-                })
+                .map(|privilege| entry(privilege, alice()))
                 .collect(),
             deletes: Vec::new(),
         }
@@ -2695,6 +2726,106 @@ mod tests {
             &metadata,
             &resource,
             &write_request(&["provision_users", "list_users"]),
+        )
+        .await
+        .expect_err("a deny-all authorizer must not confer grant authority")
+        .into_error_model();
+
+        assert_eq!(
+            err.message,
+            "Granting or revoking `provision_users`, `list_users` on this server is forbidden"
+        );
+    }
+
+    #[test]
+    fn authority_questions_are_deduplicated_on_the_pair() {
+        // Not on the privilege alone: an authorizer may answer differently depending on
+        // who receives the privilege, so `modify` for alice and `modify` for a role are
+        // two questions. The same pair twice - here a grant and a revoke of `modify` for
+        // alice - is one, asked in the position the request first names it.
+        let role_id = RoleId::new_random();
+        let role = UserOrRole::Role(RoleAssignee::from_role(role_id));
+        let request = ApplyGrantsRequest {
+            writes: vec![
+                entry("modify", alice()),
+                entry("modify", role),
+                entry("select", alice()),
+            ],
+            deletes: vec![entry("modify", alice())],
+        };
+
+        let alice_id = UserOrRoleId::from(&alice());
+        assert_eq!(
+            authority_questions(&request),
+            vec![
+                (alice_id.clone(), "modify"),
+                (UserOrRoleId::Role(role_id), "modify"),
+                (alice_id, "select"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_each_privilege_once_in_first_refusal_order() {
+        // Mixed decisions, which no authorizer in this workspace produces: the answers are
+        // positional, so a pairing that slipped by one would name a privilege the
+        // authorizer allowed - and stay invisible to every all-deny or all-allow test.
+        let alice = UserOrRoleId::from(&alice());
+        let role = UserOrRoleId::Role(RoleId::new_random());
+        let questions = vec![
+            (alice.clone(), "select"),
+            (role, "select"),
+            (alice, "modify"),
+        ];
+
+        // `select` allowed for alice but refused for the role: named once, and from the
+        // position of the refusal rather than of the first request for it.
+        assert_eq!(
+            refused_privileges(
+                &questions,
+                &[
+                    AuthorizationDecision::allow(),
+                    AuthorizationDecision::deny(),
+                    AuthorizationDecision::deny(),
+                ]
+            ),
+            vec!["select", "modify"]
+        );
+        // Only the first question refused, so `modify` must not be named.
+        assert_eq!(
+            refused_privileges(
+                &questions,
+                &[
+                    AuthorizationDecision::deny(),
+                    AuthorizationDecision::allow(),
+                    AuthorizationDecision::allow(),
+                ]
+            ),
+            vec!["select"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_write_gate_names_a_privilege_refused_for_several_principals_once() {
+        // The gate asks per pair, but the message speaks about privileges: one name
+        // refused for two principals is named once, and still in request order.
+        let authorizer = HidingAuthorizer::new();
+        let metadata = RequestMetadataTestBuilder::builder().build();
+        let resource = GrantResource::Server;
+        let role = UserOrRole::Role(RoleAssignee::from_role(RoleId::new_random()));
+
+        let err = require_grant_authority(
+            &authorizer,
+            &metadata,
+            &resource,
+            &ApplyGrantsRequest {
+                writes: vec![
+                    entry("provision_users", alice()),
+                    entry("provision_users", role),
+                    entry("list_users", alice()),
+                ],
+                deletes: Vec::new(),
+            },
         )
         .await
         .expect_err("a deny-all authorizer must not confer grant authority")

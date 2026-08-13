@@ -60,6 +60,7 @@ use crate::{
         tasks::{
             CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
         },
+        warehouse_cache::warehouse_cache_invalidate,
     },
 };
 
@@ -1088,6 +1089,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .map_err(|e| spec_lock_to_error(&event_ctx, e))?;
         C::delete_warehouse(warehouse_id, query, transaction.transaction()).await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         // Post-commit: best-effort authz cleanup (see `delete_project`).
         authorizer
@@ -1157,6 +1159,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let resolved_warehouse =
             C::set_warehouse_protected(warehouse_id, protection, transaction.transaction()).await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_protection_set(protection, resolved_warehouse.clone());
 
@@ -1203,6 +1206,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_managed_by_set(request.managed_by, updated_warehouse.clone());
 
@@ -1266,6 +1270,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             C::rename_warehouse(warehouse_id, &request.new_name, transaction.transaction()).await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_renamed(Arc::new(request), updated_warehouse.clone());
 
@@ -1325,6 +1330,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx
             .emit_warehouse_delete_profile_updated(Arc::new(request), updated_warehouse.clone());
@@ -1395,6 +1401,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await?;
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_format_version_policy_updated(
             Arc::new(request),
@@ -1463,6 +1470,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1521,6 +1529,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         Ok(())
     }
@@ -1615,6 +1624,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_updated(request_for_event, updated_warehouse.clone());
 
@@ -1720,6 +1730,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         .await?;
 
         transaction.commit().await?;
+        warehouse_cache_invalidate(warehouse_id).await;
 
         event_ctx.emit_warehouse_storage_credential_updated(
             request_for_event,

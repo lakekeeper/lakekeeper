@@ -39,7 +39,10 @@ mod grant {
             service::{
                 CatalogNamespaceOps as _, NamespaceId, State, UserId,
                 authn::Actor,
-                authz::{AuthZGrantOps as _, Authorizer as _, GrantResource, ResourceType},
+                authz::{
+                    AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantResource,
+                    ResourceType, UserOrRoleId,
+                },
             },
         };
         use lakekeeper_authz_openfga::{
@@ -84,6 +87,12 @@ mod grant {
                 privilege: privilege.to_string(),
                 principal: UserOrRole::User(user.clone()),
             }
+        }
+
+        /// A grant-authority question naming no grantee. The tests that name one build
+        /// the check directly.
+        fn check(privilege: &str) -> GrantAuthorityCheck<'_> {
+            GrantAuthorityCheck::new(privilege, None)
         }
 
         fn writes(entries: Vec<GrantEntry>) -> ApplyGrantsRequest {
@@ -273,7 +282,7 @@ mod grant {
                     &metadata(&admin, &project_id),
                     None,
                     &resource,
-                    &["select", "modify"],
+                    &[check("select"), check("modify")],
                 )
                 .await
                 .unwrap();
@@ -285,7 +294,7 @@ mod grant {
                     &metadata(&nobody, &project_id),
                     None,
                     &resource,
-                    &["select", "modify"],
+                    &[check("select"), check("modify")],
                 )
                 .await
                 .unwrap();
@@ -298,11 +307,74 @@ mod grant {
                     &metadata(&admin, &project_id),
                     None,
                     &resource,
-                    &["get_metadata"],
+                    &[check("get_metadata")],
                 )
                 .await
                 .unwrap();
             assert_eq!(unknown, vec![false]);
+        }
+
+        /// The grantee reaches the authorizer but does not change its answer: no
+        /// `can_grant_*` relation reads who receives the privilege, so this arm checks
+        /// each distinct privilege once and repeats the answer per check.
+        ///
+        /// Pins the fan-out, which is the part that can go wrong silently: one decision
+        /// per check, in the order asked, with repeated and unknown privileges mixed in.
+        #[sqlx::test]
+        async fn grant_authority_repeats_one_answer_per_grantee(pool: PgPool) {
+            let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
+            let authorizer = &ctx.v1_state.authz;
+            let resource = GrantResource::Warehouse(warehouse_id);
+            let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
+            let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
+
+            let decisions = authorizer
+                .are_allowed_grants(
+                    &metadata(&admin, &project_id),
+                    None,
+                    &resource,
+                    &[
+                        GrantAuthorityCheck::new("select", Some(&alice)),
+                        GrantAuthorityCheck::new("select", Some(&bob)),
+                        GrantAuthorityCheck::new("modify", Some(&alice)),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(decisions, vec![true, true, true]);
+
+            // An unknown name is a deny wherever it sits, and does not shift the
+            // decisions of the checks around it.
+            let mixed = authorizer
+                .are_allowed_grants(
+                    &metadata(&admin, &project_id),
+                    None,
+                    &resource,
+                    &[
+                        GrantAuthorityCheck::new("get_metadata", Some(&alice)),
+                        GrantAuthorityCheck::new("select", Some(&alice)),
+                        GrantAuthorityCheck::new("get_metadata", Some(&bob)),
+                        GrantAuthorityCheck::new("select", Some(&bob)),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(mixed, vec![false, true, false, true]);
+
+            let nobody = UserId::new_unchecked("oidc", "nobody");
+            let as_nobody = authorizer
+                .are_allowed_grants(
+                    &metadata(&nobody, &project_id),
+                    None,
+                    &resource,
+                    &[
+                        GrantAuthorityCheck::new("select", Some(&alice)),
+                        GrantAuthorityCheck::new("select", Some(&bob)),
+                    ],
+                )
+                .await
+                .unwrap();
+            assert_eq!(as_nobody, vec![false, false]);
         }
 
         /// A principal holding only direct `manage_grants` on a warehouse can read
@@ -471,7 +543,7 @@ mod grant {
                     &as_instance_admin,
                     None,
                     &GrantResource::Warehouse(warehouse_id),
-                    &["select", "modify"],
+                    &[check("select"), check("modify")],
                 )
                 .await
                 .unwrap();
@@ -514,7 +586,7 @@ mod grant {
                     &metadata(&admin, &project_id),
                     Some(&for_bob),
                     &resource,
-                    &["select"],
+                    &[check("select")],
                 )
                 .await
                 .unwrap();
@@ -528,7 +600,7 @@ mod grant {
                     &metadata(&nobody, &project_id),
                     Some(&for_bob),
                     &resource,
-                    &["select"],
+                    &[check("select")],
                 )
                 .await
                 .unwrap_err();

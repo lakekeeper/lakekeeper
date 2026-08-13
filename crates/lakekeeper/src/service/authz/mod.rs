@@ -2101,15 +2101,19 @@ where
     /// warehouse's grants without being able to read it — so there is no visibility
     /// check to fold in here. Callers document what that discloses.
     ///
+    /// Each check names a privilege and, where the caller knows it, the grantee it is
+    /// destined for. Whether the grantee changes the answer is the authorizer's business;
+    /// either way, return one decision per check, in order.
+    ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         _resource: &GrantResource,
-        privileges: &[&str],
+        checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-        Ok(vec![AuthorizationDecision::deny(); privileges.len()])
+        Ok(vec![AuthorizationDecision::deny(); checks.len()])
     }
 
     /// Hook that is called when a new project is created.
@@ -2294,7 +2298,7 @@ pub mod tests {
     #[test]
     fn read_grants_action_exists_at_every_grantable_level() {
         // `read_grants` gates listing grants on a resource. Grant *authority* is not an
-        // action - it is resolved per privilege by `Authorizer::are_allowed_grants`.
+        // action - `Authorizer::are_allowed_grants` resolves it from the privilege name.
         assert_eq!(
             CatalogWarehouseAction::ReadGrants
                 .action_descriptor()
@@ -2333,8 +2337,17 @@ pub mod tests {
                 privilege: "select".to_string(),
             })
         );
+        let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
         let decisions = authz
-            .are_allowed_grants(&md, None, &GrantResource::Server, &["admin", "select"])
+            .are_allowed_grants(
+                &md,
+                None,
+                &GrantResource::Server,
+                &[
+                    GrantAuthorityCheck::new("admin", None),
+                    GrantAuthorityCheck::new("select", Some(&alice)),
+                ],
+            )
             .await
             .unwrap();
         assert_eq!(decisions, vec![false, false]);
