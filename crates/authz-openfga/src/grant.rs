@@ -25,10 +25,10 @@ use lakekeeper::{
     service::authz::{
         AppliedGrants, ApplyGrantsError, AuthorizationDecision, CatalogGenericTableAction,
         CatalogNamespaceAction, CatalogProjectAction, CatalogServerAction, CatalogTableAction,
-        CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantFilter,
-        GrantListingNotImplemented, GrantNotSupported, GrantResource, GrantRow, GrantSpec,
-        IsAllowedActionError, ListGrantsError, ListGrantsResultPage, MalformedGrant, ManagesGrants,
-        PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
+        CatalogTagAction, CatalogViewAction, CatalogWarehouseAction, GrantAuthorityCheck,
+        GrantFilter, GrantListingNotImplemented, GrantNotSupported, GrantResource, GrantRow,
+        GrantSpec, IsAllowedActionError, ListGrantsError, ListGrantsResultPage, MalformedGrant,
+        ManagesGrants, PrivilegeDescriptor, ResourceType, UserOrRole, UserOrRoleId,
     },
 };
 use openfga_client::client::{
@@ -311,18 +311,24 @@ fn assumed_role_restriction(
 }
 
 impl OpenFGAAuthorizer {
-    /// Which of `privileges` the actor (or `for_user`) may grant and revoke on
-    /// `resource`, in order.
+    /// Which of `checks` the actor (or `for_user`) may grant and revoke on `resource`,
+    /// in order.
     ///
     /// A privilege outside this level's vocabulary is a deny, not an error: the name
     /// may come from another authorizer's vocabulary, and answering "not allowed" is
     /// both true and safe.
+    ///
+    /// The grantee is ignored. Every `can_grant_*` relation is a property of the actor,
+    /// the resource and the privilege — nothing in the model reads who receives the
+    /// privilege — so checks that differ only in their grantee collapse into one check
+    /// whose answer is repeated for each. A diff handing one privilege to a hundred
+    /// principals is a single check.
     pub(crate) async fn grant_authority(
         &self,
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         resource: &GrantResource,
-        privileges: &[&str],
+        checks: &[GrantAuthorityCheck<'_>],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         let resource_type = resource.resource_type();
         let object = grant_object(self, resource);
@@ -331,19 +337,25 @@ impl OpenFGAAuthorizer {
             |u| u.api_user_or_role().to_openfga(),
         );
 
-        // Keep the request dense: unknown privileges get no check and are filled back
-        // in as denials afterwards.
-        let mut checked_positions = Vec::with_capacity(privileges.len());
-        let mut items = Vec::with_capacity(privileges.len());
-        for (position, privilege) in privileges.iter().enumerate() {
-            if let Some(relation) = authority_relation(resource_type, privilege) {
-                checked_positions.push(position);
+        // Keep the request dense: unknown privileges get no check, and repeated
+        // privileges share one. Both are filled back in from `checked_item` afterwards.
+        let mut item_of_privilege: HashMap<&str, usize> = HashMap::new();
+        let mut checked_item = Vec::with_capacity(checks.len());
+        let mut items: Vec<CheckRequestTupleKey> = Vec::with_capacity(checks.len());
+        for check in checks {
+            let Some(relation) = authority_relation(resource_type, check.privilege) else {
+                checked_item.push(None);
+                continue;
+            };
+            let item = *item_of_privilege.entry(check.privilege).or_insert_with(|| {
                 items.push(CheckRequestTupleKey {
                     user: user.clone(),
                     relation,
                     object: object.clone(),
                 });
-            }
+                items.len() - 1
+            });
+            checked_item.push(Some(item));
         }
 
         let guard_tuples = if for_user.is_some() {
@@ -360,11 +372,15 @@ impl OpenFGAAuthorizer {
             .check_actions_with_permission_guard(metadata.actor(), items, guard_tuples)
             .await?;
 
-        let mut decisions = vec![AuthorizationDecision::deny(); privileges.len()];
-        for (position, decision) in checked_positions.into_iter().zip(checked) {
-            decisions[position] = decision;
-        }
-        Ok(decisions)
+        // A check with no item is an unknown privilege; a missing result would be a bug
+        // in the batch, and denying is the safe reading of both.
+        Ok(checked_item
+            .into_iter()
+            .map(|item| {
+                item.and_then(|item| checked.get(item).cloned())
+                    .unwrap_or_else(AuthorizationDecision::deny)
+            })
+            .collect())
     }
 }
 
