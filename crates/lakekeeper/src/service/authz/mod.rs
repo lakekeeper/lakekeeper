@@ -1973,6 +1973,27 @@ where
         &[]
     }
 
+    /// Privileges the creating identity receives on a resource it just created, written
+    /// as ordinary grant rows in the same transaction as the resource itself.
+    ///
+    /// Only consulted when grants live in the catalog ([`Self::grants`] returns `None`).
+    /// An authorizer that owns its grant store records what creation confers in its
+    /// `create_*` hooks instead, where it can also write whatever else its model needs.
+    ///
+    /// The owner is the **acting** identity, so a request made under an assumed role
+    /// makes the role the owner — the same identity [`AuthZGrantOps::are_allowed_grants`]
+    /// folds to `None`. An anonymous create leaves no rows.
+    ///
+    /// Names should come from [`Self::grantable_privileges`]: one outside it still lands
+    /// and stays revocable, but listings mark it unrecognized. A name here is a
+    /// commitment that the creator can be *given* it — the write fails, and with it the
+    /// create, if the acting user has no user record yet.
+    ///
+    /// The default is empty: creation confers nothing unless an authorizer opts in.
+    fn bootstrap_grants(&self, _resource_type: ResourceType) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Whether `privilege` is grantable on `resource_type`.
     ///
     /// Derived from [`Self::grantable_privileges`] so the two cannot disagree — an
@@ -2944,6 +2965,9 @@ pub mod tests {
         /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
+        /// What creation confers, for tests that exercise the catalog grant arm.
+        /// Empty by default, so no test gains grant rows it did not ask for.
+        bootstrap: &'static [&'static str],
     }
 
     impl Default for HidingAuthorizer {
@@ -2960,7 +2984,15 @@ pub mod tests {
                 blocked_actions: Arc::new(RwLock::new(HashSet::new())),
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
+                bootstrap: &[],
             }
+        }
+
+        /// Make creation confer `privileges` as catalog grant rows.
+        #[must_use]
+        pub fn with_bootstrap_grants(mut self, privileges: &'static [&'static str]) -> Self {
+            self.bootstrap = privileges;
+            self
         }
 
         fn check_available(&self, object: &str) -> bool {
@@ -3066,6 +3098,10 @@ pub mod tests {
 
         fn server_id(&self) -> ServerId {
             self.server_id
+        }
+
+        fn bootstrap_grants(&self, _resource_type: ResourceType) -> &'static [&'static str] {
+            self.bootstrap
         }
 
         #[cfg(feature = "open-api")]

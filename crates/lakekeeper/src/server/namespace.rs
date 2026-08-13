@@ -31,8 +31,9 @@ use crate::{
         Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            NamespaceParent,
+            GrantResource, NamespaceParent,
         },
+        emit_bootstrap_grants,
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
             context::{
@@ -46,6 +47,7 @@ use crate::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
+        write_bootstrap_grants,
     },
 };
 
@@ -357,7 +359,25 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+            &authorizer,
+            event_ctx.request_metadata(),
+            &GrantResource::Namespace {
+                warehouse_id,
+                namespace_id,
+            },
+            t.transaction(),
+        )
+        .await?;
+
         t.commit().await?;
+
+        emit_bootstrap_grants(
+            event_ctx.dispatcher(),
+            event_ctx.request_metadata().clone(),
+            bootstrap_grants,
+        )
+        .await;
 
         event_ctx.emit_namespace_created_async(r.clone());
 

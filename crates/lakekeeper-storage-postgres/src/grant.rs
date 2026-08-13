@@ -1889,6 +1889,61 @@ mod tests {
         }
     }
 
+    /// The bootstrap write shares its transaction with a resource create, so it must
+    /// leave that transaction's settings alone. The diff path sets a transaction-local
+    /// `lock_timeout` — asserted here as the contrast — which every create would
+    /// otherwise inherit for the rest of its work.
+    #[sqlx::test]
+    async fn bootstrapping_grants_leaves_the_transaction_settings_alone(pool: PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let user = seed_user(&pool, "oidc~alice").await;
+        let spec = user_spec(&user, GrantResource::Warehouse(warehouse_id), "ownership");
+
+        let mut txn = pool.begin().await.unwrap();
+        let created = insert_grants(std::slice::from_ref(&spec), &mut txn)
+            .await
+            .unwrap();
+        assert_eq!(created, vec![spec.clone()]);
+        let timeout: String = sqlx::query_scalar("SHOW lock_timeout")
+            .fetch_one(&mut *txn)
+            .await
+            .unwrap();
+        assert_eq!(timeout, "0");
+
+        // Re-running the same bootstrap creates nothing: a replayed create, or a
+        // re-registered table that kept its id, must not double-grant.
+        let again = insert_grants(std::slice::from_ref(&spec), &mut txn)
+            .await
+            .unwrap();
+        assert_eq!(again, Vec::new());
+
+        apply_grants(std::slice::from_ref(&spec), &[], &mut txn)
+            .await
+            .unwrap();
+        let timeout: String = sqlx::query_scalar("SHOW lock_timeout")
+            .fetch_one(&mut *txn)
+            .await
+            .unwrap();
+        assert_eq!(timeout, "3s");
+        txn.commit().await.unwrap();
+
+        let page = list_grants(
+            &GrantFilter::on(GrantResource::Warehouse(warehouse_id), None),
+            no_pagination(),
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            page.grants
+                .iter()
+                .map(|row| row.privilege.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ownership"]
+        );
+    }
+
     #[sqlx::test]
     async fn a_diff_that_revokes_and_regrants_ends_granted(pool: PgPool) {
         // Deletes run before inserts, so the same privilege appearing on both sides

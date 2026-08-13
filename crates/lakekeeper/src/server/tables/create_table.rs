@@ -31,7 +31,8 @@ use crate::{
     service::{
         AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
         State, TableCreation, TableId, TabularId, TabularListFlags, Transaction,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource},
+        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -39,6 +40,7 @@ use crate::{
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::{StoragePermissions, ValidationError, credential_revalidate_after_ms},
+        write_bootstrap_grants,
     },
 };
 
@@ -399,6 +401,19 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     guard.mark_authorizer_created();
 
+    // Grants the table is born with, in the transaction that creates it: they reference
+    // a table no other transaction can see yet.
+    let bootstrap_grants = write_bootstrap_grants::<A, C>(
+        &authorizer,
+        &request_metadata,
+        &GrantResource::Table {
+            warehouse_id,
+            table_id,
+        },
+        t.transaction(),
+    )
+    .await?;
+
     // Insert idempotency key in the same transaction.
     if let Some(key) = idempotency_key
         && !C::try_insert_idempotency_key(
@@ -423,6 +438,13 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     // Commit transaction
     t.commit().await?;
+
+    emit_bootstrap_grants(
+        event_ctx.dispatcher(),
+        event_ctx.request_metadata_arc(),
+        bootstrap_grants,
+    )
+    .await;
 
     // If a staged table was overwritten, delete it from authorizer
     if let Some(staged_table_id) = staged_table_id {

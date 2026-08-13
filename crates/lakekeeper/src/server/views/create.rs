@@ -20,12 +20,14 @@ use crate::{
     service::{
         CachePolicy, CatalogStore, CatalogViewOps, Result, SecretStore, State, TabularId,
         Transaction, ViewId,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction},
+        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource},
+        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
         storage::StoragePermissions,
+        write_bootstrap_grants,
     },
 };
 
@@ -190,16 +192,35 @@ pub async fn create_view<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         )
         .await?;
 
+    let view_id = ViewId::from(metadata_build_result.metadata.uuid());
     authorizer
         .create_view(
             &request_metadata,
             warehouse_id,
-            ViewId::from(metadata_build_result.metadata.uuid()),
+            view_id,
             ns_hierarchy.namespace_id(),
         )
         .await?;
 
+    let bootstrap_grants = write_bootstrap_grants::<A, C>(
+        authorizer,
+        &request_metadata,
+        &GrantResource::View {
+            warehouse_id,
+            view_id,
+        },
+        t.transaction(),
+    )
+    .await?;
+
     t.commit().await?;
+
+    emit_bootstrap_grants(
+        event_ctx.dispatcher(),
+        event_ctx.request_metadata_arc(),
+        bootstrap_grants,
+    )
+    .await;
 
     let view_metadata = Arc::new(metadata_build_result.metadata);
     let metadata_location_str = metadata_location.to_string();

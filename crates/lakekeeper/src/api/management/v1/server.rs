@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use iceberg_ext::catalog::rest::ErrorModel;
 use serde::{Deserialize, Serialize};
@@ -10,11 +12,13 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction, UserUpsertMode,
-        authz::Authorizer,
+        authz::{Authorizer, GrantResource},
+        emit_bootstrap_grants,
         tasks::{
             ScheduleTaskMetadata, TaskEntity,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
         },
+        write_bootstrap_grants,
     },
 };
 
@@ -183,6 +187,7 @@ impl<C: CatalogStore, A: Authorizer, S: SecretStore> Service<C, A, S> for ApiSer
 
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+    #[allow(clippy::too_many_lines)]
     async fn bootstrap(
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -294,7 +299,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 authorizer
                     .create_project(&request_metadata, default_project_id)
                     .await?;
+                // Bootstrapping without authentication has no acting identity, so the
+                // default project starts with no owner. The helper answers that.
+                let bootstrap_grants = write_bootstrap_grants::<A, C>(
+                    &authorizer,
+                    &request_metadata,
+                    &GrantResource::Project((**default_project_id).clone()),
+                    t.transaction(),
+                )
+                .await?;
                 t.commit().await?;
+
+                emit_bootstrap_grants(
+                    &state.v1_state.events,
+                    Arc::new(request_metadata.clone()),
+                    bootstrap_grants,
+                )
+                .await;
             }
         }
 

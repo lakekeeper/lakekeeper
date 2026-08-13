@@ -43,9 +43,10 @@ use crate::{
         authz::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
-            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, InstanceAdminAction,
-            InstanceAdminAuthorizer,
+            CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, GrantResource,
+            InstanceAdminAction, InstanceAdminAuthorizer,
         },
+        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{
@@ -61,6 +62,7 @@ use crate::{
             CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
         },
         warehouse_cache::warehouse_cache_invalidate,
+        write_bootstrap_grants,
     },
 };
 
@@ -435,6 +437,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore> Service<C, A, S>
 
 #[async_trait::async_trait]
 pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
+    #[allow(clippy::too_many_lines)]
     async fn create_warehouse(
         request: CreateWarehouseRequest,
         context: ApiContext<State<A, C, S>>,
@@ -548,7 +551,22 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+            &authorizer,
+            request_metadata,
+            &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
+            transaction.transaction(),
+        )
+        .await?;
+
         transaction.commit().await?;
+
+        emit_bootstrap_grants(
+            event_ctx.dispatcher(),
+            event_ctx.request_metadata_arc(),
+            bootstrap_grants,
+        )
+        .await;
 
         event_ctx.emit_warehouse_created(resolved_warehouse.clone());
 

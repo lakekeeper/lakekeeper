@@ -75,11 +75,12 @@ use crate::{
             ActionOnTableOrView, AuthZCannotSeeNamespace, AuthZCannotSeeTable, AuthZCannotSeeView,
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
-            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction,
+            CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
             RequireNamespaceActionError, RequireTableActionError,
         },
         build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
+        emit_bootstrap_grants,
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
             context::{ResolvedNamespace, ResolvedTable},
@@ -93,6 +94,7 @@ use crate::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
+        write_bootstrap_grants,
     },
 };
 
@@ -549,8 +551,29 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 .await?;
         }
 
+        // Outside the branches above on purpose. Re-registering over a table that keeps
+        // its id runs no create hook, and the drop above already took that table's grants
+        // with it, so the registered table would end up with no owner at all.
+        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+            &authorizer,
+            request_metadata,
+            &GrantResource::Table {
+                warehouse_id,
+                table_id: tabular_id,
+            },
+            t_write.transaction(),
+        )
+        .await?;
+
         // Commit the transaction
         t_write.commit().await?;
+
+        emit_bootstrap_grants(
+            event_ctx.dispatcher(),
+            event_ctx.request_metadata_arc(),
+            bootstrap_grants,
+        )
+        .await;
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {

@@ -30,9 +30,10 @@ use crate::{
         ArcProjectId, CatalogStore, CatalogWarehouseOps, State, Transaction,
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
-            CatalogServerAction, CatalogWarehouseAction,
+            CatalogServerAction, CatalogWarehouseAction, GrantResource,
             ListProjectsResponse as AuthZListProjectsResponse,
         },
+        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{ServerActionListProjects, authz_to_error_no_audit},
@@ -43,6 +44,7 @@ use crate::{
             ScheduleTaskMetadata, TaskEntity, TaskQueueName,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
         },
+        write_bootstrap_grants,
     },
 };
 
@@ -147,6 +149,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .create_project(event_ctx.request_metadata(), &project_id)
             .await?;
 
+        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+            &authorizer,
+            event_ctx.request_metadata(),
+            &GrantResource::Project((*project_id).clone()),
+            t.transaction(),
+        )
+        .await?;
+
         TaskLogCleanupTask::schedule_task::<C>(
             ScheduleTaskMetadata {
                 project_id: project_id.clone(),
@@ -166,6 +176,13 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })?;
 
         t.commit().await?;
+
+        emit_bootstrap_grants(
+            event_ctx.dispatcher(),
+            event_ctx.request_metadata_arc(),
+            bootstrap_grants,
+        )
+        .await;
 
         // Emit success event
         let () = event_ctx.emit_project_created(project_id.clone(), project_name.clone());
