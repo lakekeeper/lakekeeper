@@ -11,6 +11,7 @@ Lakekeeper emits structured JSON logs through the Rust `tracing` ecosystem. All 
 The `RUST_LOG` variable controls which logs are emitted based on their **level** and **target** (the Rust module that produced the log). This applies to all log types including audit logs, error responses, and general application logs.
 
 **Basic syntax:**
+
 ```bash
 # Set global minimum level
 RUST_LOG=info              # Show INFO, WARN, ERROR
@@ -195,6 +196,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
+
 </details>
 
 <details>
@@ -247,6 +249,7 @@ Each entry is **self-contained** — it does not require zipping with the top-le
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
+
 </details>
 
 <details>
@@ -316,6 +319,7 @@ A single `POST /management/v1/action/batch-check` call from `oidc~94eb1d88-…` 
   "target": "lakekeeper::service::events::backends::audit"
 }
 ```
+
 </details>
 
 #### Operational Audit Events
@@ -411,6 +415,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 <details>
@@ -436,6 +441,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 <details>
@@ -462,6 +468,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 <details>
@@ -488,6 +495,7 @@ That is deliberate: whether a grant was *already* held is not something every au
   "target": "lakekeeper_role_provider::role_provider::ldap"
 }
 ```
+
 </details>
 
 **Role resolution (`operation = "resolve_roles"`):**
@@ -524,6 +532,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "message": "No role provider handled user; user will have no provider-assigned roles"
 }
 ```
+
 </details>
 
 <details>
@@ -548,6 +557,7 @@ The `error` outcome always fires when role resolution fails. It is accompanied b
   "message": "Resolved role assignments for user"
 }
 ```
+
 </details>
 
 **Role assignment cache (`operation = "cached_role_provider"`):**
@@ -578,6 +588,7 @@ This outcome is always accompanied by a WARN-level general log (without PII) and
   "message": "stale provider(s) failed to refresh; serving cached roles"
 }
 ```
+
 </details>
 
 **jq filters for operational audit events:**
@@ -599,7 +610,6 @@ cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome 
 cat logs.json | jq -R 'fromjson? | select(.event_source == "audit" and .outcome == "stale_cache_fallback")'
 ```
 
-
 ### 2. Error Response Logs
 
 HTTP error responses returned to clients. **Does not contain PII.**
@@ -616,6 +626,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 **Note:** Empty arrays are omitted. If `stack` or `source` are empty, they will not appear in the log.
 
 **Example:**
+
 ```json
 {
   "timestamp": "2026-02-15T14:22:15.456789Z",
@@ -641,6 +652,7 @@ HTTP error responses returned to clients. **Does not contain PII.**
 Standard operational and debug logs from Lakekeeper. No `event_source` field.
 
 **Example:**
+
 ```json
 {
   "timestamp": "2026-02-15T14:20:42.425131Z",

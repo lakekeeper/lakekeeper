@@ -154,10 +154,10 @@ docker compose exec ollama ollama pull moondream
 docker compose exec ollama ollama pull gemma2:2b
 ```
 
-**3. Open JupyterLab → http://localhost:8888/lab/tree/notebooks** and work through `notebooks/` in
+**3. Open JupyterLab → <http://localhost:8888/lab/tree/notebooks>** and work through `notebooks/` in
 order — see [**Running the notebooks**](#running-the-notebooks) below for the
 step-by-step (including the browser login in `00-setup`). The Lakekeeper console
-is at http://localhost:8181. (`up.sh` prints these URLs when it finishes.)
+is at <http://localhost:8181>. (`up.sh` prints these URLs when it finishes.)
 
 > **Why `up.sh` and not just `docker compose up`?** Two things need a host-facing
 > address that compose can't know:
@@ -176,7 +176,7 @@ is at http://localhost:8181. (`up.sh` prints these URLs when it finishes.)
 
 ## Running the notebooks
 
-Open **http://localhost:8888/lab/tree/notebooks** and work through the three notebooks in order,
+Open **<http://localhost:8888/lab/tree/notebooks>** and work through the three notebooks in order,
 running each cell top to bottom. The manual, human-in-the-loop steps are called
 out below — the rest is "run the cell and read the output".
 
@@ -237,7 +237,7 @@ principal can't see.
 
 ### Seeing it in the Lakekeeper UI (optional)
 
-Open the console at **http://localhost:8181**. You can browse the warehouse,
+Open the console at **<http://localhost:8181>**. You can browse the warehouse,
 namespaces, tables, and the grants — and because `up.sh` set the S3 endpoint to
 your LAN IP + applied CORS, you can navigate into the Iceberg dataset files too.
 

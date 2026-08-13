@@ -32,17 +32,21 @@ NOTES=site/docs/about/release-notes.md
 ```
 
 1. **List the PRs in this release** from the new `CHANGELOG.md` section:
+
    ```bash
    awk -v v="$VERSION" '
      $0 ~ "^## \\[" v "\\]" {f=1; next}
      f && /^## \[/ {exit}
      f' CHANGELOG.md | grep -oE '#[0-9]+' | tr -d '#' | sort -un
    ```
+
 2. **Read each PR's description and summarise it** (agent-assisted is fine; use a PR's
    `## Release notes` section verbatim when it has one):
+
    ```bash
    gh pr view <N> --repo lakekeeper/lakekeeper --json title,body
    ```
+
 3. **Add the `## $TAG (date)` section** at the top of `$NOTES` (newest first): group into
    Highlights / Features / Bug Fixes / Breaking Changes / Upgrade Notes; one line per
    item; link the PRs as `[#NNNN](https://github.com/lakekeeper/lakekeeper/pull/NNNN)`.
@@ -50,6 +54,7 @@ NOTES=site/docs/about/release-notes.md
    edit it inside the release-please PR — release-please force-regenerates that branch on
    every push to `main` and would clobber the change.
 5. **Set the GitHub Release body** from the new section:
+
    ```bash
    gh release edit "$TAG" --repo lakekeeper/lakekeeper \
      --notes-file <(awk -v t="## $TAG" 'index($0,t)==1{f=1;next} f&&/^## /{exit} f' "$NOTES")
