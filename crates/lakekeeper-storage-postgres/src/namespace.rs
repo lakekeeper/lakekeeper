@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use iceberg::TableIdent;
 use itertools::izip;
@@ -18,6 +18,7 @@ use lakekeeper::{
         SerializationError, TabularId, WarehouseIdNotFound, storage::join_location, tasks::TaskId,
     },
 };
+use lakekeeper_io::Location;
 use sqlx::types::Json;
 use uuid::Uuid;
 
@@ -695,7 +696,19 @@ pub(crate) async fn drop_namespace(
             ARRAY(SELECT typ FROM tabulars where deleted_at is NULL) AS "child_tabular_typ!: Vec<TabularType>",
             ARRAY(SELECT tabular_id FROM tabulars where deleted_at is not NULL) AS "child_tabulars_deleted!",
             ARRAY(SELECT namespace_id FROM child_namespaces) AS "child_namespaces!",
-            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>"
+            ARRAY(SELECT task_id FROM tasks) AS "child_tabular_task_id!: Vec<Uuid>",
+            ARRAY(
+                SELECT n.namespace_id FROM namespace n
+                WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
+                AND n.namespace_properties->>'location' IS NOT NULL
+                ORDER BY length(n.namespace_properties->>'location') DESC, n.namespace_id
+            ) AS "dropped_ns_ids!: Vec<Uuid>",
+            ARRAY(
+                SELECT n.namespace_properties->>'location' FROM namespace n
+                WHERE (n.namespace_id = $2 OR n.namespace_id = ANY(SELECT namespace_id FROM child_namespaces))
+                AND n.namespace_properties->>'location' IS NOT NULL
+                ORDER BY length(n.namespace_properties->>'location') DESC, n.namespace_id
+            ) AS "dropped_ns_locations!: Vec<String>"
         FROM namespace_info ni
 "#,
         *warehouse_id,
@@ -816,6 +829,20 @@ pub(crate) async fn drop_namespace(
             .child_tabular_task_id
             .into_iter()
             .map(TaskId::from)
+            .collect(),
+        namespace_locations: info
+            .dropped_ns_ids
+            .into_iter()
+            .zip(info.dropped_ns_locations)
+            .filter_map(|(ns_id, loc)| match Location::from_str(&loc) {
+                Ok(location) => Some((NamespaceId::from(ns_id), location)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse namespace location '{loc}' for cleanup, skipping: {e}"
+                    );
+                    None
+                }
+            })
             .collect(),
     })
 }

@@ -332,6 +332,8 @@ pub struct NamespaceDropInfo {
     // table-id, location, table-ident
     pub child_tables: Vec<(TabularId, Location, TableIdent)>,
     pub open_tasks: Vec<TaskId>,
+    // namespace-id, location — for storage cleanup after drop
+    pub namespace_locations: Vec<(NamespaceId, Location)>,
 }
 
 macro_rules! define_simple_namespace_err {
