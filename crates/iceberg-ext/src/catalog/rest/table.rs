@@ -37,10 +37,10 @@ pub struct LoadTableResult {
     pub config: Option<std::collections::HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_credentials: Option<Vec<StorageCredential>>,
-    /// Signer settings for clients that support them. Its presence is what tells
-    /// a client to use the standard per-table `/sign` endpoint instead of the
-    /// deprecated `signer.uri` / `signer.endpoint` config keys, so it is omitted
-    /// rather than sent as `null` when remote signing is off.
+    /// Signer settings for clients that support them, superseding the deprecated
+    /// `signer.uri` / `signer.endpoint` config keys. Omitted rather than sent as
+    /// `null` when remote signing is off, since a client that finds it absent
+    /// falls back to those keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_signing_config: Option<RemoteSigningConfig>,
     /// Validator for this exact body, emitted as the `ETag` header.

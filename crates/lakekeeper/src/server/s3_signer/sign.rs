@@ -207,6 +207,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 resolve_signable_by_id(
                     warehouse_id,
                     tabular_id,
+                    Addressing::TabularId,
                     &parsed_url,
                     first_location,
                     &state,
@@ -488,12 +489,22 @@ fn validate_region(region: &str, storage_profile: &S3Profile) -> Result<()> {
     Ok(())
 }
 
+/// How the request named the tabular. Only affects how a location mismatch is reported.
+#[derive(Clone, Copy)]
+enum Addressing {
+    /// Lakekeeper's `tabular-id` route, where a mismatch has one known cause.
+    TabularId,
+    /// The spec's per-table route.
+    TableName,
+}
+
 /// Resolve the tabular addressed by the table-scoped signer route
 /// (`/v1/signer/{warehouse-id}/tabular-id/{uuid}/v1/aws/s3/sign`). That route carries a
 /// bare UUID, so the id is resolved across all tabular types.
 async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     warehouse_id: WarehouseId,
     tabular_id: uuid::Uuid,
+    addressing: Addressing,
     parsed_url: &s3_utils::ParsedSignRequest,
     first_location: &S3Location,
     state: &ApiContext<State<A, C, S>>,
@@ -513,14 +524,24 @@ async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: Secre
             return Ok(Some(signable));
         }
 
-        // The id resolved, but its location does not cover the request URI.
+        // The id resolved, but its location does not cover the request URI. Fall back to a
+        // location based lookup; the request may still be legitimate for another tabular.
+        //
         // Up to version 0.9.1 pyiceberg had a bug that did not allow table specific signer URIs.
-        // Instead the first URI of the first sign call would be used for subsequent calls in the same runtime too.
-        // This is fixed in 0.9.2 onward: https://github.com/apache/iceberg-python/pull/2005
-        // To keep backward compatibility we fall back to location based lookup when the location does not match.
-        // This fallback will be removed in a future version of Lakekeeper.
+        // Instead the first URI of the first sign call would be used for subsequent calls in the
+        // same runtime too. This is fixed in 0.9.2 onward:
+        // https://github.com/apache/iceberg-python/pull/2005
+        // The fallback exists for that bug and will be removed in a future version of Lakekeeper,
+        // so only the route that bug hits names it — the per-table route reaches this line for
+        // other reasons and must not accuse the client of it.
+        let hint = match addressing {
+            Addressing::TabularId => {
+                " This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1"
+            }
+            Addressing::TableName => "",
+        };
         tracing::warn!(
-            "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup. This is a bug in the query engine. When using PyIceberg, please update to versions > 0.9.1",
+            "Received a tabular specific sign request for tabular {tabular_id} with a location {} that does not match the request URI {}. Falling back to location based lookup.{hint}",
             signable.location(),
             parsed_url.uri.received()
         );
@@ -555,6 +576,7 @@ async fn resolve_signable_by_name<C: CatalogStore, A: Authorizer + Clone, S: Sec
         return resolve_signable_by_id(
             warehouse_id,
             *table_info.table_id(),
+            Addressing::TableName,
             parsed_url,
             first_location,
             state,

@@ -30,9 +30,10 @@ pub struct S3SignRequest {
 /// Signer settings advertised on `loadTable`, superseding the deprecated
 /// `signer.uri` / `signer.endpoint` config keys.
 ///
-/// Deliberately carries no endpoint: a client that reads this field derives the
-/// endpoint as the table's standard `…/tables/{table}/sign` path, which is why
-/// serving that route is a precondition for emitting this at all.
+/// Deliberately carries no endpoint: a client that reads this field calls the
+/// table's standard `…/tables/{table}/sign` path, discovered through the
+/// `endpoints` capability list, which is why serving that route is a
+/// precondition for emitting this at all.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TypedBuilder)]
 #[serde(rename_all = "kebab-case")]
 pub struct RemoteSigningConfig {

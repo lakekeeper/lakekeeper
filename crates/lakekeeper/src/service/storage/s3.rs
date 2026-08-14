@@ -34,7 +34,7 @@ use crate::{
     api::{
         CatalogConfig,
         iceberg::{
-            supported_endpoints,
+            supported_endpoints, supported_endpoints_with_signing,
             v1::{DataAccess, tables::DataAccessMode},
         },
         management::v1::warehouse::TabularDeleteProfile,
@@ -436,7 +436,11 @@ impl S3Profile {
         CatalogConfig {
             defaults,
             overrides: HashMap::new(),
-            endpoints: supported_endpoints().to_vec(),
+            endpoints: if self.remote_signing_enabled {
+                supported_endpoints_with_signing().to_vec()
+            } else {
+                supported_endpoints().to_vec()
+            },
             idempotency_key_lifetime: None,
         }
     }
@@ -612,20 +616,21 @@ impl S3Profile {
             let signer_uri = request_metadata.s3_signer_uri(warehouse_id);
             let signer_endpoint =
                 request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id);
-            // Iceberg 1.11.0 renamed `s3.signer.*` to `signer.*`. Emit both so clients >=1.11 read
-            // the new keys (no deprecation warning) and older clients keep using the old ones.
-            // Both are deprecated by the spec in favour of `remote-signing-config` below, but no
-            // released client reads that yet, so dropping them would break every signing client.
+            // Iceberg 1.11.0 renamed the client-side `s3.signer.*` properties to `signer.*`. Emit
+            // both so clients >=1.11 read the new keys (no deprecation warning) and older clients
+            // keep using the old ones. The spec deprecates `signer.uri`/`signer.endpoint` in
+            // favour of `remote-signing-config` below, but no released client reads that yet, and
+            // a client following the spec's resolution order picks these up first anyway.
             config.insert(&signer::Uri(signer_uri.clone()));
             config.insert(&signer::Endpoint(signer_endpoint.clone()));
             config.insert(&s3::SignerUri(signer_uri));
             config.insert(&s3::SignerEndpoint(signer_endpoint));
 
-            // Empty on purpose: presence is the whole signal. A client reading
-            // this field derives the endpoint as the table's standard `/sign`
-            // path, and we need no properties or headers echoed back — the
-            // signer resolves the table from the path, falling back to the
-            // request location, which already survives a rename.
+            // Empty on purpose. The field carries no endpoint — a client that
+            // uses it calls the table's standard `/sign` route, which the
+            // `endpoints` capability list advertises — and we need nothing
+            // echoed back: the signer resolves the table from the path, falling
+            // back to the request location, which already survives a rename.
             Some(RemoteSigningConfig::default())
         } else {
             None
@@ -3137,6 +3142,13 @@ pub(crate) mod test {
                     signs_remotely.then_some(true),
                     "({context})"
                 );
+                // Advertised only when we actually sign: it points the client at the per-table
+                // `/sign` route, which rejects requests for a table we do not sign for.
+                assert_eq!(
+                    table_config.remote_signing.is_some(),
+                    signs_remotely,
+                    "({context})"
+                );
             }
         }
     }
@@ -3293,6 +3305,38 @@ pub(crate) mod test {
         );
         assert!(!config.defaults.contains_key("s3.sse.type"));
         assert!(!config.defaults.contains_key("s3.sse.key"));
+    }
+
+    /// `remote-signing-config` carries no endpoint, so the `endpoints` capability list is the
+    /// only place a client learns that the per-table `/sign` route is served here.
+    #[test]
+    fn catalog_config_advertises_the_sign_route_only_when_signing_is_enabled() {
+        let sign_route = "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/sign";
+        for remote_signing_enabled in [false, true] {
+            let profile = S3Profile::builder()
+                .bucket("bucket-name".to_string())
+                .region("us-east-1".to_string())
+                .flavor(S3Flavor::S3Compat)
+                .sts_enabled(false)
+                .remote_signing_enabled(remote_signing_enabled)
+                .build();
+            let config = profile.generate_catalog_config(
+                WarehouseId::new_random(),
+                &RequestMetadata::new_unauthenticated(),
+                crate::api::management::v1::warehouse::TabularDeleteProfile::Hard {},
+            );
+            assert_eq!(
+                config.endpoints.iter().any(|e| e == sign_route),
+                remote_signing_enabled,
+                "remote_signing_enabled={remote_signing_enabled}"
+            );
+            // The rest of the list is unchanged either way.
+            assert!(
+                config.endpoints.contains(
+                    &"GET /v1/{prefix}/namespaces/{namespace}/tables/{table}".to_string()
+                )
+            );
+        }
     }
 
     #[test]
