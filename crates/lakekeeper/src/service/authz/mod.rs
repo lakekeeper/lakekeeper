@@ -2237,8 +2237,8 @@ pub mod tests {
                 None,
                 &GrantResource::Server,
                 &[
-                    GrantAuthorityCheck::new("admin", None, None),
-                    GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Revoke)),
+                    GrantAuthorityCheck::any("admin"),
+                    GrantAuthorityCheck::entry("select", &alice, GrantOp::Revoke),
                 ],
             )
             .await
@@ -2976,6 +2976,9 @@ pub mod tests {
         /// What creation confers per resource type, for tests that exercise the catalog
         /// grant arm. Empty by default, so no test gains grant rows it did not ask for.
         bootstrap: &'static [(ResourceType, &'static [&'static str])],
+        /// Which grant directions this authorizer has authority over. Empty by default,
+        /// which answers every grant-authority question with the trait's deny.
+        grant_ops: &'static [GrantOp],
     }
 
     impl Default for HidingAuthorizer {
@@ -2993,7 +2996,16 @@ pub mod tests {
                 hidden_for_user: Arc::new(RwLock::new(HashMap::new())),
                 server_id: ServerId::new_random(),
                 bootstrap: &[],
+                grant_ops: &[],
             }
+        }
+
+        /// Give this authorizer authority over `ops` and nothing else, so a test can tell
+        /// a grant-authority question apart from a revoke one.
+        #[must_use]
+        pub fn with_grant_authority(mut self, ops: &'static [GrantOp]) -> Self {
+            self.grant_ops = ops;
+            self
         }
 
         /// Make creation confer privileges as catalog grant rows, per resource type.
@@ -3117,6 +3129,28 @@ pub mod tests {
                 .iter()
                 .find(|(declared_for, _)| *declared_for == resource_type)
                 .map_or(&[], |(_, privileges)| *privileges)
+        }
+
+        async fn are_allowed_grants_impl(
+            &self,
+            _metadata: &RequestMetadata,
+            _for_user: Option<&UserOrRole>,
+            _resource: &GrantResource,
+            checks: &[GrantAuthorityCheck<'_>],
+        ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
+            // Authority over a direction, and only when the caller names one: a question
+            // that names none is what the vocabulary endpoint asks, and this authorizer
+            // has nothing to say about it.
+            Ok(checks
+                .iter()
+                .map(|check| {
+                    if check.op.is_some_and(|op| self.grant_ops.contains(&op)) {
+                        AuthorizationDecision::allow()
+                    } else {
+                        AuthorizationDecision::deny()
+                    }
+                })
+                .collect())
         }
 
         #[cfg(feature = "open-api")]

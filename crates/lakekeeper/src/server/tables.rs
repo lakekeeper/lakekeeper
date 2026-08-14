@@ -567,8 +567,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // Commit the transaction
         t_write.commit().await?;
 
-        // Held across the register event below, which consumes the context: the grants
-        // are announced after the table they are on.
+        // Held across the register event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
         let grant_request_metadata = event_ctx.request_metadata_arc();
 

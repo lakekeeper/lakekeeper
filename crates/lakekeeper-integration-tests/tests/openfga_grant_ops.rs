@@ -93,7 +93,7 @@ mod grant {
         /// grantable-privileges endpoint asks it. The tests that name either build the
         /// check directly.
         fn check(privilege: &str) -> GrantAuthorityCheck<'_> {
-            GrantAuthorityCheck::new(privilege, None, None)
+            GrantAuthorityCheck::any(privilege)
         }
 
         fn writes(entries: Vec<GrantEntry>) -> ApplyGrantsRequest {
@@ -335,9 +335,9 @@ mod grant {
                     None,
                     &resource,
                     &[
-                        GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
-                        GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
-                        GrantAuthorityCheck::new("modify", Some(&alice), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("modify", &alice, GrantOp::Grant),
                     ],
                 )
                 .await
@@ -352,14 +352,10 @@ mod grant {
                     None,
                     &resource,
                     &[
-                        GrantAuthorityCheck::new(
-                            "get_metadata",
-                            Some(&alice),
-                            Some(GrantOp::Grant),
-                        ),
-                        GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
-                        GrantAuthorityCheck::new("get_metadata", Some(&bob), Some(GrantOp::Grant)),
-                        GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::entry("get_metadata", &alice, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("get_metadata", &bob, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
                     ],
                 )
                 .await
@@ -373,8 +369,8 @@ mod grant {
                     None,
                     &resource,
                     &[
-                        GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
-                        GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
+                        GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
                     ],
                 )
                 .await

@@ -359,9 +359,8 @@ pub struct GrantablePrivilege {
     /// distinct — and so a new descriptor field can never collide with `allowed`.
     #[cfg_attr(feature = "open-api", schema(value_type = PrivilegeDescriptor))]
     pub privilege: &'static PrivilegeDescriptor,
-    /// Whether the principal has authority over this privilege on this resource. Asked
-    /// without a direction, so an authorizer that separates granting from revoking may
-    /// answer for either; an apply is checked per entry.
+    /// Whether the principal may administer this privilege here — grant it, revoke it, or
+    /// both. Advisory: an apply checks each of its entries on its own.
     pub allowed: bool,
 }
 
@@ -717,17 +716,22 @@ async fn validate_write_principals<C: CatalogRoleOps>(
 // Shared apply / list bodies
 // ---------------------------------------------------------------------------
 
-/// The distinct grant-authority questions a diff asks, in `writes`-then-`deletes` order:
-/// which privilege, destined for which principal, moving which way.
+/// The grant-authority questions a diff asks, one per entry, in `writes`-then-`deletes`
+/// order: which privilege, destined for which principal, moving which way.
 ///
-/// Deduplicated on the *triple*, in first-seen order. A diff handing one privilege to a
-/// hundred principals asks a hundred questions, and handing one to a principal while
-/// taking it from another asks two: whether the grantee or the direction changes the
-/// answer belongs to the authorizer's model, so this layer cannot collapse them. An
-/// authorizer that resolves authority from the privilege alone collapses them itself,
-/// where that is sound.
+/// One question per entry rather than one per privilege: a diff handing one privilege to a
+/// hundred principals asks a hundred questions. Whether the grantee or the direction
+/// changes the answer belongs to the authorizer's model, so this layer collapses neither.
+/// An authorizer that resolves authority from the privilege alone collapses them itself,
+/// where that is sound — the tuple-based one does.
+///
+/// The direction each question carries is what lets an authorizer hold a principal to
+/// taking access away without letting it hand access out.
+///
+/// Nothing is deduplicated here because nothing can repeat: [`validate_request_shape`]
+/// rejects an entry repeated within a side and an entry appearing on both sides, and the
+/// side is what fixes the direction.
 fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str, GrantOp)> {
-    let mut seen = std::collections::HashSet::new();
     let sides = [
         (request.writes.iter(), GrantOp::Grant),
         (request.deletes.iter(), GrantOp::Revoke),
@@ -743,27 +747,26 @@ fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str,
                 )
             })
         })
-        .filter(|question| seen.insert(question.clone()))
         .collect()
 }
 
-/// The privileges to name in a refusal: those `decisions` refused, named once each, in
-/// the order they were first refused.
+/// What a refusal is about: every question `decisions` refused, with the direction it
+/// asked about, in the order they were refused.
 ///
-/// `decisions` answer `questions` positionally. First-refusal order is not request order
-/// once an authorizer answers per grantee: a privilege allowed for the first principal
-/// that asks for it and refused for the second is named where the refusal is.
+/// `decisions` answer `questions` positionally. Refusal order is not request order once an
+/// authorizer answers per grantee: a privilege allowed for the first principal that asks
+/// for it and refused for the second is reported where the refusal is. Repeats are left
+/// in — naming each privilege once is the error's own presentation choice, and it needs
+/// every refused direction to say which were refused.
 fn refused_privileges<'a>(
     questions: &[(UserOrRoleId, &'a str, GrantOp)],
     decisions: &[AuthorizationDecision],
-) -> Vec<&'a str> {
-    let mut named = std::collections::HashSet::new();
+) -> Vec<(GrantOp, &'a str)> {
     questions
         .iter()
         .zip(decisions)
         .filter(|(_, decision)| !decision.allowed)
-        .map(|((_, privilege, _), _)| *privilege)
-        .filter(|privilege| named.insert(*privilege))
+        .map(|((_, privilege, op), _)| (*op, *privilege))
         .collect()
 }
 
@@ -781,9 +784,7 @@ async fn require_grant_authority<A: Authorizer>(
     let questions = authority_questions(request);
     let checks: Vec<GrantAuthorityCheck<'_>> = questions
         .iter()
-        .map(|(grantee, privilege, op)| {
-            GrantAuthorityCheck::new(privilege, Some(grantee), Some(*op))
-        })
+        .map(|(grantee, privilege, op)| GrantAuthorityCheck::entry(privilege, grantee, *op))
         .collect();
     let decisions = authorizer
         .are_allowed_grants(metadata, None, resource, &checks)
@@ -817,7 +818,7 @@ async fn allowed_privileges<A: Authorizer>(
     // authorizer that distinguishes them need not enumerate anyone to answer.
     let checks: Vec<GrantAuthorityCheck<'_>> = vocabulary
         .iter()
-        .map(|privilege| GrantAuthorityCheck::new(privilege.name.as_str(), None, None))
+        .map(|privilege| GrantAuthorityCheck::any(privilege.name.as_str()))
         .collect();
     let decisions = authorizer
         .are_allowed_grants(request_metadata, for_user.as_ref(), resource, &checks)
@@ -2721,7 +2722,7 @@ mod tests {
         assert_eq!(err.r#type, "GrantActionForbidden");
         assert_eq!(
             err.message,
-            "Granting or revoking `get_metadata` on this warehouse is forbidden"
+            "Granting `get_metadata` on this warehouse is forbidden"
         );
     }
 
@@ -2746,29 +2747,20 @@ mod tests {
 
         assert_eq!(
             err.message,
-            "Granting or revoking `provision_users`, `list_users` on this server is forbidden"
+            "Granting `provision_users`, `list_users` on this server is forbidden"
         );
     }
 
     #[test]
-    fn authority_questions_are_deduplicated_on_the_triple() {
-        // Not on the privilege alone: an authorizer may answer differently depending on
-        // who receives the privilege and on which way it moves. So `modify` for alice,
-        // `modify` for a role, and taking `modify` back from alice are three questions —
-        // the last one is what lets a revoke-only role exist. A repeat of the whole
-        // triple is one question, asked where the request first names it; the request
-        // validator rejects a repeat within one side, but it compares the principal as
-        // written, and two spellings can name the same principal.
+    fn every_entry_asks_its_own_question_tagged_with_its_side() {
+        // One question per entry, writes first, each carrying the direction its side
+        // implies. Nothing collapses: an authorizer may answer differently depending on who
+        // receives the privilege and on which way it moves.
         let role_id = RoleId::new_random();
         let role = UserOrRole::Role(RoleAssignee::from_role(role_id));
         let request = ApplyGrantsRequest {
-            writes: vec![
-                entry("modify", alice()),
-                entry("modify", role),
-                entry("select", alice()),
-                entry("modify", alice()),
-            ],
-            deletes: vec![entry("modify", alice())],
+            writes: vec![entry("modify", alice()), entry("select", alice())],
+            deletes: vec![entry("modify", role)],
         };
 
         let alice_id = UserOrRoleId::from(&alice());
@@ -2776,17 +2768,38 @@ mod tests {
             authority_questions(&request),
             vec![
                 (alice_id.clone(), "modify", GrantOp::Grant),
-                (UserOrRoleId::Role(role_id), "modify", GrantOp::Grant),
-                (alice_id.clone(), "select", GrantOp::Grant),
-                (alice_id, "modify", GrantOp::Revoke),
+                (alice_id, "select", GrantOp::Grant),
+                (UserOrRoleId::Role(role_id), "modify", GrantOp::Revoke),
             ]
         );
     }
 
+    /// The direction has to reach the authorizer, or separating the two is a fiction: this
+    /// authorizer has authority over revokes only, so the grant in the same diff is the one
+    /// refused — and the refusal says which.
+    ///
+    /// Fails if the apply path stopped passing the direction (both entries would be
+    /// refused), or if the sides were tagged the wrong way round (the revoke would be).
+    #[tokio::test]
+    async fn the_gate_asks_with_the_direction_each_entry_moves() {
+        let authorizer = HidingAuthorizer::new().with_grant_authority(&[GrantOp::Revoke]);
+        let metadata = RequestMetadataTestBuilder::builder().build();
+        let request = ApplyGrantsRequest {
+            writes: vec![entry("select", alice())],
+            deletes: vec![entry("modify", alice())],
+        };
+
+        let err = require_grant_authority(&authorizer, &metadata, &GrantResource::Server, &request)
+            .await
+            .expect_err("granting is not this authorizer's to allow")
+            .into_error_model();
+        assert_eq!(err.message, "Granting `select` on this server is forbidden");
+    }
+
     #[test]
-    fn a_refusal_names_each_privilege_once_in_first_refusal_order() {
+    fn a_refusal_reports_every_refused_question_with_its_direction() {
         // Mixed decisions, which no authorizer in this workspace produces: the answers are
-        // positional, so a pairing that slipped by one would name a privilege the
+        // positional, so a pairing that slipped by one would report a question the
         // authorizer allowed - and stay invisible to every all-deny or all-allow test.
         let alice = UserOrRoleId::from(&alice());
         let role = UserOrRoleId::Role(RoleId::new_random());
@@ -2796,8 +2809,9 @@ mod tests {
             (alice, "modify", GrantOp::Revoke),
         ];
 
-        // `select` allowed for alice but refused for the role: named once, and from the
-        // position of the refusal rather than of the first request for it.
+        // `select` allowed for alice but refused for the role: reported from the position
+        // of the refusal rather than of the first request for it, and the revoke of
+        // `modify` keeps its direction so the message can name it.
         assert_eq!(
             refused_privileges(
                 &questions,
@@ -2807,9 +2821,9 @@ mod tests {
                     AuthorizationDecision::deny(),
                 ]
             ),
-            vec!["select", "modify"]
+            vec![(GrantOp::Grant, "select"), (GrantOp::Revoke, "modify")]
         );
-        // Only the first question refused, so `modify` must not be named.
+        // Only the first question refused, so `modify` must not be reported.
         assert_eq!(
             refused_privileges(
                 &questions,
@@ -2819,7 +2833,7 @@ mod tests {
                     AuthorizationDecision::allow(),
                 ]
             ),
-            vec!["select"]
+            vec![(GrantOp::Grant, "select")]
         );
     }
 
@@ -2851,7 +2865,7 @@ mod tests {
 
         assert_eq!(
             err.message,
-            "Granting or revoking `provision_users`, `list_users` on this server is forbidden"
+            "Granting `provision_users`, `list_users` on this server is forbidden"
         );
     }
 

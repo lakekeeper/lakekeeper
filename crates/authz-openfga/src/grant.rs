@@ -313,9 +313,10 @@ fn assumed_role_restriction(
 /// The tuples to check for `checks`, and the item each check takes its answer from.
 ///
 /// Keeps the request dense. A privilege this level cannot grant gets no tuple at all
-/// (`None`, answered as a deny), and equal privileges share one: the relation is a
-/// function of the privilege, so two checks differing only in their grantee ask the same
-/// question of the model.
+/// (`None`, answered as a deny), and equal privileges share one: the relation is a function
+/// of the privilege alone, so two checks differing only in their grantee or in which way
+/// the privilege would move ask the same question of the model. A relation that ever became
+/// sensitive to either would have to key this map on it too.
 fn plan_authority_checks(
     resource_type: ResourceType,
     user: &str,
@@ -351,11 +352,12 @@ impl OpenFGAAuthorizer {
     /// may come from another authorizer's vocabulary, and answering "not allowed" is
     /// both true and safe.
     ///
-    /// The grantee is ignored. Every `can_grant_*` relation is a property of the actor,
-    /// the resource and the privilege — nothing in the model reads who receives the
-    /// privilege — so checks that differ only in their grantee collapse into one check
-    /// whose answer is repeated for each. A diff handing one privilege to a hundred
-    /// principals is a single check.
+    /// The grantee and the direction are both ignored. Every `can_grant_*` relation is a
+    /// property of the actor, the resource and the privilege — nothing in the model reads
+    /// who receives the privilege, and holding the relation covers taking the privilege
+    /// back as much as handing it out — so checks that differ only in either collapse into
+    /// one check whose answer is repeated for each. A diff handing one privilege to a
+    /// hundred principals is a single check.
     pub(crate) async fn grant_authority(
         &self,
         metadata: &RequestMetadata,
@@ -690,14 +692,14 @@ mod tests {
             "user:oidc~caller",
             "warehouse:11111111-1111-1111-1111-111111111111",
             &[
-                GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
-                GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
-                GrantAuthorityCheck::new("modify", Some(&alice), Some(GrantOp::Grant)),
+                GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
+                GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
+                GrantAuthorityCheck::entry("modify", &alice, GrantOp::Grant),
                 // Taking `select` back asks the same relation as handing it out: this
                 // model has one relation per privilege and nothing to say about direction.
-                GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Revoke)),
+                GrantAuthorityCheck::entry("select", &alice, GrantOp::Revoke),
                 // A warehouse action, but not an assignable relation, so not grantable.
-                GrantAuthorityCheck::new("get_metadata", Some(&alice), Some(GrantOp::Grant)),
+                GrantAuthorityCheck::entry("get_metadata", &alice, GrantOp::Grant),
             ],
         );
 

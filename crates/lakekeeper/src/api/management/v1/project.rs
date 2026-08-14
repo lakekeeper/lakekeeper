@@ -176,8 +176,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         t.commit().await?;
 
-        // Held across the create event below, which consumes the context: the grants are
-        // announced after the project they are on.
+        // Held across the create event below, which consumes the context.
         let grant_dispatcher = event_ctx.dispatcher().clone();
         let grant_request_metadata = event_ctx.request_metadata_arc();
 

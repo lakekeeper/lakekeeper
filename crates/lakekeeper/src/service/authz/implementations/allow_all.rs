@@ -552,8 +552,8 @@ mod tests {
                 None,
                 &resource,
                 &[
-                    GrantAuthorityCheck::new("get_metadata", Some(&bob), Some(GrantOp::Grant)),
-                    GrantAuthorityCheck::new("not_a_privilege", None, None),
+                    GrantAuthorityCheck::entry("get_metadata", &bob, GrantOp::Grant),
+                    GrantAuthorityCheck::any("not_a_privilege"),
                 ],
             )
             .await

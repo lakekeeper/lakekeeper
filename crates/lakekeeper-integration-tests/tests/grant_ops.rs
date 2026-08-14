@@ -1748,9 +1748,10 @@ async fn an_authorizer_without_a_vocabulary_refuses_writes_but_allows_revokes(po
     .unwrap_err();
     assert_eq!(err.error.code, 403);
     assert_eq!(err.error.r#type, "GrantActionForbidden");
+    // A deletes-only diff, so the refusal is about revoking and says so.
     assert_eq!(
         err.error.message,
-        "Granting or revoking `get_metadata` on this warehouse is forbidden"
+        "Revoking `get_metadata` on this warehouse is forbidden"
     );
 }
 

@@ -312,7 +312,9 @@ impl From<InvalidGrantPrivilege> for ErrorModel {
 #[derive(Debug, PartialEq, Eq)]
 pub struct AuthZGrantActionForbidden {
     resource_type: ResourceType,
-    privileges: Vec<String>,
+    /// `(privilege, refused granting it, refused revoking it)` — each name once, in
+    /// refusal order.
+    privileges: Vec<(String, bool, bool)>,
 }
 
 impl AuthZGrantActionForbidden {
@@ -321,14 +323,34 @@ impl AuthZGrantActionForbidden {
     /// round trip fixes them all, but bounded so the message stays readable.
     const MAX_NAMED: usize = 5;
 
+    /// Names each refused privilege once, with the directions it was refused in, so the
+    /// message says which entries to fix — a caller refused only on the grant side needs
+    /// to know their deletes would have gone through.
     #[must_use]
     pub fn new(
         resource: &GrantResource,
-        privileges: impl IntoIterator<Item = impl Into<String>>,
+        refused: impl IntoIterator<Item = (GrantOp, impl Into<String>)>,
     ) -> Self {
+        let mut privileges: Vec<(String, bool, bool)> = Vec::new();
+        for (op, privilege) in refused {
+            let privilege = privilege.into();
+            let (granting, revoking) = match op {
+                GrantOp::Grant => (true, false),
+                GrantOp::Revoke => (false, true),
+            };
+            if let Some((_, seen_granting, seen_revoking)) = privileges
+                .iter_mut()
+                .find(|(name, _, _)| *name == privilege)
+            {
+                *seen_granting |= granting;
+                *seen_revoking |= revoking;
+            } else {
+                privileges.push((privilege, granting, revoking));
+            }
+        }
         Self {
             resource_type: resource.resource_type(),
-            privileges: privileges.into_iter().map(Into::into).collect(),
+            privileges,
         }
     }
 }
@@ -339,22 +361,49 @@ impl AuthorizationFailureSource for AuthZGrantActionForbidden {
             resource_type,
             privileges,
         } = self;
-        let named = privileges
-            .iter()
-            .take(Self::MAX_NAMED)
-            .map(|p| format!("`{p}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let listed = if privileges.len() > Self::MAX_NAMED {
-            format!("{named} and {} more", privileges.len() - Self::MAX_NAMED)
+        // One segment per refused direction, so nothing is claimed forbidden that was
+        // not refused: a grant-side refusal must not read as if revoking were too.
+        // The name budget is shared across segments; past it the tail is counted, not
+        // named, and a direction whose names all fall past the budget goes with it.
+        let mut budget = Self::MAX_NAMED;
+        let mut segments: Vec<String> = Vec::new();
+        for (verb, granting, revoking) in [
+            ("granting", true, false),
+            ("revoking", false, true),
+            ("granting or revoking", true, true),
+        ] {
+            let named = privileges
+                .iter()
+                .filter(|(_, g, r)| (*g, *r) == (granting, revoking))
+                .take(budget)
+                .map(|(name, _, _)| format!("`{name}`"))
+                .collect::<Vec<_>>();
+            if named.is_empty() {
+                continue;
+            }
+            budget -= named.len();
+            segments.push(format!("{verb} {}", named.join(", ")));
+        }
+        let described = match segments.as_slice() {
+            // No privilege at all is unreachable from the gate; kept total for safety.
+            [] => "granting or revoking".to_string(),
+            [one] => one.clone(),
+            [head @ .., last] => format!("{} and {last}", head.join(", ")),
+        };
+        let named_count = Self::MAX_NAMED - budget;
+        let listed = if privileges.len() > named_count {
+            format!("{described} and {} more", privileges.len() - named_count)
         } else {
-            named
+            described
+        };
+        // The segments read as one sentence, so only its first letter is capitalized.
+        let mut listed_chars = listed.chars();
+        let listed = match listed_chars.next() {
+            Some(first) => format!("{}{}", first.to_uppercase(), listed_chars.as_str()),
+            None => listed,
         };
         ErrorModel::forbidden(
-            format!(
-                "Granting or revoking {listed} on this {} is forbidden",
-                resource_type.as_str()
-            ),
+            format!("{listed} on this {} is forbidden", resource_type.as_str()),
             "GrantActionForbidden",
             None,
         )
@@ -543,6 +592,11 @@ impl AppliedGrants {
 }
 
 /// Which way a grant would move: handed out, or taken back.
+///
+/// Exhaustive, unlike the check that carries it: a new *term* on the check should not break
+/// an authorizer that ignores it, but a new value of a term it already branches on must,
+/// or the authorizer would fold something it has never considered into whichever arm it
+/// happens to have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GrantOp {
     Grant,
@@ -552,10 +606,14 @@ pub enum GrantOp {
 /// One grant-authority question: may the subject `op` `privilege` on the resource, to
 /// `grantee`?
 ///
-/// Extensible on purpose — construct with [`new`](Self::new) and read fields rather than
-/// destructuring, so a new term costs no out-of-workspace authorizer a compile error.
-/// Compiling is not honoring: a term that changes what may be authorized (grant versus
-/// revoke, say) belongs in a change its implementors cannot silently ignore.
+/// Extensible on purpose — construct with [`entry`](Self::entry) or [`any`](Self::any)
+/// and read fields rather than destructuring, so a new term costs no out-of-workspace
+/// authorizer a compile error.
+///
+/// Compiling is therefore not honoring, and the release notes carry what the compiler
+/// cannot: an authorizer that reads only the terms it knows keeps its previous answers,
+/// which is safe but silent. Every term here narrows the question, so ignoring one can
+/// only make an answer coarser than intended — never wider than the caller asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct GrantAuthorityCheck<'a> {
@@ -584,12 +642,30 @@ pub struct GrantAuthorityCheck<'a> {
 }
 
 impl<'a> GrantAuthorityCheck<'a> {
+    /// The question one diff entry asks: may the subject move `privilege` in direction
+    /// `op`, to — or, for a revoke, from — `grantee`?
     #[must_use]
-    pub fn new(privilege: &'a str, grantee: Option<&'a UserOrRoleId>, op: Option<GrantOp>) -> Self {
+    pub fn entry(privilege: &'a str, grantee: &'a UserOrRoleId, op: GrantOp) -> Self {
         Self {
             privilege,
-            grantee,
-            op,
+            grantee: Some(grantee),
+            op: Some(op),
+        }
+    }
+
+    /// A question naming neither grantee nor direction: has the subject authority over
+    /// `privilege` here at all? What the grantable-privileges endpoint asks — advisory,
+    /// since the apply path asks [`entry`](Self::entry) questions again per entry.
+    ///
+    /// The two constructors are the two questions anything asks. Terms are left out
+    /// together or not at all — a third combination would be a question no caller has,
+    /// which an authorizer would still have to decide how to answer.
+    #[must_use]
+    pub fn any(privilege: &'a str) -> Self {
+        Self {
+            privilege,
+            grantee: None,
+            op: None,
         }
     }
 }
@@ -703,8 +779,9 @@ pub(crate) async fn write_bootstrap_grants<C: CatalogStore, A: Authorizer>(
 ///
 /// They still have to reach the audit log: the backend derives its per-grant records from
 /// grant events, so a consumer mirroring them would otherwise never learn the creator
-/// holds anything. Emitted after the resource's own creation event, and spawned like it,
-/// so a listener's latency stays off the create path.
+/// holds anything. Spawned, like the resource's own creation event, so a listener's
+/// latency stays off the create path — and independent of it, so nothing orders which of
+/// the two a listener sees first.
 ///
 /// Announces no removals. That is exact for every create except re-registering a table
 /// that keeps its id, where the drop this write follows cascaded the old grants away
@@ -783,29 +860,129 @@ mod tests {
     #[test]
     fn forbidden_grant_is_a_403_that_does_not_name_the_resource() {
         let resource = GrantResource::Warehouse(WarehouseId::new_random());
-        let err = AuthZGrantActionForbidden::new(&resource, ["select"]).into_error_model();
+        let err = AuthZGrantActionForbidden::new(&resource, [(GrantOp::Grant, "select")])
+            .into_error_model();
         assert_eq!(err.code, 403);
         assert_eq!(err.r#type, "GrantActionForbidden");
         assert_eq!(
             err.message,
-            "Granting or revoking `select` on this warehouse is forbidden"
+            "Granting `select` on this warehouse is forbidden"
+        );
+    }
+
+    /// The refusal names the directions it is actually about, per privilege. A caller
+    /// refused only on one side must not be told the other is forbidden too — that
+    /// reading was free while authority was symmetric, and wrong as soon as an
+    /// authorizer separates the two.
+    #[test]
+    fn forbidden_grant_names_the_refused_directions() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let err = AuthZGrantActionForbidden::new(&resource, [(GrantOp::Revoke, "select")])
+            .into_error_model();
+        assert_eq!(
+            err.message,
+            "Revoking `select` on this warehouse is forbidden"
+        );
+
+        // Refused in different directions: each privilege sits under its own verb, so
+        // the message never claims a refusal that did not happen.
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [(GrantOp::Grant, "select"), (GrantOp::Revoke, "modify")],
+        )
+        .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `select` and revoking `modify` on this warehouse is forbidden"
+        );
+
+        // All three groups at once, reading as one sentence.
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [
+                (GrantOp::Grant, "select"),
+                (GrantOp::Revoke, "modify"),
+                (GrantOp::Grant, "ownership"),
+                (GrantOp::Revoke, "ownership"),
+            ],
+        )
+        .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `select`, revoking `modify` and granting or revoking `ownership` \
+             on this warehouse is forbidden"
         );
     }
 
     #[test]
     fn forbidden_grant_names_every_refused_privilege_bounded() {
         let resource = GrantResource::Warehouse(WarehouseId::new_random());
-        let err =
-            AuthZGrantActionForbidden::new(&resource, ["select", "modify"]).into_error_model();
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [(GrantOp::Grant, "select"), (GrantOp::Grant, "modify")],
+        )
+        .into_error_model();
         assert_eq!(
             err.message,
-            "Granting or revoking `select`, `modify` on this warehouse is forbidden"
+            "Granting `select`, `modify` on this warehouse is forbidden"
         );
-        let err = AuthZGrantActionForbidden::new(&resource, ["a", "b", "c", "d", "e", "f", "g"])
-            .into_error_model();
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            ["a", "b", "c", "d", "e", "f", "g"].map(|p| (GrantOp::Grant, p)),
+        )
+        .into_error_model();
         assert_eq!(
             err.message,
-            "Granting or revoking `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
+            "Granting `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
+        );
+    }
+
+    /// The name budget is shared across directions, so one direction can exhaust it and
+    /// leave the other's names in the count. Under-reporting *which* direction the tail
+    /// was refused in is the honest failure: the alternative — naming the budget's worth
+    /// under a verb covering both — would claim refusals that never happened. Pinned
+    /// because it is the one case where the message stops naming a direction it knows
+    /// about.
+    #[test]
+    fn forbidden_grant_lets_one_direction_exhaust_the_name_budget() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let refused = ["a", "b", "c", "d", "e"]
+            .map(|p| (GrantOp::Grant, p))
+            .into_iter()
+            .chain(["x", "y"].map(|p| (GrantOp::Revoke, p)));
+        let err = AuthZGrantActionForbidden::new(&resource, refused).into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `a`, `b`, `c`, `d`, `e` and 2 more on this warehouse is forbidden"
+        );
+
+        // One name left over, so the second direction is still named — and the count
+        // covers only what went unnamed.
+        let refused = ["a", "b", "c", "d"]
+            .map(|p| (GrantOp::Grant, p))
+            .into_iter()
+            .chain(["x", "y"].map(|p| (GrantOp::Revoke, p)));
+        let err = AuthZGrantActionForbidden::new(&resource, refused).into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting `a`, `b`, `c`, `d` and revoking `x` and 1 more on this warehouse \
+             is forbidden"
+        );
+    }
+
+    /// One privilege refused in both directions is named once, not twice: it sits under
+    /// the one verb that carries both directions.
+    #[test]
+    fn forbidden_grant_names_a_privilege_refused_both_ways_once() {
+        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let err = AuthZGrantActionForbidden::new(
+            &resource,
+            [(GrantOp::Grant, "select"), (GrantOp::Revoke, "select")],
+        )
+        .into_error_model();
+        assert_eq!(
+            err.message,
+            "Granting or revoking `select` on this warehouse is forbidden"
         );
     }
 

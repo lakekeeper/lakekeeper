@@ -17,6 +17,15 @@ use crate::{api::RequestMetadata, service::authz::GrantSpec};
 /// triple *is* the grant's identity — there is no grant id to reference, and a revoked
 /// grant is hard-deleted, so nothing remains to look up afterwards.
 ///
+/// Not every disappearance is announced. Grant rows are deleted by foreign key with the
+/// principal or resource they name, and only the user-deletion path turns that into an
+/// event — a deleted role, project, warehouse, namespace, tabular or tag definition takes
+/// its grants with it silently, traced by that resource's own deletion event. A listener
+/// mirroring grants must therefore treat a resource deletion as terminating the grants on
+/// it, rather than waiting for a `removed` entry that never comes. Announcing them would
+/// mean reading every affected row back before each delete, on paths that today delete a
+/// whole subtree in one statement.
+///
 /// `removed` is listed before `created` to match the order storage applies them: a diff
 /// that revokes and re-grants the same privilege ends granted.
 #[derive(Clone, Debug)]
