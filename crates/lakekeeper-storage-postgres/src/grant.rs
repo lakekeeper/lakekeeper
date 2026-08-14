@@ -603,17 +603,14 @@ fn rows_into_specs(
         .collect()
 }
 
-/// Insert grants into a transaction the caller opened for something else — the rows a
-/// resource is born with, written next to the resource itself.
+/// Insert grants into a transaction the caller opened for other work.
 ///
-/// Takes no advisory lock: that serialization exists for diffs that cross, and an insert
-/// with no delete side cannot cross one. It does bound the wait, because the insert's
-/// foreign keys take `FOR KEY SHARE` on the resource's parents — the warehouse, the
-/// tabular, the principal — and those conflict with any `FOR UPDATE` another handler holds
-/// on them across a network call. Unbounded, a create would queue behind such a handler
-/// holding a write-pool connection for as long as it runs; bounded, it fails with a typed
-/// retriable error. The reset keeps the bound off the caller's remaining statements, and
-/// on the error path the caller's transaction is doomed anyway.
+/// Takes no advisory lock: that serializes diffs which cross — each revoking what the
+/// other adds — and an insert with no delete side has nothing to cross. It does bound its
+/// wait, because the foreign keys take `FOR KEY SHARE` on the grant's resource and
+/// principal, and another handler may hold `FOR UPDATE` there across a network call;
+/// unbounded, the caller would queue behind it holding its own connection. The bound is
+/// reset so it governs nothing but this insert.
 pub(crate) async fn insert_grants_bounded(
     specs: &[GrantSpec],
     transaction: &mut Transaction<'_, Postgres>,
