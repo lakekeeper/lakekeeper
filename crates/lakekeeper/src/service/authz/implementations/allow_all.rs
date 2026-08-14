@@ -21,7 +21,7 @@ use crate::{
             AuthzBackendErrorOrBadRequest, CatalogAction, CatalogGenericTableAction,
             CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
             CatalogTableAction, CatalogTagAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantResource, IsAllowedActionError,
+            CatalogWarehouseAction, GrantAuthorityCheck, GrantTarget, IsAllowedActionError,
             ListProjectsResponse, NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
         },
         health::{Health, HealthExt},
@@ -286,7 +286,7 @@ impl Authorizer for AllowAllAuthorizer {
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _resource: &GrantResource,
+        _target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         Ok(vec![AuthorizationDecision::allow(); checks.len()])
@@ -544,13 +544,14 @@ mod tests {
     #[tokio::test]
     async fn grant_authority_is_allowed_for_every_privilege() {
         let authorizer = AllowAllAuthorizer::default();
-        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let warehouse = ResolvedWarehouse::new_random();
+        let target = GrantTarget::Warehouse(&warehouse);
         let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
         let decisions = authorizer
             .are_allowed_grants(
                 &RequestMetadata::new_unauthenticated(),
                 None,
-                &resource,
+                &target,
                 &[
                     GrantAuthorityCheck::entry("get_metadata", &bob, GrantOp::Grant),
                     GrantAuthorityCheck::any("not_a_privilege"),

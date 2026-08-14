@@ -37,11 +37,12 @@ mod grant {
             },
             server::CatalogServer,
             service::{
-                CatalogNamespaceOps as _, NamespaceId, State, UserId,
+                CatalogNamespaceOps as _, CatalogWarehouseOps as _, NamespaceId, ResolvedWarehouse,
+                State, UserId,
                 authn::Actor,
                 authz::{
                     AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantOp,
-                    GrantResource, ResourceType, UserOrRoleId,
+                    GrantResource, GrantTarget, ResourceType, UserOrRoleId,
                 },
             },
         };
@@ -73,6 +74,17 @@ mod grant {
                 .setup()
                 .await;
             (ctx, admin, warehouse.project_id, warehouse.warehouse_id)
+        }
+
+        /// The warehouse as the handlers resolve it before the gate: a grant target carries
+        /// the resource's ancestry, not its id, so an authorizer that resolves inheritance
+        /// itself can place it. This one reads inheritance from its own tuples and uses only
+        /// the id, which is why every test here can share one target.
+        async fn warehouse_target(ctx: &Ctx, warehouse_id: WarehouseId) -> Arc<ResolvedWarehouse> {
+            PostgresBackend::get_active_warehouse_by_id(warehouse_id, ctx.v1_state.catalog.clone())
+                .await
+                .expect("the setup's warehouse resolves")
+                .expect("the setup's warehouse is active")
         }
 
         fn metadata(user_id: &UserId, project_id: &ProjectId) -> RequestMetadata {
@@ -276,13 +288,14 @@ mod grant {
         async fn grant_authority_comes_from_the_can_grant_relations(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let authorizer = &ctx.v1_state.authz;
-            let resource = GrantResource::Warehouse(warehouse_id);
+            let warehouse = warehouse_target(&ctx, warehouse_id).await;
+            let target = GrantTarget::Warehouse(&warehouse);
 
             let as_admin = authorizer
                 .are_allowed_grants(
                     &metadata(&admin, &project_id),
                     None,
-                    &resource,
+                    &target,
                     &[check("select"), check("modify")],
                 )
                 .await
@@ -294,7 +307,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&nobody, &project_id),
                     None,
-                    &resource,
+                    &target,
                     &[check("select"), check("modify")],
                 )
                 .await
@@ -307,7 +320,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&admin, &project_id),
                     None,
-                    &resource,
+                    &target,
                     &[check("get_metadata")],
                 )
                 .await
@@ -325,7 +338,8 @@ mod grant {
         async fn grant_authority_repeats_one_answer_per_grantee(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let authorizer = &ctx.v1_state.authz;
-            let resource = GrantResource::Warehouse(warehouse_id);
+            let warehouse = warehouse_target(&ctx, warehouse_id).await;
+            let target = GrantTarget::Warehouse(&warehouse);
             let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
             let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
 
@@ -333,7 +347,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&admin, &project_id),
                     None,
-                    &resource,
+                    &target,
                     &[
                         GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
                         GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
@@ -350,7 +364,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&admin, &project_id),
                     None,
-                    &resource,
+                    &target,
                     &[
                         GrantAuthorityCheck::entry("get_metadata", &alice, GrantOp::Grant),
                         GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
@@ -367,7 +381,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&nobody, &project_id),
                     None,
-                    &resource,
+                    &target,
                     &[
                         GrantAuthorityCheck::entry("select", &alice, GrantOp::Grant),
                         GrantAuthorityCheck::entry("select", &bob, GrantOp::Grant),
@@ -537,13 +551,14 @@ mod grant {
 
             // The authority check itself denies rather than allowing wholesale, so the
             // vocabulary endpoint reports what an instance admin may really grant: nothing.
+            let warehouse = warehouse_target(&ctx, warehouse_id).await;
             let decisions = ctx
                 .v1_state
                 .authz
                 .are_allowed_grants(
                     &as_instance_admin,
                     None,
-                    &GrantResource::Warehouse(warehouse_id),
+                    &GrantTarget::Warehouse(&warehouse),
                     &[check("select"), check("modify")],
                 )
                 .await
@@ -577,7 +592,8 @@ mod grant {
         async fn answering_for_another_principal_needs_the_read_gate(pool: PgPool) {
             let (ctx, admin, project_id, warehouse_id) = setup(pool).await;
             let authorizer = &ctx.v1_state.authz;
-            let resource = GrantResource::Warehouse(warehouse_id);
+            let warehouse = warehouse_target(&ctx, warehouse_id).await;
+            let target = GrantTarget::Warehouse(&warehouse);
             let bob = UserId::new_unchecked("oidc", "bob");
             let for_bob = lakekeeper::service::authz::UserOrRole::User(bob.clone());
 
@@ -586,7 +602,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&admin, &project_id),
                     Some(&for_bob),
-                    &resource,
+                    &target,
                     &[check("select")],
                 )
                 .await
@@ -600,7 +616,7 @@ mod grant {
                 .are_allowed_grants(
                     &metadata(&nobody, &project_id),
                     Some(&for_bob),
-                    &resource,
+                    &target,
                     &[check("select")],
                 )
                 .await

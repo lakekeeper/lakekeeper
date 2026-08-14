@@ -1866,7 +1866,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -1877,7 +1877,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -3100,7 +3100,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -3111,7 +3111,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -3629,7 +3629,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -3640,7 +3640,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -4604,7 +4604,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -4615,7 +4615,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -5038,7 +5038,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -5049,7 +5049,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -5330,7 +5330,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -5341,7 +5341,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -6380,7 +6380,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -6391,7 +6391,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -7229,7 +7229,7 @@ paths:
         - name: principalUser
           in: query
           description: |-
-            Report which privileges this user may grant, instead of the caller. Requires
+            Report which privileges this user may administer, instead of the caller. Requires
             authority to read the resource's grants, since it discloses another principal's
             access. Mutually exclusive with `principalRole`.
           required: false
@@ -7240,7 +7240,7 @@ paths:
         - name: principalRole
           in: query
           description: |-
-            Report which privileges this role may grant, instead of the caller. Same
+            Report which privileges this role may administer, instead of the caller. Same
             authority requirement as `principalUser`, and mutually exclusive with it.
           required: false
           schema:
@@ -9611,7 +9611,7 @@ components:
           $ref: '#/components/schemas/GrantResourceResponse'
     GrantablePrivilege:
       type: object
-      description: One privilege of a resource's vocabulary, and whether the principal may grant it.
+      description: One privilege of a resource's vocabulary, and whether the principal may administer it.
       required:
         - privilege
         - allowed
@@ -13156,7 +13156,7 @@ components:
       type: object
       description: |-
         This resource's whole vocabulary, each entry marked with whether the principal may
-        grant it.
+        administer it — grant it, revoke it, or both.
 
         The deployment-wide vocabulary answers "what does this server understand"; this
         answers "what may I do here", which is the question a grant dialog asks. Grant

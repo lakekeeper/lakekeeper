@@ -2052,12 +2052,16 @@ where
     /// destined for and which way it would move. Whether either changes the answer is the
     /// authorizer's business; either way, return one decision per check, in order.
     ///
+    /// `target` carries the resource's resolved ancestry, not just its id, so an authorizer
+    /// that resolves inheritance itself can place the resource in its hierarchy — see
+    /// [`GrantTarget`].
+    ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(
         &self,
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
-        _resource: &GrantResource,
+        _target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         Ok(vec![AuthorizationDecision::deny(); checks.len()])
@@ -2235,7 +2239,7 @@ pub mod tests {
             .are_allowed_grants(
                 &md,
                 None,
-                &GrantResource::Server,
+                &GrantTarget::Server,
                 &[
                     GrantAuthorityCheck::any("admin"),
                     GrantAuthorityCheck::entry("select", &alice, GrantOp::Revoke),
@@ -3135,7 +3139,7 @@ pub mod tests {
             &self,
             _metadata: &RequestMetadata,
             _for_user: Option<&UserOrRole>,
-            _resource: &GrantResource,
+            _target: &GrantTarget<'_>,
             checks: &[GrantAuthorityCheck<'_>],
         ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
             // Authority over a direction, and only when the caller names one: a question

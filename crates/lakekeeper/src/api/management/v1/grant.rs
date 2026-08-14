@@ -72,8 +72,8 @@ use crate::{
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
             CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp, GrantResource,
-            GrantRow, GrantSpec, PrivilegeDescriptor, RequireTagActionError, ResourceType,
-            UserOrRole as AuthzUserOrRole, UserOrRoleId,
+            GrantRow, GrantSpec, GrantTarget, PrivilegeDescriptor, RequireTagActionError,
+            ResourceType, UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
             APIEventContext, GrantsChangedEvent,
@@ -348,7 +348,7 @@ impl axum::response::IntoResponse for GrantablePrivilegesResponse {
     }
 }
 
-/// One privilege of a resource's vocabulary, and whether the principal may grant it.
+/// One privilege of a resource's vocabulary, and whether the principal may administer it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "open-api", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
@@ -365,7 +365,7 @@ pub struct GrantablePrivilege {
 }
 
 /// This resource's whole vocabulary, each entry marked with whether the principal may
-/// grant it.
+/// administer it — grant it, revoke it, or both.
 ///
 /// The deployment-wide vocabulary answers "what does this server understand"; this
 /// answers "what may I do here", which is the question a grant dialog asks. Grant
@@ -477,13 +477,13 @@ fn principal_from_params(
 #[cfg_attr(feature = "open-api", derive(utoipa::IntoParams))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetGrantAccessQuery {
-    /// Report which privileges this user may grant, instead of the caller. Requires
+    /// Report which privileges this user may administer, instead of the caller. Requires
     /// authority to read the resource's grants, since it discloses another principal's
     /// access. Mutually exclusive with `principalRole`.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<String>))]
     pub principal_user: Option<UserId>,
-    /// Report which privileges this role may grant, instead of the caller. Same
+    /// Report which privileges this role may administer, instead of the caller. Same
     /// authority requirement as `principalUser`, and mutually exclusive with it.
     #[serde(default)]
     #[cfg_attr(feature = "open-api", param(required = false, value_type = Option<uuid::Uuid>))]
@@ -776,7 +776,7 @@ fn refused_privileges<'a>(
 async fn require_grant_authority<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
-    resource: &GrantResource,
+    target: &GrantTarget<'_>,
     request: &ApplyGrantsRequest,
 ) -> std::result::Result<(), AuthZError> {
     // Materialized first so each check can borrow its grantee: the request carries the
@@ -787,18 +787,18 @@ async fn require_grant_authority<A: Authorizer>(
         .map(|(grantee, privilege, op)| GrantAuthorityCheck::entry(privilege, grantee, *op))
         .collect();
     let decisions = authorizer
-        .are_allowed_grants(metadata, None, resource, &checks)
+        .are_allowed_grants(metadata, None, target, &checks)
         .await?;
     // Every refused privilege is named, matching the validation errors above: one round
     // trip should surface everything the caller must remove.
     let refused = refused_privileges(&questions, &decisions);
     if !refused.is_empty() {
-        return Err(AuthZGrantActionForbidden::new(resource, refused).into());
+        return Err(AuthZGrantActionForbidden::new(&target.resource(), refused).into());
     }
     Ok(())
 }
 
-/// The vocabulary entries the principal may grant on `resource`.
+/// The vocabulary entries the principal may administer on `target`.
 ///
 /// One batch call, so eight or nine privileges cost one round trip to the authorizer.
 ///
@@ -810,9 +810,9 @@ async fn allowed_privileges<A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
     for_user: Option<AuthzUserOrRole>,
-    resource: &GrantResource,
+    target: &GrantTarget<'_>,
 ) -> std::result::Result<Vec<GrantablePrivilege>, AuthZError> {
-    let vocabulary = authorizer.grantable_privileges(resource.resource_type());
+    let vocabulary = authorizer.grantable_privileges(target.resource_type());
     // Neither grantee nor direction: this asks whether the subject has authority over each
     // privilege here at all. Advisory - the apply path asks again per entry - so an
     // authorizer that distinguishes them need not enumerate anyone to answer.
@@ -821,7 +821,7 @@ async fn allowed_privileges<A: Authorizer>(
         .map(|privilege| GrantAuthorityCheck::any(privilege.name.as_str()))
         .collect();
     let decisions = authorizer
-        .are_allowed_grants(request_metadata, for_user.as_ref(), resource, &checks)
+        .are_allowed_grants(request_metadata, for_user.as_ref(), target, &checks)
         .await?;
     Ok(vocabulary
         .iter()
@@ -1273,7 +1273,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = require_grant_authority(
             &authorizer,
             event_ctx.request_metadata(),
-            &resource,
+            &GrantTarget::Server,
             &request,
         )
         .await;
@@ -1355,7 +1355,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = require_grant_authority(
             &authorizer,
             event_ctx.request_metadata(),
-            &resource,
+            &GrantTarget::Project(&project_id),
             &request,
         )
         .await;
@@ -1475,12 +1475,16 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 )
             );
             let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-            authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Namespace {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                },
                 &request,
             )
             .await
@@ -1607,11 +1611,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = async {
             let definition =
                 C::get_tag_definition(&project_id, tag_definition_id, catalog_state.clone()).await;
-            authorizer.require_tag_presence(tag_definition_id, definition)?;
+            let definition = authorizer.require_tag_presence(tag_definition_id, definition)?;
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Tag(&definition),
                 &request,
             )
             .await
@@ -1724,7 +1728,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let authz_result = async {
             // Presence only, as at every other level: grant authority is its own
             // right, so requiring a table action too would be a second, wrong gate.
-            let (warehouse, _, _) =
+            let (warehouse, namespace, table) =
                 crate::service::authz::fetch_warehouse_namespace_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -1737,7 +1741,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Table {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    table: &table,
+                },
                 &request,
             )
             .await
@@ -1848,7 +1856,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ApplyGrants::of(&request),
         );
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, view) =
                 crate::service::authz::fetch_warehouse_namespace_view_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -1861,7 +1869,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::View {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    view: &view,
+                },
                 &request,
             )
             .await
@@ -1972,7 +1984,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             ApplyGrants::of(&request),
         );
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, generic_table) =
                 crate::service::authz::fetch_warehouse_namespace_generic_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -1985,7 +1997,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::GenericTable {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    generic_table: &generic_table,
+                },
                 &request,
             )
             .await
@@ -2051,7 +2067,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             require_grant_authority(
                 &authorizer,
                 event_ctx.request_metadata(),
-                &resource,
+                &GrantTarget::Warehouse(&resolved),
                 &request,
             )
             .await
@@ -2076,7 +2092,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await
     }
-    /// Which server privileges the caller may grant.
+    /// Which server privileges the caller may administer.
     async fn get_server_grantable_privileges(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -2085,7 +2101,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Server;
 
         let mut event_ctx = APIEventContext::for_server(
             request_metadata.into(),
@@ -2111,7 +2126,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Server,
             )
             .await
         }
@@ -2122,7 +2137,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which project privileges the caller may grant in the request's project.
+    /// Which project privileges the caller may administer in the request's project.
     async fn get_project_grantable_privileges(
         context: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -2132,7 +2147,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Project((*project_id).clone());
 
         let mut event_ctx = APIEventContext::for_project(
             request_metadata.into(),
@@ -2158,7 +2172,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Project(&project_id),
             )
             .await
         }
@@ -2169,7 +2183,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which warehouse privileges the caller may grant on a warehouse.
+    /// Which warehouse privileges the caller may administer on a warehouse.
     async fn get_warehouse_grantable_privileges(
         warehouse_id: WarehouseId,
         context: ApiContext<State<A, C, S>>,
@@ -2180,7 +2194,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Warehouse(warehouse_id);
 
         let mut event_ctx = APIEventContext::for_warehouse(
             request_metadata.into(),
@@ -2208,7 +2221,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_warehouse_action(
                         event_ctx.request_metadata(),
                         warehouse_id,
-                        Ok(Some(resolved)),
+                        Ok(Some(resolved.clone())),
                         CatalogWarehouseAction::ReadGrants,
                     )
                     .await?;
@@ -2217,7 +2230,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Warehouse(&resolved),
             )
             .await
         }
@@ -2228,7 +2241,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which namespace privileges the caller may grant on a namespace.
+    /// Which namespace privileges the caller may administer on a namespace.
     async fn get_namespace_grantable_privileges(
         warehouse_id: WarehouseId,
         namespace_id: NamespaceId,
@@ -2240,10 +2253,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Namespace {
-            warehouse_id,
-            namespace_id,
-        };
 
         let mut event_ctx = APIEventContext::for_namespace(
             request_metadata.into(),
@@ -2266,7 +2275,8 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 )
             );
             let warehouse = authorizer.require_warehouse_presence(warehouse_id, warehouse)?;
-            authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
+            let namespace =
+                authorizer.require_namespace_presence(warehouse_id, namespace_id, namespace)?;
             ensure_warehouse_in_project(warehouse_id, &warehouse.project_id, &project_id)?;
             let for_user = resolve_principal::<C>(for_user_api, catalog_state.clone()).await?;
             if grant_read_is_delegated(for_user.as_ref(), event_ctx.request_metadata()) {
@@ -2284,7 +2294,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Namespace {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                },
             )
             .await
         }
@@ -2295,7 +2308,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which table privileges the caller may grant on a table.
+    /// Which table privileges the caller may administer on a table.
     async fn get_table_grantable_privileges(
         warehouse_id: WarehouseId,
         table_id: TableId,
@@ -2307,10 +2320,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Table {
-            warehouse_id,
-            table_id,
-        };
 
         let mut event_ctx = APIEventContext::for_table(
             request_metadata.into(),
@@ -2323,7 +2332,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx;
 
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, table) =
                 crate::service::authz::fetch_warehouse_namespace_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -2349,7 +2358,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Table {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    table: &table,
+                },
             )
             .await
         }
@@ -2360,7 +2373,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which view privileges the caller may grant on a view.
+    /// Which view privileges the caller may administer on a view.
     async fn get_view_grantable_privileges(
         warehouse_id: WarehouseId,
         view_id: ViewId,
@@ -2372,10 +2385,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::View {
-            warehouse_id,
-            view_id,
-        };
 
         let mut event_ctx = APIEventContext::for_view(
             request_metadata.into(),
@@ -2388,7 +2397,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx;
 
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, view) =
                 crate::service::authz::fetch_warehouse_namespace_view_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -2414,7 +2423,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::View {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    view: &view,
+                },
             )
             .await
         }
@@ -2425,7 +2438,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which generic-table privileges the caller may grant on a generic table.
+    /// Which generic-table privileges the caller may administer on a generic table.
     async fn get_generic_table_grantable_privileges(
         warehouse_id: WarehouseId,
         generic_table_id: GenericTableId,
@@ -2437,10 +2450,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::GenericTable {
-            warehouse_id,
-            generic_table_id,
-        };
 
         let mut event_ctx = APIEventContext::for_generic_table(
             request_metadata.into(),
@@ -2453,7 +2462,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let event_ctx = event_ctx;
 
         let authz_result = async {
-            let (warehouse, _, _) =
+            let (warehouse, namespace, generic_table) =
                 crate::service::authz::fetch_warehouse_namespace_generic_table_by_id::<C, A>(
                     &authorizer,
                     warehouse_id,
@@ -2479,7 +2488,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::GenericTable {
+                    warehouse: &warehouse,
+                    namespace: &namespace,
+                    generic_table: &generic_table,
+                },
             )
             .await
         }
@@ -2490,7 +2503,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         })
     }
 
-    /// Which tag privileges the caller may grant on a tag definition.
+    /// Which tag privileges the caller may administer on a tag definition.
     async fn get_tag_grantable_privileges(
         tag_definition_id: TagDefinitionId,
         context: ApiContext<State<A, C, S>>,
@@ -2501,7 +2514,6 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         let for_user_api = query.try_principal()?;
         let authorizer = context.v1_state.authz;
         let catalog_state = context.v1_state.catalog;
-        let resource = GrantResource::Tag(tag_definition_id);
 
         let mut event_ctx = APIEventContext::for_tag(
             request_metadata.into(),
@@ -2522,7 +2534,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .require_tag_action(
                         event_ctx.request_metadata(),
                         tag_definition_id,
-                        Ok(Some(definition)),
+                        Ok(Some(definition.clone())),
                         CatalogTagAction::ReadGrants,
                     )
                     .await?;
@@ -2531,7 +2543,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 &authorizer,
                 event_ctx.request_metadata(),
                 for_user,
-                &resource,
+                &GrantTarget::Tag(&definition),
             )
             .await
         }
@@ -2706,12 +2718,12 @@ mod tests {
         // the grant surface, so `are_allowed_grants` takes the fail-closed default.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let warehouse = crate::service::ResolvedWarehouse::new_random();
 
         let err = require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Warehouse(&warehouse),
             &write_request(&["get_metadata"]),
         )
         .await
@@ -2733,12 +2745,11 @@ mod tests {
         // everything the caller must remove — matching the validation errors.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Server;
 
         let err = require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Server,
             &write_request(&["provision_users", "list_users"]),
         )
         .await
@@ -2789,7 +2800,7 @@ mod tests {
             deletes: vec![entry("modify", alice())],
         };
 
-        let err = require_grant_authority(&authorizer, &metadata, &GrantResource::Server, &request)
+        let err = require_grant_authority(&authorizer, &metadata, &GrantTarget::Server, &request)
             .await
             .expect_err("granting is not this authorizer's to allow")
             .into_error_model();
@@ -2843,13 +2854,12 @@ mod tests {
         // refused for two principals is named once, and still in request order.
         let authorizer = HidingAuthorizer::new();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Server;
         let role = UserOrRole::Role(RoleAssignee::from_role(RoleId::new_random()));
 
         let err = require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Server,
             &ApplyGrantsRequest {
                 writes: vec![
                     entry("provision_users", alice()),
@@ -2874,12 +2884,12 @@ mod tests {
         // The control case: the same gate, the same request, an allow-all authorizer.
         let authorizer = AllowAllAuthorizer::default();
         let metadata = RequestMetadataTestBuilder::builder().build();
-        let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let warehouse = crate::service::ResolvedWarehouse::new_random();
 
         require_grant_authority(
             &authorizer,
             &metadata,
-            &resource,
+            &GrantTarget::Warehouse(&warehouse),
             &write_request(&["get_metadata", "list_namespaces"]),
         )
         .await

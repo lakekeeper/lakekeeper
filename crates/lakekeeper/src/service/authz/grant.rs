@@ -33,8 +33,9 @@ use super::{
 use crate::{
     api::{RequestMetadata, iceberg::v1::PaginationQuery},
     service::{
-        ApplyGrantsStoreError, CatalogStore, GenericTableId, NamespaceId, ProjectId, TableId,
-        TagDefinitionId, Transaction, ViewId, WarehouseId,
+        ApplyGrantsStoreError, CatalogStore, GenericTableId, GenericTabularInfo,
+        NamespaceHierarchy, NamespaceId, ProjectId, ResolvedWarehouse, TableId, TableInfo,
+        TagDefinition, TagDefinitionId, Transaction, ViewId, ViewInfo, WarehouseId,
         events::{
             EventDispatcher, GrantsChangedEvent,
             types::authorization::{AuthorizationFailureReason, AuthorizationFailureSource},
@@ -182,6 +183,101 @@ impl GrantResource {
             | GrantResource::View { warehouse_id, .. }
             | GrantResource::GenericTable { warehouse_id, .. } => Some(*warehouse_id),
             GrantResource::Server | GrantResource::Project(_) | GrantResource::Tag(_) => None,
+        }
+    }
+}
+
+/// A grant's resource together with the ancestry needed to decide authority on it.
+///
+/// [`GrantResource`] names a resource; this places it. Each variant carries what that
+/// level's `are_allowed_*_actions` check already takes, so an authorizer answers a grant
+/// question against the same entities it answers an action question against — a policy
+/// written against a project covers the warehouses beneath it either way. Ids alone cannot
+/// do that: an authorizer resolving inheritance itself has nothing to hang a bare
+/// [`WarehouseId`] under.
+///
+/// Borrowed rather than owned, and nothing here is fetched for the authorizer's benefit:
+/// every handler resolves this chain before the gate anyway, to establish that the resource
+/// exists at all.
+#[derive(Debug, Clone, Copy)]
+pub enum GrantTarget<'a> {
+    Server,
+    Project(&'a ProjectId),
+    Warehouse(&'a ResolvedWarehouse),
+    Namespace {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+    },
+    Table {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        table: &'a TableInfo,
+    },
+    View {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        view: &'a ViewInfo,
+    },
+    GenericTable {
+        warehouse: &'a ResolvedWarehouse,
+        namespace: &'a NamespaceHierarchy,
+        generic_table: &'a GenericTabularInfo,
+    },
+    Tag(&'a TagDefinition),
+}
+
+impl GrantTarget<'_> {
+    /// The resource a grant on this target is held on: what gets stored, listed and
+    /// announced. Derived rather than passed alongside, so the placed and named forms
+    /// cannot disagree.
+    #[must_use]
+    pub fn resource(&self) -> GrantResource {
+        match self {
+            GrantTarget::Server => GrantResource::Server,
+            GrantTarget::Project(project_id) => GrantResource::Project((*project_id).clone()),
+            GrantTarget::Warehouse(warehouse) => GrantResource::Warehouse(warehouse.warehouse_id),
+            GrantTarget::Namespace {
+                warehouse,
+                namespace,
+            } => GrantResource::Namespace {
+                warehouse_id: warehouse.warehouse_id,
+                namespace_id: namespace.namespace.namespace_id(),
+            },
+            GrantTarget::Table {
+                warehouse, table, ..
+            } => GrantResource::Table {
+                warehouse_id: warehouse.warehouse_id,
+                table_id: table.tabular_id,
+            },
+            GrantTarget::View {
+                warehouse, view, ..
+            } => GrantResource::View {
+                warehouse_id: warehouse.warehouse_id,
+                view_id: view.tabular_id,
+            },
+            GrantTarget::GenericTable {
+                warehouse,
+                generic_table,
+                ..
+            } => GrantResource::GenericTable {
+                warehouse_id: warehouse.warehouse_id,
+                generic_table_id: generic_table.tabular_id,
+            },
+            GrantTarget::Tag(definition) => GrantResource::Tag(definition.tag_definition_id),
+        }
+    }
+
+    #[must_use]
+    pub fn resource_type(&self) -> ResourceType {
+        match self {
+            GrantTarget::Server => ResourceType::Server,
+            GrantTarget::Project(_) => ResourceType::Project,
+            GrantTarget::Warehouse(_) => ResourceType::Warehouse,
+            GrantTarget::Namespace { .. } => ResourceType::Namespace,
+            GrantTarget::Table { .. } => ResourceType::Table,
+            GrantTarget::View { .. } => ResourceType::View,
+            GrantTarget::GenericTable { .. } => ResourceType::GenericTable,
+            GrantTarget::Tag(_) => ResourceType::Tag,
         }
     }
 }
@@ -675,8 +771,8 @@ impl<'a> GrantAuthorityCheck<'a> {
 /// [`are_allowed_grants_impl`](Authorizer::are_allowed_grants_impl) instead.
 #[async_trait::async_trait]
 pub trait AuthZGrantOps: Authorizer {
-    /// May the actor (or `for_user`, when given) administer each of `checks` on
-    /// `resource`? Returns exactly one decision per check, in order.
+    /// May the actor (or `for_user`, when given) administer each of `checks` on `target`?
+    /// Returns exactly one decision per check, in order.
     ///
     /// Grant *authority* is resolved here rather than modelled as a `Catalog*Action`
     /// because the privilege is a name from this authorizer's own vocabulary: it cannot
@@ -690,7 +786,7 @@ pub trait AuthZGrantOps: Authorizer {
         &self,
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
-        resource: &GrantResource,
+        target: &GrantTarget<'_>,
         checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Naming yourself asks the same question as naming nobody, so it must not trip
@@ -705,7 +801,7 @@ pub trait AuthZGrantOps: Authorizer {
         // by writing the very records its own permission API refuses them. Instance
         // admins provision; they do not administer permissions.
         let decisions = self
-            .are_allowed_grants_impl(metadata, for_user, resource, checks)
+            .are_allowed_grants_impl(metadata, for_user, target, checks)
             .await?;
         // Callers zip decisions against the checks, and `zip` stops at the shorter side —
         // a short vector would silently authorize the tail rather than deny it.
