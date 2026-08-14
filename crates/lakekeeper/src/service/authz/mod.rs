@@ -1984,13 +1984,21 @@ where
     /// makes the role the owner — the same identity [`AuthZGrantOps::are_allowed_grants`]
     /// folds to `None`. An anonymous create leaves no rows.
     ///
-    /// Names should come from [`Self::grantable_privileges`]: one outside it still lands
-    /// and stays revocable, but listings mark it unrecognized. A name here is a
-    /// commitment that the creator can be *given* it — the write fails, and with it the
-    /// create, if the acting user has no user record yet.
+    /// Names should come from [`Self::grantable_privileges`]. One outside it is stored
+    /// and returned verbatim like any other name, but listings mark it unrecognized, and
+    /// revoking it needs [`AuthZGrantOps::are_allowed_grants`] to answer for a name the
+    /// authorizer does not know — which an enforcing one refuses, leaving the row
+    /// unrevocable through the API.
+    ///
+    /// A name here is also a commitment that the creator can be *given* it: the write,
+    /// and with it the create, fails if the acting user has no user record yet. That is
+    /// deliberate — a resource nobody owns is worse than a rejected create.
+    ///
+    /// [`ResourceType::Server`] is consulted when the server is bootstrapped; every
+    /// other type when a resource of it is created.
     ///
     /// The default is empty: creation confers nothing unless an authorizer opts in.
-    fn bootstrap_grants(&self, _resource_type: ResourceType) -> &'static [&'static str] {
+    fn bootstrap_grants(&self, _resource_type: ResourceType) -> &[&str] {
         &[]
     }
 
@@ -2965,9 +2973,9 @@ pub mod tests {
         /// but cannot override global hides. See [`Self::check_available_for_user`].
         hidden_for_user: Arc<RwLock<HashMap<String, HashSet<String>>>>,
         server_id: ServerId,
-        /// What creation confers, for tests that exercise the catalog grant arm.
-        /// Empty by default, so no test gains grant rows it did not ask for.
-        bootstrap: &'static [&'static str],
+        /// What creation confers per resource type, for tests that exercise the catalog
+        /// grant arm. Empty by default, so no test gains grant rows it did not ask for.
+        bootstrap: &'static [(ResourceType, &'static [&'static str])],
     }
 
     impl Default for HidingAuthorizer {
@@ -2988,9 +2996,13 @@ pub mod tests {
             }
         }
 
-        /// Make creation confer `privileges` as catalog grant rows.
+        /// Make creation confer privileges as catalog grant rows, per resource type.
+        /// A type absent from `privileges` confers nothing.
         #[must_use]
-        pub fn with_bootstrap_grants(mut self, privileges: &'static [&'static str]) -> Self {
+        pub fn with_bootstrap_grants(
+            mut self,
+            privileges: &'static [(ResourceType, &'static [&'static str])],
+        ) -> Self {
             self.bootstrap = privileges;
             self
         }
@@ -3100,8 +3112,11 @@ pub mod tests {
             self.server_id
         }
 
-        fn bootstrap_grants(&self, _resource_type: ResourceType) -> &'static [&'static str] {
+        fn bootstrap_grants(&self, resource_type: ResourceType) -> &[&str] {
             self.bootstrap
+                .iter()
+                .find(|(declared_for, _)| *declared_for == resource_type)
+                .map_or(&[], |(_, privileges)| *privileges)
         }
 
         #[cfg(feature = "open-api")]

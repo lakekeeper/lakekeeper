@@ -4024,6 +4024,7 @@ dependencies = [
  "anyhow",
  "assert-json-diff",
  "async-channel 2.5.0",
+ "async-trait",
  "aws-sdk-s3",
  "bytes",
  "chrono",

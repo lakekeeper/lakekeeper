@@ -44,9 +44,9 @@ use crate::{
             AuthZProjectOps, AuthZTableOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogTableAction, CatalogViewAction, CatalogWarehouseAction, GrantResource,
-            InstanceAdminAction, InstanceAdminAuthorizer,
+            InstanceAdminAction, InstanceAdminAuthorizer, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
-        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{
@@ -62,7 +62,6 @@ use crate::{
             CancelTasksFilter, TaskQueueName, tabular_expiration_queue::TabularExpirationTask,
         },
         warehouse_cache::warehouse_cache_invalidate,
-        write_bootstrap_grants,
     },
 };
 
@@ -551,7 +550,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             )
             .await?;
 
-        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
             &authorizer,
             request_metadata,
             &GrantResource::Warehouse(resolved_warehouse.warehouse_id),
@@ -561,14 +560,14 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         transaction.commit().await?;
 
-        emit_bootstrap_grants(
-            event_ctx.dispatcher(),
-            event_ctx.request_metadata_arc(),
-            bootstrap_grants,
-        )
-        .await;
+        // Held across the create event below, which consumes the context: the grants are
+        // announced after the warehouse they are on.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
 
         event_ctx.emit_warehouse_created(resolved_warehouse.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         let response =
             GetWarehouseResponse::from_resolved((*resolved_warehouse).clone(), credential_type);

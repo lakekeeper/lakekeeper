@@ -31,8 +31,10 @@ use crate::{
     service::{
         AllowedFormatVersions, CachePolicy, CatalogIdempotencyOps, CatalogStore, CatalogTableOps,
         State, TableCreation, TableId, TabularId, TabularListFlags, Transaction,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource},
-        emit_bootstrap_grants,
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
+        },
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
@@ -40,7 +42,6 @@ use crate::{
         idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::{StoragePermissions, ValidationError, credential_revalidate_after_ms},
-        write_bootstrap_grants,
     },
 };
 
@@ -403,7 +404,7 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
 
     // Grants the table is born with, in the transaction that creates it: they reference
     // a table no other transaction can see yet.
-    let bootstrap_grants = write_bootstrap_grants::<A, C>(
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
         &authorizer,
         &request_metadata,
         &GrantResource::Table {
@@ -439,12 +440,10 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
     // Commit transaction
     t.commit().await?;
 
-    emit_bootstrap_grants(
-        event_ctx.dispatcher(),
-        event_ctx.request_metadata_arc(),
-        bootstrap_grants,
-    )
-    .await;
+    // Held across the create event below, which consumes the context: the grants are
+    // announced after the table they are on.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
 
     // If a staged table was overwritten, delete it from authorizer
     if let Some(staged_table_id) = staged_table_id {
@@ -462,6 +461,8 @@ async fn create_table_inner<C: CatalogStore, A: Authorizer + Clone, S: SecretSto
         table.name,
         Arc::new(request),
     );
+
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     Ok(load_table_result)
 }

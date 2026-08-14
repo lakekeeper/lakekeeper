@@ -603,6 +603,36 @@ fn rows_into_specs(
         .collect()
 }
 
+/// Insert grants into a transaction the caller opened for something else — the rows a
+/// resource is born with, written next to the resource itself.
+///
+/// Takes no advisory lock: that serialization exists for diffs that cross, and an insert
+/// with no delete side cannot cross one. It does bound the wait, because the insert's
+/// foreign keys take `FOR KEY SHARE` on the resource's parents — the warehouse, the
+/// tabular, the principal — and those conflict with any `FOR UPDATE` another handler holds
+/// on them across a network call. Unbounded, a create would queue behind such a handler
+/// holding a write-pool connection for as long as it runs; bounded, it fails with a typed
+/// retriable error. The reset keeps the bound off the caller's remaining statements, and
+/// on the error path the caller's transaction is doomed anyway.
+pub(crate) async fn insert_grants_bounded(
+    specs: &[GrantSpec],
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query("SET LOCAL lock_timeout = '3s'")
+        .execute(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    let created = insert_grants(specs, transaction).await?;
+    sqlx::query("SET LOCAL lock_timeout = DEFAULT")
+        .execute(&mut **transaction)
+        .await
+        .map_err(DBErrorHandler::into_catalog_backend_error)?;
+    Ok(created)
+}
+
 /// Insert `specs`, ignoring grants that already exist. Returns the grants actually
 /// created.
 pub(crate) async fn insert_grants(
@@ -1889,10 +1919,10 @@ mod tests {
         }
     }
 
-    /// The bootstrap write shares its transaction with a resource create, so it must
-    /// leave that transaction's settings alone. The diff path sets a transaction-local
-    /// `lock_timeout` — asserted here as the contrast — which every create would
-    /// otherwise inherit for the rest of its work.
+    /// The bootstrap write shares its transaction with a resource create, so the bound it
+    /// needs for its own foreign-key waits must not outlive it. The diff path sets the
+    /// same transaction-local `lock_timeout` and deliberately keeps it — asserted here as
+    /// the contrast.
     #[sqlx::test]
     async fn bootstrapping_grants_leaves_the_transaction_settings_alone(pool: PgPool) {
         let state = CatalogState::from_pools(pool.clone(), pool.clone());
@@ -1901,7 +1931,7 @@ mod tests {
         let spec = user_spec(&user, GrantResource::Warehouse(warehouse_id), "ownership");
 
         let mut txn = pool.begin().await.unwrap();
-        let created = insert_grants(std::slice::from_ref(&spec), &mut txn)
+        let created = insert_grants_bounded(std::slice::from_ref(&spec), &mut txn)
             .await
             .unwrap();
         assert_eq!(created, vec![spec.clone()]);
@@ -1913,7 +1943,7 @@ mod tests {
 
         // Re-running the same bootstrap creates nothing: a replayed create, or a
         // re-registered table that kept its id, must not double-grant.
-        let again = insert_grants(std::slice::from_ref(&spec), &mut txn)
+        let again = insert_grants_bounded(std::slice::from_ref(&spec), &mut txn)
             .await
             .unwrap();
         assert_eq!(again, Vec::new());

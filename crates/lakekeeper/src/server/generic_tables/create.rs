@@ -20,14 +20,15 @@ use crate::{
         CachePolicy, CatalogGenericTableOps, CatalogIdempotencyOps, CatalogStore,
         GenericTableCreation, GenericTableId, Result, SecretStore, State, TabularId, Transaction,
         WarehouseId,
-        authz::{Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource},
-        emit_bootstrap_grants,
+        authz::{
+            Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, GrantResource,
+            emit_bootstrap_grants_async, write_bootstrap_grants,
+        },
         events::{
             APIEventContext,
             context::{ResolvedNamespace, UserProvidedNamespace},
         },
         idempotency::IdempotencyInfo,
-        write_bootstrap_grants,
     },
 };
 
@@ -290,7 +291,7 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
         .await?;
     guard.mark_authorizer_created();
 
-    let bootstrap_grants = write_bootstrap_grants::<A, C>(
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
         authorizer,
         request_metadata,
         &GrantResource::GenericTable {
@@ -323,12 +324,10 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
 
     t.commit().await?;
 
-    emit_bootstrap_grants(
-        event_ctx.dispatcher(),
-        event_ctx.request_metadata_arc(),
-        bootstrap_grants,
-    )
-    .await;
+    // Held across the create event below, which consumes the context: the grants are
+    // announced after the table they are on.
+    let grant_dispatcher = event_ctx.dispatcher().clone();
+    let grant_request_metadata = event_ctx.request_metadata_arc();
 
     let info = Arc::new(info);
     let response = LoadGenericTableResponse {
@@ -347,6 +346,8 @@ async fn create_generic_table_inner<C: CatalogStore, A: Authorizer + Clone, S: S
     };
 
     event_ctx.emit_generic_table_created_async(info, Arc::new(request.clone()));
+
+    emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
     Ok(response)
 }

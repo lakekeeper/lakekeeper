@@ -31,9 +31,9 @@ use crate::{
         authz::{
             AuthZProjectOps, AuthZServerOps, Authorizer, AuthzWarehouseOps, CatalogProjectAction,
             CatalogServerAction, CatalogWarehouseAction, GrantResource,
-            ListProjectsResponse as AuthZListProjectsResponse,
+            ListProjectsResponse as AuthZListProjectsResponse, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
-        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{ServerActionListProjects, authz_to_error_no_audit},
@@ -44,7 +44,6 @@ use crate::{
             ScheduleTaskMetadata, TaskEntity, TaskQueueName,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
         },
-        write_bootstrap_grants,
     },
 };
 
@@ -149,7 +148,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             .create_project(event_ctx.request_metadata(), &project_id)
             .await?;
 
-        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
             &authorizer,
             event_ctx.request_metadata(),
             &GrantResource::Project((*project_id).clone()),
@@ -177,15 +176,15 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
 
         t.commit().await?;
 
-        emit_bootstrap_grants(
-            event_ctx.dispatcher(),
-            event_ctx.request_metadata_arc(),
-            bootstrap_grants,
-        )
-        .await;
+        // Held across the create event below, which consumes the context: the grants are
+        // announced after the project they are on.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
 
         // Emit success event
         let () = event_ctx.emit_project_created(project_id.clone(), project_name.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         Ok(CreateProjectResponse { project_id })
     }

@@ -76,11 +76,11 @@ use crate::{
             AuthZError, AuthZTableActionForbidden, AuthZTableOps, AuthorizationCountMismatch,
             Authorizer, AuthzNamespaceOps, AuthzWarehouseOps, BackendUnavailableOrCountMismatch,
             CatalogNamespaceAction, CatalogTableAction, CatalogWarehouseAction, GrantResource,
-            RequireNamespaceActionError, RequireTableActionError,
+            RequireNamespaceActionError, RequireTableActionError, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
         build_namespace_hierarchy,
         contract_verification::{ContractVerification, ContractVerificationOutcome},
-        emit_bootstrap_grants,
         events::{
             APIEventCommitContext, APIEventContext, CommitTransactionEvent,
             context::{ResolvedNamespace, ResolvedTable},
@@ -94,7 +94,6 @@ use crate::{
             tabular_expiration_queue::{TabularExpirationPayload, TabularExpirationTask},
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
-        write_bootstrap_grants,
     },
 };
 
@@ -554,7 +553,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // Outside the branches above on purpose. Re-registering over a table that keeps
         // its id runs no create hook, and the drop above already took that table's grants
         // with it, so the registered table would end up with no owner at all.
-        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
             &authorizer,
             request_metadata,
             &GrantResource::Table {
@@ -568,12 +567,10 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // Commit the transaction
         t_write.commit().await?;
 
-        emit_bootstrap_grants(
-            event_ctx.dispatcher(),
-            event_ctx.request_metadata_arc(),
-            bootstrap_grants,
-        )
-        .await;
+        // Held across the register event below, which consumes the context: the grants
+        // are announced after the table they are on.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
 
         // If we need to delete the previous table from authorizer
         if auth_needs_delete && let Some(previous_table) = &previous_table_to_drop {
@@ -603,6 +600,8 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             Arc::new(metadata_location),
             data_access,
         );
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         // Full snapshot list from the metadata file, tagged with the delegation
         // and permission scope the config above was built for. A read-only

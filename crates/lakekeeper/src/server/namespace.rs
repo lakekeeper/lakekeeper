@@ -31,9 +31,8 @@ use crate::{
         Transaction,
         authz::{
             Authorizer, AuthzNamespaceOps, CatalogNamespaceAction, CatalogWarehouseAction,
-            GrantResource, NamespaceParent,
+            GrantResource, NamespaceParent, emit_bootstrap_grants_async, write_bootstrap_grants,
         },
-        emit_bootstrap_grants,
         events::{
             APIEventContext, EventDispatcher, NamespaceOrWarehouseAPIContext,
             context::{
@@ -47,7 +46,6 @@ use crate::{
             CancelTasksFilter, ScheduleTaskMetadata, TaskEntity, WarehouseTaskEntityId,
             tabular_purge_queue::{TabularPurgePayload, TabularPurgeTask},
         },
-        write_bootstrap_grants,
     },
 };
 
@@ -359,7 +357,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             .create_namespace(event_ctx.request_metadata(), namespace_id, authz_parent)
             .await?;
 
-        let bootstrap_grants = write_bootstrap_grants::<A, C>(
+        let bootstrap_grants = write_bootstrap_grants::<C, A>(
             &authorizer,
             event_ctx.request_metadata(),
             &GrantResource::Namespace {
@@ -372,14 +370,14 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
 
         t.commit().await?;
 
-        emit_bootstrap_grants(
-            event_ctx.dispatcher(),
-            event_ctx.request_metadata().clone(),
-            bootstrap_grants,
-        )
-        .await;
+        // Held across the create event below, which consumes the context: the grants are
+        // announced after the namespace they are on.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata().clone();
 
         event_ctx.emit_namespace_created_async(r.clone());
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
 
         let r_namespace = r.namespace.clone();
         let mut properties = r_namespace.properties.clone().unwrap_or_default();

@@ -30,9 +30,9 @@ use crate::{
             AuthZViewOps, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogTableAction, CatalogTagAction, CatalogViewAction, CatalogWarehouseAction,
-            GrantResource, GrantSpec, RequireTagActionError,
+            GrantResource, GrantSpec, RequireTagActionError, emit_bootstrap_grants_async,
+            write_bootstrap_grants,
         },
-        emit_bootstrap_grants,
         events::{
             APIEventContext,
             context::{
@@ -41,7 +41,7 @@ use crate::{
             },
         },
         is_reserved_tag_name, validate_scope_widening, validate_tag_name, validate_tag_scope,
-        validate_tag_value, validate_tag_value_chars, write_bootstrap_grants,
+        validate_tag_value, validate_tag_value_chars,
     },
 };
 
@@ -614,12 +614,10 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         )
         .await;
         let (event_ctx, (tag_definition, bootstrap_grants)) = event_ctx.emit_authz(authz_result)?;
-        emit_bootstrap_grants(
-            event_ctx.dispatcher(),
-            event_ctx.request_metadata_arc(),
-            bootstrap_grants,
-        )
-        .await;
+        // Held across the create event below, which consumes the context: the grants are
+        // announced after the definition they are on.
+        let grant_dispatcher = event_ctx.dispatcher().clone();
+        let grant_request_metadata = event_ctx.request_metadata_arc();
         let event_ctx = event_ctx.resolve(tag_definition);
         let mut result: TagDefinition = (**event_ctx.resolved()).clone().into();
         // Echo the validated allowed values, sorted, so create and get agree on order.
@@ -630,6 +628,9 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
             });
         }
         event_ctx.emit_tag_definition_created();
+
+        emit_bootstrap_grants_async(&grant_dispatcher, grant_request_metadata, bootstrap_grants);
+
         Ok(result)
     }
 
@@ -1567,16 +1568,15 @@ async fn authorize_create_tag_definition<A: Authorizer, C: CatalogStore>(
         .map_err::<CreateTagDefinitionError, _>(|e| {
             CatalogBackendError::new_unexpected(e.error).into()
         })?;
-    let bootstrap_grants = write_bootstrap_grants::<A, C>(
+    // Kept typed rather than folded into a backend error: a missing user row is the
+    // caller's 400 and a lock conflict their retriable 409, not "the catalog is down".
+    let bootstrap_grants = write_bootstrap_grants::<C, A>(
         &authorizer,
         request_metadata,
         &GrantResource::Tag(tag_definition_id),
         t.transaction(),
     )
-    .await
-    .map_err::<CreateTagDefinitionError, _>(|e| {
-        CatalogBackendError::new_unexpected(ErrorModel::from(e)).into()
-    })?;
+    .await?;
     t.commit()
         .await
         .map_err::<CreateTagDefinitionError, _>(|e| {

@@ -7,11 +7,11 @@ use crate::{api::RequestMetadata, service::authz::GrantSpec};
 /// Event emitted when a request changed grants: everything it created and everything it
 /// removed, in one event.
 ///
-/// One event per request rather than one per grant. Both emitters are batch — the apply
-/// endpoint and the cascade when a user is deleted — and the latter is unbounded, so
-/// per-grant events would make dispatch cost scale with a number nothing caps. A
-/// listener that wants per-grant granularity iterates; the audit backend does exactly
-/// that, emitting one record per triple.
+/// One event per request rather than one per grant. Every emitter is batch — the apply
+/// endpoint, the cascade when a user is deleted, and the rows a resource is born with —
+/// and the cascade is unbounded, so per-grant events would make dispatch cost scale with
+/// a number nothing caps. A listener that wants per-grant granularity iterates; the audit
+/// backend does exactly that, emitting one record per triple.
 ///
 /// Each entry carries the whole `(principal, privilege, resource)` triple because that
 /// triple *is* the grant's identity — there is no grant id to reference, and a revoked

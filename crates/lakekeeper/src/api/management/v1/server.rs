@@ -12,13 +12,11 @@ use crate::{
     request_metadata::RequestMetadata,
     service::{
         Actor, ArcProjectId, CatalogStore, Result, SecretStore, State, Transaction, UserUpsertMode,
-        authz::{Authorizer, GrantResource},
-        emit_bootstrap_grants,
+        authz::{Authorizer, GrantResource, emit_bootstrap_grants_async, write_bootstrap_grants},
         tasks::{
             ScheduleTaskMetadata, TaskEntity,
             task_log_cleanup_queue::{self, TaskLogCleanupPayload, TaskLogCleanupTask},
         },
-        write_bootstrap_grants,
     },
 };
 
@@ -266,7 +264,23 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
         }
 
         authorizer.bootstrap(&request_metadata, is_operator).await?;
+
+        // The one grant resource nothing creates: the server comes into existence here,
+        // in this transaction, and the bootstrapping user's row is written above it.
+        let server_grants = write_bootstrap_grants::<C, A>(
+            &authorizer,
+            &request_metadata,
+            &GrantResource::Server,
+            t.transaction(),
+        )
+        .await?;
         t.commit().await?;
+
+        emit_bootstrap_grants_async(
+            &state.v1_state.events,
+            Arc::new(request_metadata.clone()),
+            server_grants,
+        );
 
         // If default project is specified, and the project does not exist, create it
         if let Some(default_project_id) = DEFAULT_PROJECT_ID.as_ref() {
@@ -301,7 +315,7 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                     .await?;
                 // Bootstrapping without authentication has no acting identity, so the
                 // default project starts with no owner. The helper answers that.
-                let bootstrap_grants = write_bootstrap_grants::<A, C>(
+                let bootstrap_grants = write_bootstrap_grants::<C, A>(
                     &authorizer,
                     &request_metadata,
                     &GrantResource::Project((**default_project_id).clone()),
@@ -310,12 +324,11 @@ pub trait Service<C: CatalogStore, A: Authorizer, S: SecretStore> {
                 .await?;
                 t.commit().await?;
 
-                emit_bootstrap_grants(
+                emit_bootstrap_grants_async(
                     &state.v1_state.events,
                     Arc::new(request_metadata.clone()),
                     bootstrap_grants,
-                )
-                .await;
+                );
             }
         }
 

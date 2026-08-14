@@ -785,15 +785,15 @@ where
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<AppliedGrants, ApplyGrantsStoreError>;
 
-    /// Insert grants a resource is born with, inside the transaction that creates it.
+    /// Insert grants, in the transaction that creates the resource they belong to.
     /// Returns the grants actually created; an identical existing grant is skipped.
     ///
-    /// Deliberately not [`Self::apply_grants_impl`] with an empty delete side. That path
-    /// serializes concurrent diffs per resource and sets a transaction-local lock
-    /// timeout, which would leak into the rest of the caller's create transaction — and
-    /// an insert-only write for a resource no other transaction can see yet has no diff
-    /// to cross.
-    async fn bootstrap_grants_impl<'a>(
+    /// Deliberately not [`Self::apply_grants_impl`] with an empty delete side: that path
+    /// serializes concurrent diffs per resource, and sets a transaction-local lock
+    /// timeout to do it that would then govern the rest of the caller's transaction.
+    /// The serialization exists for diffs that cross — each revoking what the other
+    /// adds — so an insert with no delete side has nothing to cross and needs none of it.
+    async fn insert_grants_impl<'a>(
         writes: &[GrantSpec],
         transaction: <Self::Transaction as Transaction<Self::State>>::Transaction<'a>,
     ) -> Result<Vec<GrantSpec>, ApplyGrantsStoreError>;
