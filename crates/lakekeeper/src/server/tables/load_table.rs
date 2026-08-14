@@ -45,6 +45,36 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
 ) -> Result<LoadTableResultOrNotModified> {
+    load_table_with_flags(
+        parameters,
+        request,
+        state,
+        request_metadata,
+        TabularListFlags::active(),
+    )
+    .await
+}
+
+/// [`load_table`], but with control over whether a staged table is visible.
+///
+/// `loadTable` itself must never serve a staged table — a client that sees one
+/// would treat an uncommitted table as real. The idempotency replay path is the
+/// exception: a `createTable` with `stage_create` returns a staged
+/// [`LoadTableResult`], and replaying that key has to reproduce it rather than
+/// 404. Staged-ness is gated twice — once when resolving the table for authz and
+/// once on the loaded row — so both have to agree.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn load_table_with_flags<
+    C: CatalogStore,
+    A: Authorizer + Clone,
+    S: SecretStore,
+>(
+    parameters: TableParameters,
+    request: LoadTableRequest,
+    state: ApiContext<State<A, C, S>>,
+    request_metadata: RequestMetadata,
+    list_flags: TabularListFlags,
+) -> Result<LoadTableResultOrNotModified> {
     let LoadTableRequest {
         data_access,
         filters,
@@ -82,7 +112,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
             &request_metadata,
             table,
             warehouse_id,
-            TabularListFlags::active(),
+            list_flags,
             authorizer.clone(),
             catalog_state.clone(),
             referenced_by.as_deref(),
@@ -159,6 +189,7 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
         event_ctx.resolved().table.table_id(),
         event_ctx.resolved().table.table_ident(),
         false,
+        list_flags.include_staged,
         &filters,
         &mut t,
     )
@@ -242,15 +273,17 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     ))
 }
 
-/// Load a table from the catalog, ensuring that it is not staged
+/// Load a table from the catalog, by default rejecting a staged one.
 ///
 /// # Errors
-/// Returns an error if the table is staged, if it cannot be found, or if a DB error occurs.
+/// Returns an error if the table is staged and `include_staged` is false, if it
+/// cannot be found, or if a DB error occurs.
 async fn load_table_inner<C: CatalogStore>(
     warehouse_id: WarehouseId,
     table_id: TableId,
     table_ident: &TableIdent,
     include_deleted: bool,
+    include_staged: bool,
     load_table_filters: &LoadTableFilters,
     t: &mut C::Transaction,
 ) -> Result<CatalogLoadTableResult> {
@@ -277,11 +310,13 @@ async fn load_table_inner<C: CatalogStore>(
             metadatas.keys()
         );
     }
-    require_not_staged(
-        warehouse_id,
-        table_ident.clone(),
-        result.metadata_location.as_ref(),
-    )?;
+    if !include_staged {
+        require_not_staged(
+            warehouse_id,
+            table_ident.clone(),
+            result.metadata_location.as_ref(),
+        )?;
+    }
     Ok(result)
 }
 

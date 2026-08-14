@@ -6,6 +6,7 @@ use iceberg_ext::catalog::rest::ErrorModel;
 use lakekeeper::{
     SecretId,
     api::{
+        endpoints::EndpointFlat,
         iceberg::v1::{
             PaginatedMapping, PaginationQuery, namespace::NamespaceDropFlags,
             tables::LoadTableFilters,
@@ -1272,9 +1273,10 @@ impl CatalogStore for super::PostgresBackend {
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: Self::State,
     ) -> Result<IdempotencyCheck> {
-        Self::check_idempotency_key_impl(warehouse_id, key, state).await
+        Self::check_idempotency_key_impl(warehouse_id, key, endpoint, state).await
     }
 
     async fn try_insert_idempotency_key_impl<'a>(

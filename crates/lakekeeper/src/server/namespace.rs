@@ -39,7 +39,7 @@ use crate::{
                 ResolvedNamespace, Unresolved, UserProvidedNamespace, authz_to_error_no_audit,
             },
         },
-        idempotency::IdempotencyInfo,
+        idempotency::{IdempotencyInfo, IdempotencyKey},
         secrets::SecretStore,
         storage::storage_layout::{NamespaceNameContext, NamespacePath},
         tasks::{
@@ -234,8 +234,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1CreateNamespace,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 let ns = Self::load_namespace_metadata(
                     NamespaceParameters {
@@ -484,17 +489,15 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         }
 
         // ------------------- IDEMPOTENCY CHECK -------------------
-        // Idempotency is not supported for recursive drops — they manage their own
-        // transaction internally, so we cannot insert the key atomically. A retry of
-        // a recursive drop will get 404 (namespace already gone), which is correct.
-        let idempotency_key = if flags.recursive {
-            None
-        } else {
-            request_metadata.idempotency_key().copied()
-        };
+        let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1DropNamespace,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 return Ok(());
             }
@@ -538,7 +541,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         let namespace_id = namespace.namespace_id();
         let mut t = C::Transaction::begin_write(state.v1_state.catalog).await?;
         if flags.recursive {
-            // recursive drop manages its own transaction
+            // recursive drop commits its own transaction
             try_recursive_drop::<_, C>(
                 flags,
                 authorizer,
@@ -546,6 +549,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                 t,
                 namespace_id,
                 &request_metadata,
+                idempotency_key.as_ref(),
             )
             .await?;
         } else {
@@ -613,8 +617,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1UpdateNamespaceProperties,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 let ns = Self::load_namespace_metadata(
                     parameters,
@@ -717,6 +726,7 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
     mut t: <C as CatalogStore>::Transaction,
     namespace_id: NamespaceId,
     request_metadata: &RequestMetadata,
+    idempotency_key: Option<&IdempotencyKey>,
 ) -> Result<()> {
     if matches!(
         warehouse.tabular_delete_profile,
@@ -764,6 +774,31 @@ async fn try_recursive_drop<A: Authorizer, C: CatalogStore>(
                 .await?;
             }
         }
+        // The recursive drop reaches this point with a single un-committed
+        // transaction, so the key goes in atomically here exactly as it does on the
+        // non-recursive path. Without it a retried recursive drop re-executes and
+        // 404s on the already-gone namespace instead of replaying the 204.
+        if let Some(key) = idempotency_key
+            && !C::try_insert_idempotency_key(
+                warehouse.warehouse_id,
+                &IdempotencyInfo::builder()
+                    .key(*key)
+                    .endpoint(EndpointFlat::CatalogV1DropNamespace)
+                    .http_status(StatusCode::NO_CONTENT)
+                    .build(),
+                t.transaction(),
+            )
+            .await?
+        {
+            t.rollback()
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Rollback failed after idempotency conflict: {e}");
+                })
+                .ok();
+            return Err(ErrorModel::request_in_progress().into());
+        }
+
         // commit before starting the purge tasks so that we cannot end in the situation where
         // data is deleted but the transaction is not committed, meaning dangling pointers.
         t.commit().await?;

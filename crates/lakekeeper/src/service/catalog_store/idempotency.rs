@@ -1,5 +1,6 @@
 use crate::{
     WarehouseId,
+    api::endpoints::EndpointFlat,
     service::{
         CatalogStore, Transaction,
         idempotency::{IdempotencyCheck, IdempotencyInfo, IdempotencyKey},
@@ -16,12 +17,20 @@ where
     ///
     /// Called before authz, outside any transaction. Uses the write pool
     /// to avoid replica lag.
+    ///
+    /// `endpoint` must be the endpoint currently handling the request — the same
+    /// one it will store via [`IdempotencyInfo`]. A key found under a *different*
+    /// endpoint is rejected rather than replayed: the spec requires keys to be
+    /// globally unique across operations, and replaying a `dropTable` record for
+    /// an incoming `createTable` would hand the client a response of the wrong
+    /// shape.
     async fn check_idempotency_key(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: Self::State,
     ) -> super::Result<IdempotencyCheck> {
-        Self::check_idempotency_key_impl(warehouse_id, key, state).await
+        Self::check_idempotency_key_impl(warehouse_id, key, endpoint, state).await
     }
 
     /// Insert an idempotency key inside the mutation transaction.

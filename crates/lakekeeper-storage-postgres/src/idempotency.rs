@@ -48,6 +48,7 @@ impl PostgresBackend {
     pub(crate) async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &IdempotencyKey,
+        endpoint: EndpointFlat,
         state: <Self as lakekeeper::service::CatalogStore>::State,
     ) -> Result<IdempotencyCheck> {
         // Uses read_pool for performance. This is a fast-path optimization only —
@@ -57,7 +58,7 @@ impl PostgresBackend {
         // AND a duplicate request is very low.
         let record = sqlx::query!(
             r#"
-            SELECT http_status
+            SELECT http_status, operation as "operation: EndpointFlat"
             FROM idempotency_record
             WHERE warehouse_id = $1 AND idempotency_key = $2
             "#,
@@ -120,6 +121,19 @@ impl PostgresBackend {
         let Some(record) = record else {
             return Ok(IdempotencyCheck::NewRequest);
         };
+
+        // The spec makes the key globally unique — never reused across operations.
+        // A client that breaks that rule must not be handed a replay of the other
+        // operation's response, which would be of the wrong shape entirely.
+        if record.operation != endpoint {
+            return Err(lakekeeper::api::ErrorModel::bad_request(
+                "Idempotency-Key was already used for a different operation. \
+                 Keys must be globally unique and must not be reused across operations.",
+                "IdempotencyKeyReused",
+                None,
+            )
+            .into());
+        }
 
         match record.http_status {
             204 => Ok(IdempotencyCheck::ReplayNoContent),

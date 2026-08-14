@@ -1279,6 +1279,7 @@ where
     async fn check_idempotency_key_impl(
         warehouse_id: WarehouseId,
         key: &crate::service::idempotency::IdempotencyKey,
+        endpoint: crate::api::endpoints::EndpointFlat,
         state: Self::State,
     ) -> Result<crate::service::idempotency::IdempotencyCheck>;
 

@@ -106,18 +106,25 @@ pub(crate) const MAX_RETRIES_ON_CONCURRENT_UPDATE: usize = 2;
 ///
 /// Used when an idempotency check detects a replay for operations that
 /// return a `LoadTableResult` (e.g. `createTable`, `registerTable`).
+///
+/// `list_flags` must include staged tables for any operation that can produce
+/// one — only `createTable` with `stage_create` can. Everything else passes
+/// `active()`, so a replay that unexpectedly lands on a staged table still
+/// fails loudly rather than returning a half-built response.
 async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
     data_access: DataAccessMode,
     state: ApiContext<State<A, C, S>>,
     request_metadata: RequestMetadata,
     operation_name: &str,
+    list_flags: TabularListFlags,
 ) -> Result<LoadTableResult> {
-    let load_result = load_table::load_table::<C, A, S>(
+    let load_result = load_table::load_table_with_flags::<C, A, S>(
         parameters,
         LoadTableRequest::builder().data_access(data_access).build(),
         state,
         request_metadata,
+        list_flags,
     )
     .await
     .map_err(|e| {
@@ -157,6 +164,7 @@ async fn replay_commit_table<C: CatalogStore, A: Authorizer + Clone, S: SecretSt
         state,
         request_metadata,
         "updateTable",
+        TabularListFlags::active(),
     )
     .await?;
     let metadata_location = r.metadata_location.ok_or_else(|| {
@@ -292,8 +300,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1RegisterTable,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 let load_params = TableParameters {
                     prefix: parameters.prefix.clone(),
@@ -305,6 +318,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
                     state,
                     request_metadata,
                     "registerTable",
+                    TabularListFlags::active(),
                 )
                 .await;
             }
@@ -775,8 +789,13 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
         // ------------------- IDEMPOTENCY CHECK -------------------
         let idempotency_key = request_metadata.idempotency_key().copied();
         if let Some(ref key) = idempotency_key {
-            let check =
-                C::check_idempotency_key(warehouse_id, key, state.v1_state.catalog.clone()).await?;
+            let check = C::check_idempotency_key(
+                warehouse_id,
+                key,
+                EndpointFlat::CatalogV1DropTable,
+                state.v1_state.catalog.clone(),
+            )
+            .await?;
             if check.is_replay() {
                 return Ok(());
             }
@@ -1409,8 +1428,13 @@ pub async fn commit_tables_with_authz<C: CatalogStore, A: Authorizer + Clone, S:
         ),
         async {
             if let Some(info) = idempotency {
-                C::check_idempotency_key(warehouse_id, &info.key, state.v1_state.catalog.clone())
-                    .await
+                C::check_idempotency_key(
+                    warehouse_id,
+                    &info.key,
+                    info.endpoint,
+                    state.v1_state.catalog.clone(),
+                )
+                .await
             } else {
                 Ok(IdempotencyCheck::NewRequest)
             }
