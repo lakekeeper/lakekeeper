@@ -5994,6 +5994,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/IcebergErrorResponse'
+  /management/v1/warehouse/{warehouse_id}/table/{table_id}/column-tags:
+    get:
+      tags:
+        - tag
+      summary: List All Column Tags
+      description: |-
+        Returns the governance tags on every column of the table in one call, grouped by
+        column (field-id). Columns without tags are omitted. Requires metadata access on
+        the table.
+      operationId: list_column_tags
+      parameters:
+        - name: warehouse_id
+          in: path
+          description: Warehouse ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: table_id
+          in: path
+          description: Table ID
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: x-project-id
+          in: header
+          description: Project ID (optional; falls back to the default project if not provided)
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+      responses:
+        '200':
+          description: Tags on each column of the table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListColumnTagsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
   /management/v1/warehouse/{warehouse_id}/table/{table_id}/column/{column_name}/tags:
     get:
       tags:
@@ -7983,6 +8029,28 @@ components:
         allowed:
           type: boolean
           description: Whether the action is allowed.
+    ColumnTags:
+      type: object
+      description: |-
+        A column and the governance tags attached directly to it. The column is identified
+        by Iceberg field-id only; resolve it to a name against the table metadata client-side
+        (field-ids are stable across schema evolution, names are not).
+      required:
+        - field-id
+        - tags
+      properties:
+        field-id:
+          type: integer
+          format: int32
+          description: Iceberg field-id of the column.
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetTag'
+          description: |-
+            Tags attached directly to this column. Always non-empty — a column with no tags
+            is omitted from the response entirely.
+          minItems: 1
     ConsoleInfo:
       type: object
       description: Information about the UI (console) shipped with this binary.
@@ -11403,6 +11471,19 @@ components:
         valid:
           type: boolean
           description: If the license is valid and active
+    ListColumnTagsResponse:
+      type: object
+      description: |-
+        Every column of a table that carries at least one tag, each with its direct tags;
+        columns without tags are omitted. Column tags are never inherited, so this is a
+        direct-only listing (no effective view).
+      required:
+        - columns
+      properties:
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ColumnTags'
     ListDeletedTabularsResponse:
       type: object
       required:

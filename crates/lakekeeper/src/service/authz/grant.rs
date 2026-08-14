@@ -538,13 +538,45 @@ impl AppliedGrants {
     }
 }
 
+/// One grant-authority question: may the subject grant and revoke `privilege` on the
+/// resource, to `grantee`?
+///
+/// Extensible on purpose — construct with [`new`](Self::new) and read fields rather than
+/// destructuring, so a new term costs no out-of-workspace authorizer a compile error.
+/// Compiling is not honoring: a term that changes what may be authorized (grant versus
+/// revoke, say) belongs in a change its implementors cannot silently ignore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct GrantAuthorityCheck<'a> {
+    /// A name from the authorizer's own vocabulary. An unrecognized name is answered
+    /// rather than rejected — it may belong to a different authorizer's vocabulary — and
+    /// an authorizer that enforces its own vocabulary answers it with a deny.
+    pub privilege: &'a str,
+    /// Who would come to hold the privilege — or lose it, for a revoke. An authorizer
+    /// whose authority does not depend on the recipient ignores it.
+    ///
+    /// `None` leaves the grantee out of the question: the grantable-privileges endpoint
+    /// asks whether the subject has authority over the privilege here at all. That
+    /// answer is advisory, since the apply path asks again for each grantee, so even an
+    /// authorizer that does distinguish grantees may answer this form from the privilege
+    /// alone.
+    pub grantee: Option<&'a UserOrRoleId>,
+}
+
+impl<'a> GrantAuthorityCheck<'a> {
+    #[must_use]
+    pub fn new(privilege: &'a str, grantee: Option<&'a UserOrRoleId>) -> Self {
+        Self { privilege, grantee }
+    }
+}
+
 /// The checked entry point to grant authority. Blanket-implemented, so an authorizer
 /// cannot replace it and lose the guards — implement
 /// [`are_allowed_grants_impl`](Authorizer::are_allowed_grants_impl) instead.
 #[async_trait::async_trait]
 pub trait AuthZGrantOps: Authorizer {
-    /// May the actor (or `for_user`, when given) grant and revoke each of `privileges`
-    /// on `resource`? Returns exactly one decision per privilege, in order.
+    /// May the actor (or `for_user`, when given) grant and revoke each of `checks` on
+    /// `resource`? Returns exactly one decision per check, in order.
     ///
     /// Grant *authority* is resolved here rather than modelled as a `Catalog*Action`
     /// because the privilege is a name from this authorizer's own vocabulary: it cannot
@@ -559,7 +591,7 @@ pub trait AuthZGrantOps: Authorizer {
         metadata: &RequestMetadata,
         mut for_user: Option<&UserOrRole>,
         resource: &GrantResource,
-        privileges: &[&str],
+        checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
         // Naming yourself asks the same question as naming nobody, so it must not trip
         // the read-assignments guard that answering for someone else requires.
@@ -573,17 +605,14 @@ pub trait AuthZGrantOps: Authorizer {
         // by writing the very records its own permission API refuses them. Instance
         // admins provision; they do not administer permissions.
         let decisions = self
-            .are_allowed_grants_impl(metadata, for_user, resource, privileges)
+            .are_allowed_grants_impl(metadata, for_user, resource, checks)
             .await?;
-        // Callers zip decisions against privileges, and `zip` stops at the shorter side —
+        // Callers zip decisions against the checks, and `zip` stops at the shorter side —
         // a short vector would silently authorize the tail rather than deny it.
-        if decisions.len() != privileges.len() {
-            return Err(AuthorizationCountMismatch::new(
-                privileges.len(),
-                decisions.len(),
-                "grant",
-            )
-            .into());
+        if decisions.len() != checks.len() {
+            return Err(
+                AuthorizationCountMismatch::new(checks.len(), decisions.len(), "grant").into(),
+            );
         }
         Ok(decisions)
     }

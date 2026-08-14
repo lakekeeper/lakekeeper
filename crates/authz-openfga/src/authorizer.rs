@@ -18,10 +18,11 @@ use lakekeeper::{
             ActionOnGenericTable, ActionOnTable, ActionOnView, AddRoleAssignmentsError,
             AuthorizationBackendUnavailable, AuthorizationDecision, Authorizer,
             AuthzBackendErrorOrBadRequest, CannotInspectPermissions, CatalogProjectAction,
-            CatalogUserAction, GrantResource, IsAllowedActionError, ListProjectsResponse,
-            ListRoleAssignmentsError, ListRoleAssignmentsResultPage, MalformedRoleAssignment,
-            ManagesGrants, ManagesRoleAssignments, NamespaceParent, PrivilegeDescriptor,
-            ResourceType, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole, UserOrRoleId,
+            CatalogUserAction, GrantAuthorityCheck, GrantResource, IsAllowedActionError,
+            ListProjectsResponse, ListRoleAssignmentsError, ListRoleAssignmentsResultPage,
+            MalformedRoleAssignment, ManagesGrants, ManagesRoleAssignments, NamespaceParent,
+            PrivilegeDescriptor, ResourceType, RoleAssignmentFilter, RoleAssignmentRow, UserOrRole,
+            UserOrRoleId,
         },
         events::context::authz_to_error_no_audit,
         health::Health,
@@ -1014,9 +1015,9 @@ impl Authorizer for OpenFGAAuthorizer {
         metadata: &RequestMetadata,
         for_user: Option<&UserOrRole>,
         resource: &GrantResource,
-        privileges: &[&str],
+        checks: &[GrantAuthorityCheck<'_>],
     ) -> std::result::Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-        self.grant_authority(metadata, for_user, resource, privileges)
+        self.grant_authority(metadata, for_user, resource, checks)
             .await
     }
 }

@@ -111,6 +111,7 @@ alter type api_endpoints add value if not exists 'management-v1-list-table-tags'
 alter type api_endpoints add value if not exists 'management-v1-set-table-column-tag';
 alter type api_endpoints add value if not exists 'management-v1-delete-table-column-tag';
 alter type api_endpoints add value if not exists 'management-v1-list-table-column-tags';
+alter type api_endpoints add value if not exists 'management-v1-list-column-tags';
 alter type api_endpoints add value if not exists 'management-v1-set-view-tag';
 alter type api_endpoints add value if not exists 'management-v1-delete-view-tag';
 alter type api_endpoints add value if not exists 'management-v1-list-view-tags';

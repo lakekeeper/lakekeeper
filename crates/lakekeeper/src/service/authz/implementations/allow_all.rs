@@ -21,8 +21,8 @@ use crate::{
             AuthzBackendErrorOrBadRequest, CatalogAction, CatalogGenericTableAction,
             CatalogNamespaceAction, CatalogProjectAction, CatalogRoleAction, CatalogServerAction,
             CatalogTableAction, CatalogTagAction, CatalogUserAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantResource, IsAllowedActionError, ListProjectsResponse,
-            NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
+            CatalogWarehouseAction, GrantAuthorityCheck, GrantResource, IsAllowedActionError,
+            ListProjectsResponse, NamespaceParent, PrivilegeDescriptor, ResourceType, UserOrRole,
         },
         health::{Health, HealthExt},
     },
@@ -287,9 +287,9 @@ impl Authorizer for AllowAllAuthorizer {
         _metadata: &RequestMetadata,
         _for_user: Option<&UserOrRole>,
         _resource: &GrantResource,
-        privileges: &[&str],
+        checks: &[GrantAuthorityCheck<'_>],
     ) -> Result<Vec<AuthorizationDecision>, IsAllowedActionError> {
-        Ok(vec![AuthorizationDecision::allow(); privileges.len()])
+        Ok(vec![AuthorizationDecision::allow(); checks.len()])
     }
 
     async fn delete_user(&self, _metadata: &RequestMetadata, _user_id: UserId) -> Result<()> {
@@ -453,7 +453,7 @@ fn build_vocabulary(resource_type: ResourceType) -> Vec<PrivilegeDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::super::{AuthZGrantOps, InvalidGrantPrivilege},
+        super::super::{AuthZGrantOps, InvalidGrantPrivilege, UserOrRoleId},
         *,
     };
 
@@ -545,12 +545,16 @@ mod tests {
     async fn grant_authority_is_allowed_for_every_privilege() {
         let authorizer = AllowAllAuthorizer::default();
         let resource = GrantResource::Warehouse(WarehouseId::new_random());
+        let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
         let decisions = authorizer
             .are_allowed_grants(
                 &RequestMetadata::new_unauthenticated(),
                 None,
                 &resource,
-                &["get_metadata", "not_a_privilege"],
+                &[
+                    GrantAuthorityCheck::new("get_metadata", Some(&bob)),
+                    GrantAuthorityCheck::new("not_a_privilege", None),
+                ],
             )
             .await
             .expect("allow-all never fails a grant-authority check");

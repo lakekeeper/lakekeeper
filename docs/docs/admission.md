@@ -32,6 +32,10 @@ On admit, each passing check contributes its role to the request's admission rol
 - **Fail closed.** Anything other than `2xx`/`403` becomes a `503` with `Retry-After`.
 - **Token relay is opt-in.** The caller's bearer token is forwarded only when `auth` is `forward_caller_token`; otherwise the endpoint is reached with the static `headers` only. A forwarded token goes over the configured URL (use TLS) and is never logged.
 
+## Monitoring
+
+Every gate evaluation is timed as `lakekeeper_admission_gate_duration_seconds{gate, outcome}`, each enforce call as `lakekeeper_admission_enforce_call_duration_seconds{check, outcome}`, and the decision cache reports into the shared `lakekeeper_cache_*` series under `cache_type="admission_enforce"`. See [Monitoring > Admission Gate Metrics](./monitoring.md#admission-gate-metrics) for the queries that matter — rejection rate, fail-closed rate, and the load the gate puts on your enforce endpoint.
+
 ## Configuration
 
 The gate is **disabled unless an `[admission_enforce]` block is present**. Like [Cedar derivations](./authorization-cedar.md) and [role providers](./configuration.md#role-provider), this is nested config, so it is configured via a TOML file with full environment-variable parity — point `LAKEKEEPER__ADMISSION_ENFORCE_FILE` at a TOML file, and/or set `LAKEKEEPER__ADMISSION_ENFORCE__*` variables on top.
