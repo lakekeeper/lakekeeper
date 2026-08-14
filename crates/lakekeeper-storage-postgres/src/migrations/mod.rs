@@ -1630,6 +1630,54 @@ mod tests {
         );
     }
 
+    /// Pins the definition of the index behind `list_tabulars`.
+    ///
+    /// The index is partial, so Postgres may only use it if it can prove the
+    /// query's predicate implies the index's. If the query is widened to return
+    /// a row the index does not contain, the planner does not error — it
+    /// silently stops using the index and falls back to a sequential scan of
+    /// `tabular`. That is exactly what happened when generic tables were added:
+    /// the query started accepting `metadata_location IS NULL` rows for
+    /// `typ = 'generic-table'`, the index predicate was not widened with it, and
+    /// listing a namespace regressed to the plan from before the index existed.
+    ///
+    /// The column list is pinned for the same reason: the index only serves the
+    /// query because `(warehouse_id, namespace_id)` are equality-matched and
+    /// `(created_at, tabular_id)` then supply the ORDER BY, letting LIMIT stop
+    /// the scan early. Reordering the columns breaks that just as silently.
+    #[sqlx::test(migrations = false)]
+    async fn test_list_tabulars_index_definition_is_pinned(pool: PgPool) {
+        migrate_core_only(&pool)
+            .await
+            .expect("core migrations must succeed");
+
+        let indexdef: Option<String> = sqlx::query_scalar(
+            "SELECT pg_get_indexdef(oid) FROM pg_class \
+             WHERE relname = 'tabular_warehouse_namespace_created_at_idx' \
+               AND relnamespace = current_schema()::regnamespace",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+
+        let indexdef = indexdef.expect(
+            "index tabular_warehouse_namespace_created_at_idx is missing — list_tabulars \
+             falls back to a sequential scan of `tabular` without it",
+        );
+
+        assert_eq!(
+            indexdef,
+            "CREATE INDEX tabular_warehouse_namespace_created_at_idx ON public.tabular \
+             USING btree (warehouse_id, namespace_id, created_at, tabular_id) \
+             WHERE ((deleted_at IS NULL) AND ((metadata_location IS NOT NULL) \
+             OR (typ = 'generic-table'::tabular_type)))",
+            "the index behind list_tabulars changed. If you widened the `include_active` \
+             branch of list_tabulars (src/tabular/mod.rs) to return more rows, widen this \
+             index predicate to match and update this assertion — otherwise Postgres will \
+             silently stop using the index and listing a namespace becomes a sequential scan."
+        );
+    }
+
     /// End-to-end guard for the customer-facing `pg_dump` → `pg_restore`
     /// failure: simulate what `pg_restore` does (re-execute every trigger's
     /// DDL against the post-migration schema), then drive the same catalog

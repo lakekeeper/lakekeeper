@@ -825,11 +825,11 @@ where
             LEFT JOIN task tt ON (t.tabular_id = tt.entity_id AND tt.entity_type in ('table', 'view', 'generic-table') AND tt.queue_name IN ('soft_deletion', 'tabular_expiration') AND tt.warehouse_id = $1 AND tt.project_id = w.project_id)
             -- Deliberately NOT filtering on tt.queue_name here. The predicate used to be:
             --     AND (tt.queue_name IN ('soft_deletion', 'tabular_expiration') OR tt.queue_name is NULL)
-            -- It can never exclude a row: the LEFT JOIN's ON clause already restricts matches to 
-            -- those two queues, so a matched row always satisfies the IN, and an unmatched row 
+            -- It can never exclude a row: the LEFT JOIN's ON clause already restricts matches to
+            -- those two queues, so a matched row always satisfies the IN, and an unmatched row
             -- is NULL-extended by the outer join and always satisfies the IS NULL.
             -- Postgres cannot reason about the LEFT JOIN, so the planner can get confused
-            -- an decides to not use the index, degrading query performance.
+            -- and decides to not use the index, degrading query performance.
             WHERE t.warehouse_id = $1
                 AND (t.namespace_id = $2 OR $2 IS NULL)
                 AND w.status = 'active'
@@ -2315,5 +2315,102 @@ mod tests {
             vec!["hr_ns".to_string()]
         );
         assert_eq!(res.tabular.tabular_ident().name, "test_region_42");
+    }
+
+    /// `list_tabulars` joins `task` only to decorate rows with soft-deletion
+    /// info. The join is restricted to the soft-deletion queues by its ON clause
+    /// *alone*: the WHERE clause that used to repeat that restriction was
+    /// removed because it is a tautology that wrecks the planner's row estimate
+    /// (see the comment in `list_tabulars`).
+    ///
+    /// That makes the ON clause the only thing preventing a tabular with tasks
+    /// in other queues from being joined more than once. Duplicate joined rows
+    /// do not surface as duplicate entries -- the result is keyed by tabular id,
+    /// so they collapse -- they surface as *short pages*, because `LIMIT` counts
+    /// joined rows, not tabulars. This test would catch that: one tabular
+    /// carries two tasks in unrelated queues, and a page of two must still
+    /// return both tabulars.
+    #[sqlx::test]
+    async fn test_list_tabulars_unaffected_by_tasks_in_unrelated_queues(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+        let namespace =
+            iceberg_ext::NamespaceIdent::from_vec(vec!["unrelated_queue_ns".to_string()]).unwrap();
+        let namespace_id = initialize_namespace(state.clone(), warehouse_id, &namespace, None)
+            .await
+            .namespace_id();
+
+        let mut transaction = pool.begin().await.unwrap();
+        let mut tabular_ids = Vec::new();
+        for name in ["table_one", "table_two"] {
+            let id = Uuid::now_v7();
+            let location = Location::from_str(&format!("s3://test-bucket/{name}/")).unwrap();
+            let metadata_location =
+                Location::from_str(&format!("s3://test-bucket/{name}/metadata/v1.json")).unwrap();
+            create_tabular(
+                CreateTabular {
+                    id,
+                    name,
+                    namespace_id: *namespace_id,
+                    warehouse_id: *warehouse_id,
+                    typ: TabularType::Table,
+                    metadata_location: Some(&metadata_location),
+                    location: &location,
+                },
+                &mut transaction,
+            )
+            .await
+            .unwrap();
+            tabular_ids.push(id);
+        }
+        transaction.commit().await.unwrap();
+
+        // Two tasks on the *first* tabular, both in queues the list query does
+        // not join. If the ON clause ever stops filtering on queue_name, this
+        // tabular joins twice and consumes both slots of the page below.
+        for queue_name in ["tabular_purge", "statistics"] {
+            sqlx::query(
+                r#"
+                INSERT INTO task (task_id, warehouse_id, queue_name, status, scheduled_for,
+                                  task_data, entity_id, entity_type, entity_name, project_id)
+                SELECT gen_random_uuid(), w.warehouse_id, $1, 'scheduled', now(), '{}'::jsonb,
+                       $2, 'table', ARRAY['table_one'], w.project_id
+                FROM warehouse w WHERE w.warehouse_id = $3
+                "#,
+            )
+            .bind(queue_name)
+            .bind(tabular_ids[0])
+            .bind(*warehouse_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let listed = list_tabulars(
+            warehouse_id,
+            Some(namespace_id),
+            lakekeeper::service::TabularListFlags::active(),
+            &pool,
+            None,
+            lakekeeper::api::iceberg::v1::PaginationQuery {
+                page_token: lakekeeper::api::iceberg::v1::PageToken::NotSpecified,
+                page_size: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            listed.len(),
+            2,
+            "a page of 2 must return both tabulars; tasks in unrelated queues must not \
+             join and consume page slots"
+        );
+        for (_, info) in listed.iter() {
+            assert!(
+                info.expiration_task().is_none(),
+                "a task in an unrelated queue must not be reported as a pending deletion"
+            );
+        }
     }
 }
