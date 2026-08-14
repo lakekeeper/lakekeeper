@@ -9618,7 +9618,10 @@ components:
       properties:
         allowed:
           type: boolean
-          description: Whether the principal may grant and revoke this privilege on this resource.
+          description: |-
+            Whether the principal has authority over this privilege on this resource. Asked
+            without a direction, so an authorizer that separates granting from revoking may
+            answer for either; an apply is checked per entry.
         privilege:
           $ref: '#/components/schemas/PrivilegeDescriptor'
           description: |-
