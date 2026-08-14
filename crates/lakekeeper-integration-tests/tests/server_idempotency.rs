@@ -90,10 +90,10 @@ async fn test_key_reused_across_operations_is_rejected(pool: PgPool) {
                 name: "second".to_string(),
             },
         },
-        DropParams {
-            purge_requested: false,
-            force: false,
-        },
+        DropParams::builder()
+            .purge_requested(false)
+            .force(false)
+            .build(),
         ctx.clone(),
         metadata_with_key(key),
     )
@@ -226,10 +226,10 @@ async fn test_replay_of_a_dropped_table_is_not_an_internal_error(pool: PgPool) {
                 name: "gone".to_string(),
             },
         },
-        DropParams {
-            purge_requested: false,
-            force: false,
-        },
+        DropParams::builder()
+            .purge_requested(false)
+            .force(false)
+            .build(),
         ctx.clone(),
         RequestMetadata::new_unauthenticated(),
     )
@@ -314,11 +314,7 @@ async fn test_recursive_namespace_drop_replays(pool: PgPool) {
         prefix: Some(Prefix(prefix)),
         namespace: ns,
     };
-    let flags = NamespaceDropFlags {
-        force: false,
-        purge: false,
-        recursive: true,
-    };
+    let flags = NamespaceDropFlags::builder().recursive().build();
 
     CatalogServer::drop_namespace(params.clone(), flags, ctx.clone(), metadata_with_key(key))
         .await
