@@ -20,7 +20,12 @@ use lakekeeper::{
         },
         iceberg::{
             types::Prefix,
-            v1::{DataAccess, namespace::NamespaceParameters, s3_signer::Service as _},
+            v1::{
+                DataAccess, LoadTableResultOrNotModified, TableParameters,
+                namespace::NamespaceParameters,
+                s3_signer::{Service as _, SignTarget},
+                tables::{LoadTableRequest, TablesService as _},
+            },
         },
     },
     server::{CatalogServer, tables::create_table::create_table_request_into_table_metadata},
@@ -353,7 +358,7 @@ async fn sign_warehouse_scoped_request<A: Authorizer>(
 ) -> lakekeeper::api::Result<S3SignResponse> {
     CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
-        None,
+        SignTarget::FromRequestUri,
         request,
         ctx.clone(),
         random_request_metadata(),
@@ -372,7 +377,7 @@ async fn sign_table_scoped<A: Authorizer>(
 ) -> lakekeeper::api::Result<S3SignResponse> {
     CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
-        Some(tabular_id),
+        SignTarget::TabularId(tabular_id),
         sign_request(method, sign_url(base_location, "data/file.bin")),
         ctx.clone(),
         random_request_metadata(),
@@ -690,7 +695,7 @@ async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
 
     let response = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
-        Some(*table_id),
+        SignTarget::TabularId(*table_id),
         list_prefix_request(&prefix),
         ctx.clone(),
         random_request_metadata(),
@@ -703,7 +708,7 @@ async fn test_sign_iceberg_table_list_prefix(pool: PgPool) {
     // path owns it, then again after authorization. Both must apply the directory rule.
     let err = CatalogServer::sign(
         Some(Prefix(warehouse_id.to_string())),
-        Some(*table_id),
+        SignTarget::TabularId(*table_id),
         list_prefix_request(prefix.trim_end_matches('/')),
         ctx.clone(),
         random_request_metadata(),
@@ -925,5 +930,141 @@ async fn test_generic_table_load_omits_credentials_when_nothing_is_vended(pool: 
         config.get("s3.endpoint").map(String::as_str),
         Some(format!("{ENDPOINT}/").as_str()),
         "config must still carry the endpoint: {config:?}"
+    );
+}
+
+/// The spec's per-table signer route (`…/tables/{table}/sign`), which adopting
+/// `remote-signing-config` obliges us to serve since that config carries no
+/// endpoint of its own.
+#[sqlx::test]
+async fn test_sign_by_table_name(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    let (_table_id, location) =
+        create_catalog_table(&ctx, &namespace_name, warehouse_id, "by_name").await;
+
+    let response = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        SignTarget::Table(Box::new(TableIdent::new(
+            NamespaceIdent::new(namespace_name),
+            "by_name".to_string(),
+        ))),
+        sign_request(Method::GET, sign_url(location.as_ref(), "data/file.bin")),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("the standard per-table signer route must sign for a table named in the path");
+    assert_signed(&response);
+}
+
+/// A name can be renamed out from under an open session. The name route stays
+/// usable because it falls back to resolving the table from the request
+/// location — the same fallback the id route relies on.
+#[sqlx::test]
+async fn test_sign_by_table_name_falls_back_to_the_request_location(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    let (_table_id, location) =
+        create_catalog_table(&ctx, &namespace_name, warehouse_id, "real_name").await;
+
+    let response = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        SignTarget::Table(Box::new(TableIdent::new(
+            NamespaceIdent::new(namespace_name),
+            "name_it_no_longer_has".to_string(),
+        ))),
+        sign_request(Method::GET, sign_url(location.as_ref(), "data/file.bin")),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("a stale name must still sign via the request location");
+    assert_signed(&response);
+}
+
+/// `provider` is absent-means-s3 per the spec. Anything else must be refused
+/// rather than quietly signed as S3.
+#[sqlx::test]
+async fn test_sign_rejects_a_foreign_provider(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    let (table_id, location) =
+        create_catalog_table(&ctx, &namespace_name, warehouse_id, "provider_check").await;
+
+    let mut request = sign_request(Method::GET, sign_url(location.as_ref(), "data/file.bin"));
+    request.provider = Some("gcs".to_string());
+
+    let err = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        SignTarget::TabularId(*table_id),
+        request,
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect_err("a non-s3 provider must not be signed as s3");
+    assert_eq!(err.error.code, StatusCode::BAD_REQUEST, "{err:?}");
+    assert_eq!(err.error.r#type, "UnsupportedSignerProvider", "{err:?}");
+
+    // Absent still means s3.
+    let response = CatalogServer::sign(
+        Some(Prefix(warehouse_id.to_string())),
+        SignTarget::TabularId(*table_id),
+        sign_request(Method::GET, sign_url(location.as_ref(), "data/file.bin")),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("an absent provider means s3");
+    assert_signed(&response);
+}
+
+/// `loadTable` advertises the signer settings that replace `signer.uri` /
+/// `signer.endpoint`. Presence is the signal, so it must carry the table id and
+/// must appear only when remote signing is actually on.
+#[sqlx::test]
+async fn test_load_table_advertises_remote_signing_config(pool: PgPool) {
+    let (ctx, namespace_name, warehouse_id) = setup(pool, AllowAllAuthorizer::default()).await;
+    create_catalog_table(&ctx, &namespace_name, warehouse_id, "advertised").await;
+
+    let response = CatalogServer::load_table(
+        TableParameters {
+            prefix: Some(Prefix(warehouse_id.to_string())),
+            table: TableIdent::new(
+                NamespaceIdent::new(namespace_name),
+                "advertised".to_string(),
+            ),
+        },
+        LoadTableRequest::builder()
+            .data_access(
+                DataAccess {
+                    vended_credentials: false,
+                    remote_signing: true,
+                }
+                .into(),
+            )
+            .build(),
+        ctx.clone(),
+        random_request_metadata(),
+    )
+    .await
+    .expect("loading the table must succeed");
+
+    let LoadTableResultOrNotModified::LoadTableResult(response) = response else {
+        panic!("an unconditional load must not return 304");
+    };
+
+    let signing = response
+        .remote_signing_config
+        .expect("remote signing is enabled, so the config must be advertised");
+    assert_eq!(
+        signing,
+        Default::default(),
+        "presence is the signal; we advertise no properties or headers: {signing:?}"
+    );
+
+    // The deprecated keys stay: no released client reads the config yet.
+    let config = response.config.expect("load response must carry a config");
+    assert!(
+        config.contains_key("signer.endpoint"),
+        "the deprecated signer keys must remain until clients read the config: {config:?}"
     );
 }

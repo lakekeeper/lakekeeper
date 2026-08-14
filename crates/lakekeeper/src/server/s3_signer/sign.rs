@@ -12,7 +12,10 @@ use crate::{
     WarehouseId,
     api::{
         ApiContext, ErrorModel, IcebergErrorResponse, Result, S3SignRequest, S3SignResponse,
-        iceberg::types::Prefix,
+        iceberg::{
+            types::Prefix,
+            v1::{TableIdent, s3_signer::SignTarget},
+        },
     },
     request_metadata::RequestMetadata,
     server::require_warehouse_id,
@@ -108,7 +111,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     #[allow(clippy::too_many_lines)]
     async fn sign(
         prefix: Option<Prefix>,
-        path_table_id: Option<uuid::Uuid>,
+        target: SignTarget,
         request: S3SignRequest,
         state: ApiContext<State<A, C, S>>,
         request_metadata: RequestMetadata,
@@ -160,7 +163,26 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             method: request_method,
             headers: request_headers,
             body: request_body,
+            // Accepted per spec; we advertise no properties to echo back.
+            properties: _,
+            provider: request_provider,
         } = request;
+
+        // Absent means S3 per the spec's backwards-compatibility rule. Anything
+        // else is refused rather than signed as S3 — we reached this point only
+        // because the warehouse is an S3 profile, so a different provider means
+        // the client is asking for something we cannot produce.
+        if let Some(provider) = request_provider.as_deref()
+            && !provider.eq_ignore_ascii_case("s3")
+        {
+            return Err(IcebergErrorResponse::from(ErrorModel::bad_request(
+                format!(
+                    "Cannot sign requests for storage provider '{provider}'. Only 's3' is supported."
+                ),
+                "UnsupportedSignerProvider",
+                None,
+            )));
+        }
 
         let (parsed_url, operation) = s3_utils::parse_s3_url(
             &s3_utils::SignRequestUri::new(request_url.clone())?,
@@ -177,23 +199,33 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
             )
         })?;
 
-        let resolved = if let Some(tabular_id) = path_table_id {
-            tracing::debug!("Got S3 sign request for tabular {tabular_id} with URL {request_url}");
-            resolve_signable_by_id(
-                warehouse_id,
-                tabular_id,
-                &parsed_url,
-                first_location,
-                &state,
-            )
-            .await
-        } else {
-            tracing::debug!(
-                "Got S3 sign request for URL {request_url} without tabular id. Searching for tabular by location"
-            );
-            resolve_signable_by_location(warehouse_id, first_location, &state)
+        let resolved = match target {
+            SignTarget::TabularId(tabular_id) => {
+                tracing::debug!(
+                    "Got S3 sign request for tabular {tabular_id} with URL {request_url}"
+                );
+                resolve_signable_by_id(
+                    warehouse_id,
+                    tabular_id,
+                    &parsed_url,
+                    first_location,
+                    &state,
+                )
                 .await
-                .map_err(RequireTableActionError::from)
+            }
+            SignTarget::Table(ident) => {
+                tracing::debug!("Got S3 sign request for table {ident:?} with URL {request_url}");
+                resolve_signable_by_name(warehouse_id, *ident, &parsed_url, first_location, &state)
+                    .await
+            }
+            SignTarget::FromRequestUri => {
+                tracing::debug!(
+                    "Got S3 sign request for URL {request_url} without tabular id. Searching for tabular by location"
+                );
+                resolve_signable_by_location(warehouse_id, first_location, &state)
+                    .await
+                    .map_err(RequireTableActionError::from)
+            }
         };
         // Can't fail here before AuthZ!
 
@@ -492,6 +524,42 @@ async fn resolve_signable_by_id<C: CatalogStore, A: Authorizer + Clone, S: Secre
             signable.location(),
             parsed_url.uri.received()
         );
+    }
+
+    resolve_signable_by_location(warehouse_id, first_location, state)
+        .await
+        .map_err(RequireTableActionError::from)
+}
+
+/// Resolve the table the spec's per-table `/sign` route names.
+///
+/// Funnels into [`resolve_signable_by_id`] so the name path inherits its
+/// location cross-check and its fallback, rather than growing a second set.
+async fn resolve_signable_by_name<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
+    warehouse_id: WarehouseId,
+    table: TableIdent,
+    parsed_url: &s3_utils::ParsedSignRequest,
+    first_location: &S3Location,
+    state: &ApiContext<State<A, C, S>>,
+) -> std::result::Result<Option<SignableTabular>, RequireTableActionError> {
+    let table_info = C::get_table_info(
+        warehouse_id,
+        table,
+        TabularListFlags::active_and_staged(),
+        state.v1_state.catalog.clone(),
+    )
+    .await
+    .map_err(RequireTableActionError::from)?;
+
+    if let Some(table_info) = table_info {
+        return resolve_signable_by_id(
+            warehouse_id,
+            *table_info.table_id(),
+            parsed_url,
+            first_location,
+            state,
+        )
+        .await;
     }
 
     resolve_signable_by_location(warehouse_id, first_location, state)

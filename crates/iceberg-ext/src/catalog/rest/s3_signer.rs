@@ -13,6 +13,37 @@ pub struct S3SignRequest {
     pub method: http::Method,
     pub headers: HashMap<String, Vec<String>>,
     pub body: Option<String>,
+    /// Echoed back verbatim from [`RemoteSigningConfig::properties`]. The spec
+    /// makes this the signer's only channel for per-table state, since the
+    /// config carries no endpoint of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub properties: Option<HashMap<String, String>>,
+    /// Storage provider the request is to be signed for, matching the scheme of
+    /// a native storage URI. Absent means `s3`, per the spec's backwards
+    /// compatibility rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub provider: Option<String>,
+}
+
+/// Signer settings advertised on `loadTable`, superseding the deprecated
+/// `signer.uri` / `signer.endpoint` config keys.
+///
+/// Deliberately carries no endpoint: a client that reads this field derives the
+/// endpoint as the table's standard `…/tables/{table}/sign` path, which is why
+/// serving that route is a precondition for emitting this at all.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TypedBuilder)]
+#[serde(rename_all = "kebab-case")]
+pub struct RemoteSigningConfig {
+    /// Passed through unchanged in the `properties` of every sign request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub properties: Option<HashMap<String, String>>,
+    /// Included unchanged in every request to the signing endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub headers: Option<HashMap<String, Vec<String>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypedBuilder)]
@@ -72,6 +103,55 @@ mod tests {
         let serialized = serde_json::to_string(&sign_request).unwrap();
         let deserialized: S3SignRequest = serde_json::from_str(&serialized).unwrap();
         assert_eq!(sign_request, deserialized);
+    }
+
+    /// Every released signing client predates `properties` / `provider`. Their
+    /// payloads must keep deserializing, and we must not start emitting the new
+    /// keys as `null` to servers reading them back.
+    #[test]
+    fn sign_request_stays_compatible_without_the_new_fields() {
+        let legacy = serde_json::json!({
+            "region": "us-west-2",
+            "uri": "https://example.com",
+            "method": "GET",
+            "headers": {},
+            "body": null,
+        });
+        let parsed: S3SignRequest = serde_json::from_value(legacy).unwrap();
+        assert_eq!(parsed.properties, None);
+        assert_eq!(parsed.provider, None);
+
+        let reserialized = serde_json::to_value(&parsed).unwrap();
+        assert!(reserialized.get("properties").is_none());
+        assert!(reserialized.get("provider").is_none());
+    }
+
+    #[test]
+    fn sign_request_round_trips_the_new_fields() {
+        let request = S3SignRequest::builder()
+            .region("us-west-2".to_string())
+            .uri(url::Url::parse("https://example.com").unwrap())
+            .method(http::Method::GET)
+            .headers(HashMap::new())
+            .body(None)
+            .properties(Some(HashMap::from([(
+                "lakekeeper.tabular-id".to_string(),
+                "some-id".to_string(),
+            )])))
+            .provider(Some("s3".to_string()))
+            .build();
+
+        let round_tripped: S3SignRequest =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(request, round_tripped);
+    }
+
+    /// Absence is the signal that a client should fall back to the deprecated
+    /// `signer.*` config keys, so an unset config must not serialize as `null`.
+    #[test]
+    fn remote_signing_config_omits_unset_fields() {
+        let serialized = serde_json::to_value(RemoteSigningConfig::default()).unwrap();
+        assert_eq!(serialized, serde_json::json!({}));
     }
 
     #[test]

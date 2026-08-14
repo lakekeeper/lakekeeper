@@ -11,7 +11,7 @@ use aws_config::SdkConfig;
 use aws_sdk_sts::{config::ProvideCredentials as _, types::Tag};
 use aws_smithy_runtime_api::client::identity::Identity;
 use iceberg_ext::{
-    catalog::rest::ErrorModel,
+    catalog::rest::{ErrorModel, RemoteSigningConfig},
     configs::{
         ConfigProperty as _,
         table::{TableProperties, client, creds, custom, s3, signer},
@@ -604,7 +604,7 @@ impl S3Profile {
             TableProperties::default()
         };
 
-        if remote_signing {
+        let remote_signing_config = if remote_signing {
             let warehouse_id = stc_request.warehouse_id;
             let tabular_id = stc_request.tabular_id;
             push_fsspec_fileio_with_s3v4restsigner(&mut config);
@@ -614,16 +614,28 @@ impl S3Profile {
                 request_metadata.s3_signer_endpoint_for_table(warehouse_id, tabular_id);
             // Iceberg 1.11.0 renamed `s3.signer.*` to `signer.*`. Emit both so clients >=1.11 read
             // the new keys (no deprecation warning) and older clients keep using the old ones.
+            // Both are deprecated by the spec in favour of `remote-signing-config` below, but no
+            // released client reads that yet, so dropping them would break every signing client.
             config.insert(&signer::Uri(signer_uri.clone()));
             config.insert(&signer::Endpoint(signer_endpoint.clone()));
             config.insert(&s3::SignerUri(signer_uri));
             config.insert(&s3::SignerEndpoint(signer_endpoint));
-        }
+
+            // Empty on purpose: presence is the whole signal. A client reading
+            // this field derives the endpoint as the table's standard `/sign`
+            // path, and we need no properties or headers echoed back — the
+            // signer resolves the table from the path, falling back to the
+            // request location, which already survives a rename.
+            Some(RemoteSigningConfig::default())
+        } else {
+            None
+        };
 
         Ok(TableConfig {
             creds,
             config,
             credentials_expiration_ms,
+            remote_signing: remote_signing_config,
         })
     }
 

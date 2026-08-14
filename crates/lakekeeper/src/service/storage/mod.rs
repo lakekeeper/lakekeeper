@@ -24,7 +24,9 @@ use iceberg::{NamespaceIdent, TableIdent};
 // `rest::StorageCredential` is the response-side credential entry; `StorageCredential` in this
 // module is the warehouse's stored secret. Aliased to keep the two apart.
 use iceberg_ext::{
-    catalog::rest::{ErrorModel, StorageCredential as VendedStorageCredential},
+    catalog::rest::{
+        ErrorModel, RemoteSigningConfig, StorageCredential as VendedStorageCredential,
+    },
     configs::table::TableProperties,
 };
 use lakekeeper_io::{
@@ -145,6 +147,10 @@ pub struct TableConfig {
     /// `None` if none expire. Set wherever a backend vends an expiring
     /// credential; the source for the `loadTable` `ETag`'s revalidation point.
     pub(crate) credentials_expiration_ms: Option<i64>,
+    /// Signer settings to advertise, or `None` when the backend does not use
+    /// remote signing. Emitting it tells the client to sign against the table's
+    /// standard `/sign` path rather than the deprecated `signer.*` config keys.
+    pub(crate) remote_signing: Option<RemoteSigningConfig>,
 }
 
 impl TableConfig {
@@ -539,6 +545,7 @@ impl StorageProfile {
                 creds: TableProperties::default(),
                 config: TableProperties::default(),
                 credentials_expiration_ms: None,
+                remote_signing: None,
             }),
         }
     }
