@@ -34,11 +34,6 @@ use crate::{
 };
 
 /// Load a table from the catalog.
-///
-/// # Panics
-/// May panic if internal invariants are violated (e.g., an entry expected to
-/// exist in a pre-resolved map is missing).
-#[allow(clippy::too_many_lines)]
 pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
     parameters: TableParameters,
     request: LoadTableRequest,
@@ -63,6 +58,10 @@ pub async fn load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>(
 /// [`LoadTableResult`], and replaying that key has to reproduce it rather than
 /// 404. Staged-ness is gated twice — once when resolving the table for authz and
 /// once on the loaded row — so both have to agree.
+///
+/// # Panics
+/// May panic if internal invariants are violated (e.g., an entry expected to
+/// exist in a pre-resolved map is missing).
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn load_table_with_flags<
     C: CatalogStore,

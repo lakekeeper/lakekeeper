@@ -197,6 +197,107 @@ async fn test_staged_create_replays_as_staged(pool: PgPool) {
     );
 }
 
+/// A retry whose table has since been dropped cannot be replayed — but that is a
+/// 404, not a server fault. The replay used to wrap every load error as internal.
+#[sqlx::test]
+async fn test_replay_of_a_dropped_table_is_not_an_internal_error(pool: PgPool) {
+    let (ctx, prefix, ns) = setup(pool).await;
+    let key = new_key();
+    let params = NamespaceParameters {
+        prefix: Some(Prefix(prefix.clone())),
+        namespace: ns.clone(),
+    };
+
+    CatalogServer::create_table(
+        params.clone(),
+        create_table_request(Some("gone".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        metadata_with_key(key),
+    )
+    .await
+    .unwrap();
+
+    CatalogServer::drop_table(
+        TableParameters {
+            prefix: Some(Prefix(prefix)),
+            table: TableIdent {
+                namespace: ns,
+                name: "gone".to_string(),
+            },
+        },
+        DropParams {
+            purge_requested: false,
+            force: false,
+        },
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    let err = CatalogServer::create_table(
+        params,
+        create_table_request(Some("gone".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx,
+        metadata_with_key(key),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+}
+
+/// The staged relaxation belongs to staging retries only. `loadTable` refuses
+/// staged tables outright, so a plain create's key must not become a way to read
+/// one — which matters because the record binds the key to an endpoint, not to a
+/// target.
+#[sqlx::test]
+async fn test_a_plain_create_key_does_not_expose_a_staged_table(pool: PgPool) {
+    let (ctx, prefix, ns) = setup(pool).await;
+    let params = NamespaceParameters {
+        prefix: Some(Prefix(prefix)),
+        namespace: ns,
+    };
+
+    // A staged table nobody has committed.
+    CatalogServer::create_table(
+        params.clone(),
+        create_table_request(Some("secret_staged".to_string()), Some(true)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        RequestMetadata::new_unauthenticated(),
+    )
+    .await
+    .unwrap();
+
+    // A key spent on an ordinary, non-staging create.
+    let key = new_key();
+    CatalogServer::create_table(
+        params.clone(),
+        create_table_request(Some("ordinary".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx.clone(),
+        metadata_with_key(key),
+    )
+    .await
+    .unwrap();
+
+    // Replaying it against the staged table's name must not hand it over.
+    let err = CatalogServer::create_table(
+        params,
+        create_table_request(Some("secret_staged".to_string()), Some(false)),
+        DataAccess::not_specified(),
+        ctx,
+        metadata_with_key(key),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.error.code, StatusCode::NOT_FOUND);
+}
+
 /// A recursive drop commits a single transaction, so it can carry the key like
 /// every other mutation. Previously the key was silently dropped and the retry
 /// re-executed against an already-gone namespace.

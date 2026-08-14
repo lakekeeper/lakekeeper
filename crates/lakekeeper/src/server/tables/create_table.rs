@@ -136,14 +136,22 @@ pub(super) async fn create_table<C: CatalogStore, A: Authorizer + Clone, S: Secr
             };
             // `stage_create` tables are persisted with no metadata_location, and
             // the original response returned exactly that. Replaying through an
-            // active-only load would 404 on a key whose request in fact succeeded.
+            // active-only load would 404 on a key whose request in fact
+            // succeeded. Only a staging retry gets the relaxation: `loadTable`
+            // otherwise refuses staged tables outright, so a plain create's key
+            // must not become a way to read one.
+            let list_flags = if request.stage_create.unwrap_or(false) {
+                TabularListFlags::active_and_staged()
+            } else {
+                TabularListFlags::active()
+            };
             return super::replay_load_table::<C, A, S>(
                 load_params,
                 data_access.into(),
                 state,
                 request_metadata,
                 "createTable",
-                TabularListFlags::active_and_staged(),
+                list_flags,
             )
             .await;
         }

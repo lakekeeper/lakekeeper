@@ -127,12 +127,16 @@ async fn replay_load_table<C: CatalogStore, A: Authorizer + Clone, S: SecretStor
         list_flags,
     )
     .await
-    .map_err(|e| {
-        ErrorModel::internal(
-            format!("Failed to replay idempotent {operation_name}: {e}"),
-            "IdempotencyReplayFailed",
-            None,
-        )
+    // Keep the load's own status. Wrapping everything as internal turned the two
+    // outcomes a client can legitimately hit on a retry — the table was dropped
+    // or renamed since (404), the caller's read access was revoked (403) — into
+    // 500s, which reads as a server fault rather than "this key can no longer be
+    // replayed". The namespace and view replay paths already propagate.
+    .map_err(|mut e| {
+        e.error
+            .stack
+            .push(format!("Failed to replay idempotent {operation_name}"));
+        e
     })?;
     match load_result {
         LoadTableResultOrNotModified::LoadTableResult(r) => Ok(r),

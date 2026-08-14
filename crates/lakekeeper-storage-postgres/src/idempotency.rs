@@ -51,21 +51,33 @@ impl PostgresBackend {
         endpoint: EndpointFlat,
         state: <Self as lakekeeper::service::CatalogStore>::State,
     ) -> Result<IdempotencyCheck> {
-        // Uses read_pool for performance. This is a fast-path optimization only —
-        // correctness is guaranteed by the INSERT at commit time. A stale replica
-        // might miss a recently committed key, causing duplicate work that the
-        // INSERT will catch. This is acceptable: the probability of replica lag
-        // AND a duplicate request is very low.
+        // Deliberately the write pool. The insert at commit time is not a
+        // sufficient backstop: handlers run their mutation first and only insert
+        // the key just before commit, so a replica that misses a just-committed
+        // record loses the replay entirely — `createTable` re-runs and dies on
+        // the tabular-name unique violation as a 409, the drop paths 404 on the
+        // already-gone entity. Retry-after-timeout is the whole point of the
+        // feature and is exactly when lag is likely, so this read has to be
+        // authoritative. It is a primary-key lookup and only runs when the
+        // client sent the header.
+        //
+        // `operation` is read as text rather than decoded into `EndpointFlat`.
+        // The `api_endpoints` enum grows over time, so during a rolling
+        // downgrade this replica can encounter a value written by a newer one.
+        // Decoding would fail the whole query and 500 every idempotent request
+        // in the warehouse until the records expire; a text compare just fails
+        // to match, which is the same answer for any endpoint this binary can
+        // actually serve.
         let record = sqlx::query!(
             r#"
-            SELECT http_status, operation as "operation: EndpointFlat"
+            SELECT http_status, operation::text as "operation!"
             FROM idempotency_record
             WHERE warehouse_id = $1 AND idempotency_key = $2
             "#,
             *warehouse_id,
             key.as_uuid(),
         )
-        .fetch_optional(&state.read_pool())
+        .fetch_optional(&state.write_pool())
         .await
         .map_err(|e: sqlx::Error| {
             e.into_error_model("Error checking idempotency key".to_string())
@@ -125,7 +137,7 @@ impl PostgresBackend {
         // The spec makes the key globally unique — never reused across operations.
         // A client that breaks that rule must not be handed a replay of the other
         // operation's response, which would be of the wrong shape entirely.
-        if record.operation != endpoint {
+        if record.operation != endpoint.to_string() {
             return Err(lakekeeper::api::ErrorModel::bad_request(
                 "Idempotency-Key was already used for a different operation. \
                  Keys must be globally unique and must not be reused across operations.",

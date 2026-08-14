@@ -15,8 +15,13 @@ where
 {
     /// Check if an idempotency key exists and return its status.
     ///
-    /// Called before authz, outside any transaction. Uses the write pool
-    /// to avoid replica lag.
+    /// Called before authz, outside any transaction, and against the **write
+    /// pool**. A replica that misses a just-committed record does not merely
+    /// delay the replay, it loses it: most handlers run their mutation before
+    /// reaching `try_insert_idempotency_key`, so the retry dies on the
+    /// mutation's own conflict — `createTable` returns 409 `TableAlreadyExists`
+    /// and the drop paths 404 — rather than replaying. The insert is a backstop
+    /// only for the handlers that reach it.
     ///
     /// `endpoint` must be the endpoint currently handling the request — the same
     /// one it will store via [`IdempotencyInfo`]. A key found under a *different*
