@@ -42,23 +42,44 @@ pub const X_REQUEST_ID_HEADER_NAME: HeaderName = HeaderName::from_static(X_REQUE
 
 const ANONYMOUS_ACTOR: &Actor = &Actor::Anonymous;
 
+/// The `User-Agent` request header, recorded as the caller sent it.
+///
+/// Deliberately not parsed into a client taxonomy. The value is surfaced in the
+/// audit log, where a normalised form would be a reconstruction rather than
+/// evidence, and where classifying it would mean maintaining a parser against
+/// strings the caller chooses. Consumers classify; Lakekeeper records.
 #[derive(Debug, Clone)]
-pub enum UserAgent {
-    // User-Agent: PyIceberg/<version>
-    PyIceberg { version: String },
-    Unknown(String),
-}
+pub struct UserAgent(String);
 
 impl UserAgent {
-    #[cfg(feature = "router")]
-    fn parse(user_agent: &str) -> Self {
-        if let Some(version) = user_agent.strip_prefix("PyIceberg/") {
-            Self::PyIceberg {
-                version: version.to_string(),
-            }
-        } else {
-            Self::Unknown(user_agent.to_string())
+    /// Longest header value retained. The header is caller-controlled and is
+    /// recorded on every audit event, so it is bounded at capture.
+    #[cfg(any(feature = "router", test))]
+    const MAX_LEN: usize = 256;
+
+    #[cfg(any(feature = "router", test))]
+    pub(crate) fn parse(user_agent: &str) -> Self {
+        let mut end = user_agent.len().min(Self::MAX_LEN);
+        // Header values are visible ASCII in practice, but never split a code
+        // point — a partial character would not survive JSON encoding.
+        while !user_agent.is_char_boundary(end) {
+            end -= 1;
         }
+        Self(user_agent[..end].to_string())
+    }
+
+    /// The header value, truncated at capture to a bounded length.
+    ///
+    /// Caller-supplied and unverified — see the audit-log documentation.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The version from a `PyIceberg/<version>` user agent, if this is one.
+    #[must_use]
+    pub fn pyiceberg_version(&self) -> Option<&str> {
+        self.0.strip_prefix("PyIceberg/")
     }
 }
 
@@ -581,6 +602,10 @@ pub struct RequestMetadataTestBuilder {
     /// construct a request that carries them.
     #[builder(default, setter(strip_option))]
     pub admission_roles: Option<TokenRoles>,
+    /// The `User-Agent` header the caller sent, as captured by the request
+    /// middleware. Lets tests exercise the audit log's `user_agent` field.
+    #[builder(default, setter(strip_option))]
+    pub user_agent: Option<UserAgent>,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -594,7 +619,7 @@ impl From<RequestMetadataTestBuilder> for RequestMetadata {
             project_id: b.project_id,
             matched_path: b.matched_path,
             request_method: b.request_method,
-            user_agent: None,
+            user_agent: b.user_agent,
             engines: MatchedEngines::default(),
             token_roles: b.token_roles,
             admission_roles: b.admission_roles,
@@ -781,6 +806,59 @@ mod test {
     use http::{HeaderMap, header::HeaderValue};
 
     use super::*;
+
+    /// The audit log records the user agent as the caller sent it, so the
+    /// header must survive capture byte-for-byte. A parsed representation that
+    /// only kept the version would make the recorded value a reconstruction
+    /// rather than evidence.
+    #[test]
+    fn a_user_agent_is_captured_verbatim() {
+        for raw in [
+            "PyIceberg/0.9.1",
+            "Trino/476",
+            "Apache-Spark/3.5.1 (Scala/2.12)",
+            "",
+        ] {
+            assert_eq!(UserAgent::parse(raw).as_str(), raw);
+        }
+    }
+
+    /// The header is caller-controlled and lands on every audit record, so its
+    /// length is bounded at capture rather than at emit.
+    #[test]
+    fn an_overlong_user_agent_is_truncated() {
+        let raw = "x".repeat(UserAgent::MAX_LEN * 2);
+        let captured = UserAgent::parse(&raw);
+        assert_eq!(captured.as_str().len(), UserAgent::MAX_LEN);
+        assert!(raw.starts_with(captured.as_str()));
+    }
+
+    /// Truncation must not split a multi-byte character — a partial code point
+    /// would render as invalid JSON in the audit log.
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        // 'ä' is two bytes, so a 256-byte cut lands mid-character.
+        let raw = "ä".repeat(UserAgent::MAX_LEN);
+        let captured = UserAgent::parse(&raw);
+        assert!(captured.as_str().len() <= UserAgent::MAX_LEN);
+        assert!(raw.starts_with(captured.as_str()));
+    }
+
+    /// The ADLS SAS-property workaround needs the `PyIceberg` version; it is
+    /// derived from the raw header rather than stored separately.
+    #[test]
+    fn a_pyiceberg_version_is_derived_from_the_raw_header() {
+        assert_eq!(
+            UserAgent::parse("PyIceberg/0.9.1").pyiceberg_version(),
+            Some("0.9.1")
+        );
+        assert_eq!(UserAgent::parse("Trino/476").pyiceberg_version(), None);
+        // Case-sensitive prefix: a different product is not PyIceberg.
+        assert_eq!(
+            UserAgent::parse("pyiceberg/0.9.1").pyiceberg_version(),
+            None
+        );
+    }
 
     #[test]
     fn test_bypass_matrix() {
