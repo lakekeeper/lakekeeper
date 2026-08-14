@@ -624,7 +624,7 @@ fn tuple_timestamp(seconds_and_nanos: Option<(i64, i32)>) -> Option<chrono::Date
 
 #[cfg(test)]
 mod tests {
-    use lakekeeper::service::UserId;
+    use lakekeeper::service::{UserId, authz::GrantOp};
 
     use super::*;
     use crate::FgaType;
@@ -677,11 +677,12 @@ mod tests {
             .copied()
     }
 
-    /// Equal privileges are one tuple however many grantees name them, and a privilege
-    /// this level cannot grant is no tuple at all. The decisions alone cannot show either:
-    /// a plan with one tuple per check answers identically, just more expensively.
+    /// Equal privileges are one tuple however many grantees name them and whichever way
+    /// they move, and a privilege this level cannot grant is no tuple at all. The decisions
+    /// alone cannot show either: a plan with one tuple per check answers identically, just
+    /// more expensively.
     #[test]
-    fn equal_privileges_share_one_tuple_whatever_the_grantee() {
+    fn equal_privileges_share_one_tuple_whatever_the_grantee_or_direction() {
         let alice = UserOrRoleId::User(UserId::new_unchecked("oidc", "alice"));
         let bob = UserOrRoleId::User(UserId::new_unchecked("oidc", "bob"));
         let (items, item_of_check) = plan_authority_checks(
@@ -689,15 +690,21 @@ mod tests {
             "user:oidc~caller",
             "warehouse:11111111-1111-1111-1111-111111111111",
             &[
-                GrantAuthorityCheck::new("select", Some(&alice)),
-                GrantAuthorityCheck::new("select", Some(&bob)),
-                GrantAuthorityCheck::new("modify", Some(&alice)),
+                GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
+                GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
+                GrantAuthorityCheck::new("modify", Some(&alice), Some(GrantOp::Grant)),
+                // Taking `select` back asks the same relation as handing it out: this
+                // model has one relation per privilege and nothing to say about direction.
+                GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Revoke)),
                 // A warehouse action, but not an assignable relation, so not grantable.
-                GrantAuthorityCheck::new("get_metadata", Some(&alice)),
+                GrantAuthorityCheck::new("get_metadata", Some(&alice), Some(GrantOp::Grant)),
             ],
         );
 
-        assert_eq!(item_of_check, vec![Some(0), Some(0), Some(1), None]);
+        assert_eq!(
+            item_of_check,
+            vec![Some(0), Some(0), Some(1), Some(0), None]
+        );
         assert_eq!(
             items,
             vec![

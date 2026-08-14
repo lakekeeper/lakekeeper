@@ -40,8 +40,8 @@ mod grant {
                 CatalogNamespaceOps as _, NamespaceId, State, UserId,
                 authn::Actor,
                 authz::{
-                    AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantResource,
-                    ResourceType, UserOrRoleId,
+                    AuthZGrantOps as _, Authorizer as _, GrantAuthorityCheck, GrantOp,
+                    GrantResource, ResourceType, UserOrRoleId,
                 },
             },
         };
@@ -89,10 +89,11 @@ mod grant {
             }
         }
 
-        /// A grant-authority question naming no grantee. The tests that name one build
-        /// the check directly.
+        /// A grant-authority question naming neither grantee nor direction, as the
+        /// grantable-privileges endpoint asks it. The tests that name either build the
+        /// check directly.
         fn check(privilege: &str) -> GrantAuthorityCheck<'_> {
-            GrantAuthorityCheck::new(privilege, None)
+            GrantAuthorityCheck::new(privilege, None, None)
         }
 
         fn writes(entries: Vec<GrantEntry>) -> ApplyGrantsRequest {
@@ -334,9 +335,9 @@ mod grant {
                     None,
                     &resource,
                     &[
-                        GrantAuthorityCheck::new("select", Some(&alice)),
-                        GrantAuthorityCheck::new("select", Some(&bob)),
-                        GrantAuthorityCheck::new("modify", Some(&alice)),
+                        GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::new("modify", Some(&alice), Some(GrantOp::Grant)),
                     ],
                 )
                 .await
@@ -351,10 +352,14 @@ mod grant {
                     None,
                     &resource,
                     &[
-                        GrantAuthorityCheck::new("get_metadata", Some(&alice)),
-                        GrantAuthorityCheck::new("select", Some(&alice)),
-                        GrantAuthorityCheck::new("get_metadata", Some(&bob)),
-                        GrantAuthorityCheck::new("select", Some(&bob)),
+                        GrantAuthorityCheck::new(
+                            "get_metadata",
+                            Some(&alice),
+                            Some(GrantOp::Grant),
+                        ),
+                        GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::new("get_metadata", Some(&bob), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
                     ],
                 )
                 .await
@@ -368,8 +373,8 @@ mod grant {
                     None,
                     &resource,
                     &[
-                        GrantAuthorityCheck::new("select", Some(&alice)),
-                        GrantAuthorityCheck::new("select", Some(&bob)),
+                        GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Grant)),
+                        GrantAuthorityCheck::new("select", Some(&bob), Some(GrantOp::Grant)),
                     ],
                 )
                 .await

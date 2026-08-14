@@ -2048,9 +2048,9 @@ where
     /// warehouse's grants without being able to read it — so there is no visibility
     /// check to fold in here. Callers document what that discloses.
     ///
-    /// Each check names a privilege and, where the caller knows it, the grantee it is
-    /// destined for. Whether the grantee changes the answer is the authorizer's business;
-    /// either way, return one decision per check, in order.
+    /// Each check names a privilege and, where the caller knows them, the grantee it is
+    /// destined for and which way it would move. Whether either changes the answer is the
+    /// authorizer's business; either way, return one decision per check, in order.
     ///
     /// The default denies everything.
     async fn are_allowed_grants_impl(
@@ -2237,8 +2237,8 @@ pub mod tests {
                 None,
                 &GrantResource::Server,
                 &[
-                    GrantAuthorityCheck::new("admin", None),
-                    GrantAuthorityCheck::new("select", Some(&alice)),
+                    GrantAuthorityCheck::new("admin", None, None),
+                    GrantAuthorityCheck::new("select", Some(&alice), Some(GrantOp::Revoke)),
                 ],
             )
             .await

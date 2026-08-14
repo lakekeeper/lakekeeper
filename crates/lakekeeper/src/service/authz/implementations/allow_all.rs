@@ -453,7 +453,7 @@ fn build_vocabulary(resource_type: ResourceType) -> Vec<PrivilegeDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::super::{AuthZGrantOps, InvalidGrantPrivilege, UserOrRoleId},
+        super::super::{AuthZGrantOps, GrantOp, InvalidGrantPrivilege, UserOrRoleId},
         *,
     };
 
@@ -552,8 +552,8 @@ mod tests {
                 None,
                 &resource,
                 &[
-                    GrantAuthorityCheck::new("get_metadata", Some(&bob)),
-                    GrantAuthorityCheck::new("not_a_privilege", None),
+                    GrantAuthorityCheck::new("get_metadata", Some(&bob), Some(GrantOp::Grant)),
+                    GrantAuthorityCheck::new("not_a_privilege", None, None),
                 ],
             )
             .await

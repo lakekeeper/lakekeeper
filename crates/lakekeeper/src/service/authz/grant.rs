@@ -542,8 +542,15 @@ impl AppliedGrants {
     }
 }
 
-/// One grant-authority question: may the subject grant and revoke `privilege` on the
-/// resource, to `grantee`?
+/// Which way a grant would move: handed out, or taken back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrantOp {
+    Grant,
+    Revoke,
+}
+
+/// One grant-authority question: may the subject `op` `privilege` on the resource, to
+/// `grantee`?
 ///
 /// Extensible on purpose — construct with [`new`](Self::new) and read fields rather than
 /// destructuring, so a new term costs no out-of-workspace authorizer a compile error.
@@ -565,12 +572,25 @@ pub struct GrantAuthorityCheck<'a> {
     /// authorizer that does distinguish grantees may answer this form from the privilege
     /// alone.
     pub grantee: Option<&'a UserOrRoleId>,
+    /// Which way the privilege would move. An authorizer that grants and revokes on the
+    /// same authority ignores it; one that separates them — a role that may take access
+    /// away without being able to hand it out — answers the two differently.
+    ///
+    /// `None` asks about neither direction in particular, which is what the
+    /// grantable-privileges endpoint wants: authority over the privilege here at all.
+    /// Like a `None` grantee, that answer is advisory, since the apply path asks again
+    /// per entry.
+    pub op: Option<GrantOp>,
 }
 
 impl<'a> GrantAuthorityCheck<'a> {
     #[must_use]
-    pub fn new(privilege: &'a str, grantee: Option<&'a UserOrRoleId>) -> Self {
-        Self { privilege, grantee }
+    pub fn new(privilege: &'a str, grantee: Option<&'a UserOrRoleId>, op: Option<GrantOp>) -> Self {
+        Self {
+            privilege,
+            grantee,
+            op,
+        }
     }
 }
 
@@ -579,7 +599,7 @@ impl<'a> GrantAuthorityCheck<'a> {
 /// [`are_allowed_grants_impl`](Authorizer::are_allowed_grants_impl) instead.
 #[async_trait::async_trait]
 pub trait AuthZGrantOps: Authorizer {
-    /// May the actor (or `for_user`, when given) grant and revoke each of `checks` on
+    /// May the actor (or `for_user`, when given) administer each of `checks` on
     /// `resource`? Returns exactly one decision per check, in order.
     ///
     /// Grant *authority* is resolved here rather than modelled as a `Catalog*Action`

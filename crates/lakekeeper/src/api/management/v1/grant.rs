@@ -71,8 +71,8 @@ use crate::{
             AuthorizationDecision, Authorizer, AuthzNamespaceOps, AuthzWarehouseOps,
             CatalogGenericTableAction, CatalogNamespaceAction, CatalogProjectAction,
             CatalogServerAction, CatalogTableAction, CatalogTagAction, CatalogViewAction,
-            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantResource, GrantRow,
-            GrantSpec, PrivilegeDescriptor, RequireTagActionError, ResourceType,
+            CatalogWarehouseAction, GrantAuthorityCheck, GrantFilter, GrantOp, GrantResource,
+            GrantRow, GrantSpec, PrivilegeDescriptor, RequireTagActionError, ResourceType,
             UserOrRole as AuthzUserOrRole, UserOrRoleId,
         },
         events::{
@@ -359,7 +359,9 @@ pub struct GrantablePrivilege {
     /// distinct — and so a new descriptor field can never collide with `allowed`.
     #[cfg_attr(feature = "open-api", schema(value_type = PrivilegeDescriptor))]
     pub privilege: &'static PrivilegeDescriptor,
-    /// Whether the principal may grant and revoke this privilege on this resource.
+    /// Whether the principal has authority over this privilege on this resource. Asked
+    /// without a direction, so an authorizer that separates granting from revoking may
+    /// answer for either; an apply is checked per entry.
     pub allowed: bool,
 }
 
@@ -716,22 +718,30 @@ async fn validate_write_principals<C: CatalogRoleOps>(
 // ---------------------------------------------------------------------------
 
 /// The distinct grant-authority questions a diff asks, in `writes`-then-`deletes` order:
-/// which privilege, destined for which principal.
+/// which privilege, destined for which principal, moving which way.
 ///
-/// Deduplicated on the *pair*, in first-seen order. A diff handing one privilege to a
-/// hundred principals asks a hundred questions: whether the grantee changes the answer
-/// belongs to the authorizer's model, so this layer cannot collapse them. An authorizer
-/// that resolves authority from the privilege alone collapses them itself, where that is
-/// sound.
-fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str)> {
+/// Deduplicated on the *triple*, in first-seen order. A diff handing one privilege to a
+/// hundred principals asks a hundred questions, and handing one to a principal while
+/// taking it from another asks two: whether the grantee or the direction changes the
+/// answer belongs to the authorizer's model, so this layer cannot collapse them. An
+/// authorizer that resolves authority from the privilege alone collapses them itself,
+/// where that is sound.
+fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str, GrantOp)> {
     let mut seen = std::collections::HashSet::new();
-    request
-        .entries()
-        .map(|entry| {
-            (
-                UserOrRoleId::from(&entry.principal),
-                entry.privilege.as_str(),
-            )
+    let sides = [
+        (request.writes.iter(), GrantOp::Grant),
+        (request.deletes.iter(), GrantOp::Revoke),
+    ];
+    sides
+        .into_iter()
+        .flat_map(|(entries, op)| {
+            entries.map(move |entry| {
+                (
+                    UserOrRoleId::from(&entry.principal),
+                    entry.privilege.as_str(),
+                    op,
+                )
+            })
         })
         .filter(|question| seen.insert(question.clone()))
         .collect()
@@ -744,7 +754,7 @@ fn authority_questions(request: &ApplyGrantsRequest) -> Vec<(UserOrRoleId, &str)
 /// once an authorizer answers per grantee: a privilege allowed for the first principal
 /// that asks for it and refused for the second is named where the refusal is.
 fn refused_privileges<'a>(
-    questions: &[(UserOrRoleId, &'a str)],
+    questions: &[(UserOrRoleId, &'a str, GrantOp)],
     decisions: &[AuthorizationDecision],
 ) -> Vec<&'a str> {
     let mut named = std::collections::HashSet::new();
@@ -752,13 +762,14 @@ fn refused_privileges<'a>(
         .iter()
         .zip(decisions)
         .filter(|(_, decision)| !decision.allowed)
-        .map(|((_, privilege), _)| *privilege)
+        .map(|((_, privilege, _), _)| *privilege)
         .filter(|privilege| named.insert(*privilege))
         .collect()
 }
 
-/// Check grant authority for every entry of the diff, including the deletes:
-/// revoking a privilege requires the same authority as granting it.
+/// Check grant authority for every entry of the diff, including the deletes: taking a
+/// privilege away is administering it too, so it is asked rather than assumed. Whether an
+/// authorizer answers the two directions alike is its own business.
 async fn require_grant_authority<A: Authorizer>(
     authorizer: &A,
     metadata: &RequestMetadata,
@@ -770,7 +781,9 @@ async fn require_grant_authority<A: Authorizer>(
     let questions = authority_questions(request);
     let checks: Vec<GrantAuthorityCheck<'_>> = questions
         .iter()
-        .map(|(grantee, privilege)| GrantAuthorityCheck::new(privilege, Some(grantee)))
+        .map(|(grantee, privilege, op)| {
+            GrantAuthorityCheck::new(privilege, Some(grantee), Some(*op))
+        })
         .collect();
     let decisions = authorizer
         .are_allowed_grants(metadata, None, resource, &checks)
@@ -799,12 +812,12 @@ async fn allowed_privileges<A: Authorizer>(
     resource: &GrantResource,
 ) -> std::result::Result<Vec<GrantablePrivilege>, AuthZError> {
     let vocabulary = authorizer.grantable_privileges(resource.resource_type());
-    // No grantee: this asks whether the subject has authority over each privilege here
-    // at all. Advisory - the apply path asks again per grantee - so an authorizer that
-    // distinguishes them need not enumerate anyone to answer.
+    // Neither grantee nor direction: this asks whether the subject has authority over each
+    // privilege here at all. Advisory - the apply path asks again per entry - so an
+    // authorizer that distinguishes them need not enumerate anyone to answer.
     let checks: Vec<GrantAuthorityCheck<'_>> = vocabulary
         .iter()
-        .map(|privilege| GrantAuthorityCheck::new(privilege.name.as_str(), None))
+        .map(|privilege| GrantAuthorityCheck::new(privilege.name.as_str(), None, None))
         .collect();
     let decisions = authorizer
         .are_allowed_grants(request_metadata, for_user.as_ref(), resource, &checks)
@@ -2738,11 +2751,14 @@ mod tests {
     }
 
     #[test]
-    fn authority_questions_are_deduplicated_on_the_pair() {
+    fn authority_questions_are_deduplicated_on_the_triple() {
         // Not on the privilege alone: an authorizer may answer differently depending on
-        // who receives the privilege, so `modify` for alice and `modify` for a role are
-        // two questions. The same pair twice - here a grant and a revoke of `modify` for
-        // alice - is one, asked in the position the request first names it.
+        // who receives the privilege and on which way it moves. So `modify` for alice,
+        // `modify` for a role, and taking `modify` back from alice are three questions —
+        // the last one is what lets a revoke-only role exist. A repeat of the whole
+        // triple is one question, asked where the request first names it; the request
+        // validator rejects a repeat within one side, but it compares the principal as
+        // written, and two spellings can name the same principal.
         let role_id = RoleId::new_random();
         let role = UserOrRole::Role(RoleAssignee::from_role(role_id));
         let request = ApplyGrantsRequest {
@@ -2750,6 +2766,7 @@ mod tests {
                 entry("modify", alice()),
                 entry("modify", role),
                 entry("select", alice()),
+                entry("modify", alice()),
             ],
             deletes: vec![entry("modify", alice())],
         };
@@ -2758,9 +2775,10 @@ mod tests {
         assert_eq!(
             authority_questions(&request),
             vec![
-                (alice_id.clone(), "modify"),
-                (UserOrRoleId::Role(role_id), "modify"),
-                (alice_id, "select"),
+                (alice_id.clone(), "modify", GrantOp::Grant),
+                (UserOrRoleId::Role(role_id), "modify", GrantOp::Grant),
+                (alice_id.clone(), "select", GrantOp::Grant),
+                (alice_id, "modify", GrantOp::Revoke),
             ]
         );
     }
@@ -2773,9 +2791,9 @@ mod tests {
         let alice = UserOrRoleId::from(&alice());
         let role = UserOrRoleId::Role(RoleId::new_random());
         let questions = vec![
-            (alice.clone(), "select"),
-            (role, "select"),
-            (alice, "modify"),
+            (alice.clone(), "select", GrantOp::Grant),
+            (role, "select", GrantOp::Grant),
+            (alice, "modify", GrantOp::Revoke),
         ];
 
         // `select` allowed for alice but refused for the role: named once, and from the
