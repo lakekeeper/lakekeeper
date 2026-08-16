@@ -58,7 +58,7 @@ Lakekeeper+ builds on the open-source catalog with the capabilities regulated an
 Talk to the team at Vakamo about running Lakekeeper in production — self-hosted or managed. We help you understand which edition fits, and get you there.
 
 <div class="lkplus-cta">
-  <a href="#lkplus-contact-form" id="lkplus-contact-btn" class="md-button md-button--primary" aria-expanded="false" aria-controls="lkplus-contact-form" data-goatcounter-click="vakamo-cta-production-primary" data-goatcounter-title="Production page — Talk to us">Talk to us about Lakekeeper+</a>
+  <a href="https://forms.zohopublic.com/supportvak1/form/Contactus/formperma/lTpraap5Nwq1DckVGakAqP0NPo1qWTu3JxPZ9bP07CQ" target="_blank" rel="noopener noreferrer" id="lkplus-contact-btn" class="md-button md-button--primary" aria-expanded="false" aria-controls="lkplus-contact-form" data-goatcounter-click="vakamo-cta-production-primary" data-goatcounter-title="Production page — Talk to us">Talk to us about Lakekeeper+</a>
   <a href="/about/enterprise-release-notes/" class="md-button" data-goatcounter-click="production-plus-release-notes" data-goatcounter-title="Production page — Plus release notes">See Plus release notes</a>
 </div>
 
@@ -76,7 +76,7 @@ Talk to the team at Vakamo about running Lakekeeper in production — self-hoste
       if (box.dataset.loaded) { box.hidden = false; box.scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
       box.dataset.loaded = "1";
       var f = document.createElement("iframe");
-      f.src = "https://forms.zohopublic.com/supportvak1/form/Contactus/formperma/lTpraap5Nwq1DckVGakAqP0NPo1qWTu3JxPZ9bP07CQ";
+      f.src = btn.href;
       f.setAttribute("aria-label", "Contact Vakamo about Lakekeeper+");
       f.setAttribute("frameborder", "0");
       f.setAttribute("loading", "lazy");
