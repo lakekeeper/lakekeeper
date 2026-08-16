@@ -1,4 +1,4 @@
-# Lakekeeper Plus Release Notes
+# Lakekeeper+ Release Notes
 
 ## v0.13.4 (2026-08-14)
 
