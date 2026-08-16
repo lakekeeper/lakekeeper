@@ -1233,6 +1233,39 @@ impl From<FromTabularRowError> for RenameTabularError {
     }
 }
 
+/// Map a failed rename onto its error.
+///
+/// An occupied destination name is detected by the `unique_name_per_namespace_id`
+/// index rather than by a pre-check inside the statement. The index key is
+/// `(warehouse_id, namespace_id, name, deleted_at)` with `NULLS NOT DISTINCT`, and
+/// the row being renamed is always live, so it can only collide with another live
+/// row. A soft-deleted namesake therefore does not block the rename — the same
+/// name is already freely reusable via create. Letting the failing statement pick
+/// its own error also means the sequential case and a concurrent insert of the
+/// destination name are reported identically.
+///
+/// Like every constraint violation, a conflict aborts the caller's transaction.
+/// All callers propagate it and drop the transaction; anything that swallows this
+/// error would make the next statement fail with `25P02`.
+fn rename_tabular_error(
+    e: sqlx::Error,
+    warehouse_id: WarehouseId,
+    source_id: TabularId,
+    not_found_detail: &str,
+) -> RenameTabularError {
+    match e {
+        sqlx::Error::Database(db_err)
+            if db_err.constraint() == Some("unique_name_per_namespace_id") =>
+        {
+            TabularAlreadyExists::new().into()
+        }
+        sqlx::Error::RowNotFound => TabularNotFound::new(warehouse_id, source_id)
+            .append_detail(not_found_detail)
+            .into(),
+        _ => e.into_catalog_backend_error().into(),
+    }
+}
+
 /// Rename a tabular. Tabulars may be moved across namespaces.
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn rename_tabular(
@@ -1277,13 +1310,6 @@ pub(crate) async fn rename_tabular(
                 FROM warehouse
                 WHERE warehouse_id = $4 AND status = 'active'
             ),
-            conflict_check AS (
-                SELECT 1
-                FROM tabular t
-                JOIN locked_source_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $4
-                WHERE t.name = $1 AND t.tabular_id != $2
-                FOR UPDATE
-            ),
             updated AS (
                 UPDATE tabular t
                 SET name = $1
@@ -1292,8 +1318,7 @@ pub(crate) async fn rename_tabular(
                     AND t.warehouse_id = $4
                     AND wc.warehouse_id = $4
                     AND lsn.namespace_id IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM conflict_check)
-                RETURNING 
+                RETURNING
                     t.tabular_id,
                     t.namespace_id,
                     t.name as tabular_name,
@@ -1361,11 +1386,13 @@ pub(crate) async fn rename_tabular(
         )
         .fetch_one(&mut **transaction)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => RenameTabularError::from(TabularNotFound::new(
-            warehouse_id, source_id
-        )),
-            _ => e.into_catalog_backend_error().into(),
+        .map_err(|e| {
+            rename_tabular_error(
+                e,
+                warehouse_id,
+                source_id,
+                "The source tabular could not be found.",
+            )
         })?
     } else {
         sqlx::query_as!(
@@ -1399,13 +1426,6 @@ pub(crate) async fn rename_tabular(
                 SELECT warehouse_id FROM warehouse
                 WHERE warehouse_id = $2 AND status = 'active'
             ),
-            conflict_check AS (
-                SELECT 1
-                FROM tabular t
-                JOIN locked_namespace ln ON t.namespace_id = ln.namespace_id AND t.warehouse_id = $2
-                WHERE t.name = $1
-                FOR UPDATE
-            ),
             updated AS (
                 UPDATE tabular t
                 SET name = $1, namespace_id = ln.namespace_id, tabular_namespace_name = $3
@@ -1415,7 +1435,6 @@ pub(crate) async fn rename_tabular(
                     AND ln.namespace_id IS NOT NULL
                     AND wc.warehouse_id = $2
                     AND lsn.namespace_id IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM conflict_check)
                 RETURNING t.tabular_id,
                     t.namespace_id,
                     t.name as tabular_name,
@@ -1485,11 +1504,13 @@ pub(crate) async fn rename_tabular(
         )
         .fetch_one(&mut **transaction)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => RenameTabularError::from(TabularNotFound::new(
-            warehouse_id, source_id
-        ).append_detail("Either the source tabular or the destination namespace could not be found.")),
-            _ => e.into_catalog_backend_error().into(),
+        .map_err(|e| {
+            rename_tabular_error(
+                e,
+                warehouse_id,
+                source_id,
+                "Either the source tabular or the destination namespace could not be found.",
+            )
         })?
     };
 

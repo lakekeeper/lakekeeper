@@ -1482,6 +1482,7 @@ define_transparent_error! {
         CatalogBackendError,
         InvalidNamespaceIdentifier,
         InternalParseLocationError,
+        TabularAlreadyExists,
         TabularNotFound
     ]
 }
