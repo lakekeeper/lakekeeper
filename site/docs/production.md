@@ -43,13 +43,13 @@ Lakekeeper+ builds on the open-source catalog with the capabilities regulated an
 
     ---
 
-    Resolve roles from Okta, Microsoft Entra ID, and LDAP; gate access with an external admission check; protect provider-synced roles from drift. Structured audit logs make the catalog auditable end to end.
+    Resolve roles through [role providers](./docs/nightly/docs/configuration.md#role-provider) — Okta, Microsoft Entra ID, and LDAP; gate access with an external admission check; protect provider-synced roles from drift. Structured audit logs make the catalog auditable end to end.
 
 - :material-lifebuoy: &nbsp; __Enterprise support & LTS__
 
     ---
 
-    Commercial support for self-hosted and managed deployments, plus hardened Long-Term Support release lines — so you can run Lakekeeper at the heart of your platform with confidence.
+    Commercial support from [Vakamo](https://vakamo.com){target="_blank" rel="noopener noreferrer"} for self-hosted and managed deployments, plus hardened Long-Term Support release lines — so you can run Lakekeeper at the heart of your platform with confidence.
 
 </div>
 
