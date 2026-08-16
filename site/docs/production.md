@@ -4,9 +4,9 @@ title: "Production"
 
 # Running Lakekeeper in Production
 
-Lakekeeper is the heart of your data platform. The open-source catalog is built to run in production — it holds no local state, scales horizontally behind a load balancer, and upgrades stay online while database migrations run. Most teams reach production on the OSS edition alone.
+Lakekeeper is the heart of your data platform. The open-source catalog is built to run in production — it holds no local state, scales horizontally behind a load balancer, and upgrades stay online while database migrations run.
 
-For regulated industries and teams that want the catalog operated *for* them — permission-as-code, autonomous maintenance, and enterprise support — **Lakekeeper+** <span class="lkp"></span> is the production-grade path, backed by [Vakamo](https://vakamo.com).
+Enterprise and regulated production demands more than uptime: governed and provable access control, audited identity, and maintenance run for you. That is what **Lakekeeper+** <span class="lkp"></span> delivers — the production-grade path for the enterprise, backed by [Vakamo](https://vakamo.com). For these environments, Lakekeeper+ is what you need.
 
 ## Production checklist (open source)
 
