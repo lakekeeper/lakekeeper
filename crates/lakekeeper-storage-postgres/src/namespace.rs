@@ -151,7 +151,7 @@ pub(crate) async fn get_namespaces_by_id<
             FROM selected_ns
         ),
         relevant_namespaces AS (
-            SELECT 
+            SELECT
                 n.namespace_id,
                 n.namespace_name,
                 n.warehouse_id,
@@ -553,18 +553,21 @@ pub(crate) async fn create_namespace(
     let parent = namespace.parent();
     let has_parent = parent.is_some();
 
-    // The parent is resolved with a share lock so that a concurrent `move_namespace`
-    // cannot re-parent or rename it between this lookup and the commit — which would
-    // otherwise leave the inserted child stranded under a path that no longer resolves.
-    // Taken in a separate statement because Postgres does not allow a locking clause in
-    // a CTE that is combined with a data-modifying CTE.
+    // The parent is resolved with a key share lock so that a concurrent `move_namespace` or
+    // drop cannot re-parent, rename or delete it between this lookup and the commit — which
+    // would otherwise leave the inserted child stranded under a path that no longer resolves.
+    // `FOR KEY SHARE` suffices: both hazards take `FOR UPDATE`, a rename because
+    // `namespace_name` is a key column of `unique_namespace_per_warehouse`. It deliberately
+    // does not conflict with the `FOR NO KEY UPDATE` that property and protection updates
+    // take, since nothing here reads either. Taken in a separate statement because Postgres
+    // does not allow a locking clause in a CTE that is combined with a data-modifying CTE.
     let locked_parent_id = if let Some(ref parent) = parent {
         sqlx::query_scalar!(
             r#"
             SELECT namespace_id
             FROM namespace
             WHERE warehouse_id = $1 AND namespace_name = $2
-            FOR SHARE
+            FOR KEY SHARE
             "#,
             *warehouse_id,
             &**parent,
@@ -766,18 +769,28 @@ pub(crate) async fn move_namespace(
         .try_into()
         .unwrap_or(MAX_NAMESPACE_DEPTH + 1);
 
-    // Moving a namespace that has descendants would require rewriting the stored path of
-    // every one of them. Deliberately unsupported for now — reject rather than corrupt.
-    // Any descendant counts, not just direct children.
+    // Moving a namespace P that has descendants is not implemented yet: the UPDATE below
+    // rewrites only this row, so descendants would keep their old absolute paths and stop
+    // resolving. Check if the moving/renaming namespace has children.
+    //
+    // Any descendant counts, not just direct children. Descendants of P are contiguous in the
+    // `unique_namespace_per_warehouse` btree immediately after P.
+    //
+    // Deliberately a separate statement, issued only after the `FOR UPDATE` above returned:
+    // under READ COMMITTED each statement takes a fresh snapshot, so a concurrent
+    // `create_namespace` that held the source row's lock while we were blocked becomes visible
+    // here as soon as it commits. Folded into the locking SELECT, this guard would run against
+    // the snapshot taken *before* we blocked and would miss that child.
     let has_children = sqlx::query_scalar!(
         r#"
-        SELECT EXISTS (
-            SELECT 1
+        SELECT coalesce((
+            SELECT namespace_name[1:$2] = $3
             FROM namespace
             WHERE warehouse_id = $1
-                AND depth > $2
-                AND namespace_name[1:$2] = $3
-        ) AS "has_children!"
+                AND namespace_name > $3
+            ORDER BY namespace_name
+            LIMIT 1
+        ), false) AS "has_children!"
         "#,
         *warehouse_id,
         source_depth,
@@ -791,9 +804,23 @@ pub(crate) async fn move_namespace(
         return Err(NamespaceHasChildren::new(warehouse_id, namespace_id).into());
     }
 
-    // Resolve the destination's parent and hold a share lock on it, so it cannot be
-    // dropped between here and the commit. `namespace_name` is matched under the
-    // case-insensitive collation, consistent with `create_namespace`.
+    // Resolve the destination's parent and hold a key share lock on it. That excludes
+    // `FOR UPDATE`, which both a DELETE and a rename take — a rename because `namespace_name`
+    // is a key column of `unique_namespace_per_warehouse` — so no concurrent drop or rename of
+    // the parent can *commit before us*. It deliberately does not exclude `FOR NO KEY UPDATE`,
+    // which property and protection updates take: nothing here reads either.
+    //
+    // It does not stop the parent being dropped immediately *after* our commit:
+    // `drop_namespace` evaluates its emptiness guard in an unlocked statement and then deletes
+    // by an id list frozen from that snapshot, so it neither sees our new child nor re-checks
+    // after waiting on this lock. That is a pre-existing gap in `drop_namespace`, not one this
+    // lock can close; closing it needs a `FOR UPDATE` pre-lock there.
+    //
+    // Any such pre-lock must be `FOR UPDATE`, not `FOR NO KEY UPDATE` — the latter does not
+    // conflict with `FOR KEY SHARE` and the mutual exclusion would silently vanish.
+    //
+    // `namespace_name` is matched under the case-insensitive collation, consistent with
+    // `create_namespace`.
     let destination_parent = destination.parent();
     let destination_parent_id = if let Some(ref parent) = destination_parent {
         let parent_id = sqlx::query_scalar!(
@@ -801,7 +828,7 @@ pub(crate) async fn move_namespace(
             SELECT namespace_id
             FROM namespace
             WHERE warehouse_id = $1 AND namespace_name = $2
-            FOR SHARE
+            FOR KEY SHARE
             "#,
             *warehouse_id,
             &**parent,
@@ -826,12 +853,22 @@ pub(crate) async fn move_namespace(
     // Collisions are caught by the `unique_namespace_per_warehouse` constraint rather
     // than by a probe, so there is no window between checking and writing. Renaming a row
     // to a name only it holds — e.g. a case-only rename — does not violate it.
+    //
+    // `version` and `updated_at` are set explicitly rather than left to the
+    // `set_updated_at_and_increment_version` trigger: its `WHEN` clause compares
+    // `namespace_name`, which is `text[] collate "case_insensitive"`, so a case-only rename
+    // compares equal and the trigger never fires. The trigger *assigns*
+    // `NEW.version = OLD.version + 1` rather than incrementing `NEW`, so setting both here
+    // cannot double-bump when it does fire. The byte-exact no-op returns above, so a true
+    // no-op still bumps nothing.
     let row = sqlx::query_as!(
         NamespaceWithParentVersionRow,
         r#"
         WITH updated_ns AS (
             UPDATE namespace
-            SET namespace_name = $3
+            SET namespace_name = $3,
+                version = version + 1,
+                updated_at = now()
             WHERE warehouse_id = $1 AND namespace_id = $2
             RETURNING
                 namespace_id,
@@ -3251,6 +3288,93 @@ pub mod tests {
             vec!["CaSiNg".to_string()],
             "the stored path must carry the new casing"
         );
+        // The `set_updated_at_and_increment_version` trigger compares `namespace_name` under
+        // the case-insensitive collation, so a case-only rename does not fire it. The UPDATE
+        // sets both columns explicitly; without that, caches and the authz version fence would
+        // never learn the path changed.
+        assert!(
+            *moved.namespace.version() > *ns.version(),
+            "a case-only rename is a real rename and must bump the version"
+        );
+        assert!(
+            moved.namespace.updated_at().is_some(),
+            "a case-only rename must stamp updated_at"
+        );
+        assert!(!moved.is_noop());
+    }
+
+    #[sqlx::test]
+    async fn test_move_namespace_has_children_probe_adversarial_names(pool: sqlx::PgPool) {
+        let state = CatalogState::from_pools(pool.clone(), pool.clone());
+        let (_, warehouse_id) = initialize_warehouse(state.clone(), None, None, None, true).await;
+
+        // The guard answers "has descendants" from the first row after the source in the
+        // unique index. These names all sort immediately around `child_7` without being its
+        // descendants, so a bound that is even slightly too wide reports children that do not
+        // exist — and a case-variant descendant must still be caught.
+        let seven =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["child_7"]), None).await;
+        for path in [vec!["child_7x"], vec!["child_7.a"], vec!["child_8"]] {
+            initialize_namespace(state.clone(), warehouse_id, &ident(&path), None).await;
+        }
+
+        move_ns(
+            &state,
+            warehouse_id,
+            seven.namespace_id(),
+            &ident(&["moved_7"]),
+            false,
+        )
+        .await
+        .expect("child_7x, child_7.a and child_8 are siblings, not descendants of child_7");
+
+        // A descendant differing only in case must still be caught: the index collates
+        // case-insensitively, so it sorts inside the descendant range.
+        let cased =
+            initialize_namespace(state.clone(), warehouse_id, &ident(&["Parent"]), None).await;
+        initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["Parent", "kid"]),
+            None,
+        )
+        .await;
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            cased.namespace_id(),
+            &ident(&["Elsewhere"]),
+            false,
+        )
+        .await
+        .expect_err("a descendant must block the move regardless of casing");
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceHasChildren(_)),
+            "unexpected error: {err:?}"
+        );
+
+        // A leaf element above every sentinel candidate must not escape the range.
+        let high = initialize_namespace(state.clone(), warehouse_id, &ident(&["high"]), None).await;
+        initialize_namespace(
+            state.clone(),
+            warehouse_id,
+            &ident(&["high", "\u{ffff}"]),
+            None,
+        )
+        .await;
+        let err = move_ns(
+            &state,
+            warehouse_id,
+            high.namespace_id(),
+            &ident(&["high_moved"]),
+            false,
+        )
+        .await
+        .expect_err("a U+FFFF descendant must block the move");
+        assert!(
+            matches!(err, CatalogMoveNamespaceError::NamespaceHasChildren(_)),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[sqlx::test]
@@ -3423,12 +3547,12 @@ pub mod tests {
         )
         .await;
 
-        // Remove the intermediate namespace at the DB level to construct a state the
-        // public API cannot produce (a non-recursive `drop_namespace` refuses while a
-        // child exists). This is exactly why the guard tests for *any* descendant
-        // (`depth > source_depth`) rather than direct children only: with a
-        // direct-children-only predicate, `root` would move here and silently strand
-        // `root.mid.leaf` under a path that no longer resolves.
+        // Remove the intermediate namespace at the DB level. The public API does not produce
+        // this state on purpose — a non-recursive `drop_namespace` refuses while a child
+        // exists — though its unlocked emptiness guard can still race a concurrent move into
+        // it. This is exactly why the guard tests for *any* descendant rather than direct
+        // children only: with a direct-children-only predicate, `root` would move here and
+        // silently strand `root.mid.leaf` under a path that no longer resolves.
         sqlx::query!(
             r#"DELETE FROM namespace WHERE namespace_id = $1"#,
             *mid.namespace_id()

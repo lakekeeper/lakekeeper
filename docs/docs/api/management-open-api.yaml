@@ -5389,8 +5389,10 @@ paths:
       summary: Move a Namespace
       description: |-
         Moves a namespace to a new location in the warehouse's namespace hierarchy,
-        re-parenting it and/or renaming it. The request body carries the full destination
-        path; an empty path moves the namespace to the warehouse root.
+        re-parenting it and/or renaming it. The request body carries the full destination path:
+        its last element is the new name, the preceding elements identify the new parent, so a
+        single-element path moves the namespace to the warehouse root. The path must not be
+        empty.
 
         Requires grant authority at **both** ends, because re-parenting makes the namespace's
         contents inherit the destination subtree's permissions without any assignment being
@@ -5400,10 +5402,10 @@ paths:
         - `create_namespace` **and** `accept_moved_namespace` on the destination parent (or on
           the warehouse, when moving to the root).
 
-        Both `move` and `accept_moved_namespace` are granted by `manage_grants` rather than by
-        plain write access. `create_namespace` alone is not sufficient at the destination: it
-        authorizes adding an *empty* child, whereas a move arrives carrying existing contents
-        and their grants.
+        Both `move` and `accept_moved_namespace` require `manage_grants` on top of the ordinary
+        write privilege (`modify` at the source, `create` at the destination). `create_namespace`
+        alone is not sufficient at the destination: it authorizes adding an *empty* child,
+        whereas a move arrives carrying existing contents and their grants.
 
         Constraints:
         - Namespaces that contain child namespaces cannot be moved.
@@ -9948,7 +9950,7 @@ components:
           description: |-
             Move this namespace to a new path, re-parenting and/or renaming it.
 
-            Gated on grant-level authority rather than plain write access. Re-parenting a
+            Gated on grant-level authority *in addition to* plain write access. Re-parenting a
             namespace re-issues every privilege the destination subtree confers onto the
             namespace's contents, with no assignment record anywhere — so the actor must
             already be able to grant on the namespace being moved. Inside a `managed_access`
@@ -9979,7 +9981,7 @@ components:
 
             Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
             this subtree's grantees exposes nothing. A move arrives carrying existing contents
-            and their direct grants, which is why this is gated on grant authority instead of
+            and their direct grants, which is why this is gated on grant authority in addition to
             `create` — without it, a namespace could be populated and granted somewhere
             permissive and then moved into a `managed_access` subtree, smuggling grants past the
             control that subtree exists to enforce.
@@ -11370,7 +11372,7 @@ components:
 
             Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
             this subtree's grantees exposes nothing. A move arrives carrying existing contents
-            and their direct grants, which is why this is gated on grant authority instead of
+            and their direct grants, which is why this is gated on grant authority in addition to
             `create` — without it, a namespace could be populated and granted somewhere
             permissive and then moved into a `managed_access` subtree, smuggling grants past the
             control that subtree exists to enforce.
@@ -11968,9 +11970,10 @@ components:
           description: |-
             Full new path of the namespace, including its new name as the last element.
 
-            The preceding elements identify the new parent; an empty list moves the namespace to
-            the warehouse root. Renaming in place is expressed by keeping the same parent and
-            changing only the last element. Mirrors the `destination` of the Iceberg
+            The preceding elements identify the new parent; a single-element destination moves the
+            namespace to the warehouse root. Must not be empty. Renaming in place is expressed by
+            keeping the same parent and changing only the last element. Mirrors the `destination`
+            of the Iceberg
             rename-table request.
 
             A destination equal to the namespace's current path succeeds without changing

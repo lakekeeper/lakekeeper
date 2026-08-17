@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT namespace_id\n            FROM namespace\n            WHERE warehouse_id = $1 AND namespace_name = $2\n            FOR SHARE\n            ",
+  "query": "\n            SELECT namespace_id\n            FROM namespace\n            WHERE warehouse_id = $1 AND namespace_name = $2\n            FOR KEY SHARE\n            ",
   "describe": {
     "columns": [
       {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "b5c68f4df6a772926c217312733d7390be3df318bced9750a90386761a6af863"
+  "hash": "bc9849e9a2330a2ad3f07be7c0c21d2ad9bd7a3fc9297500d6b7071497828643"
 }

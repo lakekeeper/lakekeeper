@@ -79,9 +79,17 @@ tuples:
     object: lakekeeper_table:warehouse_2/table_2_2
   # A direct manage_grants assignment inside the managed subtree. managed_access strips
   # manage_grants from *owners*, but not from an explicit assignment — so this principal
-  # may move namespace_2_1, while its owner may not.
+  # keeps grant authority. It still cannot move the namespace: can_move also needs modify.
   - user: user:namespace_2_1_grant_admin
     relation: manage_grants
+    object: namespace:namespace_2_1
+  # Direct manage_grants plus ownership: ownership supplies modify and create, the direct
+  # assignment survives managed_access, so this principal can move out of the managed subtree.
+  - user: user:namespace_2_1_move_admin
+    relation: manage_grants
+    object: namespace:namespace_2_1
+  - user: user:namespace_2_1_move_admin
+    relation: ownership
     object: namespace:namespace_2_1
   # warehouse_2 has managed access
   - user: role:*
@@ -380,7 +388,11 @@ tests:
           can_create_table: false
           can_create_view: false
           can_create_namespace: false
+          # A server admin holds nothing inside a project, so neither half of either
+          # intersection is satisfied.
+          can_accept_moved_namespace: false
           can_delete: false
+          can_move: false
           can_update_properties: false
           can_get_metadata: false
           can_list_tables: false
@@ -540,6 +552,9 @@ tests:
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: false
+          # manage_grants without create: grant authority alone cannot accept an inbound move
+          # at the warehouse root.
+          can_accept_moved_namespace: false
           can_delete: false
           can_update_storage: false
           can_update_storage_credential: false
@@ -566,12 +581,12 @@ tests:
           can_create_table: false
           can_create_view: false
           can_create_namespace: false
+          can_accept_moved_namespace: false
           can_delete: false
-          # can_move is manage_grants, which is orthogonal to modify: the grant authority
-          # may restructure the hierarchy without holding any write permission. Deliberate
-          # — moving is a grant-shaped operation — but it does mean `can_move` is not
-          # implied by, and does not imply, `can_delete`.
-          can_move: true
+          # can_move is manage_grants AND modify: grant authority alone no longer restructures
+          # the hierarchy — a security_admin without write access cannot move. can_move is
+          # therefore strictly stronger than can_delete.
+          can_move: false
           can_update_properties: false
           can_get_metadata: true
           can_list_tables: true
@@ -639,6 +654,8 @@ tests:
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: true
+          # The mirror image: create without manage_grants.
+          can_accept_moved_namespace: false
           can_delete: true
           can_update_storage: true
           can_update_storage_credential: true
@@ -719,6 +736,7 @@ tests:
         object: warehouse:warehouse_1
         assertions:
           can_create_namespace: true
+          can_accept_moved_namespace: true
           can_delete: true
           can_update_storage: true
           can_update_storage_credential: true
@@ -748,7 +766,9 @@ tests:
           can_create_table: true
           can_create_view: true
           can_create_namespace: true
+          can_accept_moved_namespace: true
           can_delete: true
+          can_move: true
           can_update_properties: true
           can_get_metadata: true
           can_list_tables: true
@@ -1024,6 +1044,9 @@ tests:
         object: warehouse:warehouse_2
         assertions:
           can_create_namespace: true
+          # warehouse.manage_grants has no `but not managed_access` guard, so the owner of a
+          # managed warehouse keeps it and can accept an inbound move at the root.
+          can_accept_moved_namespace: true
           can_delete: true
           can_update_storage: true
           can_update_storage_credential: true
@@ -1153,10 +1176,19 @@ tests:
         object: namespace:namespace_2_1
         assertions:
           # Ownership-derived manage_grants is stripped under managed access; a direct
-          # assignment is not, so this principal may move the namespace out.
+          # assignment is not — but can_move/can_accept_moved_namespace also need
+          # modify/create, which this principal lacks.
+          can_move: false
+          can_accept_moved_namespace: false
+          can_grant_select: true
+      - user: user:namespace_2_1_move_admin
+        object: namespace:namespace_2_1
+        assertions:
+          # Direct manage_grants survives managed access and ownership supplies modify and
+          # create, so both halves of each intersection are held: this principal may move the
+          # namespace out of the managed subtree, and accept one moved in.
           can_move: true
           can_accept_moved_namespace: true
-          can_grant_select: true
       - user: user:namespace_2_1_owner
         object: namespace:namespace_2_1
         assertions:

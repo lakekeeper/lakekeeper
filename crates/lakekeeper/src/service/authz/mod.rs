@@ -691,7 +691,7 @@ pub enum CatalogWarehouseAction {
     ///
     /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
     /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
-    /// and their direct grants, which is why this is gated on grant authority instead of
+    /// and their direct grants, which is why this is gated on grant authority in addition to
     /// `create` — without it, a namespace could be populated and granted somewhere
     /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
     /// control that subtree exists to enforce.
@@ -905,7 +905,7 @@ pub enum CatalogNamespaceAction {
     ManageTags,
     /// Move this namespace to a new path, re-parenting and/or renaming it.
     ///
-    /// Gated on grant-level authority rather than plain write access. Re-parenting a
+    /// Gated on grant-level authority *in addition to* plain write access. Re-parenting a
     /// namespace re-issues every privilege the destination subtree confers onto the
     /// namespace's contents, with no assignment record anywhere — so the actor must
     /// already be able to grant on the namespace being moved. Inside a `managed_access`
@@ -925,7 +925,7 @@ pub enum CatalogNamespaceAction {
     ///
     /// Distinct from `CreateNamespace`: creating adds an *empty* child, so exposing it to
     /// this subtree's grantees exposes nothing. A move arrives carrying existing contents
-    /// and their direct grants, which is why this is gated on grant authority instead of
+    /// and their direct grants, which is why this is gated on grant authority in addition to
     /// `create` — without it, a namespace could be populated and granted somewhere
     /// permissive and then moved into a `managed_access` subtree, smuggling grants past the
     /// control that subtree exists to enforce.

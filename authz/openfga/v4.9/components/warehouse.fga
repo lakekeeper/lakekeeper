@@ -24,7 +24,7 @@ type warehouse
 
     # ------------------ Actions ------------------
     define can_create_namespace: create
-    define can_accept_moved_namespace: manage_grants
+    define can_accept_moved_namespace: manage_grants and create
     # Delete this warehouse permanently
     define can_delete: modify
     define can_update_storage: modify

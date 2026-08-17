@@ -46,9 +46,6 @@ fn move_namespace_action(destination: &NamespaceIdent, force: bool) -> CatalogNa
 /// and `force` via [`move_namespace_action`], so a caller cannot authorize a move against
 /// some other namespace action, nor pass an action whose `destination` disagrees with the
 /// destination actually being checked.
-///
-/// Returns the destination as a [`NamespaceParent`] so the caller can hand it to the
-/// authorizer's hierarchy hook without resolving it a second time.
 async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
     authorizer: &A,
     request_metadata: &RequestMetadata,
@@ -58,7 +55,7 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
     force: bool,
     catalog_state: C::State,
 ) -> std::result::Result<
-    (Arc<ResolvedWarehouse>, NamespaceHierarchy, NamespaceParent),
+    (Arc<ResolvedWarehouse>, NamespaceHierarchy),
     crate::service::authz::AuthZError,
 > {
     let action = move_namespace_action(destination, force);
@@ -99,7 +96,7 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
     // whose grants are meant to be centrally controlled.
     let destination_name = destination.as_ref().last().cloned().unwrap_or_default();
     let source_path = Arc::new(namespace.namespace_ident().as_ref().clone());
-    let new_parent = if let Some(destination_parent) = destination.parent() {
+    if let Some(destination_parent) = destination.parent() {
         let parent_namespace = C::get_namespace_cache_aware(
             warehouse_id,
             destination_parent.clone(),
@@ -124,13 +121,12 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
                 request_metadata,
                 &warehouse,
                 destination_parent,
-                Ok(Some(parent_namespace.clone())),
+                Ok(Some(parent_namespace)),
                 CatalogNamespaceAction::AcceptMovedNamespace {
                     source: source_path,
                 },
             )
             .await?;
-        NamespaceParent::Namespace(parent_namespace.namespace_id())
     } else {
         authorizer
             .require_warehouse_action(
@@ -153,10 +149,9 @@ async fn authorize_namespace_move<C: CatalogStore, A: Authorizer>(
                 },
             )
             .await?;
-        NamespaceParent::Warehouse(warehouse_id)
-    };
+    }
 
-    Ok((warehouse, namespace, new_parent))
+    Ok((warehouse, namespace))
 }
 
 /// Input validation for a move destination, matching what creating a namespace at that path
@@ -229,10 +224,10 @@ fn ensure_storage_layout_permits_move(
 pub struct MoveNamespaceRequest {
     /// Full new path of the namespace, including its new name as the last element.
     ///
-    /// The preceding elements identify the new parent; an empty list moves the namespace to
-    /// the warehouse root. Renaming in place is expressed by keeping the same parent and
-    /// changing only the last element. Mirrors the `destination` of the Iceberg
-    /// rename-table request.
+    /// The preceding elements identify the new parent; a single-element destination moves the
+    /// namespace to the warehouse root. Must not be empty. Renaming in place is expressed by
+    /// keeping the same parent and changing only the last element. Mirrors the `destination`
+    /// of Iceberg REST rename-table request.
     ///
     /// A destination equal to the namespace's current path succeeds without changing
     /// anything, so retrying a request that already went through is safe.
@@ -335,7 +330,8 @@ where
     ///
     /// Requires `move` on the namespace itself, plus both `create_namespace` and
     /// `accept_moved_namespace` on the destination parent (or on the warehouse, when moving
-    /// to the root) — grant authority at both ends. See [`authorize_namespace_move`].
+    /// to the root) — grant authority on top of the ordinary write privilege at each end.
+    /// See [`authorize_namespace_move`].
     ///
     /// # Authorization-hierarchy ordering
     ///
@@ -408,7 +404,7 @@ where
             state_catalog.clone(),
         )
         .await;
-        let (event_ctx, (warehouse, namespace, new_parent)) = event_ctx.emit_authz(authz_result)?;
+        let (event_ctx, (warehouse, namespace)) = event_ctx.emit_authz(authz_result)?;
 
         // ------------------- STORAGE LAYOUT -------------------
         ensure_storage_layout_permits_move(&warehouse, namespace.namespace_ident(), &destination)?;
@@ -433,6 +429,12 @@ where
         let reparented = moved.changed_parent();
         let old_parent = moved
             .previous_parent
+            .map_or(NamespaceParent::Warehouse(warehouse_id), |parent| {
+                NamespaceParent::Namespace(parent)
+            });
+        let new_parent = moved
+            .namespace
+            .parent_namespaces_id()
             .map_or(NamespaceParent::Warehouse(warehouse_id), |parent| {
                 NamespaceParent::Namespace(parent)
             });
